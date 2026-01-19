@@ -3,14 +3,11 @@
 ## New or locally modified
 
 - ● [`repoprompt-tool-guidance-refresh/`](repoprompt-tool-guidance-refresh/)
-  - Maintenance skill for keeping RepoPrompt prompts and tool guidance up to date after RepoPrompt releases
+  - Maintenance skill for keeping RepoPrompt tool guidance up to date after new releases
   - Contents:
     - [`SKILL.md`](repoprompt-tool-guidance-refresh/SKILL.md)
     - [`changelog-latest.md`](repoprompt-tool-guidance-refresh/changelog-latest.md)
-    - [`rp-prompts/`](repoprompt-tool-guidance-refresh/rp-prompts/)
-      - `cli/` prompts (for rp-cli usage, as for Pi)
-      - `mcp/` prompts (for RP MCP usage, as for elsewhere)
-      - `pi-extensions/` includes a reference copy of the [Pi extension](../extensions/repoprompt.ts) that implements `rp_bind`/`rp_exec`
+    - [`rp-prompts/mcp/`](repoprompt-tool-guidance-refresh/rp-prompts/mcp/) — MCP-specific prompts maintained by this skill
 
 - ◐ [`dev-browser/`](dev-browser/) (upstream: [SawyerHood/dev-browser](https://github.com/SawyerHood/dev-browser))
   - Persistent browser automation via the Dev Browser Chrome extension (Playwright-backed)
