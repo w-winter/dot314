@@ -1,0 +1,88 @@
+# Tools and accessories for [Pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)
+
+- [extensions/](extensions/) ([README](extensions/README.md))
+- [skills/](skills/) ([README](skills/README.md))
+- [prompts/](prompts/) ([README](prompts/README.md))
+- [themes/](themes/) ([README](themes/README.md))
+
+The Pi resources I'm currently enjoying - some adapted from the community, some original.  There is an emphasis here on making Pi and RepoPrompt co-operate well.
+
+## Installation
+
+Clone this repo anywhere:
+
+    git clone git@github.com:w-winter/dot314.git ~/path/to/dot314-agent
+
+Then symlink what you want into `~/.pi/agent/`:
+
+    # Example: add one extension
+    ln -s ~/path/to/dot314-agent/extensions/repoprompt.ts ~/.pi/agent/extensions/
+
+    # Example: add all skills from this repo
+    ln -s ~/path/to/dot314-agent/skills/* ~/.pi/agent/skills/
+
+Pi scans `~/.pi/agent/extensions/`, `skills/`, and `prompts/` for resources.
+
+## Extensions
+
+- ● → new
+- ◐ → from pi community, modified
+- ○ → from pi community, unmodified
+
+See [extensions/README.md](extensions/README.md) for descriptions
+
+- ○ `async-subagents/`
+- ○ `code-actions/`
+- ● `commands.ts`
+- ○ `confirm-destructive.ts`
+- ● `ephemeral-mode.ts`
+- ○ `interactive-shell.ts`
+- ○ `mac-system-theme.ts`
+- ● `md.ts`
+- ● `model-sysprompt-appendix.ts`
+- ● `notify.ts`
+- ◐ `oracle.ts`
+- ○ `permission-gate.ts`
+- ○ `pi-prompt-template-model/`
+- ◐ `plan-mode.ts`
+- ○ `preset.ts`
+- ○ `protected-paths.ts`
+- ◐ `raw-paste.ts`
+- ● `repoprompt.ts`
+- ○ `review.ts`
+- ○ `rewind/`
+- ◐ `skill-palette/`
+- ○ `speedreading.ts`
+- ○ `status-line.ts`
+- ○ `todo.ts`
+- ◐ `tools.ts`
+- ◐ `ultrathink.ts`
+- ◐ `usage-bar.ts`
+
+## Skills
+
+See [skills/README.md](skills/README.md)
+
+- ● `repoprompt-tool-guidance-refresh/`
+- ◐ `dev-browser/`
+- ◐ `xcodebuildmcp/`
+- ○ `gdcli/`
+- ○ `brave-search/`
+
+## Prompts
+
+See [prompts/README.md](prompts/README.md)
+
+- ● `rp-review-cli.md`
+- ● `rp-address-review-cli.md`
+- ◐ `rp-build-cli.md`
+- ◐ `rp-investigate-cli.md`
+- ◐ `rp-reminder-cli.md`
+- ◐ `rp-oracle-export-cli.md`
+- ○ `handoff.md`
+- ○ `pickup.md`
+
+## Themes
+
+- ● `violet-dawn.json`
+- ● `violet-dusk.json`

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Dev-Browser CLI wrapper
+# Usage: devbrowse <command> [args] [options]
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+# Run the CLI
+exec npx tsx src/cli.ts "$@"

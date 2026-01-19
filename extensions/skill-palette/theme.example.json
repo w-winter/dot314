@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy to theme.json and customize. Uses ANSI SGR codes (e.g., '36' for cyan, '38;2;R;G;B' for 24-bit color)",
+  "border": "2",
+  "title": "2",
+  "selected": "36",
+  "selectedText": "36",
+  "queued": "32",
+  "searchIcon": "2",
+  "placeholder": "2;3",
+  "description": "2",
+  "hint": "2",
+  "confirm": "32",
+  "cancel": "31"
+}

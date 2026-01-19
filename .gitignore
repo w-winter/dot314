@@ -1,0 +1,52 @@
+# macOS
+**/.DS_Store
+**/._*
+
+# Logs
+**/*.log
+sessions/
+pi-sessions-extracted/
+
+# Cache & ephemeral
+cache/
+
+# Auth & secrets
+auth.json
+oauth.json
+oauth.json.*
+extensions/notify.json
+
+# Local settings (contain paths, preferences)
+settings.json
+
+# Binaries (downloaded per-machine)
+bin/
+
+# Node/npm
+node_modules/
+package-lock.json
+bun.lock
+*.tgz
+
+# Build artifacts
+dist/
+*.js.map
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+tmp/

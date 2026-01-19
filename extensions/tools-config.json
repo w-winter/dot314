@@ -1,0 +1,16 @@
+{
+  "enabledTools": [
+    "rp_bind",
+    "rp_exec",
+    "read",
+    "bash",
+    "find",
+    "ls",
+    "subagent_status",
+    "edit",
+    "todo",
+    "write",
+    "grep",
+    "subagent"
+  ]
+}

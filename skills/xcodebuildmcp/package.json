@@ -1,0 +1,19 @@
+{
+  "name": "xcodebuildmcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run": "tsx xcodebuildmcp.ts",
+    "regen": "mcporter generate-cli --from ./xcodebuildmcp.ts",
+    "inspect": "mcporter inspect-cli ./xcodebuildmcp.ts"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "mcporter": "^0.7.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.3.3"
+  }
+}

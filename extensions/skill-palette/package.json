@@ -1,0 +1,12 @@
+{
+	"name": "pi-skill-palette",
+	"version": "1.0.0",
+	"description": "VS Code-style command palette for selecting and applying skills in pi",
+	"main": "index.ts",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/nicobailon/pi-skill-palette"
+	},
+	"author": "nicobailon",
+	"license": "MIT"
+}
