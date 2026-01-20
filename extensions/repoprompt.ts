@@ -50,6 +50,11 @@ const ExecParams = Type.Object({
         "Allow in-place workspace changes (e.g. `workspace switch <name>` or `workspace create ... --switch`) without --new-window (default: false). In-place switching can disrupt other sessions",
     }),
   ),
+  failOnNoopEdits: Type.Optional(
+    Type.Boolean({
+      description: "Treat edit commands that apply 0 changes (or produce empty output) as errors (default: true)",
+    }),
+  ),
 });
 
 function truncateText(text: string, maxChars: number): { text: string; truncated: boolean } {
@@ -156,6 +161,59 @@ function looksLikeWorkspaceSwitchInPlace(cmd: string): boolean {
     const requestsSwitch = /\B--switch\b/.test(normalized);
     if (isCreate && requestsSwitch && !normalized.includes("--new-window")) return true;
   }
+
+  return false;
+}
+
+function looksLikeEditCommand(cmd: string): boolean {
+  for (const command of parseCommandChain(cmd).commands) {
+    const normalized = command.trim().toLowerCase();
+
+    if (normalized === 'edit' || normalized.startsWith('edit ')) return true;
+
+    if (normalized.startsWith('call ') && normalized.includes('apply_edits')) return true;
+  }
+
+  return false;
+}
+
+function parseLeadingInt(text: string): number | undefined {
+  const trimmed = text.trimStart();
+  let digits = '';
+
+  for (const ch of trimmed) {
+    if (ch >= '0' && ch <= '9') {
+      digits += ch;
+    } else {
+      break;
+    }
+  }
+
+  return digits.length > 0 ? Number.parseInt(digits, 10) : undefined;
+}
+
+function looksLikeNoopEditOutput(output: string): boolean {
+  const trimmed = output.trim();
+  if (trimmed.length === 0) return true;
+
+  const lower = trimmed.toLowerCase();
+
+  if (lower.includes('search block not found')) return true;
+
+  const appliedIndex = lower.indexOf('applied');
+  if (appliedIndex !== -1) {
+    const afterLabel = trimmed.slice(appliedIndex + 'applied'.length);
+    const colonIndex = afterLabel.indexOf(':');
+
+    if (colonIndex !== -1 && colonIndex < 10) {
+      const appliedCount = parseLeadingInt(afterLabel.slice(colonIndex + 1));
+      if (appliedCount !== undefined) return appliedCount === 0;
+    }
+  }
+
+  // Fallback heuristics when the output format doesn't include an explicit applied count
+  if (lower.includes('lines changed: 0')) return true;
+  if (lower.includes('lines_changed') && lower.includes(': 0')) return true;
 
   return false;
 }
@@ -563,6 +621,7 @@ export default function (pi: ExtensionAPI) {
       const maxOutputChars = params.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
       const allowDelete = params.allowDelete ?? false;
       const allowWorkspaceSwitchInPlace = params.allowWorkspaceSwitchInPlace ?? false;
+      const failOnNoopEdits = params.failOnNoopEdits ?? true;
 
       if (!allowDelete && looksLikeDeleteCommand(params.cmd)) {
         return {
@@ -638,21 +697,47 @@ export default function (pi: ExtensionAPI) {
         execError = error instanceof Error ? error.message : String(error);
       }
 
-      const rawOutput = execError
-        ? `rp-cli execution failed: ${execError}`
-        : exitCode === 0
-          ? stdout
-          : [stdout, stderr].filter(Boolean).join("\n");
+      const combinedOutput = [stdout, stderr].filter(Boolean).join("\n").trim();
+
+      const rawOutput = execError ? `rp-cli execution failed: ${execError}` : combinedOutput;
+
+      const editNoop =
+        !execError &&
+        exitCode === 0 &&
+        looksLikeEditCommand(params.cmd) &&
+        looksLikeNoopEditOutput(rawOutput);
+
+      const shouldFailNoopEdit = editNoop && failOnNoopEdits;
+
+      let outputForUser = rawOutput;
+      if (editNoop) {
+        const rpCliOutput = rawOutput.length > 0 ? `\n--- rp-cli output ---\n${rawOutput}` : "";
+
+        if (shouldFailNoopEdit) {
+          outputForUser =
+            "RepoPrompt edit made no changes (0 edits applied). This usually means the search string was not found.\n" +
+            "If this was expected, rerun with failOnNoopEdits=false. Otherwise, verify the search text or rerun with rawJson=true / quiet=false.\n" +
+            "Tip: for tricky edits, prefer: call apply_edits {..., verbose:true}" +
+            rpCliOutput;
+        } else {
+          outputForUser =
+            "RepoPrompt edit made no changes (0 edits applied).\n" +
+            "RepoPrompt may report this as an error (e.g. 'search block not found'), but failOnNoopEdits=false is treating it as non-fatal.\n" +
+            "Tip: for tricky edits, prefer: call apply_edits {..., verbose:true}" +
+            rpCliOutput;
+        }
+      }
 
       const outputWithBindingWarning =
         windowId === undefined || tab === undefined
-          ? `WARNING: rp_exec is not bound to a RepoPrompt window/tab. Bind with rp_bind(windowId, tab).\n\n${rawOutput}`
-          : rawOutput;
+          ? `WARNING: rp_exec is not bound to a RepoPrompt window/tab. Bind with rp_bind(windowId, tab).\n\n${outputForUser}`
+          : outputForUser;
 
       const { text: truncatedOutput, truncated } = truncateText(outputWithBindingWarning.trim(), maxOutputChars);
       const finalText = truncatedOutput.length > 0 ? truncatedOutput : "(no output)";
 
       return {
+        isError: shouldFailNoopEdit,
         content: [{ type: "text", text: finalText }],
         details: {
           cmd: params.cmd,
@@ -660,13 +745,16 @@ export default function (pi: ExtensionAPI) {
           tab,
           rawJson,
           quiet,
+          failOnNoopEdits,
           failFast,
           timeoutMs,
           maxOutputChars,
           exitCode,
           truncated,
-          stderrIncluded: exitCode !== 0,
+          stderrIncluded: stderr.trim().length > 0,
           execError,
+          editNoop,
+          shouldFailNoopEdit,
         },
       };
     },
