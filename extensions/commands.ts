@@ -21,8 +21,9 @@ function discoverSkillNames(): string[] {
 
     const dirs = [
         path.join(os.homedir(), ".codex", "skills"),
-        path.join(os.homedir(), ".claude", "skills"),
-        path.join(os.homedir(), ".pi", "agent", "skills"),
+       path.join(os.homedir(), ".claude", "skills"),
+       path.join(process.cwd(), ".claude", "skills"),
+       path.join(os.homedir(), ".pi", "agent", "skills"),
         path.join(process.cwd(), ".pi", "skills"),
     ];
 
@@ -51,7 +52,6 @@ function discoverTemplateNames(): string[] {
 
     const dirs = [
         path.join(os.homedir(), ".pi", "agent", "prompts"),
-        path.join(os.homedir(), ".codex", "prompts"),
         path.join(process.cwd(), ".pi", "prompts"),
     ];
 
@@ -110,28 +110,13 @@ function buildAllLines(width: number): string[] {
 
     const usableWidth = Math.max(60, width - 6);
 
-    // // KEYBINDINGS - compact format
-    // lines.push(y(b("KEYBINDINGS")));
-    // const keybindings = [
-    //     "esc → interrupt", "ctrl+c → clear", "ctrl+d → exit",
-    //     "ctrl+z → suspend", "ctrl+k → del-end", "shift+tab → think",
-    //     "ctrl+p → model↑", "S-C-p → model↓", "ctrl+l → models",
-    //     "ctrl+o → expand", "ctrl+t → thinking", "ctrl+g → editor",
-    //     "ctrl+v → paste", "alt+ret → queue", "alt+↑ → edit-q",
-    //     "/ → menu", "! → bash", "!! → bash-noctx"
-    // ];
-    // const kbCols = Math.min(6, Math.floor(usableWidth / 17));
-    // for (const line of makeColumns(keybindings.map(d), 17, kbCols)) {
-    //     lines.push("  " + line);
-    // }
-    // lines.push("");
-
-    // BUILT-IN COMMANDS
+    // BUILT-IN COMMANDS (from pi's interactive-mode.ts setupAutocomplete)
     lines.push(y(b("BUILT-IN")));
     const builtins = [
-        "/new", "/resume", "/tree", "/fork", "/compact",
-        "/model", "/settings", "/export", "/share", "/sessions",
-        "/labels", "/thinking", "/images", "/theme", "/keybindings"
+        "/new", "/resume", "/fork", "/tree", "/compact",
+        "/model", "/scoped-models", "/settings",
+        "/export", "/share", "/copy", "/name", "/session",
+        "/changelog", "/hotkeys", "/login", "/logout"
     ];
     const builtinCols = Math.min(7, Math.floor(usableWidth / 14));
     for (const line of makeColumns(builtins.map(g), 14, builtinCols)) {
