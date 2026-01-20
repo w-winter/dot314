@@ -24,7 +24,7 @@
   - Shortcuts: `ctrl+/` and `F1`
 
 <p align="center">
-  <img width="450" alt="commands overlay" src="https://github.com/user-attachments/assets/4baf87e9-e0a6-4a77-9266-7809df670e31" />
+  <img width="450" alt="commands overlay" src="https://github.com/user-attachments/assets/b32ba300-62ce-47b2-89b6-25c7cfa2bcbc" />
 </p>
 
 - ● [`ephemeral-mode.ts`](ephemeral-mode.ts)
