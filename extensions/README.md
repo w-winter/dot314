@@ -28,6 +28,7 @@
     - `auto`: prefer `rp` (RepoPrompt MCP) if available; else `rp_exec` (RepoPrompt CLI); else behaves like `off`
     - `rp-mcp`: enforce only when `rp` is available (does not fall back to `rp_exec`)
     - `rp-cli`: enforce only when `rp_exec` is available (does not fall back to `rp`)
+  - Hotkey: `alt+L` cycles modes (off → auto → rp-mcp → rp-cli)
   - Footer status indicator while enforced: `RP 🔒 mcp` or `RP 🔒 cli`
   - Intended to complement the `/tools` extension without mutating `tools-config.json`
 

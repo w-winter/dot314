@@ -13,6 +13,9 @@
  * - rp-mcp  : enforce when the `rp` tool exists
  * - rp-cli  : enforce when the `rp_exec` tool exists
  *
+ * Hotkeys:
+ * - Alt+L: cycle lock mode (off → auto → rp-mcp → rp-cli)
+ *
  * Configuration precedence:
  * 1) Session branch override (via /rp-tools-lock)
  * 2) Global config file: ~/.pi/agent/extensions/rp-native-tools-lock.json
@@ -24,6 +27,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Key, type KeyId } from "@mariozechner/pi-tui";
 
 type Mode = "off" | "auto" | "rp-mcp" | "rp-cli";
 
@@ -40,6 +44,9 @@ const REQUIRED_TOOL_BY_MODE: Record<Exclude<Mode, "off" | "auto">, string> = {
 };
 
 const NATIVE_FILE_TOOLS = ["read", "write", "edit", "ls", "find", "grep"];
+
+const TOGGLE_MODE_HOTKEY: KeyId = Key.alt("l");
+const MODE_CYCLE_ORDER: Mode[] = ["off", "auto", "rp-mcp", "rp-cli"];
 
 function normalizeMode(raw: string | undefined): Mode | undefined {
 	const value = (raw ?? "").trim().toLowerCase();
@@ -182,6 +189,53 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 		enforceMode(pi, ctx, state.mode);
 	}
 
+	function persistState(nextState: LockState): void {
+		// Persist globally + in-session branch
+		saveGlobalConfig(nextState);
+		pi.appendEntry<LockState>(CUSTOM_TYPE, nextState);
+	}
+
+	function setMode(
+		ctx: ExtensionContext,
+		mode: Mode,
+	): { enforced: boolean; reason?: string; effectiveMode: EffectiveMode; requiredTool?: string } {
+		state = { mode };
+		persistState(state);
+		return enforceMode(pi, ctx, state.mode);
+	}
+
+	function notifyEnforcement(
+		ctx: ExtensionContext,
+		requestedMode: Mode,
+		enforced: { enforced: boolean; reason?: string; effectiveMode: EffectiveMode },
+	): void {
+		if (!ctx.hasUI) return;
+
+		if (requestedMode === "off") {
+			ctx.ui.notify("rp-tools-lock: off", "info");
+			return;
+		}
+
+		if (enforced.enforced) {
+			const suffix = requestedMode === "auto" ? ` → ${enforced.effectiveMode}` : "";
+			ctx.ui.notify(`rp-tools-lock: ${requestedMode}${suffix} (native file tools disabled)`, "info");
+			return;
+		}
+
+		if (requestedMode === "auto" && enforced.effectiveMode === "off") {
+			ctx.ui.notify("rp-tools-lock: auto (no rp/rp_exec tools available)", "info");
+			return;
+		}
+
+		ctx.ui.notify(`rp-tools-lock: ${requestedMode} (not enforced: ${enforced.reason ?? "unknown"})`, "warning");
+	}
+
+	function getNextMode(currentMode: Mode): Mode {
+		const index = MODE_CYCLE_ORDER.indexOf(currentMode);
+		const safeIndex = index >= 0 ? index : 0;
+		return MODE_CYCLE_ORDER[(safeIndex + 1) % MODE_CYCLE_ORDER.length];
+	}
+
 	pi.registerCommand("rp-tools-lock", {
 		description: "RepoPrompt-first tooling: off | auto | rp-mcp | rp-cli (disables read/write/edit/ls/find/grep)",
 		handler: async (args, ctx) => {
@@ -210,30 +264,20 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 				state = { mode };
 			}
 
-			// Persist globally + in-session branch
-			saveGlobalConfig(state);
-			pi.appendEntry<LockState>(CUSTOM_TYPE, state);
+			persistState(state);
 
 			const enforced = enforceMode(pi, ctx, state.mode);
-			if (!ctx.hasUI) return;
+			notifyEnforcement(ctx, state.mode, enforced);
+		},
+	});
 
-			if (state.mode === "off") {
-				ctx.ui.notify("rp-tools-lock: off", "info");
-				return;
-			}
-
-			if (enforced.enforced) {
-				const suffix = state.mode === "auto" ? ` → ${enforced.effectiveMode}` : "";
-				ctx.ui.notify(`rp-tools-lock: ${state.mode}${suffix} (native file tools disabled)`, "info");
-				return;
-			}
-
-			if (state.mode === "auto" && enforced.effectiveMode === "off") {
-				ctx.ui.notify("rp-tools-lock: auto (no rp/rp_exec tools available)", "info");
-				return;
-			}
-
-			ctx.ui.notify(`rp-tools-lock: ${state.mode} (not enforced: ${enforced.reason ?? "unknown"})`, "warning");
+	pi.registerShortcut(TOGGLE_MODE_HOTKEY, {
+		description: "Cycle rp-tools-lock mode (off → auto → rp-mcp → rp-cli)",
+		handler: async (ctx) => {
+			const current = resolveState(ctx).mode;
+			const next = getNextMode(current);
+			const enforced = setMode(ctx, next);
+			notifyEnforcement(ctx, next, enforced);
 		},
 	});
 
