@@ -4,7 +4,7 @@ The following instructions **override** generic tool guidance for **repo explora
 
 RepoPrompt (via `rp_exec`) is the default for repo-scoped work because it materially improves context quality and reduces routing mistakes.
 
-Every backticked command in this doc is an `rp_exec.cmd` string (what goes after `rp-cli -e`) unless explicitly labeled as a pi native tool.
+Backticked snippets in this doc are either an `rp_exec.cmd` string (what goes after `rp-cli -e`) or a full `rp-cli ...` shell command (explicitly prefixed with `rp-cli`). Pi native tools are explicitly labeled.
 
 ---
 
@@ -54,7 +54,7 @@ Routing failures are the #1 cause of "0 matches", "wrong files", or "empty resul
 
 Do not use bash for: `ls`, `find`, `grep`, `cat`, `wc`, `tree`, or similar file exploration.
 
-Do not use pi's native `read`, `grep`, `find`, `ls`, `write`, or `edit` for repo work.
+Do not use pi's native `read`, `grep`, `find`, or `ls` for repo work. Use pi's native `edit` only as a fallback for applying changes when rp-cli call mode isn't available.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Prefer `workspace switch <name> --new-window`.
 
@@ -91,10 +91,10 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 | API signatures | rp_exec `structure` | token-efficient, no native equivalent |
 | Context curation | rp_exec `select`, `context` | selection is the chat/review input |
 | Reading repo files | rp_exec `read` | workspace-scoped, supports tail reads |
-| Code editing (default) | rp_exec `edit` | workspace-aware |
-| Code editing (advanced) | rp_exec `call apply_edits {...}` | multi-edit, diff preview, full rewrite |
-| Code editing (fallback) | pi native `edit` | use if rp_exec edit fails |
+| Code editing (preferred) | `rp-cli -c apply_edits -j '{...}'` | reliable JSON edits (multiline, multi-edit, rewrite) |
+| Code editing (fallback) | pi native `edit` | use when direct rp-cli call mode isn't available |
 | File create/move/delete | rp_exec `file create/move/delete` | workspace-aware |
+| File creation with content | `rp-cli -c file_actions -j '{...}'` | create files with explicit content |
 
 ---
 
@@ -108,47 +108,30 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 RepoPrompt's pretty output uses markdown fences. If the file contains ``` lines, the formatting can collide. This is rare in practice.
 
 Options:
-- Use `rp_exec` with `rawJson=true` and JSON form: `call read_file {"path":"...","start_line":1,"limit":160}`
+- Use `rp_exec` with `rawJson=true` and call the tool directly: `read_file path=path/to/file start_line=1 limit=160`
 
 ---
 
 ## Editing
 
-### rp_exec `edit` (default)
+### Preferred: rp-cli call mode (`apply_edits`)
 
-Use for most code edits:
+Use direct tool invocation with JSON args:
 
-```
-edit <path> <search> <replace> [--all]
-```
+`rp-cli -w <id> -t <tab> -c apply_edits -j '{"path":"file.ts","search":"old","replace":"new"}'`
 
-- Exact-match replacement by default
-- Use `--all` for replace-all (only use when you truly mean "every occurrence")
+Use this when you need multiline edits, multiple edits in one call, diff previews (`verbose:true`), or full rewrites (`rewrite`).
 
-- Workspace-aware and consistent with the rest of your rp_exec workflow
+### Fallback: pi native `edit`
 
-### rp_exec JSON form (advanced features)
-
-Use when you need:
-- Multiple edits in one call (`edits:[...]`)
-- Diff preview (`verbose:true`)
-- Full file rewrite (`rewrite:"..."`)
-
-```
-call apply_edits {"path":"...","search":"...","replace":"...","all":true,"verbose":true}
-```
-
-### Pi's native `edit` (fallback)
-
-Use if rp_exec edit fails or for edge cases. Same exact-match semantics but outside the RepoPrompt workflow.
+If you can't invoke rp-cli call mode (for example, your harness only exposes `rp_exec` exec mode), use pi native `edit` for changes.
 
 ### File creation
 
-Use `file create` (rp_exec) rather than pi's native `write`. For complex file content, use JSON form: `call file_actions {"action":"create","path":"...","content":"..."}`
+Use rp_exec `file create/move/delete` for workspace-aware file ops.
 
-### The `failOnNoopEdits` parameter
-
-By default, `rp_exec` errors loudly when an edit makes no changes (parity with pi's native `edit`). If you intentionally want idempotent edits (e.g., "ensure this line exists"), set `failOnNoopEdits=false`—the tool will succeed but still print an explanation.
+If you need to create a file with full content in one step, call `file_actions` with JSON via rp-cli call mode:
+`rp-cli -c file_actions -j '{"action":"create","path":"...","content":"..."}'`
 
 ---
 
@@ -187,9 +170,11 @@ read /tmp/rp_search.txt 1 160
 
 ## Fallback Rules
 
-Fall back to pi's native tools only if:
+Fall back to pi's native tools for repo exploration/reading only if:
 1. rp-cli is not installed or not on PATH
 2. A specific rp_exec command fails after one retry
+
+For applying code changes, pi native `edit` is an acceptable fallback when rp-cli call mode isn't available.
 
 Unexpected output is usually a routing issue—wrong workspace, wrong window, wrong tab—not a tool failure. Check binding and workspace roots before falling back.
 
@@ -206,14 +191,14 @@ Unexpected output is usually a routing issue—wrong workspace, wrong window, wr
 
 ### [AGENT] (autonomous implementation loop)
 1) Ensure tight selection: `select set … && context`
-2) Make minimal edits: `edit path/to/file.py "old" "new" --all` (use `--all` only when intended)
-3) Create/move files only when necessary: `file create/delete/move` (use `call file_actions ...` only when you need to set file content)
+2) Apply edits (see **Editing** section): preferred `rp-cli -c apply_edits -j '{...}'`; fallback pi native `edit`
+3) Create/move files only when necessary: `file create/delete/move` (for file content, use `rp-cli -c file_actions -j '{...}'`)
 4) Re-check selection + context after edits: `context`
 
 ### [PAIR] (collaborative planning / second opinion)
 1) Curate context first: `select set … && context --all` (full context justified for planning here)
 2) Ask for a plan: `plan "Propose a safe plan for …"`
-3) Apply changes iteratively with `edit` and (when needed) `call <tool_name> {json_args}`
+3) Apply changes iteratively (see **Editing** section) and re-run `context` after meaningful changes
 
 ### [SECOND OPINION] (complex / risky changes)
 Use RepoPrompt chat as a reviewer (not an executor):
@@ -223,15 +208,14 @@ Use RepoPrompt chat as a reviewer (not an executor):
 
 ## Advanced: Direct Tool Calls
 
-Prefer high-level commands. Use `call <tool> {json}` only when you need exact parameters.
+Shell-level patterns:
+- List tools: `rp-cli -l`
+- Describe a tool: `rp-cli -d <tool>`
+- Call a tool: `rp-cli -w <id> -t <tab> -c <tool> -j '{"param":"value"}'`
 
-- `tools --groups` — list tool groups
-- `describe <tool_name>` — show tool schema
-- `call <tool_name> {json_args}` — raw invocation
-
-Common uses:
-- `call apply_edits {...}` — complex edits (multi-edit, diff preview, rewrite)
-- `call file_actions {...}` — creating files with complex content
-- `call read_file {...}` — when you need rawJson output
+Common calls:
+- `rp-cli -c apply_edits -j '{...}'` — complex edits (multi-edit, multiline, rewrite)
+- `rp-cli -c file_actions -j '{...}'` — creating files with complex content
+- `rp-cli -c git -j '{"op":"diff","detail":"files"}'` — token-efficient git operations
 
 ---

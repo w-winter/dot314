@@ -717,13 +717,13 @@ export default function (pi: ExtensionAPI) {
           outputForUser =
             "RepoPrompt edit made no changes (0 edits applied). This usually means the search string was not found.\n" +
             "If this was expected, rerun with failOnNoopEdits=false. Otherwise, verify the search text or rerun with rawJson=true / quiet=false.\n" +
-            "Tip: for tricky edits, prefer: call apply_edits {..., verbose:true}" +
+            "Tip: for tricky edits with multiline content, use rp-cli directly: rp-cli -c apply_edits -j '{...}'" +
             rpCliOutput;
         } else {
           outputForUser =
             "RepoPrompt edit made no changes (0 edits applied).\n" +
             "RepoPrompt may report this as an error (e.g. 'search block not found'), but failOnNoopEdits=false is treating it as non-fatal.\n" +
-            "Tip: for tricky edits, prefer: call apply_edits {..., verbose:true}" +
+            "Tip: for tricky edits with multiline content, use rp-cli directly: rp-cli -c apply_edits -j '{...}'" +
             rpCliOutput;
         }
       }

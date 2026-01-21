@@ -76,7 +76,8 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Prompt management | `prompt op="get\|set\|append\|clear\|export\|list_presets\|select_preset"` | manage instructions |
 | Window routing | `rp({ windows: true })` then `rp({ bind: { window: N, tab: "Compose" } })` | bind before operating |
 | Workspace/tab mgmt | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|list_tabs\|select_tab"` | see workspace hygiene |
-| Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan"]` | token-costly, invoke explicitly |
+| Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
+| Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | token-efficient git abstraction |
 
 ---
 
@@ -127,13 +128,14 @@ Use RepoPrompt chat as reviewer:
 
 ## Context Builder
 
-`context_builder instructions="..." [response_type="clarify|question|plan"]`
+`context_builder instructions="..." [response_type="clarify|question|plan|review"]`
 
 Runs an agent to explore the codebase and curate file selection automatically.
 
 - `response_type="clarify"` (default): Returns context only—for handoff or manual refinement
 - `response_type="question"`: Answers using built context, returns `chat_id`
 - `response_type="plan"`: Generates implementation plan, returns `chat_id`
+- `response_type="review"`: Generates a code review with git diff context, returns `chat_id`
 
 Use returned `chat_id` with `chat_send new_chat=false chat_id="..."` for followup.
 
