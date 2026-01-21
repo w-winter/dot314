@@ -1,6 +1,5 @@
 ---
-description: Address issues surfaced by code review(s) and log work
-argument-hint: [plan||log||todos||tasks = <path-to-plan-or-tasks-log.md>] [reviews = <path_to_review_feedback.md> <possible_additional_path_to_extra_review_feedback.md> <...>]
+description: Address issues surfaced by code review(s) and log work. Argument hint - [plan||log||todos||tasks = <path-to-plan-or-tasks-log.md>] [reviews = <path_to_review_feedback.md> <possible_additional_path_to_extra_review_feedback.md> <...>]
 ---
 
 ARGUMENTS: $ARGUMENTS
