@@ -6,6 +6,10 @@ RepoPrompt (via `rp_exec`) is the default for repo-scoped work because it materi
 
 Backticked snippets in this doc are either an `rp_exec.cmd` string (what goes after `rp-cli -e`) or a full `rp-cli ...` shell command (explicitly prefixed with `rp-cli`). Pi native tools are explicitly labeled.
 
+## Note on native tool disablement (rp-tools-lock)
+
+Native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available. If a native tool call is blocked, use the RepoPrompt equivalents (`rp_exec` / `rp-cli`). Disable with `/rp-tools-lock off` only if you explicitly need the native tools.
+
 ---
 
 ## Mental Model
@@ -22,31 +26,16 @@ Integration layers:
 
 ---
 
-## Why RepoPrompt is the Default
-
-Use `rp_exec` over pi's native tools for repo work because it materially improves context quality and operational correctness:
-
-- **Better exploration primitives**: `tree`, `search`, and `structure` are gitignore-aware and tuned for codebase navigation
-- **Selection = context**: the compose tab's selection is the single source of truth for what chat/edit/review sees
-- **Token-efficient structure**: codemaps (signatures) and slices let you include APIs and relevant portions without dumping whole files
-- **Less context pollution**: rp_exec output is bounded and formatted; native shell output injects large, low-signal logs into the model context
-
-You're optimizing for **correctness and stable context**, not convenience.
-
----
-
 ## Bind Before Operating
 
-Before any repo work:
+1. `windows`
+2. `workspace tabs` (if needed)
+3. `rp_bind(windowId, tab)` (usually `"Compose"`)
+4. Then use `tree/search/read/select/context/structure/...`
 
-1. `windows` — list available windows
-2. `workspace tabs` — list tabs if needed
-3. `rp_bind(windowId, tab)` — bind to a specific window and compose tab (tab is usually `"Compose"`)
-4. Then proceed with `tree`, `search`, `read`, `select`, `context`, `structure`, etc.
+Until bound, only run safe bootstrap commands: `windows`, `workspace list`, `workspace tabs`, `help`, `refresh`, or `workspace switch ... --new-window`.
 
-If rp_exec is unbound, only run safe bootstrap commands (`windows`, `workspace list`, `workspace tabs`, `help`, `refresh`, or `workspace switch ... --new-window`) until you can bind.
-
-Routing failures are the #1 cause of "0 matches", "wrong files", or "empty results". If output looks wrong, assume routing first—not tool failure.
+If output looks wrong (0 matches / wrong files / empty results), check routing first (window/tab/workspace roots).
 
 ---
 
@@ -54,7 +43,7 @@ Routing failures are the #1 cause of "0 matches", "wrong files", or "empty resul
 
 Do not use bash for: `ls`, `find`, `grep`, `cat`, `wc`, `tree`, or similar file exploration.
 
-Do not use pi's native `read`, `grep`, `find`, or `ls` for repo work. Use pi's native `edit` only as a fallback for applying changes when rp-cli call mode isn't available.
+Prefer `rp_exec` / `rp-cli` for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Prefer `workspace switch <name> --new-window`.
 
@@ -104,11 +93,8 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 - `read <path> [start] [limit]` — prefer 120–200 line chunks
 - Tail read via negative start: `read path/to/file -20` (last 20 lines)
 
-### Edge case: embedded triple-backtick fences
-RepoPrompt's pretty output uses markdown fences. If the file contains ``` lines, the formatting can collide. This is rare in practice.
-
-Options:
-- Use `rp_exec` with `rawJson=true` and call the tool directly: `read_file path=path/to/file start_line=1 limit=160`
+### Edge case: files containing ``` fences
+RepoPrompt output is fenced; rare collision if the file itself contains ``` lines. Workaround: use `rawJson=true` and call `read_file` directly: `read_file path=path/to/file start_line=1 limit=160`
 
 ---
 
@@ -170,13 +156,11 @@ read /tmp/rp_search.txt 1 160
 
 ## Fallback Rules
 
-Fall back to pi's native tools for repo exploration/reading only if:
-1. rp-cli is not installed or not on PATH
-2. A specific rp_exec command fails after one retry
+Fall back to pi native tools for repo exploration/reading only if:
+1. rp-cli is not installed / not on PATH
+2. a specific rp_exec command fails after one retry
 
 For applying code changes, pi native `edit` is an acceptable fallback when rp-cli call mode isn't available.
-
-Unexpected output is usually a routing issue—wrong workspace, wrong window, wrong tab—not a tool failure. Check binding and workspace roots before falling back.
 
 ---
 

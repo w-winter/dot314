@@ -1,12 +1,14 @@
 # Tool Protocol
 
-The following instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.
+These instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.
 
-RepoPrompt MCP tools are the default for repo-scoped work because they materially improve context quality and reduce routing mistakes.
+RepoPrompt MCP is the default for repo-scoped work. Use `rp`:
+- **Bind**: `rp({ windows: true })` → `rp({ bind: { window: N, tab: "Compose" } })`
+- **Call tools**: `rp({ call: "<tool>", args: { ... } })` (unless explicitly labeled as a Pi native tool)
 
-In Pi, RepoPrompt MCP tools are accessed via a single tool: `rp`. Every backticked RepoPrompt MCP tool name in this doc (e.g. `get_file_tree`, `apply_edits`) refers to the underlying tool name to invoke via `rp({ call: "<tool>", args: { ... } })` (unless explicitly labeled as a Pi native tool).
+## Note on native tool disablement (rp-tools-lock)
 
-Use `rp({ windows: true })` to list windows and `rp({ bind: { window: N, tab: "Compose" } })` (or `/rp bind`) to bind before calling tools.
+In some sessions, Pi may automatically disable the native repo-file tools (`read/write/edit/ls/find/grep`) when RepoPrompt is available. If a native tool call is blocked, this is expected—use the RepoPrompt equivalents via `rp` (or disable the lock with `/rp-tools-lock off` only if you explicitly need the native tools).
 
 ## Mental Model
 
@@ -16,19 +18,6 @@ RepoPrompt (macOS app) organizes state as:
 - **Compose tabs** → each tab has a prompt + file selection (selection is what chat/review sees)
 
 MCP tools operate directly against this state, but in Pi you invoke them through `rp`. Bind to a specific window (and optionally a compose tab) with `rp({ bind: { window: N, tab: "Compose" } })`, then call tools via `rp({ call: "<tool>", args: { ... } })`.
-
----
-
-## Why RepoPrompt Tools Are Default
-
-Use RepoPrompt MCP tools over Pi's native tools for repo work because they improve context quality:
-
-- **Better exploration primitives**: `get_file_tree`, `file_search`, and `get_code_structure` are gitignore-aware and tuned for codebase navigation
-- **Selection = context**: the compose tab's selection is the single source of truth for what `chat_send` sees
-- **Token-efficient structure**: codemaps (signatures) and slices let you include APIs and relevant portions without dumping whole files
-- **Less context pollution**: MCP tool output is bounded and formatted; native shell output injects large, low-signal logs into the model context
-
-You're optimizing for **correctness and stable context**, not convenience.
 
 ---
 
@@ -42,7 +31,7 @@ When a task involves a repository that isn't loaded in any existing RepoPrompt w
    - Or **ask the user** which approach they prefer
 3. Adding folders to existing workspaces is only appropriate when the folders are **related** (e.g., adding a shared library to a project that uses it)
 
-Rationale: Workspaces represent coherent working contexts. Mixing unrelated repositories clutters the selection, pollutes file trees, and makes context management harder.
+Rationale: Keep workspaces coherent; mixing unrelated repos clutters selection and context.
 
 ---
 
@@ -50,7 +39,7 @@ Rationale: Workspaces represent coherent working contexts. Mixing unrelated repo
 
 Do not use bash for: `ls`, `find`, `grep`, `cat`, `wc`, `tree`, or similar file exploration.
 
-Do not use Pi's native `read`, `grep`, `find`, `ls`, `write`, or `edit` for repo work.
+Prefer RepoPrompt MCP tools for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Use `open_in_new_window=true`.
 
