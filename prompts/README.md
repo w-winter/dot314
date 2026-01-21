@@ -1,36 +1,16 @@
 # Prompts
 
-## For [RepoPrompt](https://repoprompt.com/docs) CLI (rp-cli)
+## For [RepoPrompt](https://repoprompt.com/docs) MCP tools
 
-- ● [`rp-bind-cli.md`](rp-bind-cli.md)
-  - Discovers available windows/tabs and binds `rp_exec` to a specific RepoPrompt window and compose tab
-  - Uses `question` tool for interactive selection
+- ● [`rp-review-chat.md`](rp-review-chat.md)
+  - Sends a RepoPrompt `chat_send` with `mode="review"` to review diffs
+  - Token-efficient: infers diff scope (staged/unstaged/range) via name-only commands, lets RepoPrompt supply diffs automatically
 
-- ◐ [`rp-build-cli.md`](rp-build-cli.md) (source: RepoPrompt app)
-  - Runs `builder` to select files and draft a plan, `chat` to refine it, then implement with `edit`/`file`
-  - Modified: prefers `rp_exec` in Pi
-
-- ◐ [`rp-investigate-cli.md`](rp-investigate-cli.md) (source: RepoPrompt app)
-  - Uses `builder` and `chat` to explore a bug or question, documents findings in a report file
-  - Modified: prefers `rp_exec` in Pi
-
-- ● [`rp-review-cli.md`](rp-review-cli.md)
-  - Sends a `review` chat to RepoPrompt with inferred diff scope (staged/unstaged/range) and optional context files
-  - Token-efficient: lets RepoPrompt supply diffs rather than reading them
-
-- ● [`rp-address-review-cli.md`](rp-address-review-cli.md)
+- ● [`rp-address-review.md`](rp-address-review.md)
   - Reads review feedback files, addresses all issues, appends completed work to a plan/log/todos file
-  - Uses `builder`/`chat` when reviewer suggestions need clarification
+  - Uses `context_builder` when reviewer suggestions need clarification
 
-- ◐ [`rp-oracle-export-cli.md`](rp-oracle-export-cli.md) (source: RepoPrompt app)
-  - Uses `builder` to select files, then `prompt export` to write context to a file for pasting into an external model
-  - Modified: prefers `rp_exec` in Pi
-
-- ◐ [`rp-reminder-cli.md`](rp-reminder-cli.md) (source: RepoPrompt app)
-  - Quick reference card reminding the agent to use rp-cli tools instead of built-ins (search not grep, read not cat, etc.)
-  - Modified: prefers `rp_exec` in Pi
-
-Related: `skills/repoprompt-tool-guidance-refresh/rp-prompts/` contains prompt variants for RepoPrompt MCP usage, if desired, in other harnesses and for maintaining this guidance over time.
+Related: `skills/repoprompt-tool-guidance-refresh/rp-cli-prompts/` contains CLI-specific prompt variants for use with the `repoprompt-cli` extension.
 
 ## Other
 

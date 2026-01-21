@@ -79,21 +79,16 @@ See [prompts/README.md](prompts/README.md)
 
 ### /command prompts
 
-- ● `rp-bind-cli.md`
-- ● `rp-review-cli.md`
-- ● `rp-address-review-cli.md`
-- ◐ `rp-build-cli.md`
-- ◐ `rp-investigate-cli.md`
-- ◐ `rp-oracle-export-cli.md`
-- ◐ `rp-reminder-cli.md`
 - ○ `handoff.md`
 - ○ `pickup.md`
+- ● `rp-review-chat.md`
+- ● `rp-address-review.md`
 
 ### AGENTS.md prefaces for reliable RepoPrompt tool usage
 
 - ● `AGENTS-prefaces/rp-cli-preface.md` -- for use with Pi and the `repoprompt-cli` extension
 - ● `AGENTS-prefaces/rp-mcp-preface.md` -- for use with Pi and the `repoprompt-mcp` extension
-- ● `AGENTS-prefaces/rp-mcp-preface.md` -- for use with other harnesses
+- ● `AGENTS-prefaces/rp-mcp-preface-exPi.md` -- for use with other harnesses
 
 ## Themes
 

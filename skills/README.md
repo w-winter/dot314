@@ -7,7 +7,7 @@
   - Contents:
     - [`SKILL.md`](repoprompt-tool-guidance-refresh/SKILL.md)
     - [`changelog-latest.md`](repoprompt-tool-guidance-refresh/changelog-latest.md)
-    - [`rp-prompts/mcp/`](repoprompt-tool-guidance-refresh/rp-prompts/mcp/) — MCP-specific prompts maintained by this skill
+    - [`rp-cli-prompts/`](repoprompt-tool-guidance-refresh/rp-cli-prompts) — RP-CLI-specific prompts maintained by this skill
 
 - ◐ [`qmd/`](qmd/)
   - Local search/indexing CLI usage (BM25 + vectors + hybrid)
