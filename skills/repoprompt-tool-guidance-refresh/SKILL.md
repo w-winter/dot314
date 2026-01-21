@@ -1,6 +1,6 @@
 ---
 name: repoprompt-tool-guidance-refresh
-description: Update RepoPrompt tool guidance based empirically on the latest MCP server and CLI. MCP docs live in `agent/skills/repoprompt-tool-guidance-refresh/rp-prompts/mcp/`; CLI docs and the pi extension live in `agent/` (functional locations outside this skill folder). Invoke after determining that a new RepoPrompt version might have changed MCP/CLI tooling.
+description: Update RepoPrompt tool guidance based empirically on the latest MCP server and CLI. AGENTS prefaces (MCP and CLI) live in `agent/AGENTS-prefaces/`; MCP prompts in `agent/prompts/`; CLI prompts in this skill's `rp-cli-prompts/` subfolder; the pi extension in `agent/extensions/`. Invoke after determining that a new RepoPrompt version might have changed MCP/CLI tooling.
 ---
 
 # Workflow
@@ -9,32 +9,26 @@ description: Update RepoPrompt tool guidance based empirically on the latest MCP
 
 1. Read `changelog-latest.md` (at the Skill folder root) to see what the developer reported as changed in this new version.
 
-2. The MCP files live in `agent/skills/repoprompt-tool-guidance-refresh/rp-prompts/mcp/`:
-   - `AGENTS-mcp-preface.md`
-   - `rp-address-review.md`
-   - `rp-review-chat.md`
+2. The MCP files live in two locations outside this skill folder:
+   - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-mcp-*.md` (AGENTS-level MCP guidance)
+   - **Prompts**: `agent/prompts/rp-*.md` (MCP workflow prompts, excluding `*-cli.md`)
 
-3. Run `rp-cli -l` to get the full list of MCP tools and their definitions. Review them and then examine `AGENTS-mcp-preface.md` for any outdated definitions or missing key tools. If there are any, make surgical updates to bring it into alignment with the latest state of the RepoPrompt MCP server.
+3. Run `rp-cli -l` to get the full list of MCP tools and their definitions. Review them and then examine the preface files for any outdated definitions or missing key tools. If there are any, make surgical updates to bring them into alignment with the latest state of the RepoPrompt MCP server.
 
-4. Do the same for the other MCP files listed above.
+4. Do the same for the MCP workflow prompts.
 
 ## Phase 2 — CLI
 
 1. Retain `changelog-latest.md` in context (re-read if no longer available).
 
-2. The CLI-related files live outside this skill folder in their functional locations:
-   - `agent/AGENTS-rp-cli-prefix.md`
-   - `agent/prompts/rp-address-review-cli.md`
-   - `agent/prompts/rp-bind-cli.md`
-   - `agent/prompts/rp-review-chat-cli.md`
-   - `agent/extensions/repoprompt-cli.ts`
+2. The CLI-related files:
+   - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-cli-preface.md`
+   - **Prompts**: `rp-cli-prompts/rp-*-cli.md` (within this skill folder)
+   - **Extension**: `agent/extensions/repoprompt-cli.ts`
 
-3. Retain `rp-cli -l` in context (re-run if no longer available). Run `rp-cli --help` to understand how the CLI relates to the tool definitions provided by `rp-cli -l`. Review them and then examine `AGENTS-rp-cli-prefix.md` for outdated definitions or missing key tools. If there are any, make surgical updates to bring it into alignment with the latest state of the RepoPrompt CLI.
+3. Retain `rp-cli -l` in context (re-run if no longer available). Run `rp-cli --help` to understand how the CLI relates to the tool definitions provided by `rp-cli -l`. Review them and then examine the CLI preface for outdated definitions or missing key tools. If there are any, make surgical updates to bring it into alignment with the latest state of the RepoPrompt CLI.
 
-4. Do the same for the other CLI-related files:
-   - `rp-address-review-cli.md`
-   - `rp-bind-cli.md`
-   - `rp-review-cli.md`
+4. Do the same for the CLI workflow prompts in `rp-cli-prompts/`.
 
 5. Confirm whether `repoprompt-cli.ts` encodes any assumptions about the CLI that are now invalidated by the latest state of `rp-cli`. If so, make surgical patches to that file (only patches directly entailed by what the `rp-cli` change broke).
 
