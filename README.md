@@ -50,6 +50,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `question.ts`
 - ◐ `raw-paste.ts`
 - ● `repoprompt-cli.ts`
+- ● `repoprompt-mcp/`
 - ○ `review.ts`
 - ○ `rewind/`
 - ○ `send-user-message.ts`

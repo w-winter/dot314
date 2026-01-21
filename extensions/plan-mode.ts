@@ -9,7 +9,7 @@
  * - --plan flag to start in plan mode
  * - Restricts available tools to a read-only allowlist (no edit/write tools)
  * - Blocks destructive bash commands while plan mode is enabled (including redirects)
- * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e or rp_exec
+ * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e, rp_exec, or rp (repoprompt-mcp)
  * - Blocks rp-cli interactive REPL (-i/--interactive) to prevent bypassing the sandbox
  * - Injects a [PLAN MODE ACTIVE] context message when enabled, and a [PLAN MODE DISABLED] message after exiting
  * - Shows a "plan" indicator in the status line when active
@@ -25,10 +25,13 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { Key } from "@mariozechner/pi-tui";
 
 // Read-only tools for plan mode
-const PLAN_MODE_TOOLS = ["rp_bind", "rp_exec", "rp-cli", "read", "bash", "grep", "find", "ls"];
+//
+// Note: `rp` is provided by the repoprompt-mcp extension and can proxy many RepoPrompt tools.
+// In plan mode, we still allow the `rp` tool but block write-capable calls (apply_edits/file_actions)
+const PLAN_MODE_TOOLS = ["rp", "rp_bind", "rp_exec", "rp-cli", "read", "bash", "grep", "find", "ls"];
 
 // Full set of tools for normal mode
-const NORMAL_MODE_TOOLS = ["rp_bind", "rp_exec", "rp-cli", "read", "bash", "grep", "find", "ls", "edit", "write"];
+const NORMAL_MODE_TOOLS = ["rp", "rp_bind", "rp_exec", "rp-cli", "read", "bash", "grep", "find", "ls", "edit", "write"];
 
 // Patterns for destructive bash commands that should be blocked in plan mode
 const DESTRUCTIVE_PATTERNS = [
@@ -139,6 +142,23 @@ const RP_CLI_EXEC_WRITE_PATTERN =
 
 function isRepoPromptWriteCommand(command: string): boolean {
 	return REPROMPT_WRITE_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+function isRepoPromptMcpWriteRequest(input: unknown): boolean {
+	if (input === null || typeof input !== "object") {
+		return false;
+	}
+
+	const request = input as { call?: unknown };
+	const call = request.call;
+	if (typeof call !== "string") {
+		return false;
+	}
+
+	// `rp` (repoprompt-mcp) proxies RepoPrompt MCP tools. Treat these as write-capable.
+	// Be tolerant of tool name prefixing, e.g. RepoPrompt_apply_edits
+	const normalizedCall = call.trim();
+	return /(^|_)(apply[-_]edits)$/.test(normalizedCall) || /(^|_)(file_actions)$/.test(normalizedCall);
 }
 
 function isSafeCommand(command: string): boolean {
@@ -252,6 +272,16 @@ export default function planModeExtension(pi: ExtensionAPI) {
 				};
 			}
 		}
+
+		if (event.toolName === "rp") {
+			if (isRepoPromptMcpWriteRequest(event.input)) {
+				const call = (event.input as { call?: unknown } | undefined)?.call;
+				return {
+					block: true,
+					reason: `Plan mode: RepoPrompt write tool blocked. Use /plan to disable plan mode first.\nTool: rp(call=${String(call)})`,
+				};
+			}
+		}
 	});
 
 	// Filter out stale plan mode context messages from LLM context
@@ -313,9 +343,9 @@ You now have write access again. Previous plan mode restrictions no longer apply
 	- rp-cli interactive REPL (-i) is blocked
 
 	Prefer RepoPrompt tools when available:
-	- Use \`rp-cli -e 'windows'\` to list windows
-	- Bind with \`rp_bind\`, then use \`rp_exec\` for tree/search/read/structure
-	- In plan mode, write commands are blocked: \`edit\`, \`file\`, \`file_actions\`, \`call apply-edits\`, \`call file_actions\`
+	- If repoprompt-mcp is available, use the \`rp\` tool for RepoPrompt MCP calls (e.g. \`rp({ windows: true })\`, \`rp({ bind: { window: 1 } })\`, \`rp({ call: "read_file", args: { ... } })\`)
+	- Otherwise: use \`rp-cli -e 'windows'\` to list windows; bind with \`rp_bind\`; use \`rp_exec\` for tree/search/read/structure
+	- In plan mode, RepoPrompt write operations are blocked (including via \`rp\`): \`apply_edits\` and \`file_actions\` (and rp-cli/rp_exec equivalents)
 
 	Do NOT attempt to make changes - just describe what you would do.`,
 				display: false,

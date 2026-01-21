@@ -2,6 +2,12 @@
 
 ## New or locally modified
 
+- ● [`repoprompt-mcp/`](repoprompt-mcp/) ([README](./repoprompt-mcp/README.md))
+  - Pi-compatible, token-efficient proxy for the RepoPrompt MCP server with RP-bespoke features:
+    - Window/tab binding that prevents user/agent or agent/agent clobbering: auto-detects by `cwd`, optional persistence and restoration per session, interactive binding resolution in case of multiple windows containing the required root, and manual selection via `/rp bind`
+    - Output rendering: diff highlighting, syntax highlighting (file reads and codemaps)
+    - Safety guardrails: blocks deletes unless `allowDelete: true`, optional edit confirmation gate (`confirmEdits`)
+
 - ● [`repoprompt-cli.ts`](repoprompt-cli.ts)
   - [RepoPrompt](https://repoprompt.com/docs) bridge for Pi: `rp_bind` + `rp_exec`
   - `rp_exec` wraps `rp-cli -e ...` with safe defaults (quiet, fail-fast, timeout, output truncation)
@@ -49,7 +55,8 @@
 - ◐ [`plan-mode.ts`](plan-mode.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/plan` (and `ctrl+alt+p`) toggles a read-only sandbox
   - No todo extraction or step execution prompting (planning stays on the user)
-  - Restricts tools, blocks destructive shell commands, and blocks RepoPrompt write operations (including via `rp_exec` or `rp-cli -e ...`)
+  - Restricts tools, blocks destructive shell commands, and blocks RepoPrompt write operations
+    - Covers `rp_exec`, `rp-cli -e ...`, and `rp` (repoprompt-mcp)
 
 - ◐ [`raw-paste.ts`](raw-paste.ts) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/paste` arms raw paste for the next paste operation
