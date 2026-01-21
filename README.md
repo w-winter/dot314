@@ -16,7 +16,7 @@ Clone this repo anywhere:
 Then symlink what you want into `~/.pi/agent/`:
 
     # Example: add one extension
-    ln -s ~/path/to/dot314-agent/extensions/repoprompt.ts ~/.pi/agent/extensions/
+    ln -s ~/path/to/dot314-agent/extensions/repoprompt-mcp.ts ~/.pi/agent/extensions/
 
     # Example: add all skills from this repo
     ln -s ~/path/to/dot314-agent/skills/* ~/.pi/agent/skills/
@@ -49,7 +49,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `protected-paths.ts`
 - ○ `question.ts`
 - ◐ `raw-paste.ts`
-- ● `repoprompt.ts`
+- ● `repoprompt-cli.ts`
 - ○ `review.ts`
 - ○ `rewind/`
 - ○ `send-user-message.ts`

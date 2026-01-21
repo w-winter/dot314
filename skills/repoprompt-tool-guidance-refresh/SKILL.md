@@ -27,7 +27,7 @@ description: Update RepoPrompt tool guidance based empirically on the latest MCP
    - `agent/prompts/rp-address-review-cli.md`
    - `agent/prompts/rp-bind-cli.md`
    - `agent/prompts/rp-review-cli.md`
-   - `agent/extensions/repoprompt.ts`
+   - `agent/extensions/repoprompt-cli.ts`
 
 3. Retain `rp-cli -l` in context (re-run if no longer available). Run `rp-cli --help` to understand how the CLI relates to the tool definitions provided by `rp-cli -l`. Review them and then examine `AGENTS-rp-cli-prefix.md` for outdated definitions or missing key tools. If there are any, make surgical updates to bring it into alignment with the latest state of the RepoPrompt CLI.
 
@@ -36,7 +36,7 @@ description: Update RepoPrompt tool guidance based empirically on the latest MCP
    - `rp-bind-cli.md`
    - `rp-review-cli.md`
 
-5. Confirm whether `repoprompt.ts` encodes any assumptions about the CLI that are now invalidated by the latest state of `rp-cli`. If so, make surgical patches to that file (only patches directly entailed by what the `rp-cli` change broke).
+5. Confirm whether `repoprompt-cli.ts` encodes any assumptions about the CLI that are now invalidated by the latest state of `rp-cli`. If so, make surgical patches to that file (only patches directly entailed by what the `rp-cli` change broke).
 
 ## Phase 3 — Git
 

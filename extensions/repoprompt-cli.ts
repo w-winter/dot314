@@ -5,7 +5,7 @@ import { Type } from "@sinclair/typebox";
 import * as Diff from "diff";
 
 /**
- * RepoPrompt ↔ Pi integration extension
+ * RepoPrompt CLI ↔ Pi integration extension
  *
  * Registers two Pi tools:
  * - `rp_bind`: binds a RepoPrompt window + compose tab (routing)

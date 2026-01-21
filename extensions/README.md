@@ -2,7 +2,7 @@
 
 ## New or locally modified
 
-- ● [`repoprompt.ts`](repoprompt.ts)
+- ● [`repoprompt-cli.ts`](repoprompt-cli.ts)
   - [RepoPrompt](https://repoprompt.com/docs) bridge for Pi: `rp_bind` + `rp_exec`
   - `rp_exec` wraps `rp-cli -e ...` with safe defaults (quiet, fail-fast, timeout, output truncation)
   - Safety features: blocks unbound usage, delete-like commands (unless `allowDelete=true`), and in-place workspace switching (unless explicitly allowed)
