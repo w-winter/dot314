@@ -1,0 +1,25 @@
+42d41
+<       edit <path> <search> <replace>    edit file.ts "old" "new"
+101,105c100,104
+<     edit (apply-edits) - Find/replace in files
+<       edit src/main.swift "old text" "new text"    Single replacement
+<       edit src/main.swift "old" "new" --all        Replace all occurrences
+<       call apply-edits {"path":"f.ts","edits":[{"search":"a","replace":"b"}]}
+<       call apply-edits {"path":"new.ts","rewrite":"content","on_missing":"create"}
+---
+>     apply_edits - Find/replace in files (requires -c -j for proper escape handling)
+>       rp-cli -c apply_edits -j '{"path":"f.ts","search":"old","replace":"new"}'
+>       rp-cli -c apply_edits -j '{"path":"f.ts","search":"line1\nline2","replace":"new"}'
+>       rp-cli -c apply_edits -j '{"path":"f.ts","edits":[{"search":"a","replace":"b"}]}'
+>       rp-cli -c apply_edits -j '{"path":"f.ts","rewrite":"new content"}'
+136,137c135,136
+<     call <tool> {json} - Raw MCP tool call with JSON
+<       call file_search {"pattern":"TODO","max_results":10}
+---
+>     Raw tool calls with JSON (for tools without shorthand syntax):
+>       rp-cli -c <tool> -j '{"param":"value"}'
+142a142,143
+>     -c, --call <tool>      Call tool directly (use with -j for JSON args)
+>     -j, --json <json>      JSON args for -c/--call
+146d146
+<     --json, -j <json>      JSON args for command (e.g., -e 'builder' --json '{"task":"..."}')

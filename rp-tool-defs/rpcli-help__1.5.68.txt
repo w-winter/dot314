@@ -1,0 +1,177 @@
+RepoPrompt MCP CLI - Execute commands against RepoPrompt workspaces
+
+USAGE:
+    rp-cli -e '<command>'           Run a command
+    rp-cli -e '<cmd1> && <cmd2>'    Chain commands
+    rp-cli -w <id> -e '<command>'   Target specific window
+    rp-cli -w <id> -t <tab> -e ...  Target window and tab
+
+EXAMPLES:
+    rp-cli -e 'tree'                          Show file tree
+    rp-cli -e 'workspace list'                List workspaces
+    rp-cli -e 'select set src/ && context'    Select files, get context
+    rp-cli -e 'search "TODO" --extensions .swift'
+    rp-cli -e 'chat How does auth work?'      Send to AI chat
+
+QUICK START:
+    rp-cli --launch-app                       Launch RepoPrompt app
+    rp-cli -e 'windows'                       List open windows (get ID)
+    rp-cli -w 1 -e 'select set src/'          Select files for context
+    rp-cli -w 1 -e 'chat "Explain this code" --new'   Start new chat
+
+CORE CONCEPTS:
+    The tab's file SELECTION is the context for chat_send. The AI only
+    sees files you've selected. Build selection manually or use context_builder.
+
+    Manual:   manage_selection op=set paths=["src/"] && chat_send message="..."
+    Auto:     context_builder task="..." response_type=question  → chat
+              context_builder task="..." response_type=plan      → plan
+
+PARAMETER SYNTAX:
+    Equivalent forms:  key=value  |  --key value  |  --key=value
+    JSON values:       paths=["src/","lib/"]  filter={"paths":["src/"]}
+    Dotted keys:       filter.paths=src/  (expands to nested object)
+    Boolean flags:     --verbose  (alone means true)
+    Dash → underscore: --max-results  becomes  max_results
+    Spaces:            --pattern "hello world"
+    Slice notation:    path:start-end  (e.g., file.swift:10-50)
+
+    Positional args (tool-specific shorthands):
+      read <path> [start] [limit]       read src/main.swift 100 50
+      search <pattern> [--flags]        search "TODO" --extensions .swift
+      edit <path> <search> <replace>    edit file.ts "old" "new"
+
+MCP TOOLS WITH EXAMPLES (use -d <tool> for full parameter docs):
+
+    manage_selection (select) - Curate file selection (context for chat)
+      select set src/                              Replace selection with src/
+      select add lib/utils.ts                      Add file to selection
+      select add file.swift:10-50                  Add lines 10-50 only (slice)
+      manage_selection op=set paths=["src/"] mode=codemap_only
+
+    context_builder (builder) - Auto-build selection, optionally generate response
+      builder "find authentication code"           Build context only (sets selection)
+      builder "add logout feature" --response-type plan   Build context + generate plan
+      builder "how does auth work?" --response-type question
+      After builder, use chat to continue: chat "explain more" --chat-id <returned-id>
+
+    chat_send (chat, plan, review) - Send message with selection as context
+      Aliases: chat "msg" continues current chat (--new to start fresh)
+               plan "msg"   → new_chat=true mode=plan
+               review "msg" → new_chat=true mode=review (includes git diff)
+      chat "How does this work?"                   Continue current chat
+      chat "Explain auth" --new                    Start new chat
+      plan "Design user system"                    New chat in plan mode
+      review "What changed?"                       Review git diff of selected files
+      chat_send message="Fix bug" mode=edit new_chat=true
+
+    read_file (read, cat) - Read file contents
+      read src/main.swift                          Read entire file
+      read src/main.swift 100 50                   Lines 100-149
+      read_file path=src/main.swift start_line=-20 Read last 20 lines
+
+    file_search (search, grep) - Search by pattern
+      search "TODO"                                Search all files
+      search "func.*async" --extensions .swift     Regex in Swift files
+      search "error" --context-lines 3             Show context around matches
+      file_search pattern="TODO" filter={"paths":["src/"]}
+
+    get_file_tree (tree) - Show directory structure
+      tree                                         Auto-trimmed tree
+      tree --folders                               Folders only
+      tree src/                                    Tree from specific path
+      get_file_tree type=files mode=selected       Show only selected files
+
+    get_code_structure (structure, map) - Get function/type signatures
+      structure src/auth/                          Codemaps for directory
+      structure --scope selected                   Codemaps for selection
+      get_code_structure paths=["src/"] max_results=50
+
+    workspace_context (context) - Get workspace snapshot
+      context                                      Default snapshot
+      context --all                                Include everything
+      workspace_context include=["prompt","selection","code","tree"]
+
+    prompt - Manage shared prompt/instructions
+      prompt get                                   Show current prompt
+      prompt set "Review for security issues"      Set prompt text
+      prompt export ~/context.md                   Export full LLM context
+      prompt presets                               List copy presets
+
+    edit (apply-edits) - Find/replace in files
+      edit src/main.swift "old text" "new text"    Single replacement
+      edit src/main.swift "old" "new" --all        Replace all occurrences
+      call apply-edits {"path":"f.ts","edits":[{"search":"a","replace":"b"}]}
+      call apply-edits {"path":"new.ts","rewrite":"content","on_missing":"create"}
+
+    file_actions (file) - Create/delete/move files
+      file create src/new.ts                       Create empty file
+      file delete /absolute/path/to/file.ts        Delete (requires absolute)
+      file move src/old.ts src/new.ts              Rename/move file
+      file_actions action=create path=f.ts content="// code"
+
+    chats - List chat sessions or view history
+      chats                                        List recent sessions
+      chats log <chat_id>                          View conversation
+      chats action=log chat_id=abc123 limit=10
+
+    list_models (models) - List available AI model presets
+      models                                       Show all presets
+
+    manage_workspaces (workspace, ws, tabs) - Manage workspaces/tabs
+      workspace list                               List all workspaces
+      workspace switch MyProject                   Switch workspace
+      workspace switch MyProject --new-window      Open in NEW window (returns window_id)
+      workspace create "New Project" --new-window  Create in NEW window (returns window_id)
+      workspace create "New Project" --switch      Create and switch to it
+      workspace tabs                               List compose tabs
+      workspace tab "Feature Work"                 Select tab
+      manage_workspaces action=create name="New Project"
+      manage_workspaces action=create name="New Project" open_in_new_window=true
+      manage_workspaces action=switch workspace=X open_in_new_window=true
+
+    list_windows (windows) - List open RepoPrompt windows
+      windows                                      Show window IDs
+
+    call <tool> {json} - Raw MCP tool call with JSON
+      call file_search {"pattern":"TODO","max_results":10}
+
+OPTIONS:
+    -e, --exec <cmd>       Execute command(s)
+    -w, --window <id>      Target window ID
+    -t, --tab <name>       Target tab (name or UUID)
+    -d, --describe <tool>  Show full parameter docs (types, required, enums)
+    -l, --list-tools       List all MCP tools
+    -q, --quiet            Suppress non-essential output
+    --json, -j <json>      JSON args for command (e.g., -e 'builder' --json '{"task":"..."}')
+    --launch-app           Launch RepoPrompt app
+    --raw-json             Raw JSON output (for scripting)
+    --verbose              Show debug/timing info
+    --fail-fast            Stop on first error in chain
+
+MULTI-WINDOW ROUTING:
+    With one window: -w is optional. With multiple: -w is required (error if omitted).
+    No persistent binding - window/tab selection resets on each CLI invocation.
+
+    rp-cli -e 'windows'                   List available windows
+    rp-cli -w <id> -e 'workspace tabs'    List tabs in window
+    rp-cli -w <id> -t <tab> -e 'context'  Target window + tab
+
+    AI agents MUST:
+      1. Run 'windows' to discover available windows
+      2. Pass -w <id> on EVERY invocation
+      3. Pass -t <tab> to target a specific compose tab
+
+MORE HELP:
+    --help-interactive     REPL mode for exploration
+    --help-scripting       Script files and workflow flags
+    --help-advanced        Tab targeting, routing parameters
+
+TOOL SCHEMAS - Use -d <tool> to see complete parameter documentation:
+    rp-cli -d manage_selection    Show all params, types, required/optional
+    rp-cli -d file_search         See filter options and valid values
+    rp-cli -d chat_send           See mode options and chat workflow
+
+    Output includes: parameter names, types (string, array, object),
+    required vs optional, allowed values (enums), and descriptions.
+    Add --verbose to also see the raw JSON schema.

@@ -1,41 +1,101 @@
 ---
 name: repoprompt-tool-guidance-refresh
-description: Update RepoPrompt tool guidance based empirically on the latest MCP server and CLI. AGENTS prefaces (MCP and CLI) live in `agent/AGENTS-prefaces/`; MCP prompts in `agent/prompts/`; CLI prompts in this skill's `rp-cli-prompts/` subfolder; the pi extension in `agent/extensions/`. Invoke after determining that a new RepoPrompt version might have changed MCP/CLI tooling.
+description: Update RepoPrompt tool guidance based on MCP/CLI changes across versions. Two-phase workflow: invoke BEFORE upgrading (--pre), then AFTER upgrading (--post). Uses `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh` to detect and diff changes (outputs to `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`).
 ---
 
 # Workflow
 
-## Phase 1 — MCP
+This skill has two invocation modes depending on where you are in the upgrade cycle.
 
-1. Read `changelog-latest.md` (at the Skill folder root) to see what the developer reported as changed in this new version.
+**Canonical locations** (use these even if your working directory differs):
+- Skill directory: `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/` (may be a symlink target)
+- Script: `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh`
+- Output directory: `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
 
-2. The MCP files live in two locations outside this skill folder:
-   - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-mcp-*.md` (AGENTS-level MCP guidance)
-   - **Prompts**: `agent/prompts/rp-*.md` (MCP workflow prompts, excluding `*-cli.md`)
+## Phase A — Pre-Upgrade (invoke BEFORE updating RepoPrompt)
 
-3. Run `rp-cli -l` to get the full list of MCP tools and their definitions. Review them and then examine the preface files for any outdated definitions or missing key tools. If there are any, make surgical updates to bring them into alignment with the latest state of the RepoPrompt MCP server.
+1. Run the version tracking script:
+   ```bash
+   $HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh --pre
+   ```
+   (Equivalent if you `cd $HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh`: `./scripts/track-rp-version.sh --pre`)
 
-4. Do the same for the MCP workflow prompts.
+2. The script writes a baseline snapshot under:
+   - `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
 
-## Phase 2 — CLI
+   Files created/updated:
+   - `.baseline_version` — the baseline `rp-cli` version
+   - `rpcli-help__{VERSION}.txt` — output of `rp-cli --help`
+   - `rpcli-l__{VERSION}.txt` — output of `rp-cli -l`
 
-1. Retain `changelog-latest.md` in context (re-read if no longer available).
+3. **Stop here.** Tell the user:
+   > ✓ Baseline captured at v{VERSION}. Go update RepoPrompt, then re-invoke this skill.
 
-2. The CLI-related files:
+## Phase B — Post-Upgrade (invoke AFTER updating RepoPrompt)
+
+1. Run the version tracking script:
+   ```bash
+   $HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh --post
+   ```
+   (Equivalent if you `cd $HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh`: `./scripts/track-rp-version.sh --post`)
+
+2. On version change, the script captures a *new* snapshot and generates diffs under:
+   - `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
+
+   Files created/updated:
+   - `rpcli-help__{NEW_VERSION}.txt` / `rpcli-l__{NEW_VERSION}.txt` — new snapshots
+   - `rpcli-help__{NEW_VERSION}.diff` — changes in `rp-cli --help`
+   - `rpcli-l__{NEW_VERSION}.diff` — changes in `rp-cli -l` (MCP tool definitions)
+
+3. If no changes detected in the diffs, tell the user and stop:
+   > ✓ No MCP/CLI tool changes detected. Documentation is current.
+
+4. **(Optional) Changelog context**: Ask the user:
+   > Paste release notes for v{NEW_VERSION} (or press Enter to skip):
+   
+   If provided, write to `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/changelog-latest.md`. If skipped, proceed using diffs as ground truth.
+
+5. **Review diffs** and identify what changed:
+   - New tools
+   - Removed tools
+   - Changed parameters or descriptions
+   - New modes/options
+
+## Phase C — Update MCP Documentation
+
+1. The MCP files live in two locations outside this skill folder:
+   - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-mcp-*.md`
+   - **Prompts**: `agent/prompts/rp-*.md` (excluding `*-cli.md`)
+
+2. Using the diffs as reference, make surgical updates to bring these files into alignment with the new tool definitions.
+
+## Phase D — Update CLI Documentation
+
+1. The CLI-related files:
    - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-cli-preface.md`
-   - **Prompts**: `rp-cli-prompts/rp-*-cli.md` (within this skill folder)
+   - **Prompts**: `$HOME/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-cli-prompts/rp-*-cli.md`
    - **Extension**: `agent/extensions/repoprompt-cli.ts`
 
-3. Retain `rp-cli -l` in context (re-run if no longer available). Run `rp-cli --help` to understand how the CLI relates to the tool definitions provided by `rp-cli -l`. Review them and then examine the CLI preface for outdated definitions or missing key tools. If there are any, make surgical updates to bring it into alignment with the latest state of the RepoPrompt CLI.
+2. Using the diffs as reference, make surgical updates to the preface and prompts.
 
-4. Do the same for the CLI workflow prompts in `rp-cli-prompts/`.
+3. Check whether `repoprompt-cli.ts` encodes assumptions invalidated by the changes. If so, patch minimally.
 
-5. Confirm whether `repoprompt-cli.ts` encodes any assumptions about the CLI that are now invalidated by the latest state of `rp-cli`. If so, make surgical patches to that file (only patches directly entailed by what the `rp-cli` change broke).
-
-## Phase 3 — Git
+## Phase E — Git
 
 Stage the changed files.
 
+---
+
 # Scope of Relevant Changes
 
-Do not add anything to these files that doesn't concern a lever that you would directly have available to you. New/changed/removed MCP tools, new/changed/removed CLI tools or interface points are relevant changes for these documents to be updated on. Changes that concern the RepoPrompt desktop app (without accompanying changes to the MCP or CLI tools) are not relevant to this documentation refresh, nor are changes that concern RepoPrompt's support for or integration with other applications/TUIs/harnesses (provided that those changes are not accompanied by changes to the MCP or CLI tools), nor are any other changes noted in the Changelog that you do not find an accompanying signature of in the MCP tool descriptions or CLI outputs.
+Only update documentation for changes that affect levers you directly use:
+- New/changed/removed MCP tools
+- New/changed/removed CLI commands or flags
+- Changed parameters, modes, or behaviors
+
+Ignore changes that only affect:
+- RepoPrompt desktop app UI (without MCP/CLI changes)
+- Integrations with other apps/harnesses (without MCP/CLI changes)
+- Internal implementation details not exposed via tools
+
+The diffs are the source of truth. If a changelog item has no corresponding signature in the diffs, it's not relevant to this refresh.

@@ -3,11 +3,14 @@
 ## New or locally modified
 
 - ● [`repoprompt-tool-guidance-refresh/`](repoprompt-tool-guidance-refresh/)
-  - Maintenance skill for keeping RepoPrompt tool guidance up to date after new releases
+  - Two-phase workflow for updating RepoPrompt tool guidance across version upgrades:
+    1. Invoke **before** upgrading → captures baseline (`rp-cli -l`, `rp-cli --help`)
+    2. Invoke **after** upgrading → detects changes, generates diffs, updates docs
   - Contents:
     - [`SKILL.md`](repoprompt-tool-guidance-refresh/SKILL.md)
-    - [`changelog-latest.md`](repoprompt-tool-guidance-refresh/changelog-latest.md)
-    - [`rp-cli-prompts/`](repoprompt-tool-guidance-refresh/rp-cli-prompts) — RP-CLI-specific prompts maintained by this skill
+    - [`scripts/track-rp-version.sh`](repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh) — version detection and diff generation of RepoPrompt MCP tool definitions and of the RepoPrompt CLI
+    - [`rp-tool-defs/`](repoprompt-tool-guidance-refresh/rp-tool-defs/) — captured snapshots and diffs
+    - [`rp-cli-prompts/`](repoprompt-tool-guidance-refresh/rp-cli-prompts/) — CLI-specific prompts maintained by this skill
 
 - ◐ [`qmd/`](qmd/)
   - Local search/indexing CLI usage (BM25 + vectors + hybrid)

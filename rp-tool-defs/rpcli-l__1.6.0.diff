@@ -1,0 +1,135 @@
+1c1
+< Available Tools (16):
+---
+> Available Tools (17):
+99a100,105
+>   git_base (string)
+>     Base ref for git diff comparison (default HEAD).
+> 
+>   git_scope (string): none | selected | all
+>     Override git diff inclusion for this message (none|selected|all).
+> 
+171a178,180
+> • **"review"**: Generates a code review with git diff context.
+>   Use when: you want review findings for recent changes.
+> 
+192c201
+<   response_type (string): plan | question | clarify
+---
+>   response_type (string): plan | question | review | clarify
+194c203,204
+<     ask a question. Omit or 'clarify' to just return context.
+---
+>     ask a question, or 'review' to generate a code review. Omit or
+>     'clarify' to just return context.
+359a370,418
+> 
+> 
+> git
+> ----------------------------------------------------------------------
+> Safe, token-efficient git abstraction for MCP agents.
+> 
+> Ops:
+> - status: Repository state (branch, upstream, ahead/behind, staged/modified/untracked)
+> - diff: View changes (summary by default, full on demand, optionally writes artifacts)
+> - log: Commit history with stats
+> - show: Single commit details
+> - blame: Line attribution
+> - list: List snapshots
+> - get: Read a snapshot by snapshot_id (or "current")
+> - delete: Delete a snapshot
+> - prune: Delete snapshots older than N days
+> 
+> Compare specs (for diff/show):
+> - uncommitted (default): Working dir vs HEAD
+> - staged: Staged vs HEAD
+> - unstaged: Working dir vs staged
+> - back:N: HEAD~N..HEAD
+> - last: Working dir vs CURRENT snapshot head SHA
+> - <snapshot_id>: Working dir vs snapshot head SHA
+> - <revspec>: Any git revspec (e.g., main...HEAD)
+> 
+> Detail levels (for diff):
+> - summary (default): Totals only
+> - files: File list with stats
+> - full: Complete patches with hunks
+> 
+> Safety: All commands use --no-ext-diff, --no-textconv, --color=never, GIT_TERMINAL_PROMPT=0.
+> 
+> Parameters:
+> 
+>   op (string, required): status | diff | log | show | blame | list | get | delete | prune
+>     Operation
+> 
+>   artifacts (boolean)
+>     Write snapshot artifacts (diff only)
+> 
+>   compare (string)
+>     Compare spec for diff/show
+> 
+>   context_lines (integer)
+>     Diff context lines
+> 
+>   count (integer)
+>     Number of commits for log
+360a420,421
+>   days (integer)
+>     For list/prune: filter by days
+361a423,479
+>   detail (string): summary | files | full
+>     Detail level for diff/show
+> 
+>   detect_renames (boolean)
+>     Enable rename detection
+> 
+>   inline (object)
+>     map (boolean)
+>       Include MAP excerpt
+> 
+>     max_lines (integer)
+>       Max MAP lines
+> 
+>     mode (string): brief | full
+>       Inline mode
+> 
+> 
+>   limit (integer)
+>     For list: max results
+> 
+>   lines (string)
+>     Line range for blame (e.g., "45-60")
+> 
+>   max_diff_lines (integer)
+>     Safety guard (insertions + deletions)
+> 
+>   max_lines (integer)
+>     Truncation budget for inline diffs
+> 
+>   max_patch_bytes (integer)
+>     Per-file patch size limit
+> 
+>   mode (string): quick | standard | deep
+>     Artifact mode for diff
+> 
+>   path (string)
+>     Single pathspec
+> 
+>   paths (array<string>)
+>     Multiple pathspecs
+> 
+>   ref (string)
+>     Ref for show operation
+> 
+>   repo_root (string)
+>     Repository root (defaults to active workspace root)
+> 
+>   reuse (boolean)
+>     Reuse existing snapshot if fingerprint matches
+> 
+>   scope (string): all | selected
+>     Diff scope
+> 
+>   snapshot_id (string)
+>     Snapshot ID for get/delete or override for diff
+> 
+> 

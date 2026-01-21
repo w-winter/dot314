@@ -58,3 +58,6 @@ prompts/rp-oracle-export.md
 prompts/rp-reminder.md
 prompts/rp-refactor.md
 prompts/rp-review.md
+
+# Version tracking ephemeral state
+skills/repoprompt-tool-guidance-refresh/rp-tool-defs/.baseline_version

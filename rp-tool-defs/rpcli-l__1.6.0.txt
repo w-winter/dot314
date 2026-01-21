@@ -1,0 +1,794 @@
+Available Tools (17):
+======================================================================
+
+apply_edits
+----------------------------------------------------------------------
+Apply direct file edits. Provide exactly ONE of these three modes:
+
+**Mode 1: Rewrite** - Replace entire file content
+`{"path": "file.swift", "rewrite": "new content...", "on_missing": "create"}`
+
+**Mode 2: Single replacement** - Find and replace text
+`{"path": "file.swift", "search": "oldCode", "replace": "newCode", "all": true}`
+
+**Mode 3: Multiple edits** - Apply several replacements
+`{"path": "file.swift", "edits": [{"search": "old1", "replace": "new1"}, {"search": "old2", "replace": "new2"}]}`
+
+Note: Modes are mutually exclusive. Providing more than one will result in an error.
+
+Options: `verbose` (show diff), `on_missing` (for rewrite only: "error" | "create", default: "create")
+
+Parameters:
+
+  path (string, required)
+    File path
+
+  all (boolean)
+    Replace all occurrences (default: false)
+
+  edits (array<object>)
+    Multiple edits
+    Array items:
+    all (boolean)
+      Replace all occurrences (default: false)
+
+    replace (string, required)
+      Replacement text
+
+    search (string, required)
+      Text to find
+
+
+  on_missing (string): error | create
+    Behavior when the file is missing (only for `rewrite`)
+
+  replace (string)
+    Replacement text
+
+  rewrite (string)
+    Replace the entire file content with this string
+
+  search (string)
+    Text to find
+
+  verbose (boolean)
+    Include diff preview
+
+
+chat_send
+----------------------------------------------------------------------
+Start a new chat or continue an existing conversation. Modes: `chat` | `plan` | `edit` | `review`.
+
+**Recommended pair‑program loop**
+1) **Plan** (`mode="plan"`): ask for architecture/steps.
+2) **Apply**: use `apply_edits` (or `chat_send` with `mode="edit"`) to make the changes.
+3) **Review** (`mode="review"`): analyze code changes using git diffs of selected files.
+4) **Repeat** in the **same chat**.
+
+**Critical context hygiene**
+- Run `manage_selection` op=`get` (view="files") to confirm context and tokens.
+- Prefer `set` (or `add`/`remove`) so all **related files** are included.
+- For a full snapshot (prompt, selection, code, tokens; optionally file text/tree), call `workspace_context`.
+- Bias toward **more context over too little**; avoid selecting only one file that references others.
+
+**Session management**
+- Chats are associated with compose tabs (the bound tab for MCP connections)
+- `new_chat`: true to start; else continues the most recent for the bound tab (or pass `chat_id`)
+- `selected_paths`: replace the selection for this message
+- `chat_name`: optional but **highly recommended** — short, descriptive (e.g., "Fix login crash – auth flow")
+- `model`: preset id/name; call `list_models` first
+
+**Limitations**
+- No commands/tests; only sees **selected files** + conversation history
+- For a **snapshot of context** (prompt, selection, codemaps, optional file contents/tree), call `workspace_context`
+	(add `"files"` in `include` to embed file text). For targeted slices, use `read_file` or `file_search`.
+- The chat does not track its own edit history—after edits, it only sees current file state
+
+**Note on diffs**: Review mode includes **git diffs** (via `gitInclusion`) showing uncommitted changes. This is separate from edit tracking—git diffs are always available in review mode.
+
+Parameters:
+
+  new_chat (boolean, required)
+    Start a new chat session
+
+  chat_id (string)
+    Chat ID to continue a specific chat (optional)
+
+  chat_name (string)
+    Set or update the chat session name
+
+  git_base (string)
+    Base ref for git diff comparison (default HEAD).
+
+  git_scope (string): none | selected | all
+    Override git diff inclusion for this message (none|selected|all).
+
+  include_diffs (boolean)
+    Include edit diffs in the reply (default: true). Pass false to
+    omit.
+
+  message (string)
+    Your message to send (ignored if use_tab_prompt is true)
+
+  mode (string): chat | plan | edit | review [default: "chat"]
+    Operation mode
+
+  model (string)
+    Model preset ID or name. Call `list_models` first to see available
+    presets.
+
+  selected_paths (array<string>)
+    File paths for context (overrides current selection)
+
+  use_tab_prompt (boolean)
+    When true, use the active compose tab's prompt instead of message
+    parameter
+
+
+chats
+----------------------------------------------------------------------
+List chats or view a chat's history. Actions: list | log
+
+`list`: recent chats (ID, name, selected files, last activity, tab) — use the ID with `chat_send`
+`log`: full conversation history (optionally include diffs)
+
+Notes:
+- Chats are associated with compose tabs; `tab_id` is included when available
+- Each chat maintains its own selection and context; continuing restores state
+- `chat_send` without `chat_id` resumes the most recent for the bound tab
+- You can **rename** a session anytime by passing `chat_name` in `chat_send`
+Related: chat_send, workspace_context
+
+Parameters:
+
+  action (string): list | log
+    Action to perform (default: 'list')
+
+  chat_id (string)
+    Chat ID for log action
+
+  include_diffs (boolean)
+    Include diff summaries in log output
+
+  limit (integer)
+    Max items to return - for 'list': max sessions (default 10), for
+    'log': max messages (default 3)
+
+
+context_builder
+----------------------------------------------------------------------
+Intelligently explore the codebase and build optimal file context for a task.
+
+A discovery agent analyzes your codebase, selects relevant files within a token budget, and
+rewrites your instructions into a clarified prompt. For "plan" or "question" modes, this prompt
+is sent to a *separate* model that generates a response—you'll receive a chat_id to continue.
+
+**response_type** determines what happens after context is built:
+
+• **Omit or "clarify"**: Context-only. Returns file selection and prompt for YOU to use.
+  Use when: preparing context for an external model, building prompts for chat_send,
+  or gathering context without needing an immediate response.
+
+• **"question"**: Answers a question about the codebase using the built context.
+  Use when: you need to understand how something works, find patterns, or investigate code.
+
+• **"plan"**: Generates an implementation plan for the task.
+  Use when: the user wants a feature planned, or you need step-by-step implementation guidance.
+
+• **"review"**: Generates a code review with git diff context.
+  Use when: you want review findings for recent changes.
+
+**Structuring instructions:**
+Use XML tags: `<task>` for the main goal, `<context>` for background/constraints/file references.
+Be detailed—if a spec exists in an .md file, include the path so the agent can read it.
+
+Use `<discovery_agent-guidelines>` for hints to the discovery agent only (directories to focus on,
+patterns to search, scope constraints). These are not passed to the follow-up model.
+
+**Workflow:** Continue via chat_send with the returned chat_id. Refine with manage_selection.
+
+Note: Thorough exploration takes 30s-5min depending on codebase size and task complexity.
+
+Parameters:
+
+  instructions (string)
+    Your request, ideally structured with XML tags: <task> for the
+    main goal, <context> for background/constraints/file references,
+    <discovery_agent-guidelines> for agent-specific hints. The agent
+    explores, selects files, and rewrites this into a clarified prompt
+    for follow-up.
+
+  response_type (string): plan | question | review | clarify
+    Optional: 'plan' to generate implementation plan, 'question' to
+    ask a question, or 'review' to generate a code review. Omit or
+    'clarify' to just return context.
+
+
+file_actions
+----------------------------------------------------------------------
+Create, delete, or move files.
+
+Actions:
+- `create`: Create a new file with `content`. Use `if_exists="overwrite"` to replace an existing file. New files are added to the selection.
+- `delete`: Delete a file (absolute path required for safety).
+- `move`: Move/rename to `new_path` (fails if destination exists).
+
+Paths: Relative or absolute (`delete` requires absolute). When multiple roots are loaded, you must provide an absolute path when creating files; relative paths are rejected to avoid ambiguity.
+Options: `if_exists` (create): "error" (default) or "overwrite".
+
+Note: Multi-root file creation is supported. Missing intermediate folders are automatically created.
+
+Parameters:
+
+  action (string, required): create | delete | move
+    Operation to perform
+
+  path (string, required)
+    File path
+
+  content (string)
+    File content (for create)
+
+  if_exists (string): error | overwrite
+    Behavior if the file already exists (for create)
+
+  new_path (string)
+    New path (for move)
+
+
+file_search
+----------------------------------------------------------------------
+Search by file path and/or file content.
+
+Defaults
+- regex=true (regular expressions by default)
+- case-insensitive
+- spaces match flexible whitespace
+- results use 1‑based line numbers
+- max_results default: 50 (request higher if needed)
+
+Response capping
+- The returned payload is capped to ~50k characters.
+- When the cap is hit, we exclude whole results (never cut a line) and report how many were omitted under 'omitted_*' in the response.
+
+Params
+- pattern (required)
+- regex: true|false
+- mode: "auto" | "path" | "content" | "both" (default "auto")
+- filter: { extensions, exclude, paths }
+- max_results, count_only, context_lines, whole_word
+
+Parameter aliases (for compatibility)
+- `-C`: alias for context_lines (e.g., `-C: 5` same as `context_lines: 5`)
+- `path`: shorthand for single-file search (e.g., `path: "file.swift"` same as `filter: {paths: ["file.swift"]}`)
+
+Literal mode (`regex=false`)
+- Special characters are matched literally; no escaping needed
+
+Regex mode (`regex=true`)
+- Full regular expressions (groups, lookarounds, anchors `^`/`$`); `whole_word` adds word boundaries
+
+Path search
+- regex=false: `*` and `?` wildcards (match across folders)
+- regex=true: full regex on relative paths
+
+Examples
+- Literal: {"pattern":"frame(minWidth:", "regex":false}
+- Regex:   {"pattern":"frame\(minWidth:", "regex":true}
+- OR:      {"pattern":"performSearch|searchUsers", "regex":true}
+- Path:    {"pattern":"*.swift", "mode":"path"}
+
+Parameters:
+
+  pattern (string, required)
+    Search pattern
+
+  context_lines (integer)
+    Lines of context before/after matches (alias: -C)
+
+  count_only (boolean)
+    Return only match count
+
+  filter (object)
+    File filtering options (alias: use 'path' string parameter for
+    single-file search)
+    exclude (array<string>)
+      Skip files/paths matching these patterns
+
+    extensions (array<string>)
+      Only search files with these extensions
+
+    paths (array<string>)
+      Limit search to specific file or folder paths
+
+
+  max_results (integer)
+    Maximum total results (default: 50)
+
+  mode (string): auto | path | content | both
+    Search scope: auto-detects if not specified
+
+  regex (boolean)
+    Use regex matching (default: true)
+
+  whole_word (boolean)
+    Match whole words only
+
+
+get_code_structure
+----------------------------------------------------------------------
+Return code structure (codemaps) for files and directories.
+
+Scopes:
+- `scope="selected"` — structures for the **current selection** (also lists files without codemaps)
+- `scope="paths"` (default) — pass `paths` (files and/or directories; directories are recursive)
+
+Note: Use with `get_file_tree` and `search` to explore before selecting.
+
+Parameters:
+
+  max_results (integer)
+    Maximum number of codemaps to return (default: 25)
+
+  paths (array<string>)
+    Array of file or directory paths (when scope='paths')
+
+  scope (string): paths | selected
+    Scope of operation: current selection or explicit paths
+
+
+get_file_tree
+----------------------------------------------------------------------
+ASCII directory tree of the project.
+
+Types:
+- `files` — modes:
+	- `auto` (default): tries full tree, then trims depth to fit ~10k tokens
+	- `full`: all files/folders (can be very large)
+	- `folders`: directories only
+	- `selected`: only selected files and their parents
+	Optional: `path` to start from a specific folder; `max_depth` to limit (root=0).
+- `roots` — list root folders.
+
+Files with a codemap are marked `+` in the standard tree.
+
+Parameters:
+
+  max_depth (integer)
+    Maximum depth (root = 0)
+
+  mode (string): auto | full | folders | selected
+    Filter mode (for 'files' type only, default: 'auto')
+
+  path (string)
+    Optional starting folder (absolute or relative) when type='files'.
+    When provided, the tree is generated from this folder and 'mode'
+    and 'max_depth' apply from that subtree.
+
+  type (string): files | roots
+    Tree type to generate (default: 'files')
+
+
+git
+----------------------------------------------------------------------
+Safe, token-efficient git abstraction for MCP agents.
+
+Ops:
+- status: Repository state (branch, upstream, ahead/behind, staged/modified/untracked)
+- diff: View changes (summary by default, full on demand, optionally writes artifacts)
+- log: Commit history with stats
+- show: Single commit details
+- blame: Line attribution
+- list: List snapshots
+- get: Read a snapshot by snapshot_id (or "current")
+- delete: Delete a snapshot
+- prune: Delete snapshots older than N days
+
+Compare specs (for diff/show):
+- uncommitted (default): Working dir vs HEAD
+- staged: Staged vs HEAD
+- unstaged: Working dir vs staged
+- back:N: HEAD~N..HEAD
+- last: Working dir vs CURRENT snapshot head SHA
+- <snapshot_id>: Working dir vs snapshot head SHA
+- <revspec>: Any git revspec (e.g., main...HEAD)
+
+Detail levels (for diff):
+- summary (default): Totals only
+- files: File list with stats
+- full: Complete patches with hunks
+
+Safety: All commands use --no-ext-diff, --no-textconv, --color=never, GIT_TERMINAL_PROMPT=0.
+
+Parameters:
+
+  op (string, required): status | diff | log | show | blame | list | get | delete | prune
+    Operation
+
+  artifacts (boolean)
+    Write snapshot artifacts (diff only)
+
+  compare (string)
+    Compare spec for diff/show
+
+  context_lines (integer)
+    Diff context lines
+
+  count (integer)
+    Number of commits for log
+
+  days (integer)
+    For list/prune: filter by days
+
+  detail (string): summary | files | full
+    Detail level for diff/show
+
+  detect_renames (boolean)
+    Enable rename detection
+
+  inline (object)
+    map (boolean)
+      Include MAP excerpt
+
+    max_lines (integer)
+      Max MAP lines
+
+    mode (string): brief | full
+      Inline mode
+
+
+  limit (integer)
+    For list: max results
+
+  lines (string)
+    Line range for blame (e.g., "45-60")
+
+  max_diff_lines (integer)
+    Safety guard (insertions + deletions)
+
+  max_lines (integer)
+    Truncation budget for inline diffs
+
+  max_patch_bytes (integer)
+    Per-file patch size limit
+
+  mode (string): quick | standard | deep
+    Artifact mode for diff
+
+  path (string)
+    Single pathspec
+
+  paths (array<string>)
+    Multiple pathspecs
+
+  ref (string)
+    Ref for show operation
+
+  repo_root (string)
+    Repository root (defaults to active workspace root)
+
+  reuse (boolean)
+    Reuse existing snapshot if fingerprint matches
+
+  scope (string): all | selected
+    Diff scope
+
+  snapshot_id (string)
+    Snapshot ID for get/delete or override for diff
+
+
+list_models
+----------------------------------------------------------------------
+List available model presets (id, name, description, supported modes).
+Use before `chat_send` to pick an appropriate preset.
+If no presets exist, shows the current chat model. Without `model`, `chat_send` picks the first compatible preset.
+
+(no parameters)
+
+list_windows
+----------------------------------------------------------------------
+List all RepoPrompt windows with workspace & roots
+
+(no parameters)
+
+manage_selection
+----------------------------------------------------------------------
+Manage the current selection used by all tools.
+
+Ops: get | add | remove | set | clear | preview | promote | demote
+Options:
+• view="summary"|"files"|"content" (default "summary")
+• path_display="relative"|"full" (default "relative")
+• strict=true|false (default false) — typo/no‑match guard: if a mutation resolves nothing, return a helpful error; set false for no‑op. Note: strict is not all‑or‑nothing—valid inputs still apply and invalid ones are reported.
+• mode="full"|"slices"|"codemap_only" (default "full"):
+  - "full": Complete file content
+  - "slices": Specific line ranges only
+  - "codemap_only": Efficient API structure (function/type signatures) for token savings
+  - Files without an available codemap are skipped and reported as "codemap unavailable" when targeting folders or paths in codemap_only mode.
+
+Automatic Codemap Management:
+• When selecting files with mode="full" or "slices" (via op=add or op=set), auto-adds codemaps for related/dependency files
+• Check complete selection (including auto-codemaps) with op="get" view="files"
+• Manual codemap operations (mode="codemap_only", promote, demote) disable auto-management until you clear
+• Prefer auto-management; only manually manage when you need precise control
+
+op=set semantics (mode controls behavior):
+• mode="full": Clears selection, replaces with provided paths/slices (complete reset)
+• mode="slices": File-scoped - adds any paths without clearing, replaces slice definitions only for specified files
+• mode="codemap_only": Replaces codemap-only files, disables auto-management
+
+Path Handling:
+• Paths can be files or directories (directories are expanded to all files within, recursively)
+• Paths can be relative (to workspace root) or absolute
+• For single-root workspaces: "src/main.swift" or "Root/src/main.swift" both work
+• For multi-root workspaces: prefix with root name (e.g., "ProjectA/src/main.swift")
+• Fuzzy matching enabled by default - close matches will be resolved
+
+Guidance:
+• Read files with read_file before slicing to identify relevant sections
+• Use ranges with descriptions for clarity (aliases: description/desc/label)
+• Preview with op="preview" view="files" to see the complete selection (including auto-codemaps) and token counts before committing
+
+Examples:
+• Add full file: {"op":"add","paths":["Root/src/main.swift"]}
+• Add codemap: {"op":"add","paths":["Root/src/utils/helper.swift"],"mode":"codemap_only"}
+• Set slices (file-scoped): {"op":"set","mode":"slices","slices":[{"path":"Root/src/file.swift","ranges":[{"start_line":45,"end_line":120,"description":"UserAuth flow"}]}]}
+• Add/merge slices: {"op":"add","slices":[{"path":"Root/src/file.swift","ranges":[{"start_line":200,"end_line":250}]}]}
+• Promote codemap→full: {"op":"promote","paths":["Root/src/utils/helper.swift"]}
+• Demote full→codemap: {"op":"demote","paths":["Root/src/utils/helper.swift"]}
+
+Related:
+• Discover candidates: get_file_tree, file_search
+• Preview structure fast: get_code_structure
+• Snapshot everything: workspace_context
+• Apply changes: apply_edits
+• Chat: chat_send (list/log with chats)
+
+Parameters:
+
+  mode (string): full | slices | codemap_only
+    How to represent files in selection: 'full' (complete content),
+    'slices' (line ranges), or 'codemap_only' (signatures only). With
+    op=set, mode changes semantics (see 'op=set semantics' above).
+
+  op (string): get | add | remove | set | clear | preview | promote | demote
+    Operation
+
+  path_display (string): full | relative
+    Path display for blocks
+
+  paths (array<string>)
+    File or folder paths (required for add/remove/set)
+
+  slices (array<object>)
+    Selection slices to apply (path + line ranges)
+    Array items:
+    lines (string)
+      Comma-separated shorthand like '10-20,40'
+
+    path (string, required)
+      Relative or absolute file path
+
+    ranges (array<object>)
+      Explicit line ranges (inclusive)
+      Array items:
+      description (string)
+        Optional slice description (aliases: desc, label)
+
+      end_line (integer)
+        1-based end line
+
+      start_line (integer, required)
+        1-based start line
+
+
+
+  strict (boolean)
+    Throw when no paths resolve (mutations)
+
+  view (string): summary | files | content | codemaps
+    Amount of detail to return
+
+
+manage_workspaces
+----------------------------------------------------------------------
+Manage workspaces across RepoPrompt windows.
+
+Actions:
+• list    – Return all known workspaces (id, name, repoPaths, showing window IDs)
+• switch  – Switch a window to a specified workspace
+• create  – Create a new workspace (optional folder_path)
+• delete  – Delete a workspace (optionally close window)
+• add_folder – Add a folder to a workspace (defaults to active workspace)
+• remove_folder – Remove a folder from a workspace (defaults to active workspace)
+• list_tabs  – List compose tabs for the active workspace in a window
+• select_tab – Bind this MCP connection to a specific compose tab
+
+Parameters:
+- action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" (required)
+- workspace: string                             (required for 'switch', 'delete'; optional for 'add_folder', 'remove_folder' - defaults to active workspace; UUID or name)
+- name: string                                  (required for 'create'; the new workspace name)
+- folder_path: string                           (required for 'add_folder', 'remove_folder'; optional for 'create' to initialize with a root folder; absolute path)
+- tab: string                                   (required for 'select_tab'; UUID or name)
+- window_id: integer                            (optional; target window, defaults to selected or only window)
+- focus: boolean                                (optional for 'select_tab'; default false)
+- open_in_new_window: boolean                   (optional for 'switch' or 'create'; when true, opens workspace in a new window and binds the connection to it)
+- switch_to_created: boolean                    (optional for 'create'; when true, switches to the newly created workspace)
+- close_window: boolean                         (optional for 'delete'; when true, switches away without saving, deletes the workspace, then requests window close)
+
+For 'switch', provide a single 'workspace' value. If it parses as a UUID, that workspace is selected by ID; otherwise it is treated as a name and the first match is used.
+
+After selecting a window (via select_window), use list_tabs and select_tab to pin your connection to a specific compose tab. This ensures your tools operate on consistent context even if the user changes the active tab in the UI.
+
+Tab binding behavior:
+• If no tab is bound, tools use the user's currently active tab. This can cause inconsistent results if the user switches tabs during your operations.
+• Use select_tab to explicitly bind to a specific tab for predictable, stable context across multiple tool calls.
+• Alternatively, pass the hidden '_tabID' parameter with any tool call to bind on-the-fly.
+
+Output flags:
+• [active] = The tab currently visible in the UI for that window
+• [bound] = The tab this MCP connection is pinned to; your tool calls use this tab even if the user switches the visible tab
+
+IMPORTANT: The 'focus' parameter switches the visible tab in the UI, which can be disruptive to the user's workflow. Only set focus=true when the user explicitly requests to see or switch to a specific tab. For background operations, omit focus or set it to false.
+
+Parameters:
+
+  action (string, required)
+    Action to perform: 'list', 'switch', 'create', 'delete',
+    'add_folder', 'remove_folder', 'list_tabs', or 'select_tab'
+
+  close_window (boolean)
+    For 'delete': when true, switches away without saving, deletes the
+    workspace, then requests window close.
+
+  focus (boolean)
+    For 'select_tab': if true, also switches the UI to show the
+    selected tab
+
+  folder_path (string)
+    Absolute folder path (required for 'add_folder', 'remove_folder';
+    optional for 'create' to initialize with a root folder)
+
+  name (string)
+    Name for new workspace (required for 'create')
+
+  open_in_new_window (boolean)
+    For 'switch' or 'create': when true, opens workspace in a new
+    window and binds connection to it. Returns window_id in response.
+
+  switch_to_created (boolean)
+    For 'create': when true, switches to the newly created workspace
+    in the target window.
+
+  tab (string)
+    Compose tab UUID or name (required for 'select_tab')
+
+  window_id (integer)
+    Optional window ID; defaults to selected or only window
+
+  workspace (string)
+    Workspace UUID or name (required for 'switch', 'delete'; optional
+    for 'add_folder', 'remove_folder' - defaults to active workspace)
+
+
+prompt
+----------------------------------------------------------------------
+Get or modify the shared prompt (instructions/notes). Ops: get | set | append | clear | export | list_presets | select_preset
+
+list_presets: Returns all available copy presets with their configurations.
+select_preset: Changes the active copy preset in the UI. Pass preset (UUID, kind, or name).
+export: Exports clipboard content to a file. Use copy_preset to override which preset is used.
+
+Related: workspace_context (snapshot), manage_selection (files), chat_send (use prompt), apply_edits.
+
+Parameters:
+
+  copy_preset (oneOf(string, object))
+    Accepts one of:
+      - string
+        Preset UUID, kind, or name
+      - object
+        Preset selector object
+      id (string)
+        Preset UUID
+
+      kind (string)
+        Built-in preset kind
+
+      name (string)
+        Preset name
+
+
+  op (string): get | set | append | clear | export | list_presets | select_preset
+    Operation (default: 'get')
+
+  path (string)
+    File path (required for export)
+
+  preset (oneOf(string, object))
+    Accepts one of:
+      - string
+        Preset UUID, kind, or name
+      - object
+        Preset selector object
+      id (string)
+        Preset UUID
+
+      kind (string)
+        Built-in preset kind
+
+      name (string)
+        Preset name
+
+
+  text (string)
+    Text for set/append
+
+
+read_file
+----------------------------------------------------------------------
+Read file contents, optionally specifying a starting line and number of lines.
+
+Details:
+- 1‑based lines; no params → entire file
+- `start_line` > 0: start at that line (e.g., 10)
+- `start_line` < 0: last N lines (like `tail -n`)
+- `limit`: only with positive `start_line` (e.g., start_line=10, limit=20 → lines 10–29)
+
+Parameters:
+
+  path (string, required)
+    File path
+
+  limit (integer)
+    Number of lines to read
+
+  start_line (integer)
+    Line to start from (1-based) or negative for tail behavior (-N
+    reads last N lines)
+
+
+select_window
+----------------------------------------------------------------------
+Bind all subsequent tool calls of THIS client to the given window ID.
+
+Parameters:
+
+  window_id (integer, required)
+    ID from list_windows
+
+
+workspace_context
+----------------------------------------------------------------------
+Snapshot of this window's workspace: prompt, selection, code structure (codemaps). Larger parts are opt-in.
+Defaults include: prompt, selection, code, tokens.
+include: ["prompt","selection","code","files","tree","tokens"]
+path_display: "relative"|"full"
+copy_preset: Override the copy preset for projection (does not change UI state). Can be a preset UUID, kind (e.g. "standard", "mcpBuilder"), name, or object with id/kind/name.
+
+Related: manage_selection (curate selection), prompt (edit instructions), get_file_tree, file_search, get_code_structure, apply_edits, chat_send, chats.
+
+Parameters:
+
+  copy_preset (oneOf(string, object))
+    Accepts one of:
+      - string
+        Preset UUID, kind, or name
+      - object
+        Preset selector object
+      id (string)
+        Preset UUID
+
+      kind (string)
+        Built-in preset kind
+
+      name (string)
+        Preset name
+
+
+  include (array<string>): items: prompt | selection | code | files | tree | tokens
+    What to include (defaults to prompt, selection, code, tokens)
+
+  path_display (string): full | relative
+    Path display for blocks
+
