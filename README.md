@@ -38,6 +38,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `confirm-destructive.ts`
 - ● `ephemeral-mode.ts`
 - ◐ `guardrails/`
+- ○ `inline-bash.ts`
 - ○ `interactive-shell.ts`
 - ○ `mac-system-theme.ts`
 - ● `md.ts`
@@ -48,13 +49,14 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ◐ `plan-mode.ts`
 - ○ `preset.ts`
 - ○ `protected-paths.ts`
-- ○ `question.ts`
+- ○ `questionnaire.ts`
 - ◐ `raw-paste.ts`
 - ● `repoprompt-cli.ts`
 - ● `repoprompt-mcp/`
 - ○ `review.ts`
 - ○ `rewind/`
 - ● `rp-native-tools-lock.ts`
+- ◐ `sandbox/`
 - ○ `send-user-message.ts`
 - ◐ `skill-palette/`
 - ○ `speedreading.ts`

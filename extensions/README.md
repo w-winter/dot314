@@ -107,11 +107,12 @@ Single-file extensions (see file headers):
 
 Upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions)
 - ○ `confirm-destructive.ts`
+- ○ `inline-bash.ts` — expands `!{command}` patterns in prompts via `input` event transformation
 - ○ `interactive-shell.ts`
 - ○ `mac-system-theme.ts`
 - ○ `preset.ts`
 - ○ `protected-paths.ts`
-- ○ `question.ts`
+- ○ `questionnaire.ts` — multi-question input with tab bar navigation between questions
 - ○ `review.ts`
 - ○ `send-user-message.ts`
 - ○ `status-line.ts`
@@ -121,5 +122,7 @@ Other:
 - ○ [`code-actions/`](code-actions/) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/code` to pick code blocks or inline code from recent assistant messages, then copy or insert
   - Type to search; enter to copy, right arrow to insert in the command line
+- ◐ [`sandbox/`](sandbox/) — OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+  - This version has a more minimalist statusline indicator
 - ○ `speedreading.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
 - ◐ `ultrathink.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
