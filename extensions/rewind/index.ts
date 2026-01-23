@@ -58,11 +58,11 @@ export default function (pi: ExtensionAPI) {
   let repoRoot: string | null = null;
   let isGitRepo = false;
   let sessionId: string | null = null;
-  
+
   // Pending checkpoint: worktree state captured at turn_start, waiting for turn_end
   // to associate with the correct user message entry ID
   let pendingCheckpoint: { commitSha: string; timestamp: number } | null = null;
-  
+
   /**
    * Update the footer status with checkpoint count
    */
@@ -76,7 +76,7 @@ export default function (pi: ExtensionAPI) {
     const count = checkpoints.size;
     ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "◆ ") + theme.fg("muted", `${count} checkpoint${count === 1 ? "" : "s"}`));
   }
-  
+
   /**
    * Reset all state for a fresh session
    */
@@ -250,7 +250,7 @@ export default function (pi: ExtensionAPI) {
   function findUserMessageEntry(sessionManager: { getLeafId(): string | null; getBranch(id?: string): any[] }): { id: string } | null {
     const leafId = sessionManager.getLeafId();
     if (!leafId) return null;
-    
+
     const branch = sessionManager.getBranch(leafId);
     // Walk backwards to find the most recent user message
     for (let i = branch.length - 1; i >= 0; i--) {
@@ -342,14 +342,14 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // Silent failure - resume checkpoint is optional
     }
-    
+
     updateStatus(ctx);
   }
 
   pi.on("session_start", async (_event, ctx) => {
     await initializeForSession(ctx);
   });
-  
+
   pi.on("session_switch", async (_event, ctx) => {
     await initializeForSession(ctx);
   });
@@ -357,7 +357,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_start", async (event, ctx) => {
     if (!ctx.hasUI) return;
     if (!isGitRepo) return;
-    
+
     // Only capture at the start of a new agent loop (first turn).
     // This is when a user message triggers the agent - we want to snapshot
     // the file state BEFORE any tools execute.
@@ -379,7 +379,7 @@ export default function (pi: ExtensionAPI) {
     if (!isGitRepo) return;
     if (!pendingCheckpoint) return;
     if (!sessionId) return;
-    
+
     // Only process at end of first turn - by now the user message has been
     // appended to the session and we can find its entry ID.
     if (event.turnIndex !== 0) return;
@@ -496,13 +496,13 @@ export default function (pi: ExtensionAPI) {
       sessionId,
       ctx.ui.notify.bind(ctx.ui)
     );
-    
+
     if (!success) {
       // File restore failed - cancel the branch operation entirely
       // (restoreWithBackup already notified the user of the error)
       return { cancel: true };
     }
-    
+
     ctx.ui.notify(
       usingResumeCheckpoint
         ? "Files restored to session start"
@@ -541,6 +541,9 @@ export default function (pi: ExtensionAPI) {
 
     const options: string[] = [];
 
+    // Offer "Keep current files" first
+    options.push("Keep current files");
+
     if (checkpointId) {
       if (usingResumeCheckpoint) {
         options.push("Restore files to session start");
@@ -548,9 +551,6 @@ export default function (pi: ExtensionAPI) {
         options.push("Restore files to that point");
       }
     }
-
-    // Always offer "Keep current files" - user may want to navigate without restoring
-    options.push("Keep current files");
 
     if (hasUndo) {
       options.push("Undo last file rewind");
@@ -594,13 +594,13 @@ export default function (pi: ExtensionAPI) {
       sessionId,
       ctx.ui.notify.bind(ctx.ui)
     );
-    
+
     if (!success) {
       // File restore failed - cancel navigation
       // (restoreWithBackup already notified the user of the error)
       return { cancel: true };
     }
-    
+
     ctx.ui.notify(
       usingResumeCheckpoint
         ? "Files restored to session start"

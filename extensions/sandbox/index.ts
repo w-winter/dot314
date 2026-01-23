@@ -28,7 +28,9 @@
  * Usage:
  * - `pi -e ./sandbox` - sandbox enabled with default/config settings
  * - `pi -e ./sandbox --no-sandbox` - disable sandboxing
- * - `/sandbox` - show current sandbox configuration
+ * - `/sandbox` - interactive menu to toggle on/off (shows current sandbox config above the options)
+ * - `/sandbox on` - enable sandbox
+ * - `/sandbox off` - disable sandbox
  *
  * Setup:
  * 1. Copy sandbox/ directory to ~/.pi/agent/extensions/
@@ -42,11 +44,72 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { type BashOperations, createBashTool } from "@mariozechner/pi-coding-agent";
+import type { Component } from "@mariozechner/pi-tui";
+import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 
 interface SandboxConfig extends SandboxRuntimeConfig {
 	enabled?: boolean;
+}
+
+class SandboxMenu implements Component {
+	private currentState: "on" | "off";
+	private configLines: string[];
+	private selectedIndex: number;
+	private onDone: (value: "on" | "off" | null) => void;
+
+	constructor(params: {
+		currentState: "on" | "off";
+		configLines: string[];
+		onDone: (value: "on" | "off" | null) => void;
+	}) {
+		this.currentState = params.currentState;
+		this.configLines = params.configLines;
+		this.selectedIndex = params.currentState === "on" ? 0 : 1;
+		this.onDone = params.onDone;
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.up) || matchesKey(data, Key.left)) {
+			this.selectedIndex = this.selectedIndex === 0 ? 1 : 0;
+		} else if (matchesKey(data, Key.down) || matchesKey(data, Key.right) || matchesKey(data, Key.tab)) {
+			this.selectedIndex = this.selectedIndex === 0 ? 1 : 0;
+		} else if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
+			this.onDone(this.selectedIndex === 0 ? "on" : "off");
+		} else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+			this.onDone(null);
+		}
+	}
+
+	render(width: number): string[] {
+		const lines: string[] = [];
+
+		// Config summary (legacy formatting) at the top
+		for (const line of this.configLines) {
+			if (line.length === 0) {
+				lines.push("");
+				continue;
+			}
+
+			lines.push(...wrapTextWithAnsi(line, width));
+		}
+
+		lines.push("");
+		lines.push(truncateToWidth(`Toggle sandbox (currently ${this.currentState})`, width));
+
+		const optionLines = ["on", "off"].map((opt, i) => {
+			const prefix = i === this.selectedIndex ? " → " : "   ";
+			return truncateToWidth(prefix + opt, width);
+		});
+		lines.push(...optionLines);
+
+		return lines;
+	}
+
+	invalidate(): void {
+		// No cached state
+	}
 }
 
 const DEFAULT_CONFIG: SandboxConfig = {
@@ -208,6 +271,104 @@ export default function (pi: ExtensionAPI) {
 	let sandboxEnabled = false;
 	let sandboxInitialized = false;
 
+	const getSandboxConfigLines = (ctx: ExtensionContext): string[] => {
+		const config = loadConfig(ctx.cwd);
+
+		return [
+			"Sandbox Configuration:",
+			"",
+			"Network:",
+			`  Allowed: ${config.network?.allowedDomains?.join(", ") || "(none)"}`,
+			`  Denied: ${config.network?.deniedDomains?.join(", ") || "(none)"}`,
+			"",
+			"Filesystem:",
+			`  Deny Read: ${config.filesystem?.denyRead?.join(", ") || "(none)"}`,
+			`  Allow Write: ${config.filesystem?.allowWrite?.join(", ") || "(none)"}`,
+			`  Deny Write: ${config.filesystem?.denyWrite?.join(", ") || "(none)"}`,
+		];
+	};
+
+
+	const enableSandbox = async (ctx: ExtensionContext): Promise<void> => {
+		const noSandbox = pi.getFlag("no-sandbox") as boolean;
+		if (noSandbox) {
+			ctx.ui.notify("Sandbox disabled via --no-sandbox (restart without it to enable)", "warning");
+			return;
+		}
+
+		if (sandboxEnabled) {
+			ctx.ui.notify("Sandbox is already enabled", "info");
+			return;
+		}
+
+		const platform = process.platform;
+		if (platform !== "darwin" && platform !== "linux") {
+			ctx.ui.notify(`Sandbox not supported on ${platform}`, "warning");
+			return;
+		}
+
+		const config = loadConfig(ctx.cwd);
+		const configExt = config as unknown as {
+			ignoreViolations?: Record<string, string[]>;
+			enableWeakerNestedSandbox?: boolean;
+		};
+
+		try {
+			// If we were previously initialized, reset first so changes in config are applied cleanly
+			if (sandboxInitialized) {
+				await SandboxManager.reset();
+				sandboxInitialized = false;
+			}
+
+			await SandboxManager.initialize({
+				network: config.network,
+				filesystem: config.filesystem,
+				ignoreViolations: configExt.ignoreViolations,
+				enableWeakerNestedSandbox: configExt.enableWeakerNestedSandbox,
+			});
+
+			sandboxInitialized = true;
+			sandboxEnabled = true;
+			ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", "sandbox ✓"));
+			ctx.ui.notify("Sandbox enabled", "info");
+		} catch (err) {
+			sandboxEnabled = false;
+			ctx.ui.setStatus("sandbox", undefined);
+			ctx.ui.notify(`Sandbox initialization failed: ${err instanceof Error ? err.message : err}`, "error");
+		}
+	};
+
+	const disableSandbox = async (ctx: ExtensionContext): Promise<void> => {
+		if (!sandboxEnabled) {
+			ctx.ui.notify("Sandbox is already disabled", "info");
+			return;
+		}
+
+		sandboxEnabled = false;
+		ctx.ui.setStatus("sandbox", undefined);
+
+		if (sandboxInitialized) {
+			try {
+				await SandboxManager.reset();
+			} catch {
+				// Ignore cleanup errors
+			} finally {
+				sandboxInitialized = false;
+			}
+		}
+
+		ctx.ui.notify("Sandbox disabled", "warning");
+	};
+
+	const toggleSandbox = async (ctx: ExtensionContext): Promise<void> => {
+		if (sandboxEnabled) {
+			await disableSandbox(ctx);
+			return;
+		}
+
+		await enableSandbox(ctx);
+	};
+
 	pi.registerTool({
 		...localBash,
 		label: "bash (sandboxed)",
@@ -285,28 +446,53 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	pi.registerShortcut(Key.alt("s"), {
+		description: "Toggle sandbox on/off",
+		handler: async (ctx) => toggleSandbox(ctx),
+	});
+
 	pi.registerCommand("sandbox", {
-		description: "Show sandbox configuration",
-		handler: async (_args, ctx) => {
-			if (!sandboxEnabled) {
-				ctx.ui.notify("Sandbox is disabled", "info");
+		description: "Toggle OS-level sandboxing for bash commands",
+		handler: async (args, ctx) => {
+			const subcommand = args?.trim().toLowerCase();
+
+			if (subcommand === "on") {
+				await enableSandbox(ctx);
 				return;
 			}
 
-			const config = loadConfig(ctx.cwd);
-			const lines = [
-				"Sandbox Configuration:",
-				"",
-				"Network:",
-				`  Allowed: ${config.network?.allowedDomains?.join(", ") || "(none)"}`,
-				`  Denied: ${config.network?.deniedDomains?.join(", ") || "(none)"}`,
-				"",
-				"Filesystem:",
-				`  Deny Read: ${config.filesystem?.denyRead?.join(", ") || "(none)"}`,
-				`  Allow Write: ${config.filesystem?.allowWrite?.join(", ") || "(none)"}`,
-				`  Deny Write: ${config.filesystem?.denyWrite?.join(", ") || "(none)"}`,
-			];
-			ctx.ui.notify(lines.join("\n"), "info");
+			if (subcommand === "off") {
+				await disableSandbox(ctx);
+				return;
+			}
+
+			if (subcommand && subcommand.length > 0) {
+				ctx.ui.notify("Usage: /sandbox [on|off]", "info");
+				return;
+			}
+
+			// No args: interactive 2-option menu
+			if (!ctx.hasUI) {
+				// No UI available (print/RPC mode). Use explicit on/off subcommands instead
+				return;
+			}
+
+			const currentState = sandboxEnabled ? "on" : "off";
+			const choice = await ctx.ui.custom<"on" | "off" | null>((_tui, _theme, _keybindings, done) => {
+				return new SandboxMenu({
+					currentState,
+					configLines: getSandboxConfigLines(ctx),
+					onDone: done,
+				});
+			});
+
+			if (!choice) return;
+
+			if (choice === "on") {
+				await enableSandbox(ctx);
+			} else {
+				await disableSandbox(ctx);
+			}
 		},
 	});
 }

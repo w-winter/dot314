@@ -54,7 +54,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ● `repoprompt-cli.ts`
 - ● `repoprompt-mcp/`
 - ○ `review.ts`
-- ○ `rewind/`
+- ◐ `rewind/`
 - ● `rp-native-tools-lock.ts`
 - ◐ `sandbox/`
 - ○ `send-user-message.ts`
