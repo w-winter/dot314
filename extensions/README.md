@@ -90,10 +90,12 @@
   - This version persists tool enablement globally (`~/.pi/agent/extensions/tools-config.json`) and per-session via session entries
 
 - ◐ [`usage-bar.ts`](usage-bar.ts) (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
-  - `/usage` usage overlay for multiple providers, with provider status polling and reset countdowns
-  - This version adds `alt+u` shortcut
-
-## Vendored extensions (have their own READMEs)
+  - `/usage` quota overlay for multiple providers, with provider status polling and reset countdowns
+  - This version:
+    - Supports multiple Codex accounts with automatic workspace deduplication
+    - Displays used percentage with 5-band color scale (0-49% green → 95%+ red) and proper label alignment
+    - Provider status emoji hidden on fetch errors to avoid misleading indicators
+    - Adds `alt+u` shortcut
 
 - ○ [`async-subagents/`](async-subagents/) (upstream: [nicobailon/pi-async-subagents](https://github.com/nicobailon/pi-async-subagents))
 - ◐ [`guardrails/`](guardrails/) — security hooks: `prevent-brew`, `protect-paths`, `permission-gate` (upstream: [aliou/pi-extensions](https://github.com/aliou/pi-extensions))
