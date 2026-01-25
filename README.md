@@ -61,7 +61,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ◐ `skill-palette/`
 - ○ `speedreading.ts`
 - ○ `status-line.ts`
-- ○ `todo.ts`
+- ○ `todos.ts`
 - ◐ `tools.ts`
 - ◐ `ultrathink.ts`
 - ◐ `usage-bar.ts`
