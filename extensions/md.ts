@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as readline from "readline";
+import { execSync } from "child_process";
 
 /**
  * Processes Pi agent JSONL session logs into readable text format
@@ -191,7 +192,7 @@ async function extractConversation(
             if (includeThinking) {
               const t = itemObj.thinking;
               if (typeof t === "string" && t.trim()) {
-                textParts.push(`[thinking]\n${t.trim()}`);
+                textParts.push(`[thinking]\n${t.trim()}\n[/thinking]`);
               }
             }
           } else if (itype === "toolCall") {
@@ -364,7 +365,7 @@ function extractConversationFromBranch(
             if (includeThinking) {
               const t = itemObj.thinking;
               if (typeof t === "string" && t.trim()) {
-                textParts.push(`[thinking]\n${t.trim()}`);
+                textParts.push(`\n\n**[thinking]**\n\n${t.trim()}\n\n**[/thinking]**\n\n`);
               }
             }
           } else if (itype === "toolCall") {
@@ -435,6 +436,104 @@ function extractConversationFromBranch(
   }
 
   return { meta, conversation, leafId };
+}
+
+/**
+ * Generate markdown content from the current branch without writing to file
+ */
+function generateMarkdownFromBranch(
+  sessionManager: any,
+  sessionFile: string,
+  includeThinking: boolean = false
+): { content: string; filename: string } | null {
+  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking);
+
+  if (conversation.length === 0) {
+    return null;
+  }
+
+  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
+  const projectSlug = slug(project);
+
+  const started = meta.startedAt || new Date();
+  const stamp = formatTimestamp(started);
+  const sid = (meta.sessionId || "unknown").slice(0, 8);
+  const filename = `${projectSlug}_pi_${stamp}_${sid}.md`;
+
+  // Build output content
+  const lines: string[] = [];
+  lines.push("PI SESSION (processed)");
+  lines.push("mode: branch");
+  lines.push(`leaf: ${leafId === null ? "null" : leafId}`);
+  if (meta.sessionId) {
+    lines.push(`id: ${meta.sessionId}`);
+  }
+  if (meta.startedAt) {
+    lines.push(`started: ${meta.startedAt.toISOString()}`);
+  }
+  if (meta.cwd) {
+    lines.push(`cwd: ${meta.cwd}`);
+  }
+  lines.push(`source: ${sessionFile}`);
+  lines.push("");
+
+  for (const msg of conversation) {
+    lines.push(msg.trimEnd());
+    lines.push("");
+  }
+
+  return { content: lines.join("\n"), filename };
+}
+
+/**
+ * Generate markdown content from full session file without writing to file
+ */
+async function generateMarkdownFromSession(
+  jsonlFile: string,
+  includeThinking: boolean = false
+): Promise<{ content: string; filename: string } | null> {
+  const { meta, conversation } = await extractConversation(jsonlFile, includeThinking);
+
+  if (conversation.length === 0) {
+    return null;
+  }
+
+  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
+  const projectSlug = slug(project);
+
+  const started = meta.startedAt || new Date();
+  const stamp = formatTimestamp(started);
+  const sid = (meta.sessionId || "unknown").slice(0, 8);
+  const filename = `${projectSlug}_pi_${stamp}_${sid}.md`;
+
+  // Build output content
+  const lines: string[] = [];
+  lines.push("PI SESSION (processed)");
+  if (meta.sessionId) {
+    lines.push(`id: ${meta.sessionId}`);
+  }
+  if (meta.startedAt) {
+    lines.push(`started: ${meta.startedAt.toISOString()}`);
+  }
+  if (meta.cwd) {
+    lines.push(`cwd: ${meta.cwd}`);
+  }
+  lines.push(`source: ${jsonlFile}`);
+  lines.push("");
+
+  for (const msg of conversation) {
+    lines.push(msg.trimEnd());
+    lines.push("");
+  }
+
+  return { content: lines.join("\n"), filename };
+}
+
+/**
+ * Copy text to clipboard (macOS)
+ */
+function copyToClipboard(text: string): void {
+  execSync("pbcopy", { input: text });
 }
 
 /**
@@ -556,7 +655,7 @@ const OUTPUT_DIR = path.join(os.homedir(), ".pi", "agent", "pi-sessions-extracte
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("md", {
-    description: "Export current session to markdown (current /tree branch). Use '/md thinking' to include thinking blocks. Use '/md all' for full file.",
+    description: "Export current session as markdown (current /tree branch) on clipboard or to file. Use '/md thinking' to include thinking blocks. Use '/md all' for full file.",
     handler: async (args, ctx) => {
       const sessionFile = ctx.sessionManager.getSessionFile();
 
@@ -569,18 +668,42 @@ export default function (pi: ExtensionAPI) {
       const includeThinking = argsLower.trim().startsWith("t") || /\bthinking\b/.test(argsLower);
       const exportAll = /\ball\b/.test(argsLower) || /\bfile\b/.test(argsLower);
 
-      try {
-        const outputFile = exportAll
-          ? await processSession(sessionFile, OUTPUT_DIR, includeThinking)
-          : await processSessionFromBranch(ctx.sessionManager, sessionFile, OUTPUT_DIR, includeThinking);
+      // Show export method selection menu
+      const title = includeThinking
+        ? "Export session (with thinking blocks) as Markdown"
+        : "Export session as Markdown";
+      const choice = await ctx.ui.select(`${title}\n\nSelect export method:`, [
+        "Copy to clipboard",
+        `Save to .md file in ${OUTPUT_DIR}/`,
+      ]);
 
-        if (outputFile) {
-          const suffix = includeThinking ? " (with thinking)" : "";
-          const mode = exportAll ? " (full file)" : " (branch)";
-          ctx.ui.notify(`Processed${suffix}${mode}: ${outputFile}`, "success");
-        } else {
+      if (!choice) {
+        return; // User cancelled
+      }
+
+      try {
+        const result = exportAll
+          ? await generateMarkdownFromSession(sessionFile, includeThinking)
+          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, includeThinking);
+
+        if (!result) {
           const mode = exportAll ? "session file" : "current branch";
           ctx.ui.notify(`No meaningful conversation found in ${mode}`, "error");
+          return;
+        }
+
+        const suffix = includeThinking ? " (with thinking)" : "";
+        const mode = exportAll ? " (full file)" : " (branch)";
+
+        if (choice === "Copy to clipboard") {
+          copyToClipboard(result.content);
+          ctx.ui.notify(`Copied to clipboard${suffix}${mode}`, "success");
+        } else {
+          // Save to file
+          const outputFile = path.join(OUTPUT_DIR, result.filename);
+          fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+          fs.writeFileSync(outputFile, result.content, "utf-8");
+          ctx.ui.notify(`Saved${suffix}${mode}: ${outputFile}`, "success");
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
