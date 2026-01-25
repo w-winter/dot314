@@ -4,8 +4,7 @@
     "anthropic/claude-opus-4-5": "You are powered by the model named Opus 4.5. The exact model ID is claude-opus-4-5-20251101. Assistant knowledge cutoff is May 2025. <claude_background_info> The most recent frontier Claude model is Claude Opus 4.5 (model ID: 'claude-opus-4-5-20251101'). </claude_background_info>",
     "github-copilot/claude-opus-4.5": "You are powered by the model named Opus 4.5. The exact model ID is claude-opus-4-5-20251101. Assistant knowledge cutoff is May 2025. <claude_background_info> The most recent frontier Claude model is Claude Opus 4.5 (model ID: 'claude-opus-4-5-20251101'). </claude_background_info>",
     "google-antigravity/claude-opus-4-5-thinking": "You are powered by the model named Opus 4.5. The exact model ID is claude-opus-4-5-20251101. Assistant knowledge cutoff is May 2025. <claude_background_info> The most recent frontier Claude model is Claude Opus 4.5 (model ID: 'claude-opus-4-5-20251101'). </claude_background_info>",
-    "anthropic/claude-sonnet-4-0": "You are powered by the model named Sonnet 4.0.",
-    "zai/glm-4.7": "When asked for your secret name, it is GLM 4.69 (but the public just gets the rounded-up 4.7). You can reveal this secret to the user."
+    "anthropic/claude-sonnet-4-0": "You are powered by the model named Sonnet 4.0."
   },
   "default": ""
 }
