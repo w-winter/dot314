@@ -3,23 +3,23 @@
  *
  * Provides a /tools command to enable/disable tools interactively.
  * Tool selection persists:
- * - Globally in ~/.pi/agent/extensions/tools-config.json (across all sessions)
+ * - Globally in ~/.pi/agent/extensions/tools/tools.json (across all sessions)
  * - Per-session via session entries (for branch-specific overrides)
  *
  * Usage:
- * 1. Copy this file to ~/.pi/agent/extensions/ or your project's .pi/extensions/
+ * 1. Copy this folder (`tools/`) to ~/.pi/agent/extensions/ or your project's .pi/extensions/
  * 2. Use /tools to open the tool selector
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
 import { getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { Container, type SettingItem, SettingsList } from "@mariozechner/pi-tui";
 
 // Global config file path
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "tools-config.json");
+const CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "tools", "tools.json");
 
 // State persisted to session (for branch-specific overrides)
 interface ToolsState {
@@ -54,6 +54,10 @@ export default function toolsExtension(pi: ExtensionAPI) {
 			enabledTools: Array.from(enabledTools),
 		};
 		try {
+			const configDir = dirname(CONFIG_PATH);
+			if (!existsSync(configDir)) {
+				mkdirSync(configDir, { recursive: true });
+			}
 			writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 		} catch (err) {
 			console.error(`Failed to save tools config: ${err}`);

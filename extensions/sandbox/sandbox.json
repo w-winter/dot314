@@ -1,0 +1,41 @@
+{
+  "enabled": true,
+  "network": {
+    "allowedDomains": [
+      "npmjs.org",
+      "*.npmjs.org",
+      "registry.npmjs.org",
+      "registry.yarnpkg.com",
+      "pypi.org",
+      "*.pypi.org",
+      "files.pythonhosted.org",
+      "github.com",
+      "*.github.com",
+      "api.github.com",
+      "raw.githubusercontent.com",
+      "githubusercontent.com",
+      "crates.io",
+      "*.crates.io",
+      "rubygems.org",
+      "deno.land",
+      "cdn.jsdelivr.net",
+      "unpkg.com",
+      "jsr.io"
+    ],
+    "deniedDomains": []
+  },
+  "filesystem": {
+    "allowRead": ["~/.orbstack"],
+    "denyRead": [
+      "~/.ssh",
+      "~/.aws",
+      "~/.gnupg",
+      "~/.config/gh",
+      "~/.netrc",
+      "~/.npmrc",
+      "~/.pypirc"
+    ],
+    "allowWrite": [".", "/tmp"],
+    "denyWrite": [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx"]
+  }
+}

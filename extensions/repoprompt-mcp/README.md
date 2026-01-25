@@ -67,7 +67,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 
 3. Configure the RepoPrompt MCP server (if not auto-detected):
 
-   Create `~/.pi/agent/repoprompt-mcp.json`:
+   Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
 
    ```json
    {
@@ -153,7 +153,7 @@ rp({
 
 ## Configuration
 
-Create `~/.pi/agent/repoprompt-mcp.json`:
+Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
 
 ```json
 {

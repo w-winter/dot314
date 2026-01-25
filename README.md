@@ -43,7 +43,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `mac-system-theme.ts`
 - ● `md.ts`
 - ● `model-sysprompt-appendix/`
-- ● `notify.ts`
+- ● `notify/`
 - ◐ `oracle.ts`
 - ○ `pi-prompt-template-model/`
 - ◐ `plan-mode.ts`
@@ -55,14 +55,14 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ● `repoprompt-mcp/`
 - ○ `review.ts`
 - ◐ `rewind/`
-- ● `rp-native-tools-lock.ts`
+- ● `rp-native-tools-lock/`
 - ◐ `sandbox/`
 - ○ `send-user-message.ts`
 - ◐ `skill-palette/`
 - ○ `speedreading.ts`
 - ○ `status-line.ts`
 - ○ `todos.ts`
-- ◐ `tools.ts`
+- ◐ `tools/`
 - ◐ `ultrathink.ts`
 - ◐ `usage-bar.ts`
 - ● `vog/`

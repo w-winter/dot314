@@ -6,7 +6,7 @@
  * bubblewrap on Linux).
  *
  * Config files (merged, project takes precedence):
- * - ~/.pi/agent/sandbox.json (global)
+ * - ~/.pi/agent/extensions/sandbox/sandbox.json (global)
  * - <cwd>/.pi/sandbox.json (project-local)
  *
  * Example .pi/sandbox.json:
@@ -138,12 +138,21 @@ const DEFAULT_CONFIG: SandboxConfig = {
 
 function loadConfig(cwd: string): SandboxConfig {
 	const projectConfigPath = join(cwd, ".pi", "sandbox.json");
-	const globalConfigPath = join(homedir(), ".pi", "agent", "sandbox.json");
+
+	const preferredGlobalConfigPath = join(homedir(), ".pi", "agent", "extensions", "sandbox", "sandbox.json");
+	const legacyGlobalConfigPaths = [
+		join(homedir(), ".pi", "agent", "extensions", "sandbox.json"),
+		join(homedir(), ".pi", "agent", "sandbox.json"),
+	];
+
+	const globalConfigPath =
+		(preferredGlobalConfigPath && existsSync(preferredGlobalConfigPath) && preferredGlobalConfigPath) ||
+		legacyGlobalConfigPaths.find((p) => existsSync(p));
 
 	let globalConfig: Partial<SandboxConfig> = {};
 	let projectConfig: Partial<SandboxConfig> = {};
 
-	if (existsSync(globalConfigPath)) {
+	if (globalConfigPath) {
 		try {
 			globalConfig = JSON.parse(readFileSync(globalConfigPath, "utf-8"));
 		} catch (e) {

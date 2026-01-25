@@ -14,7 +14,7 @@ cache/
 auth.json
 oauth.json
 oauth.json.*
-extensions/notify.json
+extensions/notify/notify.json
 
 # Local settings (contain paths, preferences)
 settings.json

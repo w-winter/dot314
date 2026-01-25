@@ -21,15 +21,15 @@
   <img width="333" alt="repoprompt syntax highlighting example" src="https://github.com/user-attachments/assets/a416af2c-6f8e-4141-8040-abb8492eda7b" />
 </p>
 
-- ● [`rp-native-tools-lock.ts`](rp-native-tools-lock.ts)
+- ● [`rp-native-tools-lock/`](rp-native-tools-lock/)
   - Disables Pi native repo-file tools (`read`, `write`, `edit`, `ls`, `find`, `grep`) when RepoPrompt tools are available
   - Mode switch: `/rp-tools-lock off|auto`
     - `off`: no enforcement
     - `auto`: prefer `rp` (RepoPrompt MCP) if available; else `rp_exec` (RepoPrompt CLI); else behaves like `off`
-  - Advanced modes (`rp-mcp`, `rp-cli`) are supported via config: `~/.pi/agent/extensions/rp-native-tools-lock.json`
+  - Advanced modes (`rp-mcp`, `rp-cli`) are supported via config: [`rp-native-tools-lock/rp-native-tools-lock.json`](rp-native-tools-lock/rp-native-tools-lock.json)
   - Hotkey: `alt+L` toggles modes (off ↔ auto)
   - Footer status indicator while enforced: `RP 🔒`
-  - Intended to complement the `/tools` extension without mutating `tools-config.json`
+  - Intended to complement the `/tools` extension without mutating `tools/tools.json`
 
 <p align="center">
   <img width="225" alt="rp native tools lock" src="https://github.com/user-attachments/assets/881cb6f1-1258-4bd6-b8f3-532381ac1ab1" />
@@ -64,12 +64,12 @@
     - `/vog` with no args opens an interactive menu to toggle and edit the message (multi-line editor)
   - Persists config at [`vog/vog.json`](vog/vog.json) (cross-session, directly editable)
 
-- ● [`notify.ts`](notify.ts)
+- ● [`notify/`](notify/)
   - Desktop / sound / Pushover notifications (e.g. to smart watch) when an agent turn completes and exceeds a duration threshold
   - Sound aliases include `random` (randomly picks from configured list of sounds)
   - Volume modes: `constant` or `timeScaled`
   - `/notify` interactive menu, plus quick toggles (`/notify on|off|popup|pushover|volume|<seconds>|<sound>`)
-  - Config file lives at `~/.pi/agent/extensions/notify.json` (example: [`notify.json.example`](notify.json.example))
+  - Config file lives at `notify/notify.json` (example: [`notify/notify.json.example`](notify/notify.json.example))
 
 <p align="center">
   <img width="270" alt="notify menu" src="https://github.com/user-attachments/assets/474af589-ee3e-423d-a800-4331f2517676" />
@@ -93,9 +93,9 @@
   - Skill command palette (`/skill`)
   - This version's scanning order matches Pi/Codex/Claude conventions and avoids symlink cycles when scanning skill dirs
 
-- ◐ [`tools.ts`](tools.ts) + [`tools-config.json`](tools-config.json) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ◐ [`tools/`](tools/) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/tools` interactive enable/disable UI
-  - This version persists tool enablement globally (`~/.pi/agent/extensions/tools-config.json`) and per-session via session entries
+  - This version persists tool enablement globally ([`tools/tools.json`](tools/tools.json)) and per-session via session entries
 
 - ◐ [`usage-bar.ts`](usage-bar.ts) (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
   - `/usage` quota overlay for multiple providers, with provider status polling and reset countdowns
@@ -134,6 +134,7 @@ Other:
   - Type to search; enter to copy, right arrow to insert in the command line
 - ◐ [`sandbox/`](sandbox/) — OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
+  - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
 - ○ `speedreading.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
 - ○ `todos.ts` (upstream: [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff))
 - ◐ `ultrathink.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))

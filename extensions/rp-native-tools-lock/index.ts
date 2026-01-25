@@ -20,13 +20,13 @@
  *
  * Configuration precedence:
  * 1) Session branch override (via /rp-tools-lock)
- * 2) Global config file: ~/.pi/agent/extensions/rp-native-tools-lock.json
+ * 2) Global config file: ~/.pi/agent/extensions/rp-native-tools-lock/rp-native-tools-lock.json
  * 3) Default: auto
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Key, type KeyId } from "@mariozechner/pi-tui";
@@ -38,7 +38,7 @@ interface LockState {
 }
 
 const CUSTOM_TYPE = "rp-native-tools-lock";
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "rp-native-tools-lock.json");
+const CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "rp-native-tools-lock", "rp-native-tools-lock.json");
 
 const REQUIRED_TOOL_BY_MODE: Record<Exclude<Mode, "off" | "auto">, string> = {
 	"rp-mcp": "rp",
@@ -79,6 +79,10 @@ function loadGlobalConfig(): LockState | undefined {
 
 function saveGlobalConfig(state: LockState): void {
 	try {
+		const configDir = dirname(CONFIG_PATH);
+		if (!existsSync(configDir)) {
+			mkdirSync(configDir, { recursive: true });
+		}
 		writeFileSync(CONFIG_PATH, JSON.stringify(state, null, 2));
 	} catch (err) {
 		console.error(`Failed to save ${CONFIG_PATH}: ${err}`);
@@ -277,7 +281,7 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 					const message =
 						`Usage: /rp-tools-lock <off|auto> (got: ${raw})\n` +
 						"Advanced modes (rp-mcp/rp-cli) can be set via: " +
-						"~/.pi/agent/extensions/rp-native-tools-lock.json";
+						"~/.pi/agent/extensions/rp-native-tools-lock/rp-native-tools-lock.json";
 
 					if (ctx.hasUI) {
 						ctx.ui.notify(message, "error");

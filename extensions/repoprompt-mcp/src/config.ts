@@ -18,7 +18,11 @@ const DEFAULT_CONFIG: RpConfig = {
 
 // Common locations for MCP config files
 const CONFIG_LOCATIONS = [
-  // Pi-specific
+  // Pi-specific (preferred)
+  () => path.join(os.homedir(), ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+  // Also supported (folder-style config next to extension)
+  () => path.join(os.homedir(), ".pi", "agent", "extensions", "repoprompt-mcp", "repoprompt-mcp.json"),
+  // Legacy location (pre-extensions/ layout)
   () => path.join(os.homedir(), ".pi", "agent", "repoprompt-mcp.json"),
   () => path.join(os.homedir(), ".pi", "agent", "mcp.json"),
   // Project-local
@@ -127,7 +131,22 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
   let config: RpConfig = { ...DEFAULT_CONFIG };
 
   // Try to load from dedicated config file
-  const configPath = path.join(os.homedir(), ".pi", "agent", "repoprompt-mcp.json");
+  const preferredConfigPath = path.join(os.homedir(), ".pi", "agent", "extensions", "repoprompt-mcp.json");
+  const folderStyleConfigPath = path.join(
+    os.homedir(),
+    ".pi",
+    "agent",
+    "extensions",
+    "repoprompt-mcp",
+    "repoprompt-mcp.json"
+  );
+  const legacyConfigPath = path.join(os.homedir(), ".pi", "agent", "repoprompt-mcp.json");
+
+  const configPath =
+    (fs.existsSync(preferredConfigPath) && preferredConfigPath) ||
+    (fs.existsSync(folderStyleConfigPath) && folderStyleConfigPath) ||
+    legacyConfigPath;
+
   const fileConfig = tryReadJson<Partial<RpConfig>>(configPath);
   if (fileConfig) {
     config = { ...config, ...fileConfig };

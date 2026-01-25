@@ -16,7 +16,7 @@
  * - Pushover integration for Apple Watch / iOS notifications
  * - Status indicator in footer (♫ sound, ↥ popup, ⚡︎ pushover)
  *
- * Configuration file: ~/.pi/agent/extensions/notify.json
+ * Configuration file: ~/.pi/agent/extensions/notify/notify.json
  *
  * Volume modes:
  * - "constant": Always plays at volume.max
@@ -86,7 +86,7 @@ interface NotifyConfig {
 // =============================================================================
 
 function getConfigPath(): string {
-	return join(homedir(), ".pi", "agent", "extensions", "notify.json");
+	return join(homedir(), ".pi", "agent", "extensions", "notify", "notify.json");
 }
 
 function loadConfig(): NotifyConfig {

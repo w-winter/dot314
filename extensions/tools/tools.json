@@ -1,0 +1,17 @@
+{
+  "enabledTools": [
+    "questionnaire",
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+    "subagent",
+    "subagent_status",
+    "rp",
+    "rp_exec",
+    "rp_bind"
+  ]
+}
