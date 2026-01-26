@@ -28,6 +28,12 @@ package-lock.json
 bun.lock
 *.tgz
 
+# dev-browser local profile data (large, machine-specific)
+skills/dev-browser/profiles/
+
+# dev-browser local dependencies (redundancy for the sake of explicit intent)
+skills/dev-browser/node_modules/
+
 # Build artifacts
 dist/
 *.js.map
