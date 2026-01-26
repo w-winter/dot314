@@ -42,6 +42,7 @@
 - ● [`commands.ts`](commands.ts)
   - `/commands` — compact overlay for built-in commands, extension commands, prompts, and skills (for when the `/` menu gets long)
   - Shortcuts: `ctrl+/` and `F1`
+  - Note: this partially depends on a hardcoded list until methods are added to Pi's Extensions API to query built-in and extension-registered commands
 
 <p align="center">
   <img width="333" alt="commands overlay" src="https://github.com/user-attachments/assets/b32ba300-62ce-47b2-89b6-25c7cfa2bcbc" />

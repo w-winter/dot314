@@ -18,6 +18,10 @@ extensions/notify/notify.json
 
 # Local settings (contain paths, preferences)
 settings.json
+extensions/tools/tools.json
+extensions/rp-native-tools-lock/rp-native-tools-lock.json
+extensions/sandbox/sandbox.json
+extensions/vog/vog.json
 
 # Binaries (downloaded per-machine)
 bin/
