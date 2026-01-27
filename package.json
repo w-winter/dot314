@@ -11,6 +11,7 @@
       "./extensions/ephemeral-mode.ts",
       "./extensions/guardrails/index.ts",
       "./extensions/md.ts",
+      "./extensions/kimi-provider/index.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
       "./extensions/notify/index.ts",
       "./extensions/oracle.ts",

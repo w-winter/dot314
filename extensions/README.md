@@ -57,6 +57,10 @@
   - `/model-sysprompt-appendix reload|status`
   - Configurations stored in [`model-sysprompt-appendix/model-sysprompt-appendix.json`](model-sysprompt-appendix/model-sysprompt-appendix.json)
 
+- ● [`kimi-provider/`](kimi-provider/)
+  - Registers the `kimi/kimi-for-coding` model provider via Kimi's Anthropic-compatible "coding agents" endpoint
+  - Expected env vars: `ANTHROPIC_BASE_URL=https://api.kimi.com/coding/`, `ANTHROPIC_API_KEY=sk-kimi-...`
+
 - ● [`vog/`](vog/)
   - Adds a user-controlled message to the system prompt (inserted just before "# Project Context"), applied across all models (unlike `model-sysprompt-appendix`, which is configurable per-model)
   - `/vog on|off|<message>`
