@@ -16,6 +16,12 @@ export interface AgentConfig {
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
+	skills?: string[];
+	// Chain behavior fields
+	output?: string;
+	defaultReads?: string[];
+	defaultProgress?: boolean;
+	interactive?: boolean;
 }
 
 export interface AgentDiscoveryResult {
@@ -90,6 +96,18 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			.map((t) => t.trim())
 			.filter(Boolean);
 
+		// Parse defaultReads as comma-separated list (like tools)
+		const defaultReads = frontmatter.defaultReads
+			?.split(",")
+			.map((f) => f.trim())
+			.filter(Boolean);
+
+		const skillStr = frontmatter.skill || frontmatter.skills;
+		const skills = skillStr
+			?.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
@@ -98,6 +116,12 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			systemPrompt: body,
 			source,
 			filePath,
+			skills: skills && skills.length > 0 ? skills : undefined,
+			// Chain behavior fields
+			output: frontmatter.output,
+			defaultReads: defaultReads && defaultReads.length > 0 ? defaultReads : undefined,
+			defaultProgress: frontmatter.defaultProgress === "true",
+			interactive: frontmatter.interactive === "true",
 		});
 	}
 
@@ -143,14 +167,4 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	}
 
 	return { agents: Array.from(agentMap.values()), projectAgentsDir };
-}
-
-export function formatAgentList(agents: AgentConfig[], maxItems: number): { text: string; remaining: number } {
-	if (agents.length === 0) return { text: "none", remaining: 0 };
-	const listed = agents.slice(0, maxItems);
-	const remaining = agents.length - listed.length;
-	return {
-		text: listed.map((a) => `${a.name} (${a.source}): ${a.description}`).join("; "),
-		remaining,
-	};
 }

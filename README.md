@@ -95,7 +95,6 @@ Pi scans `~/.pi/agent/extensions/`, `skills/`, and `prompts/` for resources.
 
 See [extensions/README.md](extensions/README.md) for descriptions
 
-- ○ `async-subagents/`
 - ○ `code-actions/`
 - ● `commands.ts`
 - ○ `confirm-destructive.ts`
@@ -125,6 +124,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ◐ `skill-palette/`
 - ○ `speedreading.ts`
 - ○ `status-line.ts`
+- ○ `subagent/`
 - ○ `todos.ts`
 - ◐ `tools/`
 - ◐ `ultrathink.ts`

@@ -110,7 +110,7 @@
     - Provider status emoji hidden on fetch errors to avoid misleading indicators
     - Adds `alt+u` shortcut
 
-- ○ [`async-subagents/`](async-subagents/) (upstream: [nicobailon/pi-async-subagents](https://github.com/nicobailon/pi-async-subagents))
+- ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
 - ◐ [`guardrails/`](guardrails/) — security hooks: `prevent-brew`, `protect-paths`, `permission-gate` (upstream: [aliou/pi-extensions](https://github.com/aliou/pi-extensions))
   - `protect-paths` merges upstream's `protect-env-files` + `protected-paths` with broader coverage (all tools, bash command parsing, context-aware errors)
 - ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
