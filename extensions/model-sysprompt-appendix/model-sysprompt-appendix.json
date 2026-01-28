@@ -1,5 +1,5 @@
 {
-  "alwaysIncludeModelLine": false,
+  "includeModelLine": false,
   "exact": {
     "anthropic/claude-opus-4-5": "You are powered by the model named Opus 4.5. The exact model ID is claude-opus-4-5-20251101. Assistant knowledge cutoff is May 2025. <claude_background_info> The most recent frontier Claude model is Claude Opus 4.5 (model ID: 'claude-opus-4-5-20251101'). </claude_background_info>",
     "github-copilot/claude-opus-4.5": "You are powered by the model named Opus 4.5. The exact model ID is claude-opus-4-5-20251101. Assistant knowledge cutoff is May 2025. <claude_background_info> The most recent frontier Claude model is Claude Opus 4.5 (model ID: 'claude-opus-4-5-20251101'). </claude_background_info>",
