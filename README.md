@@ -42,6 +42,16 @@ pi install -l git:github.com/w-winter/dot314
 
 After installing, use `pi config` to enable/disable individual extensions, skills, and themes.
 
+### Install individual extensions from npm
+
+If you only want one extension, you can install the per-extension npm packages (see `packages/` in this repo).
+
+Example:
+
+```bash
+pi install npm:pi-repoprompt-cli
+```
+
 ### What the Pi package includes
 
 This repo contains more resources than the package exports. When installed as a Pi package, Pi will discover only the resources listed in [`package.json`](package.json):

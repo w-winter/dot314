@@ -1,0 +1,32 @@
+{
+  "name": "pi-md-export",
+  "version": "0.1.0",
+  "description": "Export Pi sessions to readable Markdown (branch or full session)",
+  "keywords": ["pi-package", "pi", "pi-coding-agent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-md-export"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/md.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/md.ts", "to": "extensions/md.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

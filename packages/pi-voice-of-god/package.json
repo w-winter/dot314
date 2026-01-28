@@ -1,0 +1,32 @@
+{
+  "name": "pi-voice-of-god",
+  "version": "0.1.0",
+  "description": "For within-session insertion/editing/disablement of a user-controlled message into Pi's system prompt, right before the `# Project Context` section.",
+  "keywords": ["pi-package", "pi", "pi-coding-agent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-voice-of-god"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/vog/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/vog/index.ts", "to": "extensions/vog/index.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

@@ -1,6 +1,7 @@
 {
   "name": "dot314",
   "version": "0.1.0",
+  "private": true,
   "description": "Collection of original or augmented Pi themes, skills, and extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
     "pi-package"

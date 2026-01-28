@@ -1,0 +1,36 @@
+{
+  "name": "pi-repoprompt-tools-lock",
+  "version": "0.1.0",
+  "description": "Forces the agent to use RepoPrompt tools during repo-scoped work by disabling Pi's native tools when RepoPrompt tools are available (through either the `pi-repoprompt-cli` or `pi-repoprompt-mcp` Pi packages/extensions)",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-repoprompt-tools-lock"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/rp-native-tools-lock/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      {
+        "from": "../../extensions/rp-native-tools-lock/index.ts",
+        "to": "extensions/rp-native-tools-lock/index.ts"
+      },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "pi-repoprompt-cli",
+  "version": "0.1.0",
+  "description": "Integrates RepoPrompt with Pi via RepoPrompt's `rp-cli` executable",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-repoprompt-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/repoprompt-cli.ts"]
+  },
+  "dependencies": {
+    "diff": "^7.0.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/repoprompt-cli.ts", "to": "extensions/repoprompt-cli.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

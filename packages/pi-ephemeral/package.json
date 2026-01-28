@@ -1,0 +1,32 @@
+{
+  "name": "pi-ephemeral",
+  "version": "0.1.0",
+  "description": "Toggle Pi session persistence mid-session (delete session file on exit)",
+  "keywords": ["pi-package", "pi", "pi-coding-agent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-ephemeral"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/ephemeral-mode.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/ephemeral-mode.ts", "to": "extensions/ephemeral-mode.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

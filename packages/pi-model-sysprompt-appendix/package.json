@@ -1,0 +1,35 @@
+{
+  "name": "pi-model-sysprompt-appendix",
+  "version": "0.1.0",
+  "description": "Append model-specific content to Pi system prompt before Project Context",
+  "keywords": ["pi-package", "pi", "pi-coding-agent"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-model-sysprompt-appendix"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/model-sysprompt-appendix/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      {
+        "from": "../../extensions/model-sysprompt-appendix/index.ts",
+        "to": "extensions/model-sysprompt-appendix/index.ts"
+      },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "pi-kimi-provider",
+  "version": "0.1.0",
+  "description": "Kimi provider integration for Pi (kimi/kimi-for-coding)",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "kimi"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-kimi-provider"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/kimi-provider/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      {
+        "from": "../../extensions/kimi-provider/index.ts",
+        "to": "extensions/kimi-provider/index.ts"
+      },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}
