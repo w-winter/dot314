@@ -108,6 +108,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `code-actions/`
 - ● `commands.ts`
 - ○ `confirm-destructive.ts`
+- ● `dedup-agents-files.ts`
 - ● `ephemeral-mode.ts`
 - ◐ `guardrails/`
 - ○ `inline-bash.ts`

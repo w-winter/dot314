@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: repoprompt-tool-guidance-refresh
 description: Update RepoPrompt tool guidance based on MCP/CLI changes across versions. Two-phase workflow - invoke BEFORE upgrading (--pre), then AFTER upgrading (--post). Uses `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh` to detect and diff changes (outputs to `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`).
 ---

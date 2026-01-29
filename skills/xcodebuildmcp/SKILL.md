@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: xcodebuildmcp
 description: Build/test Xcode projects via the XcodeBuildMCP MCP server using a local CLI wrapper for pi (no MCP support). Use when the user mentions Xcode, xcodebuild, iOS builds/tests, or XcodeBuildMCP.
 ---

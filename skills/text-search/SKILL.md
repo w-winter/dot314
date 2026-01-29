@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: text-search
 description: "Search indexed text corpora (sessions, docs, logs). Use instead of grep."
 ---
