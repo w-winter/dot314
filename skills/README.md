@@ -31,9 +31,6 @@
 
 ## Other skills
 
-- ○ [`brave-search/`](brave-search/) (upstream: [badlogic/pi-skills](https://github.com/badlogic/pi-skills))
-  - `SKILL.md`: Brave Search API web search + content extraction
-
 - ○ [`gdcli/`](gdcli/) (upstream: [badlogic/pi-skills](https://github.com/badlogic/pi-skills))
   - `SKILL.md`: Google Drive CLI usage
 

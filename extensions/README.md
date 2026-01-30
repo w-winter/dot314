@@ -76,6 +76,15 @@
   <img width="270" alt="notify menu" src="https://github.com/user-attachments/assets/474af589-ee3e-423d-a800-4331f2517676" />
 </p>
 
+- ● [`brave-search/`](brave-search/) ([README](./brave-search/README.md))
+  - Token-efficient Brave web search with optional content extraction/clipping for “read the docs / answer from sources” workflows
+  - Manual command: `/ws <query> ... [--content]` (no model turn)
+  - LLM tool: `brave_search({ query, count, country, freshness, fetchContent, format })`
+  - With `fetchContent=true` / `--content`: extracts readable markdown, saves full content to `~/.pi/agent/extensions/brave-search/.clips/`, returns a preview + a `Saved:` path
+  - Direct URL mode: if `query` is a URL (including `raw.githubusercontent.com/...`) and `fetchContent=true`, it fetches and clips directly (no search step)
+  - Optional LLM tool: `brave_grounding({ question, enableResearch, enableCitations, enableEntities, maxAnswerChars })` (requires `BRAVE_API_KEY_AI_GROUNDING`)
+  - Search results are shown to the user but filtered out of LLM context via the `context` hook
+
 - ● [`dedup-agents-files.ts`](dedup-agents-files.ts)
   - Removes duplicate AGENTS.md content from the system prompt when the same file is loaded via different paths (e.g., symlinks)
   - **Why it's here:** This repo is symlinked to `~/.pi/agent/` (as suggested in the root README). Pi loads AGENTS.md from both `agentDir` and the cwd walk, but since they resolve to the same file, the content appears twice. This extension deduplicates by resolving real paths.

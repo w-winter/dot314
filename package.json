@@ -9,6 +9,7 @@
   "license": "MIT",
   "pi": {
     "extensions": [
+      "./extensions/brave-search/index.ts",
       "./extensions/ephemeral-mode.ts",
       "./extensions/guardrails/index.ts",
       "./extensions/md.ts",

@@ -105,6 +105,7 @@ Pi scans `~/.pi/agent/extensions/`, `skills/`, and `prompts/` for resources.
 See [extensions/README.md](extensions/README.md) for descriptions
 
 - ◐ `branch-term.ts`
+- ● `brave-search/`
 - ○ `code-actions/`
 - ● `commands.ts`
 - ○ `confirm-destructive.ts`
@@ -151,7 +152,6 @@ Note: to keep the Pi package lightweight on dependencies, its export includes on
 - ◐ `text-search/`
 - ◐ `dev-browser/`
 - ◐ `xcodebuildmcp/`
-- ○ `brave-search/`
 - ○ `gdcli/`
 
 ## Prompts
