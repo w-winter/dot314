@@ -444,11 +444,14 @@ function extractConversationFromBranch(
 function generateMarkdownFromBranch(
   sessionManager: any,
   sessionFile: string,
-  includeThinking: boolean = false
+  includeThinking: boolean = false,
+  lastTurns: number | null = null
 ): { content: string; filename: string } | null {
   const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking);
+  const finalConversation =
+    lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
 
-  if (conversation.length === 0) {
+  if (finalConversation.length === 0) {
     return null;
   }
 
@@ -475,9 +478,12 @@ function generateMarkdownFromBranch(
     lines.push(`cwd: ${meta.cwd}`);
   }
   lines.push(`source: ${sessionFile}`);
+  if (lastTurns && lastTurns > 0) {
+    lines.push(`turns: last ${lastTurns}`);
+  }
   lines.push("");
 
-  for (const msg of conversation) {
+  for (const msg of finalConversation) {
     lines.push(msg.trimEnd());
     lines.push("");
   }
@@ -490,11 +496,14 @@ function generateMarkdownFromBranch(
  */
 async function generateMarkdownFromSession(
   jsonlFile: string,
-  includeThinking: boolean = false
+  includeThinking: boolean = false,
+  lastTurns: number | null = null
 ): Promise<{ content: string; filename: string } | null> {
   const { meta, conversation } = await extractConversation(jsonlFile, includeThinking);
+  const finalConversation =
+    lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
 
-  if (conversation.length === 0) {
+  if (finalConversation.length === 0) {
     return null;
   }
 
@@ -519,9 +528,12 @@ async function generateMarkdownFromSession(
     lines.push(`cwd: ${meta.cwd}`);
   }
   lines.push(`source: ${jsonlFile}`);
+  if (lastTurns && lastTurns > 0) {
+    lines.push(`turns: last ${lastTurns}`);
+  }
   lines.push("");
 
-  for (const msg of conversation) {
+  for (const msg of finalConversation) {
     lines.push(msg.trimEnd());
     lines.push("");
   }
@@ -651,11 +663,41 @@ function formatTimestamp(date: Date): string {
   );
 }
 
+/**
+ * Slice a flattened conversation array to the last N turns
+ *
+ * A turn is defined as a unit of [USER message -> ASSISTANT message], including any
+ * SYSTEM tool outputs that occur in between, until the next USER message begins.
+ */
+function sliceLastNTurns(conversation: string[], turns: number): string[] {
+  if (!Number.isFinite(turns) || turns <= 0) {
+    return conversation;
+  }
+
+  const userMessageIndices: number[] = [];
+  for (let i = 0; i < conversation.length; i++) {
+    if (conversation[i].startsWith("USER:")) {
+      userMessageIndices.push(i);
+    }
+  }
+
+  if (userMessageIndices.length === 0) {
+    return conversation;
+  }
+
+  const startIndex =
+    userMessageIndices.length <= turns
+      ? 0
+      : userMessageIndices[userMessageIndices.length - turns];
+
+  return conversation.slice(startIndex);
+}
+
 const OUTPUT_DIR = path.join(os.homedir(), ".pi", "agent", "pi-sessions-extracted");
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("md", {
-    description: "Export current session as markdown (current /tree branch) on clipboard or to file. Use '/md thinking' to include thinking blocks. Use '/md all' for full file.",
+    description: "Export current session as markdown (current /tree branch) on clipboard or to file. Use '/md thinking' (or '/md t') to include thinking blocks. Use '/md all' for full file. Pass a number (e.g. '/md 2' or '/md t 2') to export only the last N turns.",
     handler: async (args, ctx) => {
       const sessionFile = ctx.sessionManager.getSessionFile();
 
@@ -664,14 +706,36 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const argsLower = args.toLowerCase();
-      const includeThinking = argsLower.trim().startsWith("t") || /\bthinking\b/.test(argsLower);
-      const exportAll = /\ball\b/.test(argsLower) || /\bfile\b/.test(argsLower);
+      const argsTrimmed = args.trim();
+      const argsLower = argsTrimmed.toLowerCase();
+      const tokens = argsTrimmed ? argsTrimmed.split(/\s+/).filter(Boolean) : [];
+      const tokensLower = tokens.map((t) => t.toLowerCase());
+
+      const includeThinking =
+        argsLower.startsWith("t") ||
+        tokensLower.includes("t") ||
+        tokensLower.includes("think") ||
+        tokensLower.includes("thinking") ||
+        /\bthinking\b/.test(argsLower);
+
+      const exportAll =
+        tokensLower.includes("all") ||
+        tokensLower.includes("file") ||
+        /\ball\b/.test(argsLower) ||
+        /\bfile\b/.test(argsLower);
+
+      const turnsToken = tokens.find((t) => /^\d+$/.test(t)) || null;
+      const lastTurns = turnsToken ? parseInt(turnsToken, 10) : null;
+      if (turnsToken && (!Number.isFinite(lastTurns) || lastTurns < 1)) {
+        ctx.ui.notify("Turn limit must be >= 1 (e.g. /md 2)", "error");
+        return;
+      }
 
       // Show export method selection menu
+      const turnSuffix = lastTurns ? ` (last ${lastTurns} turns)` : "";
       const title = includeThinking
-        ? "Export session (with thinking blocks) as Markdown"
-        : "Export session as Markdown";
+        ? `Export session${turnSuffix} (with thinking blocks) as Markdown`
+        : `Export session${turnSuffix} as Markdown`;
       const choice = await ctx.ui.select(`${title}\n\nSelect export method:`, [
         "Copy to clipboard",
         `Save to .md file in ${OUTPUT_DIR}/`,
@@ -683,8 +747,8 @@ export default function (pi: ExtensionAPI) {
 
       try {
         const result = exportAll
-          ? await generateMarkdownFromSession(sessionFile, includeThinking)
-          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, includeThinking);
+          ? await generateMarkdownFromSession(sessionFile, includeThinking, lastTurns)
+          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, includeThinking, lastTurns);
 
         if (!result) {
           const mode = exportAll ? "session file" : "current branch";

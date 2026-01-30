@@ -37,7 +37,9 @@
 
 - ● [`md.ts`](md.ts)
   - `/md` exports the current Pi session to a legible Markdown transcript in `~/.pi/agent/pi-sessions-extracted/`
-  - `/md thinking` includes thinking blocks
+  - `/md t*` includes thinking blocks (any arg starting with `t`, e.g. `/md t`, `/md think`, `/md thinking`)
+  - `/md <N>` exports only the last **N turns** (a turn is `[user message → assistant message]`), e.g. `/md 2`, `/md t 2`, `/md think 1`
+  - `/md all` (or `/md file`) exports the full session file instead of the current `/tree` branch
 
 - ● [`commands.ts`](commands.ts)
   - `/commands` — compact overlay for built-in commands, extension commands, prompts, and skills (for when the `/` menu gets long)

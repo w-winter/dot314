@@ -1,6 +1,6 @@
 # Pi Markdown Export (`pi-md-export`)
 
-Export your current Pi session to a readable Markdown transcript (either the current `/tree` branch or the full session file).
+Export the last N turns, or entirety of, your current Pi session to a readable Markdown transcript (either the current `/tree` branch or the full session file).
 
 Outputs can be copied to clipboard or saved under `~/.pi/agent/pi-sessions-extracted/`.
 
@@ -35,7 +35,8 @@ Add to `~/.pi/agent/settings.json` (or replace an existing unfiltered `git:githu
 - Command: `/md`
 
 Options:
-- `/md thinking` — include thinking blocks (if present in your session log)
+- `/md t*` — include thinking blocks (any arg starting with `t`, e.g. `/md t`, `/md think`, `/md thinking`)
+- `/md <N>` exports only the last **N turns** (a turn is `[user message → assistant message]`), e.g. `/md 2`, `/md t 2`, `/md think 1`
 - `/md all` (or `/md file`) — export the full session file instead of the current branch
 
 ## Notes
