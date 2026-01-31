@@ -1,0 +1,13 @@
+225a226
+> - **Unambiguous relative paths**: Relative paths without a root alias are allowed if they resolve to exactly one loaded root (e.g., "src/utils/file.swift" works if only one root contains "src/utils/"); otherwise an error requests disambiguation
+273c274
+< - `filter.paths`: Limit to paths/folders
+---
+> - `filter.paths`: Limit to paths/folders (can also be a loaded root name like 'RepoPrompt')
+306c307,308
+<       Limit search to specific file or folder paths
+---
+>       Limit search to specific file or folder paths, or a loaded root
+>       name
+334a337
+> Line numbers are included in the output and match `read_file` line numbering, so you can jump directly to where a function/type is declared within a file. Code structure is refreshed after file edits, so results stay current.

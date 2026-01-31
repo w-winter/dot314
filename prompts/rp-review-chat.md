@@ -38,8 +38,9 @@ Prefer explicit user intent if present:
 - Context files should be added to selection but should NOT change the diff scope; they’re for the reviewer to read alongside the diffs.
 
 ## 4) Build RepoPrompt selection (must be resolvable)
-- `selected_paths` = unique(review files ∪ context files), but include only paths that exist in the working tree.
-- If a referenced path doesn’t exist, mention it in the message and continue (do not block).
+- `selected_paths` = unique(review files ∪ context files), but include only paths that exist in the working tree
+- Paths may be repo-relative if unambiguous; if multiple loaded roots make a path ambiguous, use `RootName:relative/path`
+- If a referenced path doesn’t exist, mention it in the message and continue (do not block)
 
 ## 5) Send the review chat (no diff pasted)
 ```

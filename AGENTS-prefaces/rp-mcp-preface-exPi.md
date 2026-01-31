@@ -81,6 +81,15 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 
 ---
 
+## Paths and roots
+
+Paths may be absolute, `RootName:rel/path`, or unambiguous repo-relative (`rel/path`).
+If a relative path could match multiple loaded roots, use `RootName:rel/path`.
+
+Notes:
+- `file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
+- `get_code_structure` line numbers match `read_file` and refresh after edits
+
 ## Routing
 
 If results look wrong, assume routing first—not tool failure.
