@@ -479,6 +479,31 @@ class SpeedReaderComponent {
 	}
 }
 
+/**
+ * Extract text from the last assistant message in the session
+ */
+function getLastAssistantText(ctx: ExtensionContext): string | null {
+	const branch = ctx.sessionManager.getBranch();
+	const messages = branch.filter(
+		(entry): entry is SessionEntry & { type: "message" } =>
+			entry.type === "message" && entry.message.role === "assistant"
+	);
+	const lastMsg = messages[messages.length - 1];
+	if (!lastMsg) return null;
+
+	const content = lastMsg.message.content;
+	if (typeof content === "string") {
+		return content;
+	} else if (Array.isArray(content)) {
+		const text = content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n");
+		return text || null;
+	}
+	return null;
+}
+
 async function getClipboardContent(): Promise<string> {
 	try {
 		const { stdout } = await execAsync("pbpaste");
@@ -549,24 +574,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				if (token === "-l" || token === "--last") {
-					// Get last assistant message
-					const branch = ctx.sessionManager.getBranch();
-					const messages = branch.filter(
-						(entry): entry is SessionEntry & { type: "message" } =>
-							entry.type === "message" && entry.message.role === "assistant"
-					);
-					const lastMsg = messages[messages.length - 1];
-					if (lastMsg) {
-						const content = lastMsg.message.content;
-						if (typeof content === "string") {
-							text = content;
-						} else if (Array.isArray(content)) {
-							text = content
-								.filter((c): c is { type: "text"; text: string } => c.type === "text")
-								.map((c) => c.text)
-								.join("\n");
-						}
-					}
+					text = getLastAssistantText(ctx) || "";
 					if (!text) {
 						ctx.ui.notify("No assistant message found", "error");
 						return;
@@ -625,23 +633,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Default: use last assistant message if no text provided
 			if (!text) {
-				const branch = ctx.sessionManager.getBranch();
-				const messages = branch.filter(
-					(entry): entry is SessionEntry & { type: "message" } =>
-						entry.type === "message" && entry.message.role === "assistant"
-				);
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg) {
-					const content = lastMsg.message.content;
-					if (typeof content === "string") {
-						text = content;
-					} else if (Array.isArray(content)) {
-						text = content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map((c) => c.text)
-							.join("\n");
-					}
-				}
+				text = getLastAssistantText(ctx) || "";
 				if (!text) {
 					ctx.ui.notify("No assistant message found", "error");
 					return;
@@ -672,11 +664,34 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("alt+r", {
 		description: "Speed read last assistant message",
 		handler: async (ctx) => {
-			// Trigger the command with -l flag
-			const handler = pi.getCommand("speedread")?.handler;
-			if (handler) {
-				await handler("-l", ctx);
+			if (!ctx.hasUI) {
+				ctx.ui.notify("speedread requires interactive mode", "error");
+				return;
 			}
+
+			const text = getLastAssistantText(ctx);
+			if (!text) {
+				ctx.ui.notify("No assistant message found", "error");
+				return;
+			}
+
+			const words = tokenizeText(text);
+			if (words.length === 0) {
+				ctx.ui.notify("No words to display", "error");
+				return;
+			}
+
+			const wpm = 400;
+			await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
+				const reader = new SpeedReaderComponent(text, wpm, tui, () => done());
+				return {
+					render: (w) => reader.render(w),
+					invalidate: () => reader.invalidate(),
+					handleInput: (data) => reader.handleInput(data),
+				};
+			});
+
+			ctx.ui.notify(`Speed reading complete (${words.length} words)`, "success");
 		},
 	});
 }
