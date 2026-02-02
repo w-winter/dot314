@@ -1,42 +1,35 @@
 # Changelog
 
-## 2025-01-12
+## [Unreleased]
 
-**Print Mode Support**
+## [0.2.1] - 2026-01-31
 
-- Commands now work with `pi -p "/command args"` for scripting
-- Handler waits for agent to complete before returning
+### Fixed
 
-**Thinking Level Control**
+- Thinking level now correctly restored after commands that switch model without a `thinking` field. Previously, running a prompt template that only specified `model` would reset thinking to "off" instead of restoring the original level (e.g., "high").
 
-- Added `thinking` frontmatter field to set thinking level per prompt
-- Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
-- Previous thinking level restored after response (when `restore: true`)
-- Thinking level shown in autocomplete: `[sonnet high]`
+## [0.2.0] - 2025-01-31
 
-**Skill Injection**
+### Added
 
-- Added `skill` frontmatter field to inject skill content into system prompt
-- Skills resolved from project (`.pi/skills/`) first, then user (`~/.pi/agent/skills/`)
-- Skill content wrapped in `<skill name="...">` tags for clear context
-- Fancy TUI display: expandable box shows skill name, path, and truncated content preview
+- **Model fallback**: The `model` field now accepts a comma-separated list of models tried in order
+- First model that resolves and has auth configured is used
+- Supports mixing bare model IDs and explicit `provider/model-id` specs
+- If the current model matches any candidate, it's used without switching
+- Single consolidated error when all candidates fail
+- Autocomplete shows fallback chain with pipe separator: `[haiku|sonnet]`
+- Banner image
 
-**Subdirectory Support**
+## [0.1.0] - 2025-01-12
 
-- Prompts directory now scanned recursively
-- Subdirectories create namespaced commands shown as `(user:subdir)` or `(project:subdir)`
-- Example: `~/.pi/agent/prompts/frontend/component.md` → `/component (user:frontend)`
+### Added
 
-**Documentation**
-
-- Expanded Model Format section with explicit provider selection examples
-- Added OpenAI vs OpenAI-Codex distinction (API key vs OAuth)
-- Documented auto-selection priority for models on multiple providers
-- Updated examples to use latest frontier models
-
-**Initial Release**
-
-- Model switching via `model` frontmatter in prompt templates
-- Auto-restore previous model after response (configurable via `restore: false`)
-- Provider resolution with priority fallback (anthropic → github-copilot → openrouter)
+- **Model switching** via `model` frontmatter in prompt templates
+- **Print mode support**: Commands work with `pi -p "/command args"` for scripting
+- **Thinking level control**: `thinking` frontmatter field with levels `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
+- **Skill injection**: `skill` frontmatter field injects skill content into system prompt via `<skill>` tags
+- **Subdirectory support**: Recursive scanning creates namespaced commands like `(user:subdir)`
+- **Auto-restore**: Previous model and thinking level restored after response (configurable via `restore: false`)
+- **Provider resolution** with priority fallback (anthropic, github-copilot, openrouter)
 - Support for explicit `provider/model-id` format
+- Fancy TUI display for skill loading with expandable content preview
