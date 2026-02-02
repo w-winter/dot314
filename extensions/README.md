@@ -91,6 +91,24 @@
   - Removes duplicate AGENTS.md content from the system prompt when the same file is loaded via different paths (e.g., symlinks)
   - **Why it's here:** This repo is symlinked to `~/.pi/agent/` (as suggested in the root README). Pi loads AGENTS.md from both `agentDir` and the cwd walk, but since they resolve to the same file, the content appears twice. This extension deduplicates by resolving real paths.
 
+- ● [`editor-enhancements/`](editor-enhancements/)
+  - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
+  - Includes a merged, single-editor implementation of:
+    - ◐ `file-picker` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
+       — type `@` to open an overlay file browser and insert `@path` refs
+       - This version adds zsh support and enables compatibility with the other two
+    - ◐ `shell-completions` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
+      — native shell completions in `!`/`!!` bash mode
+      - This version adds zsh support and enables compatibility with the other two
+    - ◐ `raw-paste` (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
+      - `/paste` arms raw paste for the next paste operation
+      - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi’s large-paste markers (e.g. `[paste #3 +122 lines]`)
+  - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
+
+- ◐ [`file-based-compaction/`](file-based-compaction/) ([README](./file-based-compaction/README.md); upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles/tree/main/shared/.pi/agent/extensions/file-based-compaction))
+  - Agentic compaction via a virtual filesystem: mounts `/conversation.json` and lets a summarizer model explore it with portable bash/zsh commands
+  - Emphasizes deterministic, tool-result-verified modified-file tracking (native + `rp`), filters likely temp artifacts, supports `/compact <note>`, and can parallelize tool calls via `toolCallConcurrency`
+
 - ◐ [`branch-term.ts`](branch-term.ts) (upstream: [davidgasquez/dotfiles](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts))
   - `/branch` forks the current session into a new terminal, running `pi --session <fork>`
   - This version extends the upstream original's such that, beyond the existing `--branch-terminal` override and tmux behavior, it can open the branched session in a new tab in macOS iTerm2/iTerm (first) or Terminal.app (fallback), and only then fall back to opening a new Alacritty window
@@ -106,20 +124,6 @@
   - No todo extraction or step execution prompting (planning stays on the user)
   - Restricts tools, blocks destructive shell commands, and blocks RepoPrompt write operations
     - Covers `rp_exec`, `rp-cli -e ...`, and `rp` (repoprompt-mcp)
-
-- ● [`editor-enhancements/`](editor-enhancements/)
-  - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
-  - Includes a merged, single-editor implementation of:
-    - ◐ `file-picker` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
-       — type `@` to open an overlay file browser and insert `@path` refs
-       - This version adds zsh support and enables compatibility with the other two
-    - ◐ `shell-completions` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
-      — native shell completions in `!`/`!!` bash mode
-      - This version adds zsh support and enables compatibility with the other two
-    - ◐ `raw-paste` (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
-      - `/paste` arms raw paste for the next paste operation
-      - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi’s large-paste markers (e.g. `[paste #3 +122 lines]`)
-  - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
 - ◐ [`oracle.ts`](oracle.ts) (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
   - `/oracle` queries an alternate model for a second opinion, with optional file inclusion (`-f`) and injection into the current conversation

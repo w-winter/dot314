@@ -1,0 +1,31 @@
+{
+  "name": "pi-agentic-compaction",
+  "version": "0.2.1",
+  "description": "Pi extension for intelligent conversation compaction using a virtual filesystem and LLM exploration",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "author": "laulauland",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/laulauland/dotfiles"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "just-bash": "^1.5.4"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.51.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  }
+}

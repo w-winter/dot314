@@ -12,6 +12,7 @@
       "./extensions/brave-search/index.ts",
       "./extensions/editor-enhancements/index.ts",
       "./extensions/ephemeral-mode.ts",
+      "./extensions/file-based-compaction/index.ts",
       "./extensions/guardrails/index.ts",
       "./extensions/md.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
@@ -39,6 +40,7 @@
     "@mariozechner/clipboard": "*",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@sinclair/typebox": "^0.34.33",
-    "diff": "^7.0.0"
+    "diff": "^7.0.0",
+    "just-bash": "^1.5.4"
   }
 }

@@ -1,0 +1,12 @@
+{
+  "compactionModels": [
+    { "provider": "openai-codex", "id": "gpt-5.1-codex-mini" }
+  ],
+  "thinkingLevel": "medium",
+
+  "debugCompactions": false,
+  "toolResultMaxChars": 45000,
+  "toolCallPreviewChars": 60,
+  "toolCallConcurrency": 9,
+  "minSummaryChars": 360
+}
