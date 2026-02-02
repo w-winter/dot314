@@ -1,6 +1,6 @@
 {
   "name": "pi-brave-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Token-efficient Brave web search + AI grounding extension for Pi, with optional full-page Markdown content extraction",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "brave", "search"],
   "license": "MIT",
@@ -24,7 +24,7 @@
     "turndown-plugin-gfm": "^1.0.2"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-coding-agent": ">=0.51.0",
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   },

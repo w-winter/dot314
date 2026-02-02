@@ -7,5 +7,8 @@
     "jsdom": "^26.0.0",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.51.0"
   }
 }

@@ -15,5 +15,8 @@
 	},
 	"dependencies": {
 		"@anthropic-ai/sandbox-runtime": "^0.0.26"
+	},
+	"devDependencies": {
+		"@mariozechner/pi-coding-agent": "^0.51.0"
 	}
 }

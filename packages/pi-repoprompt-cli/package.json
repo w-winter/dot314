@@ -1,6 +1,6 @@
 {
   "name": "pi-repoprompt-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Integrates RepoPrompt with Pi via RepoPrompt's `rp-cli` executable",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt"],
   "license": "MIT",
@@ -20,7 +20,7 @@
     "diff": "^7.0.0"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-coding-agent": ">=0.51.0",
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   },

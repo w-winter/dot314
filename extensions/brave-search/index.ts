@@ -840,7 +840,7 @@ export default function (pi: ExtensionAPI) {
                 }),
             ),
         }),
-        async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
+        async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
             const query = normalizeBraveQuery(String((params as any).query ?? ""));
             const fetchContent = Boolean((params as any).fetchContent ?? false);
             const count = clampNumber(Number((params as any).count ?? 3), 1, 10);
@@ -946,7 +946,7 @@ export default function (pi: ExtensionAPI) {
             enableEntities: Type.Optional(Type.Boolean({ description: "Ask for entity extraction (default false)" })),
             maxAnswerChars: Type.Optional(Type.Integer({ description: "Max characters of answer to return", minimum: 200, maximum: 10000 })),
         }),
-        async execute(_toolCallId, params, _onUpdate, _ctx, signal) {
+        async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
             const question = String((params as any).question ?? "").trim();
             if (!question) {
                 return {

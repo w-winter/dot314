@@ -16,6 +16,7 @@
     "diff": "^7.0.0"
   },
   "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.51.0",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.15.21",
     "typescript": "^5.8.3"

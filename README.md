@@ -1,7 +1,5 @@
 # Tools and accessories for [Pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)
 
-## ⚠️ WARNING: THESE EXTENSIONS NOT YET COMPATIBLE WITH PI v0.51.0 ⚠️
-
 - [extensions/](extensions/) ([README](extensions/README.md))
 - [skills/](skills/) ([README](skills/README.md))
 - [themes/](themes/)

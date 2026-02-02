@@ -594,7 +594,7 @@ export default function (pi: ExtensionAPI) {
     description: "Bind rp_exec to a specific RepoPrompt window and compose tab",
     parameters: BindParams,
 
-    async execute(_toolCallId, params, _onUpdate, _ctx, _signal) {
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       persistBinding(params.windowId, params.tab);
 
       return {
@@ -610,7 +610,7 @@ export default function (pi: ExtensionAPI) {
     description: "Run rp-cli in the bound RepoPrompt window/tab, with quiet defaults and output truncation",
     parameters: ExecParams,
 
-    async execute(_toolCallId, params, onUpdate, _ctx, signal) {
+    async execute(_toolCallId, params, signal, onUpdate, _ctx) {
       // Routing: prefer call-time overrides, otherwise fall back to the last persisted binding
       const windowId = params.windowId ?? boundWindowId;
       const tab = params.tab ?? boundTab;

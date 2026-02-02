@@ -162,7 +162,7 @@ CHAIN DATA FLOW:
 Example: { chain: [{agent:"scout", task:"Analyze {task}"}, {agent:"planner", task:"Plan based on {previous}"}] }`,
 		parameters: SubagentParams,
 
-		async execute(_id, params, onUpdate, ctx, signal) {
+		async execute(_id, params, signal, onUpdate, ctx) {
 			const scope: AgentScope = params.agentScope ?? "user";
 			baseCwd = ctx.cwd;
 			currentSessionId = ctx.sessionManager.getSessionFile() ?? `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

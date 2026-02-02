@@ -35,5 +35,8 @@
       "./index.ts",
       "./notify.ts"
     ]
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.51.0"
   }
 }

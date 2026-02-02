@@ -250,7 +250,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     
     parameters: RpToolSchema,
     
-    async execute(_toolCallId, params: RpToolParams, onUpdate, _ctx, _signal) {
+    async execute(_toolCallId, params: RpToolParams, _signal, onUpdate, _ctx) {
       // Provide a no-op if onUpdate is undefined
       const safeOnUpdate = onUpdate ?? (() => {});
 
