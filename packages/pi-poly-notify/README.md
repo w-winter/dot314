@@ -1,4 +1,4 @@
-# Notifications for Pi (`pi-notify`)
+# Notifications for Pi (`pi-poly-notify`)
 
 Sends notifications when an agent turn finishes and took longer than a configurable threshold.
 
@@ -12,7 +12,7 @@ Supports:
 From npm:
 
 ```bash
-pi install npm:pi-notify
+pi install npm:pi-poly-notify
 ```
 
 From the dot314 git bundle (filtered install):
@@ -24,7 +24,7 @@ Add to `~/.pi/agent/settings.json` (or replace an existing unfiltered `git:githu
   "packages": [
     {
       "source": "git:github.com/w-winter/dot314",
-      "extensions": ["extensions/notify/index.ts"],
+      "extensions": ["extensions/poly-notify/index.ts"],
       "skills": [],
       "themes": [],
       "prompts": []
@@ -41,7 +41,7 @@ Create your config file:
 
 Location:
 
-- `~/.pi/agent/extensions/notify/notify.json`
+- `~/.pi/agent/extensions/poly-notify/notify.json`
 
 ## Usage
 

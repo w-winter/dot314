@@ -16,7 +16,7 @@
  * - Pushover integration for Apple Watch / iOS notifications
  * - Status indicator in footer (♫ sound, ↥ popup, ⚡︎ pushover)
  *
- * Configuration file: ~/.pi/agent/extensions/notify/notify.json
+ * Configuration file: ~/.pi/agent/extensions/poly-notify/notify.json
  * - If missing, the extension will create it on first run with safe defaults
  *
  * Volume modes:
@@ -87,6 +87,10 @@ interface NotifyConfig {
 // =============================================================================
 
 function getConfigPath(): string {
+	return join(homedir(), ".pi", "agent", "extensions", "poly-notify", "notify.json");
+}
+
+function getLegacyConfigPath(): string {
 	return join(homedir(), ".pi", "agent", "extensions", "notify", "notify.json");
 }
 
@@ -117,27 +121,37 @@ const DEFAULT_CONFIG: NotifyConfig = {
 
 function loadConfig(): NotifyConfig {
 	const configPath = getConfigPath();
+	const legacyConfigPath = getLegacyConfigPath();
 
-	if (!existsSync(configPath)) {
+	const pathToLoad = existsSync(configPath) ? configPath : legacyConfigPath;
+
+	if (!existsSync(pathToLoad)) {
 		// First-run UX: create a usable default config so pi doesn't error on startup
 		try {
-			saveConfig(DEFAULT_CONFIG);
+			saveConfig(DEFAULT_CONFIG, configPath);
 		} catch (err) {
 			console.error(`Notify extension: failed to write default config to ${configPath}: ${err}`);
 		}
 		return DEFAULT_CONFIG;
 	}
 
+	if (pathToLoad === legacyConfigPath) {
+		console.warn(
+			`Notify extension: found legacy config at ${legacyConfigPath}. ` +
+				`Please move it to ${configPath} (auto-migrating on this run)`
+		);
+	}
+
 	let parsed: Partial<NotifyConfig> | undefined;
 	try {
-		const content = readFileSync(configPath, "utf-8");
+		const content = readFileSync(pathToLoad, "utf-8");
 		parsed = JSON.parse(content) as Partial<NotifyConfig>;
 	} catch (err) {
-		console.error(`Notify extension: failed to parse ${configPath}: ${err}`);
+		console.error(`Notify extension: failed to parse ${pathToLoad}: ${err}`);
 		return DEFAULT_CONFIG;
 	}
 
-	return {
+	const mergedConfig = {
 		...DEFAULT_CONFIG,
 		...parsed,
 		volume: {
@@ -149,10 +163,19 @@ function loadConfig(): NotifyConfig {
 			...(parsed.pushover ?? {}),
 		},
 	} as NotifyConfig;
+
+	if (pathToLoad === legacyConfigPath) {
+		try {
+			saveConfig(mergedConfig, configPath);
+		} catch (err) {
+			console.error(`Notify extension: failed to migrate config to ${configPath}: ${err}`);
+		}
+	}
+
+	return mergedConfig;
 }
 
-function saveConfig(config: NotifyConfig): void {
-	const configPath = getConfigPath();
+function saveConfig(config: NotifyConfig, configPath: string = getConfigPath()): void {
 	const dir = dirname(configPath);
 
 	if (!existsSync(dir)) {

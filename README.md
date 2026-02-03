@@ -44,7 +44,7 @@ After installing, use `pi config` to enable/disable individual extensions, skill
 
 Notes:
 - `pi install ...` runs `npm install` in the package root automatically
-- Some extensions store optional per-user config under `~/.pi/agent/extensions/<extension-name>/...` (e.g. `notify`, `sandbox`, `tools`, `rp-native-tools-lock`). These files are not part of the package install and are created on-demand or are optional
+- Some extensions store optional per-user config under `~/.pi/agent/extensions/<extension-name>/...` (e.g. `poly-notify`, `sandbox`, `tools`, `rp-native-tools-lock`). These files are not part of the package install and are created on-demand or are optional
 
 ### Install individual extensions from npm
 
@@ -68,7 +68,7 @@ This repo contains more resources than the package exports. When installed as a 
 - ◐ `guardrails/`
 - ● `md.ts`
 - ● `model-sysprompt-appendix/`
-- ● `notify/`
+- ● `poly-notify/`
 - ◐ `oracle.ts`
 - ◐ `plan-mode.ts`
 - ● `repoprompt-cli.ts`
@@ -122,7 +122,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `mac-system-theme.ts`
 - ● `md.ts`
 - ● `model-sysprompt-appendix/`
-- ● `notify/`
+- ● `poly-notify/`
 - ◐ `oracle.ts`
 - ○ `pi-prompt-template-model/`
 - ◐ `plan-mode.ts`

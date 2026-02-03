@@ -67,12 +67,12 @@
     - `/vog` with no args opens an interactive menu to toggle and edit the message (multi-line editor)
   - Persists config at [`vog/vog.json`](vog/vog.json) (cross-session, directly editable)
 
-- ● [`notify/`](notify/)
+- ● [`poly-notify/`](poly-notify/)
   - Desktop / sound / Pushover notifications (e.g. to smart watch) when an agent turn completes and exceeds a duration threshold
   - Sound aliases include `random` (randomly picks from configured list of sounds)
   - Volume modes: `constant` or `timeScaled`
   - `/notify` interactive menu, plus quick toggles (`/notify on|off|popup|pushover|volume|<seconds>|<sound>`)
-  - Config file lives at `notify/notify.json` (example: [`notify/notify.json.example`](notify/notify.json.example))
+  - Config file lives at `poly-notify/notify.json` (example: [`poly-notify/notify.json.example`](poly-notify/notify.json.example))
 
 <p align="center">
   <img width="270" alt="notify menu" src="https://github.com/user-attachments/assets/474af589-ee3e-423d-a800-4331f2517676" />

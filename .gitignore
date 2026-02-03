@@ -15,6 +15,7 @@ auth.json
 oauth.json
 oauth.json.*
 extensions/notify/notify.json
+extensions/poly-notify/notify.json
 
 # Local settings (contain paths, preferences)
 settings.json

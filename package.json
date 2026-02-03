@@ -16,7 +16,7 @@
       "./extensions/guardrails/index.ts",
       "./extensions/md.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
-      "./extensions/notify/index.ts",
+      "./extensions/poly-notify/index.ts",
       "./extensions/oracle.ts",
       "./extensions/plan-mode.ts",
       "./extensions/repoprompt-cli.ts",
