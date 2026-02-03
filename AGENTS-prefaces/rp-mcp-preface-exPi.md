@@ -63,7 +63,7 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Task | MCP Tool | Notes |
 |------|----------|-------|
 | Repo structure | `get_file_tree type="files" [mode="folders"] [path="..."] [max_depth=N]` | gitignore-aware |
-| Code search | `file_search pattern="..." [mode="both\|path\|content"] [filter={...}] [context_lines=N]` | regex default |
+| Code search | `file_search pattern="..." [mode="both\|path\|content"] [filter={...}] [context_lines=N]` | regex auto-detected by default |
 | API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | prefer directories first |
 | Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives chat |
 | Snapshot | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` | verify before chat |
