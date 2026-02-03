@@ -1,6 +1,6 @@
 {
   "name": "pi-notify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Highly configurable desktop/sound/Pushover notifications when Pi agent turn finishes and took longer than a definable threshold",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",

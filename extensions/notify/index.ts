@@ -571,7 +571,7 @@ export default function notifyExtension(pi: ExtensionAPI) {
 			const testIndex = config.volume.mode === "timeScaled" ? 8 : 7;
 			if (choice === menuItems[testIndex]) {
 				// Test at 4x threshold to demonstrate max volume
-				notify("𝞹", "℟", config, config.minDurationSeconds * 4);
+				notify("𝞹", "⟳", config, config.minDurationSeconds * 4);
 				return;
 			}
 		},
@@ -595,7 +595,7 @@ export default function notifyExtension(pi: ExtensionAPI) {
 		agentStartTime = null;
 
 		if (elapsedSeconds >= config.minDurationSeconds) {
-			notify("Pi", "℟", config, elapsedSeconds);
+			notify("𝞹", "⟳", config, elapsedSeconds);
 		}
 	});
 
