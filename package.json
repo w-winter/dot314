@@ -23,6 +23,7 @@
       "./extensions/repoprompt-mcp/src/index.ts",
       "./extensions/rp-native-tools-lock/index.ts",
       "./extensions/sandbox/index.ts",
+      "./extensions/session-ask/index.ts",
       "./extensions/tools/index.ts",
       "./extensions/usage-bar.ts",
       "./extensions/vog/index.ts"

@@ -2,6 +2,12 @@
 
 ## New or locally modified
 
+- ● [`session-ask/`](session-ask/) ([README](./session-ask/README.md))
+  - `session_ask({ question, sessionPath? })` queries the current (or specified) session JSONL (including pre-compaction history) without bloating the current model context; `/session-ask ...` is a UI wrapper
+  - `session_lineage({ ... })` returns fork ancestry (parentSession chain)
+  - Optional minimal fork-lineage system prompt injection via `injectForkHintSystemPrompt` (see README)
+  - Configurable model/prompt via `config.json`, optionally pointing at an agent definition under `~/.pi/agent/agents/`
+
 - ● [`repoprompt-mcp/`](repoprompt-mcp/) ([README](./repoprompt-mcp/README.md))
   - Pi-compatible, token-efficient proxy for the RepoPrompt MCP server with RP-bespoke features:
     - Window/tab binding that prevents user/agent or agent/agent clobbering: auto-detects by `cwd`, optional persistence and restoration per session, interactive binding resolution in case of multiple windows containing the required root, and manual selection via `/rp bind`

@@ -116,6 +116,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ◐ `editor-enhancements/`
 - ● `ephemeral-mode.ts`
 - ◐ `agentic-compaction/`
+- ● `session-ask/`
 - ◐ `guardrails/`
 - ○ `inline-bash.ts`
 - ○ `interactive-shell.ts`

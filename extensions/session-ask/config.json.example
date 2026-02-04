@@ -1,0 +1,17 @@
+{
+  "agentName": "session-ask-analyst",
+
+  "injectForkHintSystemPrompt": true,
+
+  "sessionAskModels": [
+    { "provider": "openai-codex", "id": "gpt-5.1-codex-mini", "thinkingLevel": "medium" }
+  ],
+  "thinkingLevel": "medium",
+
+  "maxTurns": 18,
+  "toolResultMaxChars": 45000,
+  "toolCallConcurrency": 6,
+
+  "maxSearchResults": 40,
+  "maxReadEntries": 80
+}
