@@ -2,6 +2,10 @@
 
 ## For [RepoPrompt](https://repoprompt.com/docs) MCP tools
 
+- ● [`rp-plan.md`](rp-plan.md)
+  - Planning-mode protocol: quick scan → `context_builder` → resolve unknowns (facts→chat→user) → produce a decision-complete plan
+  - Asks the user only high-leverage questions (batched, budgeted), records defaults/assumptions
+
 - ● [`rp-review-chat.md`](rp-review-chat.md)
   - Sends a RepoPrompt `chat_send` with `mode="review"` to review diffs
   - Token-efficient: infers diff scope (staged/unstaged/range) via name-only commands, lets RepoPrompt supply diffs automatically

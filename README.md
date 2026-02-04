@@ -169,6 +169,7 @@ Note: prompts are not exported as part of the Pi package.
 
 - ○ `handoff.md`
 - ○ `pickup.md`
+- ● `rp-plan.md`
 - ● `rp-review-chat.md`
 - ● `rp-address-review.md`
 
