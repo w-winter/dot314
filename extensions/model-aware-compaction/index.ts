@@ -147,10 +147,4 @@ export default function (pi: ExtensionAPI) {
             });
         }
     });
-
-    // Log initialization
-    console.log(
-        `[model-aware-compaction] Extension loaded. Global threshold: ${config.global}%, ` +
-        `${Object.keys(config.models).length} model-specific overrides configured`
-    );
 }
