@@ -128,10 +128,24 @@ function padRight(s: string, width: number): string {
 
 function makeColumns(items: string[], colWidth: number, maxCols: number): string[] {
     const lines: string[] = [];
-    for (let i = 0; i < items.length; i += maxCols) {
-        const row = items.slice(i, i + maxCols);
+
+    // Fill columns vertically (column-major) so alphabetical lists read top-to-bottom
+    // within each column:
+    // col1 col2 col3
+    // a    e    i
+    // b    f    j
+    // ...
+    const rows = Math.ceil(items.length / maxCols);
+
+    for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
+        const row: string[] = [];
+        for (let colIndex = 0; colIndex < maxCols; colIndex++) {
+            const itemIndex = colIndex * rows + rowIndex;
+            row.push(itemIndex < items.length ? items[itemIndex] : "");
+        }
         lines.push(row.map((s) => padRight(s, colWidth)).join(""));
     }
+
     return lines;
 }
 
@@ -145,6 +159,10 @@ function truncatePlain(s: string, maxVisibleChars: number): string {
     return s.slice(0, maxVisibleChars - 1) + "…";
 }
 
+function sortCommandStrings(values: string[]): string[] {
+    return [...values].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
 function buildAllLines(width: number, commands: SlashCommandInfo[], options: { includeBuiltins: boolean }): string[] {
     const lines: string[] = [];
     const g = (s: string) => `\x1b[32m${s}\x1b[0m`; // green
@@ -155,9 +173,15 @@ function buildAllLines(width: number, commands: SlashCommandInfo[], options: { i
     const usableWidth = Math.max(60, width - 6);
 
     const builtins = BUILTIN_COMMANDS;
-    const extensions = commands.filter((command) => command.source === "extension").map((command) => `/${command.name}`);
-    const prompts = commands.filter((command) => command.source === "prompt").map((command) => `/${command.name}`);
-    const skills = commands.filter((command) => command.source === "skill").map((command) => `/${command.name}`);
+    const extensions = sortCommandStrings(
+        commands.filter((command) => command.source === "extension").map((command) => `/${command.name}`),
+    );
+    const prompts = sortCommandStrings(
+        commands.filter((command) => command.source === "prompt").map((command) => `/${command.name}`),
+    );
+    const skills = sortCommandStrings(
+        commands.filter((command) => command.source === "skill").map((command) => `/${command.name}`),
+    );
 
     // Order: extensions -> prompts -> skills -> builtins (optional)
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-command-center",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Scrollable widget displaying available /commands from extensions/prompts/skills, compatible with simultaneous editor use.",
   "keywords": [
     "pi-package",
