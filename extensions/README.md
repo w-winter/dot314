@@ -2,11 +2,11 @@
 
 ## New or locally modified
 
-- ● [`model-aware-compaction/`](model-aware-compaction/) -- ⚠️ WIP & experimental
-  - Triggers auto-compaction at model-specific percentage thresholds of context window usage
-  - Configure per-model thresholds in `config.json` (keyed by model ID, supports wildcards like `claude-*`)
-  - `global` setting for models without specific overrides
-  - Works alongside other extensions that intercept `/compact` (e.g., `agentic-compaction`) since it uses `ctx.compact()` which fires `session_before_compact`
+- ● [`model-aware-compaction/`](model-aware-compaction/) ([README](./model-aware-compaction/README.md))
+  - Triggers Pi's **built-in auto-compaction** at per-model percent-used thresholds (0–100), configured via `config.json` (keyed by model ID, supports `*` wildcards)
+  - Nudges Pi's native compaction pipeline rather than calling `ctx.compact()`, preserving the compaction UI and automatic queued-message flush
+  - Requires `compaction.enabled: true` in settings; see README for `reserveTokens` tuning
+  - Compatible with compaction-summary extensions (e.g. `agentic-compaction` via `session_before_compact`)
 
 - ● [`session-ask/`](session-ask/) ([README](./session-ask/README.md))
   - `session_ask({ question, sessionPath? })` queries the current (or specified) session JSONL (including pre-compaction history) without bloating the current model context; `/session-ask ...` is a UI wrapper

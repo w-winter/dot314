@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Collection of original or augmented Pi themes, skills, and extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -17,6 +17,7 @@
       "./extensions/agentic-compaction/index.ts",
       "./extensions/guardrails/index.ts",
       "./extensions/md.ts",
+      "./extensions/model-aware-compaction/index.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
       "./extensions/move-session.ts",
       "./extensions/poly-notify/index.ts",

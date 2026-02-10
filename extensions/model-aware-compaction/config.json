@@ -1,11 +1,11 @@
 {
-  "_description": "Model-aware compaction thresholds. Percentage (0-100) of context window that triggers auto-compaction.",
+  "_description": "Model-aware compaction thresholds (percent USED). Compaction triggers when used% >= threshold.",
   "_note": "Keys are model IDs (just the ID part, not provider/id). The global value is used for any model not explicitly listed.",
-  "_wildcard": "Use * for pattern matching, e.g., 'claude-*' matches all Claude models",
+  "_wildcard": "Use * for pattern matching, e.g., 'gpt-5.2*' matches 'gpt-5.2' and 'gpt-5.2-codex'",
   "global": 70,
   "models": {
-    "claude-opus-4-6": 80,
-    "gpt-5.3*": 80,
+    "claude-opus-4-6": 85,
+    "gpt-5.3*": 75,
     "gpt-5.2*": 75
   }
 }

@@ -68,6 +68,7 @@ This repo contains more resources than the package exports. When installed as a 
 - ◐ `agentic-compaction/`
 - ◐ `guardrails/`
 - ● `md.ts`
+- ● `model-aware-compaction/`
 - ● `model-sysprompt-appendix/`
 - ● `move-session.ts`
 - ● `poly-notify/`
@@ -124,7 +125,7 @@ See [extensions/README.md](extensions/README.md) for descriptions
 - ○ `interactive-shell.ts`
 - ○ `mac-system-theme.ts`
 - ● `md.ts`
-- ● `model-aware-compaction/` — ⚠️ WIP
+- ● `model-aware-compaction/`
 - ● `model-sysprompt-appendix/`
 - ● `move-session.ts`
 - ● `poly-notify/`
