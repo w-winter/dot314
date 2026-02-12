@@ -91,7 +91,7 @@ This repo contains more resources than the package exports. When installed as a 
 If you prefer a local working-copy workflow, clone this repo anywhere:
 
 ```bash
-git clone git@github.com:w-winter/dot314.git ~/path/to/dot314-agent
+git clone --recurse-submodules git@github.com:w-winter/dot314.git ~/path/to/dot314-agent
 ```
 
 Then symlink what you want into `~/.pi/agent/`:
