@@ -3,7 +3,7 @@
 ## New or locally modified
 
 - ● [`model-aware-compaction/`](model-aware-compaction/) ([README](./model-aware-compaction/README.md))
-  - Triggers Pi's **built-in auto-compaction** at per-model percent-used thresholds (0–100), configured via `config.json` (keyed by model ID, supports `*` wildcards)
+  - Triggers Pi's **built-in auto-compaction** at per-model percent-used thresholds (0-100), configured via `config.json` (keyed by model ID, supports `*` wildcards)
   - Nudges Pi's native compaction pipeline rather than calling `ctx.compact()`, preserving the compaction UI and automatic queued-message flush
   - Requires `compaction.enabled: true` in settings; see README for `reserveTokens` tuning
   - Compatible with compaction-summary extensions (e.g. `agentic-compaction` via `session_before_compact`)
@@ -55,12 +55,12 @@
 
 - ● [`fork-from-first.ts`](fork-from-first.ts)
   - `/fork-from-first` forks the current session from its first user message and switches into the new fork immediately
-  - If `rewind/` is installed, it requests rewind’s conversation-only fork mode (“keep current files”) for that fork
+  - If `rewind/` is installed, it requests rewind's conversation-only fork mode ("keep current files") for that fork
 
 - ● [`move-session.ts`](move-session.ts)
   - `/session-move <targetCwd>` moves the *current session* to a different working directory, intended for when you started pi in one folder but come to find that you need it in another after building up valuable context
   - Forks the session JSONL into the target cwd bucket (`SessionManager.forkFrom(...)`), then relaunches `pi --session <fork>` with `cwd=<targetCwd>` so the footer + built-in tools resolve relative paths against the new directory
-  - Uses `trash` to delete the old session file (best-effort); if `trash` isn’t available, it leaves the old file in place
+  - Uses `trash` to delete the old session file (best-effort); if `trash` isn't available, it leaves the old file in place
   - Supports `~` expansion (e.g. `/session-move ~/code/my-project`)
 
 - ● [`command-center/`](command-center/) ([README](./command-center/README.md))
@@ -100,13 +100,14 @@
 </p>
 
 - ● [`brave-search/`](brave-search/) ([README](./brave-search/README.md))
-  - Token-efficient Brave web search with optional content extraction/clipping for “read the docs / answer from sources” workflows
+  - Token-efficient Brave web search with optional content extraction/clipping for "read the docs / answer from sources" workflows
   - Manual command: `/ws <query> ... [--content]` (no model turn)
   - LLM tool: `brave_search({ query, count, country, freshness, fetchContent, format })`
   - With `fetchContent=true` / `--content`: extracts readable markdown, saves full content to `~/.pi/agent/extensions/brave-search/.clips/`, returns a preview + a `Saved:` path
   - Direct URL mode: if `query` is a URL (including `raw.githubusercontent.com/...`) and `fetchContent=true`, it fetches and clips directly (no search step)
   - Optional LLM tool: `brave_grounding({ question, enableResearch, enableCitations, enableEntities, maxAnswerChars })` (requires `BRAVE_API_KEY_AI_GROUNDING`)
   - Search results are shown to the user but filtered out of LLM context via the `context` hook
+  - **Recommendation:** For general-purpose web search with agents, I now prefer [nicobailon/pi-web-access](https://github.com/nicobailon/pi-web-access) — it uses Gemini search which provides better indexing and returns an AI-synthesized overview alongside citations, which works better for agent workflows. `brave-search` remains useful when you specifically need individual search results with per-result previews
 
 - ● [`dedup-agents-files.ts`](dedup-agents-files.ts)
   - Removes duplicate AGENTS.md content from the system prompt when the same file is loaded via different paths (e.g., symlinks)
@@ -116,14 +117,14 @@
   - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
   - Includes a merged, single-editor implementation of:
     - ◐ `file-picker` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
-       — type `@` to open an overlay file browser and insert `@path` refs
+       - type `@` to open an overlay file browser and insert `@path` refs
        - This version adds zsh support and enables compatibility with the other two
     - ◐ `shell-completions` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
-      — native shell completions in `!`/`!!` bash mode
+      - native shell completions in `!`/`!!` bash mode
       - This version adds zsh support and enables compatibility with the other two
     - ◐ `raw-paste` (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
       - `/paste` arms raw paste for the next paste operation
-      - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi’s large-paste markers (e.g. `[paste #3 +122 lines]`)
+      - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi's large-paste markers (e.g. `[paste #3 +122 lines]`)
   - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
 - ◐ [`agentic-compaction/`](agentic-compaction/) ([README](./agentic-compaction/README.md); upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles/tree/main/shared/.pi/agent/extensions/file-based-compaction))
@@ -167,7 +168,7 @@
     - Adds `alt+u` shortcut
 
 - ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
-- ◐ [`guardrails/`](guardrails/) — security hooks: `prevent-brew`, `protect-paths`, `permission-gate` (upstream: [aliou/pi-extensions](https://github.com/aliou/pi-extensions))
+- ◐ [`guardrails/`](guardrails/) - security hooks: `prevent-brew`, `protect-paths`, `permission-gate` (upstream: [aliou/pi-extensions](https://github.com/aliou/pi-extensions))
   - `protect-paths` merges upstream's `protect-env-files` + `protected-paths` with broader coverage (all tools, bash command parsing, context-aware errors)
 - ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
 - ◐ [`rewind/`](rewind/) (upstream: [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
@@ -178,11 +179,11 @@
 Single-file extensions (see file headers):
 
 Upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions)
-- ○ `inline-bash.ts` — expands `!{command}` patterns in prompts via `input` event transformation
+- ○ `inline-bash.ts` - expands `!{command}` patterns in prompts via `input` event transformation
 - ○ `interactive-shell.ts`
 - ○ `mac-system-theme.ts`
 - ○ `preset.ts`
-- ○ `questionnaire.ts` — multi-question input with tab bar navigation between questions
+- ○ `questionnaire.ts` - multi-question input with tab bar navigation between questions
 - ○ `review.ts`
 - ○ `send-user-message.ts`
 - ○ `status-line.ts`
@@ -192,7 +193,7 @@ Other:
 - ○ [`code-actions/`](code-actions/) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/code` to pick code blocks or inline code from recent assistant messages, then copy or insert
   - Type to search; enter to copy, right arrow to insert in the command line
-- ◐ [`sandbox/`](sandbox/) — OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
   - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
 - ○ `speedreading.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))

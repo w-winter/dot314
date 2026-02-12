@@ -23,11 +23,20 @@
     - [`scripts/claude-session-extract-with-tools.py`](text-search/scripts/claude-session-extract-with-tools.py) — extract Claude Code sessions with tool calls
 
 - ◐ [`dev-browser/`](dev-browser/) (upstream: [SawyerHood/dev-browser](https://github.com/SawyerHood/dev-browser))
-  - Persistent browser automation via the Dev Browser Chrome extension (Playwright-backed)
+  - Browser automation that hooks into a running Chrome via the Dev Browser extension (Playwright-backed, persistent sessions)
   - This version includes a token-efficient CLI wrapper and an extended Skill covering that
     - [`devbrowse`](dev-browser/devbrowse)
     - [`src/cli.ts`](dev-browser/src/cli.ts)
     - [`dev-browser/SKILL.md`](dev-browser/SKILL.md)
+  - **Recommendation:** I now prefer [`surf/`](surf/) for browsing and scraping (less setup and more ergonomic for those use cases), and [`agent-browser/`](agent-browser/) for structured web testing
+
+- ○ [`surf/`](surf/) (upstream: [nicobailon/surf-cli](https://github.com/nicobailon/surf-cli))
+  - Controls Chrome directly via CLI. Broad feature set: DevTools streaming, network/CPU emulation, AI queries (ChatGPT/Gemini/Perplexity/Grok) in addition to navigation, screenshots, and form filling
+  - Requires global install: `npm install -g surf-cli`
+
+- ○ [`agent-browser/`](agent-browser/) (upstream: [vercel-labs/agent-browser](https://github.com/vercel-labs/agent-browser))
+  - Launches its own Playwright browser instance with a ref-based interaction model: snapshot the page to get element refs (`@e1`, `@e2`), then click/fill/assert by ref. Good for repeatable test flows and form automation
+  - Requires global install: `npm install -g agent-browser`
 
 ## Other skills
 

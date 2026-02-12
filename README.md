@@ -161,6 +161,8 @@ Note: the Pi package does not export any skills. The skills in this repo are int
 - ● `repoprompt-tool-guidance-refresh/` (maintainer workflow; writes tracking files and edits docs)
 - ◐ `text-search/`
 - ◐ `dev-browser/`
+- ○ `agent-browser/`
+- ○ `surf/`
 - ◐ `xcodebuildmcp/`
 - ○ `gdcli/`
 

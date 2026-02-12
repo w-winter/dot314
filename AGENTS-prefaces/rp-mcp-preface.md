@@ -172,9 +172,11 @@ Unexpected output is usually a routing issue—wrong workspace, wrong window, wr
 
 ---
 
-## Current events/facts
+## Web Access
 
-Use the `brave_search` tool for current events/facts. Returns citations.
+- `web_search` - for current events/facts (returns synthesis + citations)
+- `fetch_content` - for full-page/repo content from URLs
+- `search_github` - for code pattern search within GitHub repos (API-based, no clone)
 
 ### Security
 
