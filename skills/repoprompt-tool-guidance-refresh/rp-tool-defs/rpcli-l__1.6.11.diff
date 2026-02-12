@@ -1,0 +1,15 @@
+19c19,20
+< Options: `verbose` (show diff), `on_missing` (for rewrite only: "error" | "create", default: "create")
+---
+> Options: `verbose` (show diff), `on_missing` (for rewrite only: "error" | "create", default: "error")
+> Edits are literal. Use real JSON newlines for multi-line search/replace (not `\n`). If a match fails, the tool may retry internally with escape decoding.
+263c264
+< **Matching** (regex=true by default):
+---
+> **Matching** (regex auto-detected by default):
+265a267
+> - Tip: Set `regex=false` to force literal substring matching
+318c320
+<     Use regex matching (default: true)
+---
+>     Use regex matching (default: auto based on pattern)

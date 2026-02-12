@@ -150,6 +150,8 @@ Describe **what** you need, not **where** to look. Mention what you know and wha
 
 Use returned `chat_id` with `chat_send new_chat=false chat_id="..."` for followup.
 
+If invoked during an Agent Mode run, `context_builder` reuses the current agent tab instead of creating a new tab.
+
 `<discovery_agent-guidelines>` is optional and should be treated as starting hints only. The agent may explore beyond those hints.
 
 Token-costly—invoke explicitly when user requests or during planning phases, not automatically.

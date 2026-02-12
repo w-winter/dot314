@@ -1,0 +1,7 @@
+195a196,197
+> 
+> **Agent mode behavior**: If this tool is invoked during an Agent Mode run, it reuses the current agent tab instead of creating a new tab.
+709c711
+< - `export` writes clipboard content to file; use `copy_preset` to override format
+---
+> - `export` writes clipboard content to file so it can be copy/pasted into ChatGPT (or another AI) for a second opinion; use `copy_preset` to override format

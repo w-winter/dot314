@@ -118,8 +118,9 @@ Return:
 
 After it returns:
 - Ensure your subsequent calls operate on the discovery result's tab/selection
-  - If the tool output includes a tab id, bind to it via `manage_workspaces(select_tab ...)`
-  - Otherwise, `manage_workspaces(list_tabs)` then `select_tab` the newest "Context Builder" tab
+  - In Agent Mode runs, `context_builder` reuses the current agent tab
+  - Otherwise, if the tool output includes a tab id, bind to it via `manage_workspaces(select_tab ...)`
+  - If no tab id is present, `manage_workspaces(list_tabs)` then `select_tab` the newest "Context Builder" tab
 - Sanity check context + token size:
 ```js
 rp({ call: "workspace_context", args: { include: ["selection", "tokens", "tree"] } })
