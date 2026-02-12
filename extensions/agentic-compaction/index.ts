@@ -282,8 +282,13 @@ function detectFileOpsFromConversation(llmMessages: any[]): DetectedFileOps {
         const toolName = toolCall.name;
         const args = toolCall.args ?? {};
 
+        // Some edit tools report success but actually apply 0 changes (e.g. "Applied: 0")
+        // Don't count those as modifications
+        const toolResultText = extractTextFromLlmMessageContent(msg?.content).toLowerCase();
+        const isNoOp = /applied:\s*0|no changes applied|nothing to (do|change)/i.test(toolResultText);
+
         if (toolName === "write" || toolName === "edit") {
-            if (typeof args.path === "string") {
+            if (typeof args.path === "string" && !isNoOp) {
                 modifiedFiles.push(args.path);
             }
             continue;
@@ -294,7 +299,9 @@ function detectFileOpsFromConversation(llmMessages: any[]): DetectedFileOps {
             const callArgs = args.args ?? {};
 
             if (call === "apply_edits" && typeof callArgs.path === "string") {
-                modifiedFiles.push(callArgs.path);
+                if (!isNoOp) {
+                    modifiedFiles.push(callArgs.path);
+                }
                 continue;
             }
 
@@ -581,7 +588,13 @@ What is Done ✓ vs In Progress ⏳ vs Blocked ❌
 ### 6. Issues/Blockers
 Any reported problems or unresolved issues
 
-### 7. Next Steps
+### 7. Continuation Handoff
+- Mandatory reading: exact repo-relative file paths to reopen next session
+- Environment & services: ports, env vars, tables, deployments, keys/services actually referenced
+- Tools used: MCP/CLI/skills actively used (include brief usage notes only if non-obvious)
+- Collaborators & process: pending approvals, human-in-the-loop decisions, RepoPrompt window/tab binding if relevant
+
+### 8. Next Steps
 What remains to be done`;
 
         const initialUserPrompt = userCompactionNote
