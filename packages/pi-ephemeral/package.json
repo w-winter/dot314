@@ -1,6 +1,6 @@
 {
   "name": "pi-ephemeral",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Toggle Pi session persistence mid-session (delete session file on exit)",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",

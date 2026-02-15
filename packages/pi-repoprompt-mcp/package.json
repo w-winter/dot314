@@ -1,6 +1,6 @@
 {
   "name": "pi-repoprompt-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A token-efficient RepoPrompt MCP integration for Pi",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt", "mcp"],
   "license": "MIT",

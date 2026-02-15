@@ -1,6 +1,6 @@
 {
   "name": "pi-session-ask",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Allows the agent or user to ask questions about the current session's pre-compaction history, parent (if forked) sessions' histories, or any other sessions' histories, via a subagent (keeping current context clean).",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session", "compaction"],
   "license": "MIT",
@@ -15,6 +15,9 @@
   "homepage": "https://github.com/w-winter/dot314#readme",
   "pi": {
     "extensions": ["extensions/session-ask/index.ts"]
+  },
+  "dependencies": {
+    "just-bash": "^2.10.0"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": ">=0.51.0",
