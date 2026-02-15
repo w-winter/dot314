@@ -536,11 +536,15 @@ export default function (pi: ExtensionAPI) {
   };
 
   const reconstructBinding = (ctx: ExtensionContext) => {
-    // Prefer persisted binding (appendEntry), then fall back to prior rp_bind tool results
+    // Prefer persisted binding (appendEntry) from the *current branch*, then fall back to prior rp_bind tool results
+    // Branch semantics: if the current branch has no binding state, stay unbound
+    boundWindowId = undefined;
+    boundTab = undefined;
+
     let reconstructedWindowId: number | undefined;
     let reconstructedTab: string | undefined;
 
-    for (const entry of ctx.sessionManager.getEntries()) {
+    for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || entry.customType !== BINDING_CUSTOM_TYPE) continue;
 
       const data = entry.data as { windowId?: unknown; tab?: unknown } | undefined;
@@ -571,6 +575,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => reconstructBinding(ctx));
   pi.on("session_switch", async (_event, ctx) => reconstructBinding(ctx));
+  // session_fork is the current event name; keep session_branch for backwards compatibility
+  pi.on("session_fork", async (_event, ctx) => reconstructBinding(ctx));
   pi.on("session_branch", async (_event, ctx) => reconstructBinding(ctx));
   pi.on("session_tree", async (_event, ctx) => reconstructBinding(ctx));
 

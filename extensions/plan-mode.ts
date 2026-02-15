@@ -213,6 +213,9 @@ export default function planModeExtension(pi: ExtensionAPI) {
 		planModeEnabled = !planModeEnabled;
 		applyToolMode();
 
+		// Persist immediately so /tree navigation restores the correct branch-specific state even before the next turn
+		persistPlanModeState();
+
 		if (ctx.hasUI) {
 			if (planModeEnabled) {
 				ctx.ui.notify(`Plan mode enabled. Tools: ${PLAN_MODE_TOOLS.join(", ")}`);
@@ -245,9 +248,17 @@ export default function planModeExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// Block write operations in plan mode (bash + RepoPrompt)
+	// Block write operations in plan mode (bash + RepoPrompt + native file tools as a backstop)
 	pi.on("tool_call", async (event) => {
 		if (!planModeEnabled) return;
+
+		// Backstop: even if another extension (e.g. /tools) re-enables these, plan mode must remain read-only
+		if (event.toolName === "edit" || event.toolName === "write") {
+			return {
+				block: true,
+				reason: `Plan mode: native tool "${event.toolName}" is blocked. Use /plan to disable plan mode first.`,
+			};
+		}
 
 		if (event.toolName === "bash") {
 			const command = event.input.command as string;
@@ -282,6 +293,13 @@ export default function planModeExtension(pi: ExtensionAPI) {
 				};
 			}
 		}
+	});
+
+	// Re-apply tool restrictions right before the agent starts, in case other extensions mutate tool state
+	pi.on("input", async (_event, ctx) => {
+		if (!planModeEnabled) return;
+		applyToolMode();
+		updateStatus(ctx);
 	});
 
 	// Filter out stale plan mode context messages from LLM context
@@ -353,30 +371,68 @@ You now have write access again. Previous plan mode restrictions no longer apply
 		};
 	});
 
-	// Initialize state on session start
-	pi.on("session_start", async (_event, ctx) => {
-		const startInPlanMode = pi.getFlag("plan") === true;
-		if (startInPlanMode) {
-			planModeEnabled = true;
-		} else {
-			const entries = ctx.sessionManager.getEntries();
-			const planModeEntry = entries
-				.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === "plan-mode")
-				.pop() as { data?: { enabled?: boolean } } | undefined;
+	function persistPlanModeState(): void {
+		pi.appendEntry("plan-mode", {
+			enabled: planModeEnabled,
+		});
+	}
 
-			if (planModeEntry?.data?.enabled !== undefined) {
-				planModeEnabled = planModeEntry.data.enabled;
-			}
+	function restorePlanModeFromBranch(
+		ctx: ExtensionContext,
+		options?: { preferStartFlag?: boolean },
+	): void {
+		justExitedPlanMode = false;
+
+		// Optionally force plan mode on at startup
+		if (options?.preferStartFlag && pi.getFlag("plan") === true) {
+			planModeEnabled = true;
+			// Persist once so /tree navigation remains branch-consistent even before the first turn starts
+			persistPlanModeState();
+			return;
 		}
 
+		planModeEnabled = false;
+
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "custom" || entry.customType !== "plan-mode") {
+				continue;
+			}
+
+			const data = entry.data as { enabled?: unknown } | undefined;
+			if (typeof data?.enabled === "boolean") {
+				planModeEnabled = data.enabled;
+			}
+		}
+	}
+
+	function applyRestoredState(ctx: ExtensionContext): void {
 		applyToolMode();
 		updateStatus(ctx);
+	}
+
+	// Initialize state on session start
+	pi.on("session_start", async (_event, ctx) => {
+		restorePlanModeFromBranch(ctx, { preferStartFlag: true });
+		applyRestoredState(ctx);
+	});
+
+	pi.on("session_switch", async (_event, ctx) => {
+		restorePlanModeFromBranch(ctx);
+		applyRestoredState(ctx);
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		restorePlanModeFromBranch(ctx);
+		applyRestoredState(ctx);
+	});
+
+	pi.on("session_fork", async (_event, ctx) => {
+		restorePlanModeFromBranch(ctx);
+		applyRestoredState(ctx);
 	});
 
 	// Persist state at start of each turn
 	pi.on("turn_start", async () => {
-		pi.appendEntry("plan-mode", {
-			enabled: planModeEnabled,
-		});
+		persistPlanModeState();
 	});
 }

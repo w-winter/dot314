@@ -118,6 +118,22 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     }
   });
   
+  // Restore binding from the current branch on /fork navigation
+  pi.on("session_fork", async (_event: unknown, ctx: ExtensionContext) => {
+    restoreBinding(ctx, config);
+    if (ctx.hasUI) {
+      ctx.ui.setStatus("rp", undefined);
+    }
+  });
+
+  // Backwards compatibility (older pi versions)
+  (pi as any).on("session_branch", async (_event: unknown, ctx: ExtensionContext) => {
+    restoreBinding(ctx, config);
+    if (ctx.hasUI) {
+      ctx.ui.setStatus("rp", undefined);
+    }
+  });
+  
   pi.on("session_tree", async (_event: unknown, ctx: ExtensionContext) => {
     restoreBinding(ctx, config);
     if (ctx.hasUI) {

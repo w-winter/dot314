@@ -57,7 +57,10 @@ export function restoreBinding(ctx: ExtensionContext, config: RpConfig): RpBindi
     return currentBinding;
   }
 
-  const entries = ctx.sessionManager.getEntries();
+  const entries = ctx.sessionManager.getBranch();
+
+  let restored: RpBinding | null = null;
+
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.type !== "custom" || entry.customType !== BINDING_ENTRY_TYPE) {
@@ -69,13 +72,16 @@ export function restoreBinding(ctx: ExtensionContext, config: RpConfig): RpBindi
       continue;
     }
 
-    currentBinding = {
+    restored = {
       windowId: data.windowId,
       tab: data.tab,
       workspace: data.workspace,
     };
     break;
   }
+
+  // Branch semantics: if the branch has no saved binding, stay unbound
+  currentBinding = restored;
 
   return currentBinding;
 }

@@ -15,21 +15,40 @@ import { unlinkSync, existsSync } from "node:fs";
 export default function (pi: ExtensionAPI) {
     let ephemeralMode = false;
 
-    // Reconstruct state from session (survives /tree navigation, session restore)
-    const reconstructState = (entries: any[]) => {
+    // When switching sessions, pi doesn't exit, so session_shutdown won't fire for the previous session.
+    // Track the previous session file here so we can delete it after a successful switch when ephemeral mode was enabled
+    let pendingDeleteSessionFile: string | null = null;
+
+    // Reconstruct state from the *current branch* so /tree navigation properly restores branch-specific state
+    const reconstructStateFromBranch = (ctx: any) => {
         ephemeralMode = false;
-        for (const entry of entries) {
+
+        for (const entry of ctx.sessionManager.getBranch()) {
             if (entry.type === "custom" && entry.customType === "ephemeral-mode") {
                 ephemeralMode = entry.data?.enabled ?? false;
             }
+        }
+
+        if (!ctx.hasUI) {
+            return;
+        }
+
+        if (ephemeralMode) {
+            ctx.ui.setStatus("ephemeral", ctx.ui.theme.fg("warning", "儚"));
+        } else {
+            ctx.ui.setStatus("ephemeral", undefined);
         }
     };
 
     const toggleEphemeral = async (ctx: any) => {
         ephemeralMode = !ephemeralMode;
 
-        // Persist the state in session (for branch navigation)
+        // Persist the state in the session branch (for /tree navigation)
         pi.appendEntry("ephemeral-mode", { enabled: ephemeralMode });
+
+        if (!ctx.hasUI) {
+            return;
+        }
 
         if (ephemeralMode) {
             ctx.ui.setStatus("ephemeral", ctx.ui.theme.fg("warning", "儚"));
@@ -40,20 +59,69 @@ export default function (pi: ExtensionAPI) {
         }
     };
 
+    const clearIndicator = (ctx: any) => {
+        ephemeralMode = false;
+        if (ctx?.hasUI) {
+            ctx.ui.setStatus("ephemeral", undefined);
+        }
+    };
+
+    const deleteSessionFileBestEffort = async (sessionFile: string) => {
+        try {
+            const { code } = await pi.exec("trash", [sessionFile], { timeout: 5000 });
+            if (code === 0) {
+                return;
+            }
+        } catch {
+            // ignore
+        }
+
+        // Fallback to direct deletion
+        try {
+            if (existsSync(sessionFile)) {
+                unlinkSync(sessionFile);
+            }
+        } catch {
+            // ignore
+        }
+    };
+
     pi.on("session_start", async (_event, ctx) => {
-        reconstructState(ctx.sessionManager.getEntries());
+        reconstructStateFromBranch(ctx);
+    });
+
+    pi.on("session_before_switch", async (_event, ctx) => {
+        // If we are leaving an ephemeral session, schedule its file for deletion after a successful switch
         if (ephemeralMode) {
-            ctx.ui.setStatus("ephemeral", ctx.ui.theme.fg("warning", "儚"));
+            const sessionFile = ctx.sessionManager.getSessionFile();
+            if (sessionFile) {
+                pendingDeleteSessionFile = sessionFile;
+            }
+        }
+
+        // Clear the indicator immediately so it never visually leaks into the switcher UI or next session
+        clearIndicator(ctx);
+    });
+
+    pi.on("session_switch", async (_event, ctx) => {
+        // Some pi versions update session state very close to this event; yield once to ensure ctx.sessionManager is current
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        reconstructStateFromBranch(ctx);
+
+        // Now that we've successfully switched away, delete the previous session if it was ephemeral
+        if (pendingDeleteSessionFile) {
+            const toDelete = pendingDeleteSessionFile;
+            pendingDeleteSessionFile = null;
+            await deleteSessionFileBestEffort(toDelete);
         }
     });
 
     pi.on("session_tree", async (_event, ctx) => {
-        reconstructState(ctx.sessionManager.getEntries());
-        if (ephemeralMode) {
-            ctx.ui.setStatus("ephemeral", ctx.ui.theme.fg("warning", "儚"));
-        } else {
-            ctx.ui.setStatus("ephemeral", undefined);
-        }
+        reconstructStateFromBranch(ctx);
+    });
+
+    pi.on("session_fork", async (_event, ctx) => {
+        reconstructStateFromBranch(ctx);
     });
 
     pi.registerCommand("ephemeral", {
