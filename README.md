@@ -120,7 +120,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `rp-native-tools-lock/` | Prefer RP tools over Pi native tools |
 | ◐ | `sandbox/` | OS-level sandboxing |
 | ● | `session-ask/` | Query session history via subagent |
-| ◐ | `session-switch.ts` | `/resume`-style session picker (via `/switch`), with live background preview of selected session |
+| ◐ | `session-switch.ts` | `/resume`-style session picker (via `/switch-session`), with live background preview of selected session |
 | ◐ | `tools/` | Interactive tool enable/disable |
 | ◐ | `usage-bar.ts` | Provider quota overlay |
 | ● | `vog/` | Inject custom system prompt message |

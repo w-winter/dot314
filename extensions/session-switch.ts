@@ -153,7 +153,7 @@ class ResumeOverlay implements Focusable {
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("switch", {
+	pi.registerCommand("switch-session", {
 		description: "Session picker (mirrors /resume) with live background preview",
 		handler: async (_args, ctx: ExtensionCommandContext) => {
 			if (!ctx.hasUI) {
