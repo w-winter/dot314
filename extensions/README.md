@@ -152,10 +152,6 @@
   - `/oracle` queries an alternate model for a second opinion, with optional file inclusion (`-f`) and injection into the current conversation
   - This version adds a thinking-level picker and fixes text-overflow crashes (CJK-safe wrapping)
 
-- ◐ [`skill-palette/`](skill-palette/) (upstream: [pi-skill-palette](https://github.com/nicobailon/pi-skill-palette))
-  - Skill command palette (`/skill`)
-  - This version's scanning order matches Pi/Codex/Claude conventions and avoids symlink cycles when scanning skill dirs
-
 - ◐ [`session-switch.ts`](session-switch.ts) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
   - Session switching (via `/switch` command) with live preview of selected session in the background
   - This version mirrors the native `/resume` picker's layout, behaviors, and keybindings
@@ -171,6 +167,8 @@
     - Displays used percentage with 5-band color scale (0-49% green → 95%+ red) and proper label alignment
     - Provider status emoji hidden on fetch errors to avoid misleading indicators
     - Adds `alt+u` shortcut
+
+- ○ [`skill-palette/`](skill-palette/) (upstream: [nicobailon/pi-skill-palette](https://github.com/nicobailon/pi-skill-palette))
 
 - ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
 

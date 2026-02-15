@@ -1,3 +1,6 @@
 [submodule "extensions/subagent"]
 	path = extensions/subagent
 	url = https://github.com/nicobailon/pi-subagents
+[submodule "extensions/skill-palette"]
+	path = extensions/skill-palette
+	url = https://github.com/nicobailon/pi-skill-palette.git
