@@ -4,6 +4,179 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import * as Diff from "diff";
 
+let parseBash: ((input: string) => any) | null = null;
+let justBashLoadPromise: Promise<void> | null = null;
+let justBashLoadDone = false;
+
+async function ensureJustBashLoaded(): Promise<void> {
+  if (justBashLoadDone) return;
+
+  if (!justBashLoadPromise) {
+    justBashLoadPromise = import("just-bash")
+      .then((mod: any) => {
+        parseBash = typeof mod?.parse === "function" ? mod.parse : null;
+      })
+      .catch(() => {
+        parseBash = null;
+      })
+      .finally(() => {
+        justBashLoadDone = true;
+      });
+  }
+
+  await justBashLoadPromise;
+}
+
+let warnedAstUnavailable = false;
+function maybeWarnAstUnavailable(ctx: any): void {
+  if (warnedAstUnavailable) return;
+  if (parseBash) return;
+  if (!ctx?.hasUI) return;
+
+  warnedAstUnavailable = true;
+  ctx.ui.notify(
+    "repoprompt-cli: just-bash >= 2 is not available; falling back to best-effort command parsing",
+    "warning",
+  );
+}
+
+type BashInvocation = {
+  statementIndex: number;
+  pipelineIndex: number;
+  pipelineLength: number;
+  commandNameRaw: string;
+  commandName: string;
+  args: string[];
+};
+
+function commandBaseName(value: string): string {
+  const normalized = value.replace(/\\+/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  const base = idx >= 0 ? normalized.slice(idx + 1) : normalized;
+  return base.toLowerCase();
+}
+
+function partToText(part: any): string {
+  if (!part || typeof part !== "object") return "";
+
+  switch (part.type) {
+    case "Literal":
+    case "SingleQuoted":
+    case "Escaped":
+      return typeof part.value === "string" ? part.value : "";
+    case "DoubleQuoted":
+      return Array.isArray(part.parts) ? part.parts.map(partToText).join("") : "";
+    case "Glob":
+      return typeof part.pattern === "string" ? part.pattern : "";
+    case "TildeExpansion":
+      return typeof part.user === "string" && part.user.length > 0 ? `~${part.user}` : "~";
+    case "ParameterExpansion":
+      return typeof part.parameter === "string" && part.parameter.length > 0
+        ? "${" + part.parameter + "}"
+        : "${}";
+    case "CommandSubstitution":
+      return "$(...)";
+    case "ProcessSubstitution":
+      return part.direction === "output" ? ">(...)" : "<(...)";
+    case "ArithmeticExpansion":
+      return "$((...))";
+    default:
+      return "";
+  }
+}
+
+function wordToText(word: any): string {
+  if (!word || typeof word !== "object" || !Array.isArray(word.parts)) return "";
+  return word.parts.map(partToText).join("");
+}
+
+function analyzeTopLevelBashScript(command: string): { parseError?: string; topLevelInvocations: BashInvocation[] } {
+  try {
+    if (!parseBash) {
+      return { parseError: "just-bash parse unavailable", topLevelInvocations: [] };
+    }
+
+    const ast: any = parseBash(command);
+    const topLevelInvocations: BashInvocation[] = [];
+
+    if (!ast || typeof ast !== "object" || !Array.isArray(ast.statements)) {
+      return { topLevelInvocations };
+    }
+
+    ast.statements.forEach((statement: any, statementIndex: number) => {
+      if (!statement || typeof statement !== "object" || !Array.isArray(statement.pipelines)) return;
+
+      statement.pipelines.forEach((pipeline: any, pipelineIndex: number) => {
+        if (!pipeline || typeof pipeline !== "object" || !Array.isArray(pipeline.commands)) return;
+
+        const pipelineLength = pipeline.commands.length;
+        pipeline.commands.forEach((commandNode: any) => {
+          if (!commandNode || commandNode.type !== "SimpleCommand") return;
+
+          const commandNameRaw = wordToText(commandNode.name).trim();
+          if (!commandNameRaw) return;
+
+          const args = Array.isArray(commandNode.args)
+            ? commandNode.args.map((arg: any) => wordToText(arg)).filter(Boolean)
+            : [];
+
+          topLevelInvocations.push({
+            statementIndex,
+            pipelineIndex,
+            pipelineLength,
+            commandNameRaw,
+            commandName: commandBaseName(commandNameRaw),
+            args,
+          });
+        });
+      });
+    });
+
+    return { topLevelInvocations };
+  } catch (error: any) {
+    return {
+      parseError: error?.message ?? String(error),
+      topLevelInvocations: [],
+    };
+  }
+}
+
+function hasSemicolonOutsideQuotes(script: string): boolean {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escaped = false;
+
+  for (let i = 0; i < script.length; i += 1) {
+    const ch = script[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (!inDoubleQuote && ch === "'") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+
+    if (!inSingleQuote && ch === '"') {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+
+    if (!inSingleQuote && !inDoubleQuote && ch === ";") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * RepoPrompt CLI ↔ Pi integration extension
  *
@@ -19,6 +192,7 @@ import * as Diff from "diff";
  * UX goals:
  * - Persist binding across session reloads via `pi.appendEntry()` (does not enter LLM context)
  * - Provide actionable error messages when blocked
+ * - For best command parsing (AST-based), install `just-bash` >= 2; otherwise it falls back to a legacy splitter
  * - Syntax-highlight fenced code blocks in output (read, structure, etc.)
  * - Word-level diff highlighting for edit output
  */
@@ -66,8 +240,13 @@ function truncateText(text: string, maxChars: number): { text: string; truncated
   };
 }
 
-function parseCommandChain(cmd: string): { commands: string[]; hasSemicolonOutsideQuotes: boolean } {
-  // Lightweight parser to split on `&&` / `;` without breaking quoted JSON or quoted strings
+type ParsedCommandChain = {
+  commands: string[];
+  invocations: BashInvocation[];
+  hasSemicolonOutsideQuotes: boolean;
+};
+
+function parseCommandChainLegacy(cmd: string): { commands: string[]; hasSemicolonOutsideQuotes: boolean } {
   const commands: string[] = [];
   let current = "";
   let inSingleQuote = false;
@@ -81,7 +260,7 @@ function parseCommandChain(cmd: string): { commands: string[]; hasSemicolonOutsi
     current = "";
   };
 
-  for (let i = 0; i < cmd.length; i++) {
+  for (let i = 0; i < cmd.length; i += 1) {
     const ch = cmd[i];
 
     if (escaped) {
@@ -102,7 +281,7 @@ function parseCommandChain(cmd: string): { commands: string[]; hasSemicolonOutsi
       continue;
     }
 
-    if (!inSingleQuote && ch === "\"") {
+    if (!inSingleQuote && ch === '"') {
       inDoubleQuote = !inDoubleQuote;
       current += ch;
       continue;
@@ -129,21 +308,74 @@ function parseCommandChain(cmd: string): { commands: string[]; hasSemicolonOutsi
   return { commands, hasSemicolonOutsideQuotes };
 }
 
+function renderInvocation(invocation: BashInvocation): string {
+  return [invocation.commandNameRaw, ...invocation.args].filter(Boolean).join(" ").trim();
+}
+
+function parseCommandChain(cmd: string): ParsedCommandChain {
+  const semicolonOutsideQuotes = hasSemicolonOutsideQuotes(cmd);
+  const analysis = analyzeTopLevelBashScript(cmd);
+
+  if (!analysis.parseError && analysis.topLevelInvocations.length > 0) {
+    const commands = analysis.topLevelInvocations
+      .map(renderInvocation)
+      .filter((command) => command.length > 0);
+
+    return {
+      commands,
+      invocations: analysis.topLevelInvocations,
+      hasSemicolonOutsideQuotes: semicolonOutsideQuotes,
+    };
+  }
+
+  const legacy = parseCommandChainLegacy(cmd);
+  return {
+    commands: legacy.commands,
+    invocations: [],
+    hasSemicolonOutsideQuotes: legacy.hasSemicolonOutsideQuotes || semicolonOutsideQuotes,
+  };
+}
+
 function looksLikeDeleteCommand(cmd: string): boolean {
-  // Conservative detection: block obvious deletes and common `call ... {"action":"delete"}` patterns
-  for (const command of parseCommandChain(cmd).commands) {
+  const parsed = parseCommandChain(cmd);
+
+  if (parsed.invocations.length > 0) {
+    for (const invocation of parsed.invocations) {
+      const commandName = invocation.commandName;
+      const args = invocation.args.map((arg) => arg.toLowerCase());
+
+      if (commandName === "file" && args[0] === "delete") return true;
+      if (commandName === "workspace" && args[0] === "delete") return true;
+
+      if (commandName === "call") {
+        const normalized = args.join(" ");
+        if (
+          /\baction\s*=\s*delete\b/.test(normalized)
+          || /"action"\s*:\s*"delete"/.test(normalized)
+          || /'action'\s*:\s*'delete'/.test(normalized)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Fallback when parsing fails
+  for (const command of parsed.commands) {
     const normalized = command.trim().toLowerCase();
     if (normalized === "file delete" || normalized.startsWith("file delete ")) return true;
     if (normalized === "workspace delete" || normalized.startsWith("workspace delete ")) return true;
 
-    if (normalized.startsWith("call ")) {
-      if (
-        /\baction\s*=\s*delete\b/.test(normalized) ||
-        /"action"\s*:\s*"delete"/.test(normalized) ||
-        /'action'\s*:\s*'delete'/.test(normalized)
-      ) {
-        return true;
-      }
+    if (
+      normalized.startsWith("call ")
+      && (
+        /\baction\s*=\s*delete\b/.test(normalized)
+        || /"action"\s*:\s*"delete"/.test(normalized)
+        || /'action'\s*:\s*'delete'/.test(normalized)
+      )
+    ) {
+      return true;
     }
   }
 
@@ -151,8 +383,26 @@ function looksLikeDeleteCommand(cmd: string): boolean {
 }
 
 function looksLikeWorkspaceSwitchInPlace(cmd: string): boolean {
-  // Prevent clobbering shared state: require `--new-window` for workspace switching/creation by default
-  for (const command of parseCommandChain(cmd).commands) {
+  const parsed = parseCommandChain(cmd);
+
+  if (parsed.invocations.length > 0) {
+    for (const invocation of parsed.invocations) {
+      if (invocation.commandName !== "workspace") continue;
+
+      const args = invocation.args.map((arg) => arg.toLowerCase());
+      const action = args[0] ?? "";
+      const hasNewWindow = args.includes("--new-window");
+      const hasSwitchFlag = args.includes("--switch");
+
+      if (action === "switch" && !hasNewWindow) return true;
+      if (action === "create" && hasSwitchFlag && !hasNewWindow) return true;
+    }
+
+    return false;
+  }
+
+  // Fallback when parsing fails
+  for (const command of parsed.commands) {
     const normalized = command.toLowerCase();
 
     if (normalized.startsWith("workspace switch ") && !normalized.includes("--new-window")) return true;
@@ -166,15 +416,22 @@ function looksLikeWorkspaceSwitchInPlace(cmd: string): boolean {
 }
 
 function looksLikeEditCommand(cmd: string): boolean {
-  for (const command of parseCommandChain(cmd).commands) {
-    const normalized = command.trim().toLowerCase();
+  const parsed = parseCommandChain(cmd);
 
-    if (normalized === 'edit' || normalized.startsWith('edit ')) return true;
+  if (parsed.invocations.length > 0) {
+    return parsed.invocations.some((invocation) => {
+      if (invocation.commandName === "edit") return true;
+      if (invocation.commandName !== "call") return false;
 
-    if (normalized.startsWith('call ') && normalized.includes('apply_edits')) return true;
+      return invocation.args.some((arg) => arg.toLowerCase().includes("apply_edits"));
+    });
   }
 
-  return false;
+  return parsed.commands.some((command) => {
+    const normalized = command.trim().toLowerCase();
+    if (normalized === "edit" || normalized.startsWith("edit ")) return true;
+    return normalized.startsWith("call ") && normalized.includes("apply_edits");
+  });
 }
 
 function parseLeadingInt(text: string): number | undefined {
@@ -219,7 +476,31 @@ function looksLikeNoopEditOutput(output: string): boolean {
 }
 
 function isSafeSingleCommandToRunUnbound(cmd: string): boolean {
-  // Allow only "bootstrap" commands before binding so agents don't operate on the wrong window/workspace
+  const parsed = parseCommandChain(cmd);
+
+  if (parsed.invocations.length > 0) {
+    if (parsed.invocations.length !== 1) return false;
+    const invocation = parsed.invocations[0];
+    const commandName = invocation.commandName;
+    const args = invocation.args.map((arg) => arg.toLowerCase());
+
+    if (commandName === "windows") return true;
+    if (commandName === "help") return true;
+    if (commandName === "refresh" && args.length === 0) return true;
+    if (commandName === "tabs" && args.length === 0) return true;
+
+    if (commandName === "workspace") {
+      const action = args[0] ?? "";
+      if (action === "list") return true;
+      if (action === "tabs") return true;
+      if (action === "switch" && args.includes("--new-window")) return true;
+      if (action === "create" && args.includes("--new-window")) return true;
+    }
+
+    return false;
+  }
+
+  // Fallback when parsing fails
   const normalized = cmd.trim().toLowerCase();
 
   if (normalized === "windows" || normalized.startsWith("windows ")) return true;
@@ -240,8 +521,15 @@ function isSafeToRunUnbound(cmd: string): boolean {
   // Allow `&&` chains, but only if *every* sub-command is safe before binding
   const parsed = parseCommandChain(cmd);
   if (parsed.hasSemicolonOutsideQuotes) return false;
-  if (parsed.commands.length === 0) return false;
 
+  if (parsed.invocations.length > 0) {
+    return parsed.invocations.every((invocation) => {
+      const commandText = renderInvocation(invocation);
+      return isSafeSingleCommandToRunUnbound(commandText);
+    });
+  }
+
+  if (parsed.commands.length === 0) return false;
   return parsed.commands.every((command) => isSafeSingleCommandToRunUnbound(command));
 }
 
@@ -600,7 +888,9 @@ export default function (pi: ExtensionAPI) {
     description: "Bind rp_exec to a specific RepoPrompt window and compose tab",
     parameters: BindParams,
 
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      await ensureJustBashLoaded();
+      maybeWarnAstUnavailable(ctx);
       persistBinding(params.windowId, params.tab);
 
       return {
@@ -616,8 +906,11 @@ export default function (pi: ExtensionAPI) {
     description: "Run rp-cli in the bound RepoPrompt window/tab, with quiet defaults and output truncation",
     parameters: ExecParams,
 
-    async execute(_toolCallId, params, signal, onUpdate, _ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // Routing: prefer call-time overrides, otherwise fall back to the last persisted binding
+      await ensureJustBashLoaded();
+      maybeWarnAstUnavailable(ctx);
+
       const windowId = params.windowId ?? boundWindowId;
       const tab = params.tab ?? boundTab;
       const rawJson = params.rawJson ?? false;

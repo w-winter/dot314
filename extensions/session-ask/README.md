@@ -51,10 +51,14 @@ You may want to disable it otherwise.
 The extension:
 1. Determines the session file (default: current session via `ctx.sessionManager.getSessionFile()`)
 2. Parses the JSONL and renders a stable, human-readable transcript with entry indices (`[#123] ...`)
-3. Runs an isolated model call with three internal tools:
+3. Runs an isolated model call with internal tools (for best `session_shell` policy enforcement, install `just-bash` >= 2):
    - `session_meta` — session path / id / entry count
    - `session_search` — substring / regex search over the rendered transcript
    - `session_read` — read windows of entries by index
+   - `session_shell` — read-only just-bash analysis over virtual files:
+     - `/conversation.json` (structured rendered entries)
+     - `/transcript.txt` (plain rendered transcript)
+     - `/session.meta.json` (session metadata)
 4. Returns only the final answer (plus a few citations) to the user
 
 ## Configuration

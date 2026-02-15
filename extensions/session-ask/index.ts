@@ -19,6 +19,45 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+let parseBash: ((input: string) => any) | null = null;
+let BashCtor: any | null = null;
+let justBashLoadPromise: Promise<void> | null = null;
+let justBashLoadDone = false;
+
+async function ensureJustBashLoaded(): Promise<void> {
+    if (justBashLoadDone) return;
+
+    if (!justBashLoadPromise) {
+        justBashLoadPromise = import("just-bash")
+            .then((mod: any) => {
+                parseBash = typeof mod?.parse === "function" ? mod.parse : null;
+                BashCtor = typeof mod?.Bash === "function" ? mod.Bash : null;
+            })
+            .catch(() => {
+                parseBash = null;
+                BashCtor = null;
+            })
+            .finally(() => {
+                justBashLoadDone = true;
+            });
+    }
+
+    await justBashLoadPromise;
+}
+
+let warnedAstUnavailable = false;
+function maybeWarnAstUnavailable(ctx: any): void {
+    if (warnedAstUnavailable) return;
+    if (parseBash && BashCtor) return;
+    if (!ctx?.hasUI) return;
+
+    warnedAstUnavailable = true;
+    ctx.ui.notify(
+        "session-ask: just-bash (>=2 recommended) is not available; session_shell will be disabled and policy checks will fall back",
+        "warning",
+    );
+}
+
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -87,6 +126,249 @@ const DEFAULT_CONFIG: ExtensionConfig = {
     maxSearchResults: 40,
     maxReadEntries: 80,
 };
+
+const SESSION_SHELL_BLOCKED_COMMANDS = new Set([
+    "rm", "rmdir", "mv", "cp", "mkdir", "touch", "ln", "chmod", "chown", "chgrp", "truncate", "tee", "dd", "shred",
+    "bash", "sh", "zsh", "dash", "ksh", "fish", "env", "sudo", "su", "timeout", "sleep",
+]);
+
+const SESSION_SHELL_READ_COMMANDS = new Set([
+    "cat", "head", "tail", "grep", "rg", "jq", "awk", "wc", "cut", "tr", "sed", "sort", "uniq", "nl", "paste", "join",
+    "comm", "column", "printf", "echo", "rev", "tac", "find", "ls", "pwd", "file", "stat", "strings", "od",
+]);
+
+const SESSION_SHELL_WRITE_REDIRECTION_OPERATORS = new Set([">", ">>", ">|", "<>", "&>", "&>>", ">&"]);
+
+const SESSION_SHELL_EXECUTION_LIMITS = {
+    maxCallDepth: 32,
+    maxCommandCount: 1200,
+    maxLoopIterations: 2500,
+    maxAwkIterations: 8000,
+    maxSedIterations: 8000,
+};
+
+type SessionShellFiles = {
+    conversationJson: string;
+    transcriptText: string;
+    sessionMeta: string;
+};
+
+type SessionShellPolicyResult = {
+    allowed: boolean;
+    reason?: string;
+};
+
+type BashInvocation = {
+    commandName: string;
+    effectiveCommandName: string;
+    effectiveArgs: string[];
+    redirections: Array<{ operator: string }>;
+};
+
+const WRAPPER_COMMANDS = new Set(["command", "builtin", "exec", "nohup"]);
+
+function commandBaseName(value: string): string {
+    const normalized = value.replace(/\\+/g, "/");
+    const idx = normalized.lastIndexOf("/");
+    const base = idx >= 0 ? normalized.slice(idx + 1) : normalized;
+    return base.toLowerCase();
+}
+
+function partToText(part: any): string {
+    if (!part || typeof part !== "object") return "";
+
+    switch (part.type) {
+        case "Literal":
+        case "SingleQuoted":
+        case "Escaped":
+            return typeof part.value === "string" ? part.value : "";
+        case "DoubleQuoted":
+            return Array.isArray(part.parts) ? part.parts.map(partToText).join("") : "";
+        case "Glob":
+            return typeof part.pattern === "string" ? part.pattern : "";
+        case "TildeExpansion":
+            return typeof part.user === "string" && part.user.length > 0 ? `~${part.user}` : "~";
+        case "ParameterExpansion":
+            return typeof part.parameter === "string" && part.parameter.length > 0
+                ? "${" + part.parameter + "}"
+                : "${}";
+        case "CommandSubstitution":
+            return "$(...)";
+        case "ProcessSubstitution":
+            return part.direction === "output" ? ">(...)" : "<(...)";
+        case "ArithmeticExpansion":
+            return "$((...))";
+        default:
+            return "";
+    }
+}
+
+function wordToText(word: any): string {
+    if (!word || typeof word !== "object" || !Array.isArray(word.parts)) return "";
+    return word.parts.map(partToText).join("");
+}
+
+function resolveEffectiveCommand(commandNameRaw: string, args: string[]): {
+    effectiveCommandName: string;
+    effectiveArgs: string[];
+} {
+    const primary = commandNameRaw.trim();
+    const primaryBase = commandBaseName(primary);
+
+    if (WRAPPER_COMMANDS.has(primaryBase)) {
+        const next = args[0] ?? "";
+        return {
+            effectiveCommandName: commandBaseName(next),
+            effectiveArgs: args.slice(1),
+        };
+    }
+
+    if (primaryBase === "env") {
+        let idx = 0;
+        while (idx < args.length) {
+            const token = args[idx] ?? "";
+            if (token === "--") {
+                idx += 1;
+                break;
+            }
+            if (token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
+
+        const next = args[idx] ?? "";
+        return {
+            effectiveCommandName: commandBaseName(next),
+            effectiveArgs: args.slice(idx + 1),
+        };
+    }
+
+    if (primaryBase === "sudo") {
+        let idx = 0;
+        while (idx < args.length) {
+            const token = args[idx] ?? "";
+            if (token === "--") {
+                idx += 1;
+                break;
+            }
+            if (token.startsWith("-")) {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
+
+        const next = args[idx] ?? "";
+        return {
+            effectiveCommandName: commandBaseName(next),
+            effectiveArgs: args.slice(idx + 1),
+        };
+    }
+
+    return {
+        effectiveCommandName: primaryBase,
+        effectiveArgs: args,
+    };
+}
+
+function collectNestedScriptsFromWord(word: any, collect: (script: any) => void): void {
+    if (!word || typeof word !== "object" || !Array.isArray(word.parts)) return;
+
+    for (const part of word.parts) {
+        if (!part || typeof part !== "object") continue;
+
+        if (part.type === "DoubleQuoted") {
+            collectNestedScriptsFromWord(part, collect);
+            continue;
+        }
+
+        if ((part.type === "CommandSubstitution" || part.type === "ProcessSubstitution") && part.body) {
+            collect(part.body);
+        }
+    }
+}
+
+function analyzeBashScript(command: string): { parseError?: string; invocations: BashInvocation[] } {
+    try {
+        if (!parseBash) {
+            return { parseError: "just-bash parse unavailable", invocations: [] };
+        }
+
+        const ast: any = parseBash(command);
+        const invocations: BashInvocation[] = [];
+
+        const visitScript = (script: any) => {
+            if (!script || typeof script !== "object" || !Array.isArray(script.statements)) return;
+
+            for (const statement of script.statements) {
+                if (!statement || typeof statement !== "object" || !Array.isArray(statement.pipelines)) continue;
+
+                for (const pipeline of statement.pipelines) {
+                    if (!pipeline || typeof pipeline !== "object" || !Array.isArray(pipeline.commands)) continue;
+
+                    for (const commandNode of pipeline.commands) {
+                        if (!commandNode || typeof commandNode !== "object") continue;
+
+                        if (commandNode.type === "SimpleCommand") {
+                            const commandNameRaw = wordToText(commandNode.name).trim();
+                            const commandName = commandBaseName(commandNameRaw);
+                            const args = Array.isArray(commandNode.args)
+                                ? commandNode.args.map((arg: any) => wordToText(arg)).filter(Boolean)
+                                : [];
+                            const redirections = Array.isArray(commandNode.redirections)
+                                ? commandNode.redirections.map((r: any) => ({ operator: typeof r?.operator === "string" ? r.operator : "" }))
+                                : [];
+
+                            const effective = resolveEffectiveCommand(commandNameRaw, args);
+                            invocations.push({
+                                commandName,
+                                effectiveCommandName: effective.effectiveCommandName,
+                                effectiveArgs: effective.effectiveArgs,
+                                redirections,
+                            });
+
+                            if (commandNode.name) collectNestedScriptsFromWord(commandNode.name, visitScript);
+                            if (Array.isArray(commandNode.args)) {
+                                for (const arg of commandNode.args) {
+                                    collectNestedScriptsFromWord(arg, visitScript);
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (Array.isArray(commandNode.body)) visitScript({ statements: commandNode.body });
+                        if (Array.isArray(commandNode.condition)) visitScript({ statements: commandNode.condition });
+                        if (Array.isArray(commandNode.clauses)) {
+                            for (const clause of commandNode.clauses) {
+                                if (Array.isArray(clause?.condition)) visitScript({ statements: clause.condition });
+                                if (Array.isArray(clause?.body)) visitScript({ statements: clause.body });
+                            }
+                        }
+                        if (Array.isArray(commandNode.elseBody)) visitScript({ statements: commandNode.elseBody });
+                        if (Array.isArray(commandNode.items)) {
+                            for (const item of commandNode.items) {
+                                if (Array.isArray(item?.body)) visitScript({ statements: item.body });
+                            }
+                        }
+                        if (commandNode.word) collectNestedScriptsFromWord(commandNode.word, visitScript);
+                        if (Array.isArray(commandNode.words)) {
+                            for (const word of commandNode.words) {
+                                collectNestedScriptsFromWord(word, visitScript);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        visitScript(ast);
+        return { invocations };
+    } catch (error: any) {
+        return { parseError: error?.message ?? String(error), invocations: [] };
+    }
+}
 
 function normalizeThinkingLevel(value: unknown): ThinkingLevel | undefined {
     if (typeof value !== "string") return undefined;
@@ -490,6 +772,158 @@ async function loadSessionAsRenderedEntries(sessionPath: string): Promise<Render
     return entries;
 }
 
+function buildSessionShellFiles(
+    renderedEntries: RenderedEntry[],
+    meta: {
+        sessionPath: string;
+        sessionId?: string;
+        parentSession?: string;
+        entryCount: number;
+        model: string;
+        thinkingLevel: ThinkingLevel;
+    },
+): SessionShellFiles {
+    const conversation = renderedEntries.map((entry) => ({
+        index: entry.index,
+        type: entry.type,
+        id: entry.id,
+        timestamp: entry.timestamp,
+        text: entry.lines.join("\n").trim(),
+        lines: entry.lines,
+    }));
+
+    const transcript = renderedEntries.flatMap((entry) => entry.lines).join("\n");
+
+    return {
+        conversationJson: JSON.stringify(conversation, null, 2),
+        transcriptText: transcript,
+        sessionMeta: JSON.stringify(meta, null, 2),
+    };
+}
+
+function validateSessionShellCommand(command: string): SessionShellPolicyResult {
+    const trimmed = command.trim();
+    if (!trimmed) {
+        return { allowed: false, reason: "empty command" };
+    }
+
+    const analysis = analyzeBashScript(trimmed);
+
+    // If AST parsing isn't available (e.g. single-extension install without just-bash>=2),
+    // degrade to best-effort regex checks. session_shell runs in an ephemeral in-memory FS
+    // per tool call, so this is primarily a UX guardrail (not a hard security boundary)
+    if (analysis.parseError) {
+        if (/[\s\S]*>>/.test(trimmed) || /[^<]>(?![>&])/.test(trimmed) || /2>/.test(trimmed)) {
+            return { allowed: false, reason: "write redirection is not allowed" };
+        }
+
+        const blocked = [
+            "rm", "rmdir", "mv", "cp", "mkdir", "touch", "ln", "chmod", "chown", "chgrp", "truncate", "tee", "dd", "shred",
+            "bash", "sh", "zsh", "dash", "ksh", "fish", "env", "sudo", "su",
+        ];
+
+        const blockedRegex = new RegExp(`\\b(${blocked.join("|")})\\b`, "i");
+        if (blockedRegex.test(trimmed)) {
+            return { allowed: false, reason: "command blocked (parser unavailable; conservative policy)" };
+        }
+
+        return { allowed: true };
+    }
+
+    if (analysis.invocations.length === 0) {
+        return { allowed: false, reason: "no executable command found" };
+    }
+
+    for (const invocation of analysis.invocations) {
+        if (invocation.redirections.some((r) => SESSION_SHELL_WRITE_REDIRECTION_OPERATORS.has(r.operator))) {
+            return { allowed: false, reason: `write redirection is not allowed (${invocation.commandNameRaw || "command"})` };
+        }
+
+        const executable = invocation.effectiveCommandName || invocation.commandName;
+        if (!executable) continue;
+
+        if (SESSION_SHELL_BLOCKED_COMMANDS.has(executable)) {
+            return { allowed: false, reason: `command is not allowed in session_shell: ${executable}` };
+        }
+
+        if (!SESSION_SHELL_READ_COMMANDS.has(executable)) {
+            return { allowed: false, reason: `only read-oriented commands are allowed in session_shell: ${executable}` };
+        }
+
+        if (executable === "sed") {
+            const hasInPlace = invocation.effectiveArgs.some((arg) => arg === "-i" || arg.startsWith("-i") || arg === "--in-place");
+            if (hasInPlace) {
+                return { allowed: false, reason: "sed in-place edits are not allowed" };
+            }
+        }
+
+        if (executable === "find") {
+            const hasDeleteAction = invocation.effectiveArgs.some((arg) => arg === "-delete");
+            if (hasDeleteAction) {
+                return { allowed: false, reason: "find -delete is not allowed" };
+            }
+        }
+    }
+
+    return { allowed: true };
+}
+
+async function runSessionShellCommand(command: string, files: SessionShellFiles): Promise<{ text: string; isError: boolean }> {
+    await ensureJustBashLoaded();
+
+    const policy = validateSessionShellCommand(command);
+    if (!policy.allowed) {
+        return {
+            text: `Error: blocked by session_shell policy (${policy.reason})`,
+            isError: true,
+        };
+    }
+
+    if (!BashCtor) {
+        return {
+            text: "Error: just-bash is not available (session_shell disabled). Install just-bash >= 2 to enable it.",
+            isError: true,
+        };
+    }
+
+    try {
+        const bash = new BashCtor({
+            files: {
+                "/conversation.json": files.conversationJson,
+                "/transcript.txt": files.transcriptText,
+                "/session.meta.json": files.sessionMeta,
+            },
+            cwd: "/",
+            executionLimits: SESSION_SHELL_EXECUTION_LIMITS,
+        });
+
+        const result = await bash.exec(command);
+        const outputLines: string[] = [];
+
+        if (result.stdout) {
+            outputLines.push(result.stdout.trimEnd());
+        }
+        if (result.stderr) {
+            outputLines.push(`stderr:\n${result.stderr.trimEnd()}`);
+        }
+
+        if (result.exitCode !== 0) {
+            outputLines.push(`exit code: ${result.exitCode}`);
+        }
+
+        const output = outputLines.join("\n").trim();
+        return {
+            text: output.length > 0 ? output : "(no output)",
+            isError: result.exitCode !== 0,
+        };
+    } catch (error: any) {
+        return {
+            text: `Error: ${error?.message ?? String(error)}`,
+            isError: true,
+        };
+    }
+}
+
 async function mapWithConcurrency<T, U>(
     items: T[],
     concurrency: number,
@@ -641,6 +1075,9 @@ async function runSessionAsk(params: RunSessionAskParams): Promise<string> {
         throw new Error("No model available (or no API key) for session-ask");
     }
 
+    await ensureJustBashLoaded();
+    maybeWarnAstUnavailable(ctx);
+
     const renderedEntries = await loadSessionAsRenderedEntries(sessionPath);
 
     const meta = {
@@ -651,6 +1088,15 @@ async function runSessionAsk(params: RunSessionAskParams): Promise<string> {
         model: `${model.provider}/${model.id}`,
         thinkingLevel: selectedThinkingLevel,
     };
+
+    const sessionShellFiles = buildSessionShellFiles(renderedEntries, {
+        sessionPath,
+        sessionId,
+        parentSession: meta.parentSession,
+        entryCount: renderedEntries.length,
+        model: `${model.provider}/${model.id}`,
+        thinkingLevel: selectedThinkingLevel,
+    });
 
     const tools: Tool[] = [
         {
@@ -688,6 +1134,30 @@ async function runSessionAsk(params: RunSessionAskParams): Promise<string> {
         },
     ];
 
+    if (BashCtor) {
+        tools.push({
+            name: "session_shell",
+            description:
+                "Run a read-only shell command against virtual files. Files: /conversation.json, /transcript.txt, /session.meta.json. " +
+                "Use jq/grep/rg/awk/wc/head/tail/cut/sort/uniq for structured extraction.",
+            parameters: Type.Object({
+                command: Type.String({ description: "Read-only shell command to execute" }),
+            }),
+        });
+    }
+
+    const explorationStrategyLines = [
+        "1) Use session_meta (and session_lineage if relevant)",
+        "2) Use session_search with a few candidate keywords",
+        "3) Use session_read around the most relevant matches",
+        ...(BashCtor
+            ? [
+                "4) For high-precision extraction (counts, filtering, field projection), use session_shell on /conversation.json or /transcript.txt",
+                "5) Answer the user's question concisely with citations",
+            ]
+            : ["4) Answer the user's question concisely with citations"]),
+    ];
+
     const systemPrompt = `${agent.systemPrompt.trim()}
 
 You are analyzing a Pi session JSONL file. You DO NOT have the full transcript in context.
@@ -703,10 +1173,7 @@ Important limitation:
 - If the user needs information from a parent/grandparent session, tell them which sessionPath to call session_ask on next
 
 Exploration strategy:
-1) Use session_meta (and session_lineage if relevant)
-2) Use session_search with a few candidate keywords
-3) Use session_read around the most relevant matches
-4) Answer the user's question concisely with citations
+${explorationStrategyLines.join("\n")}
 `;
 
     const initialUserMessage: Message = {
@@ -844,6 +1311,26 @@ Exploration strategy:
                             const text = out.join("\n").slice(0, config.toolResultMaxChars);
 
                             return { id: tc.id, name: toolName, text, isError: false };
+                        }
+
+                        if (toolName === "session_shell") {
+                            const command = String(toolArgs.command ?? "").trim();
+                            if (!command) {
+                                return {
+                                    id: tc.id,
+                                    name: toolName,
+                                    text: "Error: command is required",
+                                    isError: true,
+                                };
+                            }
+
+                            const shellResult = await runSessionShellCommand(command, sessionShellFiles);
+                            return {
+                                id: tc.id,
+                                name: toolName,
+                                text: shellResult.text.slice(0, config.toolResultMaxChars),
+                                isError: shellResult.isError,
+                            };
                         }
 
                         return { id: tc.id, name: toolName, text: `Error: Unknown tool: ${toolName}`, isError: true };
@@ -1046,6 +1533,8 @@ export default function sessionAskExtension(pi: ExtensionAPI) {
         }),
 
         async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+            await ensureJustBashLoaded();
+            maybeWarnAstUnavailable(ctx);
             const question = String((params as any)?.question ?? "").trim();
             if (!question) {
                 return {
@@ -1106,6 +1595,9 @@ export default function sessionAskExtension(pi: ExtensionAPI) {
                 ctx.ui.notify("session-ask requires interactive mode", "error");
                 return;
             }
+
+            await ensureJustBashLoaded();
+            maybeWarnAstUnavailable(ctx);
 
             const parsed = parseSessionAskArgs(args);
             if (!parsed.question) {

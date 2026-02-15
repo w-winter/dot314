@@ -24,6 +24,257 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Key } from "@mariozechner/pi-tui";
 
+let parseBash: ((input: string) => any) | null = null;
+let justBashLoadPromise: Promise<void> | null = null;
+let justBashLoadDone = false;
+
+async function ensureJustBashLoaded(): Promise<void> {
+	if (justBashLoadDone) return;
+
+	if (!justBashLoadPromise) {
+		justBashLoadPromise = import("just-bash")
+			.then((mod: any) => {
+				parseBash = typeof mod?.parse === "function" ? mod.parse : null;
+			})
+			.catch(() => {
+				parseBash = null;
+			})
+			.finally(() => {
+				justBashLoadDone = true;
+			});
+	}
+
+	await justBashLoadPromise;
+}
+
+let warnedAstUnavailable = false;
+function maybeWarnAstUnavailable(ctx: ExtensionContext): void {
+	if (warnedAstUnavailable) return;
+	if (parseBash) return;
+	if (!ctx.hasUI) return;
+
+	warnedAstUnavailable = true;
+	ctx.ui.notify(
+		"plan-mode: bash AST parser unavailable; falling back to best-effort regex command checks",
+		"warning",
+	);
+}
+
+type BashInvocation = {
+	commandNameRaw: string;
+	commandName: string;
+	effectiveCommandName: string;
+	effectiveArgs: string[];
+	hasWriteRedirection: boolean;
+};
+
+const WRAPPER_COMMANDS = new Set(["command", "builtin", "exec", "nohup"]);
+const WRITE_REDIRECTION_OPERATORS = new Set([">", ">>", ">|", "<>", "&>", "&>>", ">&"]);
+
+function commandBaseName(value: string): string {
+	const normalized = value.replace(/\\+/g, "/");
+	const idx = normalized.lastIndexOf("/");
+	const base = idx >= 0 ? normalized.slice(idx + 1) : normalized;
+	return base.toLowerCase();
+}
+
+function partToText(part: any): string {
+	if (!part || typeof part !== "object") return "";
+
+	switch (part.type) {
+		case "Literal":
+		case "SingleQuoted":
+		case "Escaped":
+			return typeof part.value === "string" ? part.value : "";
+		case "DoubleQuoted":
+			return Array.isArray(part.parts) ? part.parts.map(partToText).join("") : "";
+		case "Glob":
+			return typeof part.pattern === "string" ? part.pattern : "";
+		case "TildeExpansion":
+			return typeof part.user === "string" && part.user.length > 0 ? `~${part.user}` : "~";
+		case "ParameterExpansion":
+			return typeof part.parameter === "string" && part.parameter.length > 0
+				? "${" + part.parameter + "}"
+				: "${}";
+		case "CommandSubstitution":
+			return "$(...)";
+		case "ProcessSubstitution":
+			return part.direction === "output" ? ">(...)" : "<(...)";
+		case "ArithmeticExpansion":
+			return "$((...))";
+		default:
+			return "";
+	}
+}
+
+function wordToText(word: any): string {
+	if (!word || typeof word !== "object" || !Array.isArray(word.parts)) return "";
+	return word.parts.map(partToText).join("");
+}
+
+function resolveEffectiveCommand(commandNameRaw: string, args: string[]): {
+	effectiveCommandName: string;
+	effectiveArgs: string[];
+} {
+	const primary = commandNameRaw.trim();
+	const primaryBase = commandBaseName(primary);
+
+	if (WRAPPER_COMMANDS.has(primaryBase)) {
+		const next = args[0] ?? "";
+		return {
+			effectiveCommandName: commandBaseName(next),
+			effectiveArgs: args.slice(1),
+		};
+	}
+
+	if (primaryBase === "env") {
+		let idx = 0;
+		while (idx < args.length) {
+			const token = args[idx] ?? "";
+			if (token === "--") {
+				idx += 1;
+				break;
+			}
+			if (token.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token)) {
+				idx += 1;
+				continue;
+			}
+			break;
+		}
+
+		const next = args[idx] ?? "";
+		return {
+			effectiveCommandName: commandBaseName(next),
+			effectiveArgs: args.slice(idx + 1),
+		};
+	}
+
+	if (primaryBase === "sudo") {
+		let idx = 0;
+		while (idx < args.length) {
+			const token = args[idx] ?? "";
+			if (token === "--") {
+				idx += 1;
+				break;
+			}
+			if (token.startsWith("-")) {
+				idx += 1;
+				continue;
+			}
+			break;
+		}
+
+		const next = args[idx] ?? "";
+		return {
+			effectiveCommandName: commandBaseName(next),
+			effectiveArgs: args.slice(idx + 1),
+		};
+	}
+
+	return {
+		effectiveCommandName: primaryBase,
+		effectiveArgs: args,
+	};
+}
+
+function collectNestedScriptsFromWord(word: any, collect: (script: any) => void): void {
+	if (!word || typeof word !== "object" || !Array.isArray(word.parts)) return;
+
+	for (const part of word.parts) {
+		if (!part || typeof part !== "object") continue;
+
+		if (part.type === "DoubleQuoted") {
+			collectNestedScriptsFromWord(part, collect);
+			continue;
+		}
+
+		if ((part.type === "CommandSubstitution" || part.type === "ProcessSubstitution") && part.body) {
+			collect(part.body);
+		}
+	}
+}
+
+function analyzeBashScript(command: string): { parseError?: string; invocations: BashInvocation[] } {
+	try {
+		if (!parseBash) {
+			return { parseError: "just-bash parse unavailable", invocations: [] };
+		}
+
+		const ast: any = parseBash(command);
+		const invocations: BashInvocation[] = [];
+
+		const visitScript = (script: any) => {
+			if (!script || typeof script !== "object" || !Array.isArray(script.statements)) return;
+
+			for (const statement of script.statements) {
+				if (!statement || typeof statement !== "object" || !Array.isArray(statement.pipelines)) continue;
+
+				for (const pipeline of statement.pipelines) {
+					if (!pipeline || typeof pipeline !== "object" || !Array.isArray(pipeline.commands)) continue;
+
+					for (const commandNode of pipeline.commands) {
+						if (!commandNode || typeof commandNode !== "object") continue;
+
+						if (commandNode.type === "SimpleCommand") {
+							const commandNameRaw = wordToText(commandNode.name).trim();
+							const commandName = commandBaseName(commandNameRaw);
+							const args = Array.isArray(commandNode.args)
+								? commandNode.args.map((arg: any) => wordToText(arg)).filter(Boolean)
+								: [];
+							const redirections = Array.isArray(commandNode.redirections)
+								? commandNode.redirections.map((r: any) => typeof r?.operator === "string" ? r.operator : "")
+								: [];
+							const effective = resolveEffectiveCommand(commandNameRaw, args);
+
+							invocations.push({
+								commandNameRaw,
+								commandName,
+								effectiveCommandName: effective.effectiveCommandName,
+								effectiveArgs: effective.effectiveArgs,
+								hasWriteRedirection: redirections.some((op) => WRITE_REDIRECTION_OPERATORS.has(op)),
+							});
+
+							if (commandNode.name) collectNestedScriptsFromWord(commandNode.name, visitScript);
+							if (Array.isArray(commandNode.args)) {
+								for (const arg of commandNode.args) {
+									collectNestedScriptsFromWord(arg, visitScript);
+								}
+							}
+							continue;
+						}
+
+						if (Array.isArray(commandNode.body)) visitScript({ statements: commandNode.body });
+						if (Array.isArray(commandNode.condition)) visitScript({ statements: commandNode.condition });
+						if (Array.isArray(commandNode.clauses)) {
+							for (const clause of commandNode.clauses) {
+								if (Array.isArray(clause?.condition)) visitScript({ statements: clause.condition });
+								if (Array.isArray(clause?.body)) visitScript({ statements: clause.body });
+							}
+						}
+						if (Array.isArray(commandNode.elseBody)) visitScript({ statements: commandNode.elseBody });
+						if (Array.isArray(commandNode.items)) {
+							for (const item of commandNode.items) {
+								if (Array.isArray(item?.body)) visitScript({ statements: item.body });
+							}
+						}
+						if (commandNode.word) collectNestedScriptsFromWord(commandNode.word, visitScript);
+						if (Array.isArray(commandNode.words)) {
+							for (const word of commandNode.words) {
+								collectNestedScriptsFromWord(word, visitScript);
+							}
+						}
+					}
+				}
+			}
+		};
+
+		visitScript(ast);
+		return { invocations };
+	} catch (error: any) {
+		return { parseError: error?.message ?? String(error), invocations: [] };
+	}
+}
+
 // Read-only tools for plan mode
 //
 // Note: `rp` is provided by the repoprompt-mcp extension and can proxy many RepoPrompt tools.
@@ -161,11 +412,81 @@ function isRepoPromptMcpWriteRequest(input: unknown): boolean {
 	return /(^|_)(apply[-_]edits)$/.test(normalizedCall) || /(^|_)(file_actions)$/.test(normalizedCall);
 }
 
-function isSafeCommand(command: string): boolean {
-	if (DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command))) {
+const AST_READ_ONLY_COMMANDS = new Set([
+	"cat", "head", "tail", "less", "more", "grep", "find", "ls", "pwd", "echo", "printf", "wc", "sort", "uniq",
+	"diff", "file", "stat", "du", "df", "tree", "which", "whereis", "type", "env", "printenv", "uname", "whoami",
+	"id", "date", "cal", "uptime", "ps", "top", "htop", "free", "jq", "awk", "rg", "fd", "bat", "exa", "rp-cli",
+	"rp_exec", "rp_bind", "curl",
+]);
+
+const AST_BLOCKED_COMMANDS = new Set([
+	"rm", "rmdir", "mv", "cp", "mkdir", "touch", "chmod", "chown", "chgrp", "ln", "tee", "truncate", "dd", "shred",
+	"sudo", "su", "kill", "pkill", "killall", "reboot", "shutdown", "systemctl", "service", "vim", "vi", "nano", "emacs",
+	"code", "subl", "apt", "apt-get", "brew", "pip",
+]);
+
+const ALLOWED_GIT_SUBCOMMANDS = new Set(["status", "log", "diff", "show", "branch", "remote", "config", "ls-files", "ls-tree", "ls-remote"]);
+const ALLOWED_NPM_SUBCOMMANDS = new Set(["list", "ls", "view", "info", "search", "outdated", "audit"]);
+const ALLOWED_YARN_SUBCOMMANDS = new Set(["list", "info", "why", "audit"]);
+const ALLOWED_PNPM_SUBCOMMANDS = new Set(["list", "ls", "view", "info", "search", "outdated", "audit"]);
+
+function isInvocationReadOnly(invocation: { effectiveCommandName: string; effectiveArgs: string[]; commandName: string; commandNameRaw: string }): boolean {
+	const commandName = invocation.effectiveCommandName || invocation.commandName;
+	const args = invocation.effectiveArgs;
+
+	if (!commandName) {
+		return true;
+	}
+
+	if (AST_BLOCKED_COMMANDS.has(commandName)) {
 		return false;
 	}
 
+	if (commandName === "git") {
+		const sub = (args[0] ?? "").toLowerCase();
+		if (!sub) return true;
+		if (sub === "config") {
+			return args[1] === "--get";
+		}
+		return ALLOWED_GIT_SUBCOMMANDS.has(sub) || sub.startsWith("ls-");
+	}
+
+	if (commandName === "npm") {
+		const sub = (args[0] ?? "").toLowerCase();
+		return !sub || ALLOWED_NPM_SUBCOMMANDS.has(sub);
+	}
+
+	if (commandName === "yarn") {
+		const sub = (args[0] ?? "").toLowerCase();
+		return !sub || ALLOWED_YARN_SUBCOMMANDS.has(sub);
+	}
+
+	if (commandName === "pnpm") {
+		const sub = (args[0] ?? "").toLowerCase();
+		return !sub || ALLOWED_PNPM_SUBCOMMANDS.has(sub);
+	}
+
+	if (commandName === "node" || commandName === "python" || commandName === "python3") {
+		return args.length > 0 && args.every((arg) => arg === "--version");
+	}
+
+	if (commandName === "wget") {
+		for (let i = 0; i < args.length; i += 1) {
+			if (args[i] === "-O") {
+				return args[i + 1] === "-";
+			}
+		}
+		return false;
+	}
+
+	if (commandName === "sed") {
+		return args.includes("-n");
+	}
+
+	return AST_READ_ONLY_COMMANDS.has(commandName);
+}
+
+function isSafeCommand(command: string): boolean {
 	// Prevent using rp-cli via bash to enter interactive REPL while in plan mode
 	if (RP_CLI_INTERACTIVE_PATTERN.test(command)) {
 		return false;
@@ -176,7 +497,20 @@ function isSafeCommand(command: string): boolean {
 		return false;
 	}
 
-	// Strict allowlist: only allow commands we explicitly recognize as read-only
+	const analysis = analyzeBashScript(command);
+	if (!analysis.parseError) {
+		if (analysis.invocations.some((invocation) => invocation.hasWriteRedirection)) {
+			return false;
+		}
+
+		return analysis.invocations.every((invocation) => isInvocationReadOnly(invocation));
+	}
+
+	// Fallback: original regex policy if parsing fails
+	if (DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command))) {
+		return false;
+	}
+
 	return SAFE_COMMANDS.some((pattern) => pattern.test(command));
 }
 
@@ -249,7 +583,7 @@ export default function planModeExtension(pi: ExtensionAPI) {
 	});
 
 	// Block write operations in plan mode (bash + RepoPrompt + native file tools as a backstop)
-	pi.on("tool_call", async (event) => {
+	pi.on("tool_call", async (event, ctx) => {
 		if (!planModeEnabled) return;
 
 		// Backstop: even if another extension (e.g. /tools) re-enables these, plan mode must remain read-only
@@ -261,6 +595,8 @@ export default function planModeExtension(pi: ExtensionAPI) {
 		}
 
 		if (event.toolName === "bash") {
+			await ensureJustBashLoaded();
+			maybeWarnAstUnavailable(ctx);
 			const command = event.input.command as string;
 			if (!isSafeCommand(command)) {
 				return {

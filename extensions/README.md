@@ -11,6 +11,7 @@
 - ● [`session-ask/`](session-ask/) ([README](./session-ask/README.md))
   - `session_ask({ question, sessionPath? })` queries the current (or specified) session JSONL (including pre-compaction history) without bloating the current model context; `/session-ask ...` is a UI wrapper
   - `session_lineage({ ... })` returns fork ancestry (parentSession chain)
+  - Internal `session_shell` uses a read-only just-bash virtual FS (`/conversation.json`, `/transcript.txt`, `/session.meta.json`) for precise extraction with `jq`/`rg`/`awk`/`wc`
   - Optional minimal fork-lineage system prompt injection via `injectForkHintSystemPrompt` (see README)
   - Configurable model/prompt via `config.json`, optionally pointing at an agent definition under `~/.pi/agent/agents/`
 
@@ -24,6 +25,7 @@
   - [RepoPrompt](https://repoprompt.com/docs) bridge for Pi: `rp_bind` + `rp_exec`
   - `rp_exec` wraps `rp-cli -e ...` with safe defaults (quiet, fail-fast, timeout, output truncation)
   - Safety features: blocks unbound usage, delete-like commands (unless `allowDelete=true`), and in-place workspace switching (unless explicitly allowed)
+  - Uses just-bash AST parsing (requires `just-bash` >= 2) for command-chain inspection (better handling of quoting/escaping/chaining edge cases)
   - Syntax-highlights fenced code blocks; diff blocks get word-level change highlighting
   - Persists the current RepoPrompt window/tab binding across session reloads
   - Edit ergonomics: detects no-op edits and fails loudly by default (set `failOnNoopEdits=false` to allow intentional no-ops)
@@ -146,6 +148,7 @@
   - `/plan` (and `ctrl+alt+p`) toggles a read-only sandbox
   - No todo extraction or step execution prompting (planning stays on the user)
   - Restricts tools, blocks destructive shell commands, and blocks RepoPrompt write operations
+  - Adds just-bash AST-backed bash command inspection (requires `just-bash` >= 2; regex fallback if parse fails)
     - Covers `rp_exec`, `rp-cli -e ...`, and `rp` (repoprompt-mcp)
 
 - ◐ [`oracle.ts`](oracle.ts) (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
@@ -175,7 +178,8 @@
 - ● [`protect-paths.ts`](protect-paths.ts) - standalone directory/command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-extensions)
   - 🔄 **Replaces the directory protection and brew prevention hooks from the old `guardrails/` directory.** For `.env` file protection and AST-based dangerous command gates (the other components of the old `guardrails/`), install upstream: `pi install npm:@aliou/pi-guardrails`
   - Hard blocks: `.git/` and `node_modules/` directory access (file tools + bash command parsing), Homebrew install/upgrade commands
-  - Confirm gates: broad `rm` commands, piped shell execution (`: | sh`)
+  - Uses just-bash AST analysis (requires `just-bash` >= 2) to inspect nested command structures (including substitutions/functions/conditionals)
+  - Confirm gates: broad delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
   - Allowlist for Pi's Homebrew install path in `node_modules/` (read-only)
 
 - ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
@@ -201,6 +205,7 @@ Upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packa
 Other:
 - ○ [`code-actions/`](code-actions/) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/code` to pick code blocks or inline code from recent assistant messages, then copy or insert
+  - `run` now executes snippets in a just-bash OverlayFs sandbox by default on non-Windows (copy-on-write over cwd), with optional fallback to real shell when sandbox commands are unsupported
   - Type to search; enter to copy, right arrow to insert in the command line
 - ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`

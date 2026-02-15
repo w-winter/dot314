@@ -58,9 +58,33 @@ export function extractText(content: unknown): string {
 
 	let text = "";
 	for (const part of content) {
-		if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
-			const value = (part as { text?: string }).text;
-			if (value) text += value;
+		if (!part) continue;
+
+		if (typeof part === "string") {
+			text += part;
+			continue;
+		}
+
+		if (typeof part !== "object") continue;
+
+		// Pi content parts are usually `{ type: "text", text: "..." }`, but tool outputs and
+		// other renderers may use different `type`s while still storing the actual text in a `.text` field
+		const anyPart = part as any;
+		if (typeof anyPart.text === "string" && anyPart.text.length > 0) {
+			text += anyPart.text;
+			continue;
+		}
+
+		// Best-effort: some tool result parts may expose `content`/`stdout`/`stderr`
+		if (typeof anyPart.content === "string" && anyPart.content.length > 0) {
+			text += anyPart.content;
+			continue;
+		}
+		if (typeof anyPart.stdout === "string" && anyPart.stdout.length > 0) {
+			text += anyPart.stdout;
+		}
+		if (typeof anyPart.stderr === "string" && anyPart.stderr.length > 0) {
+			text += `\nstderr:\n${anyPart.stderr}`;
 		}
 	}
 
@@ -153,6 +177,68 @@ export function extractSnippets(
 			messageId,
 			sourceLabel,
 		});
+	}
+
+	// Also extract shell transcript-style prompt lines from assistant messages, e.g.
+	//   $ echo hello
+	//   > continued args
+	// This is common when the assistant shows a terminal-style interaction without a fenced code block.
+	// We only extract prompt lines outside fenced code blocks
+	const lines = text.split(/\r?\n/);
+	let cursor = 0;
+	let currentCommandLines: string[] = [];
+
+	const flushPromptSnippet = () => {
+		if (snippets.length >= limit) return;
+		const content = currentCommandLines.join("\n").trim();
+		if (!content) return;
+		snippets.push({
+			id: startId + snippets.length,
+			type: "block",
+			language: "bash",
+			content,
+			messageId,
+			sourceLabel,
+		});
+	};
+
+	for (const line of lines) {
+		const lineStart = cursor;
+		cursor += line.length + 1;
+
+		const inFence = fencedRanges.some((range) => lineStart >= range.start && lineStart < range.end);
+		if (inFence) {
+			if (currentCommandLines.length > 0) {
+				flushPromptSnippet();
+				currentCommandLines = [];
+				currentStartIndex = null;
+			}
+			continue;
+		}
+
+		const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
+		const isPrompt = /^\s*\$\s+/.test(stripped) || /^\s*!\s*/.test(stripped);
+		const isContinuation = /^\s*>\s+/.test(stripped);
+
+		if (isPrompt) {
+			currentCommandLines.push(stripped.replace(/^\s*(?:\$\s+|!\s*)/, ""));
+			continue;
+		}
+
+		if (isContinuation && currentCommandLines.length > 0) {
+			currentCommandLines.push(stripped.replace(/^\s*>\s+/, ""));
+			continue;
+		}
+
+		if (currentCommandLines.length > 0) {
+			flushPromptSnippet();
+			currentCommandLines = [];
+			currentStartIndex = null;
+		}
+	}
+
+	if (currentCommandLines.length > 0) {
+		flushPromptSnippet();
 	}
 
 	return snippets;

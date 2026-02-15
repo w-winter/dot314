@@ -54,13 +54,15 @@ function collectSnippets(
 	limit: number,
 ): Snippet[] {
 	const branchEntries = ctx.sessionManager.getBranch();
-	const assistantEntries = branchEntries.filter(
-		(entry) => entry.type === "message" && entry.message?.role === "assistant",
-	);
+	const candidateEntries = branchEntries.filter((entry) => {
+		if (entry.type !== "message") return false;
+		const role = entry.message?.role;
+		return role === "assistant" || role === "toolResult";
+	});
 
-	if (assistantEntries.length === 0) return [];
+	if (candidateEntries.length === 0) return [];
 
-	const sorted = assistantEntries.slice().sort((a, b) => {
+	const sorted = candidateEntries.slice().sort((a, b) => {
 		const aTime = Date.parse(a.timestamp);
 		const bTime = Date.parse(b.timestamp);
 		return bTime - aTime;
@@ -72,9 +74,32 @@ function collectSnippets(
 	let nextId = 0;
 	for (const entry of entriesToScan) {
 		if (snippets.length >= limit) break;
+		const label = new Date(entry.timestamp).toLocaleTimeString();
+
+		// Extract bash tool calls directly (these often render as `$ ...` in the UI but are stored structurally)
+		if (entry.type === "message" && entry.message?.role === "assistant" && Array.isArray(entry.message.content)) {
+			for (const block of entry.message.content as any[]) {
+				if (snippets.length >= limit) break;
+				if (!block || typeof block !== "object") continue;
+				if (block.type !== "toolCall") continue;
+				if (block.name !== "bash") continue;
+				const cmd = typeof block.arguments?.command === "string" ? block.arguments.command.trim() : "";
+				if (!cmd) continue;
+
+				snippets.push({
+					id: nextId,
+					type: "block",
+					language: "bash",
+					content: cmd,
+					messageId: entry.id,
+					sourceLabel: label,
+				});
+				nextId += 1;
+			}
+		}
+
 		const text = extractText(entry.message.content);
 		if (!text) continue;
-		const label = new Date(entry.timestamp).toLocaleTimeString();
 		const extracted = extractSnippets(text, entry.id, label, nextId, includeInline, limit - snippets.length);
 		snippets = snippets.concat(extracted);
 		nextId = snippets.length;

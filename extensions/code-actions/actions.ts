@@ -4,6 +4,28 @@ import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+let justBash: { Bash?: any; OverlayFs?: any } | null = null;
+let justBashLoadPromise: Promise<void> | null = null;
+let justBashLoadDone = false;
+
+async function ensureJustBashLoaded(): Promise<void> {
+	if (justBashLoadDone) return;
+
+	if (!justBashLoadPromise) {
+		justBashLoadPromise = import("just-bash")
+			.then((mod: any) => {
+				justBash = mod;
+			})
+			.catch(() => {
+				justBash = null;
+			})
+			.finally(() => {
+				justBashLoadDone = true;
+			});
+	}
+
+	await justBashLoadPromise;
+}
 
 export async function copyToClipboard(pi: ExtensionAPI, content: string): Promise<boolean> {
 	const tmpPath = path.join(os.tmpdir(), `pi-code-${Date.now()}.txt`);
@@ -75,13 +97,152 @@ function truncateLines(text: string, maxLines: number): string {
 	return `${truncated}\n\n[Output truncated to ${maxLines} lines]`;
 }
 
-export async function runSnippet(pi: ExtensionAPI, ctx: ExtensionCommandContext, snippet: string): Promise<void> {
+type CommandRunResult = {
+	stdout: string;
+	stderr: string;
+	code: number;
+	commandLabel: string;
+};
+
+function looksLikeMissingCommand(stderr: string): boolean {
+	const normalized = stderr.toLowerCase();
+	return normalized.includes("command not found") || normalized.includes("unknown command") || normalized.includes("not recognized");
+}
+
+function normalizeShellSnippetForExecution(snippet: string): string {
+	const trimmed = snippet.trim();
+
+	// If the snippet is a tool-call style JSON object, extract the command field
+	if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+		try {
+			const parsed = JSON.parse(trimmed) as any;
+			const cmd = typeof parsed?.command === "string"
+				? parsed.command
+				: typeof parsed?.cmd === "string"
+					? parsed.cmd
+					: null;
+			if (cmd && cmd.trim().length > 0) return cmd.trim();
+		} catch {
+			// ignore
+		}
+	}
+
+	const lines = snippet.split(/\r?\n/);
+	const hasPromptLines = lines.some(
+		(line) => /^\s*\$\s+/.test(line) || /^\s*>\s+/.test(line) || /^\s*!\s*/.test(line),
+	);
+
+	// Common Pi convention: snippets sometimes include a leading `!` to indicate “run in shell”
+	// If there are no prompt-like transcript lines, just strip a single leading `!`
+	if (!hasPromptLines) {
+		return trimmed.startsWith("!")
+			? trimmed.replace(/^!\s*/, "")
+			: trimmed;
+	}
+
+	const extracted = lines
+		.map((line) => {
+			if (/^\s*\$\s+/.test(line)) return line.replace(/^\s*\$\s+/, "");
+			if (/^\s*>\s+/.test(line)) return line.replace(/^\s*>\s+/, "");
+			if (/^\s*!\s*/.test(line)) return line.replace(/^\s*!\s*/, "");
+			return "";
+		})
+		.filter((line) => line.trim().length > 0)
+		.join("\n")
+		.trim();
+
+	return extracted.length > 0 ? extracted : trimmed;
+}
+
+async function runSnippetInSystemShell(pi: ExtensionAPI, ctx: ExtensionCommandContext, snippet: string): Promise<CommandRunResult> {
 	const isWindows = process.platform === "win32";
 	const command = isWindows ? "powershell" : "bash";
 	const args = isWindows ? ["-NoProfile", "-Command", snippet] : ["-lc", snippet];
-
 	const result = await pi.exec(command, args, { cwd: ctx.cwd });
-	const output = truncateLines(formatOutput(`${command} ${args.join(" ")}`, result), 200);
+
+	return {
+		stdout: result.stdout,
+		stderr: result.stderr,
+		code: result.code,
+		commandLabel: `${command} ${args.join(" ")}`,
+	};
+}
+
+async function runSnippetInSandbox(snippet: string, cwd: string): Promise<CommandRunResult> {
+	await ensureJustBashLoaded();
+	const OverlayFsCtor = justBash?.OverlayFs;
+	const BashCtor = justBash?.Bash;
+	if (typeof OverlayFsCtor !== "function" || typeof BashCtor !== "function") {
+		throw new Error("just-bash is not available");
+	}
+
+	const overlay = new OverlayFsCtor({ root: cwd });
+	const bash = new BashCtor({
+		fs: overlay,
+		cwd: overlay.getMountPoint(),
+		executionLimits: {
+			maxCallDepth: 32,
+			maxCommandCount: 1000,
+			maxLoopIterations: 3000,
+			maxAwkIterations: 8000,
+			maxSedIterations: 8000,
+		},
+	});
+
+	const result = await bash.exec(snippet);
+	return {
+		stdout: result.stdout,
+		stderr: result.stderr,
+		code: result.exitCode,
+		commandLabel: `just-bash (overlayfs, read-only) -c ${JSON.stringify(snippet)}`,
+	};
+}
+
+export async function runSnippet(pi: ExtensionAPI, ctx: ExtensionCommandContext, snippet: string): Promise<void> {
+	let runResult: CommandRunResult;
+
+	const normalizedSnippet = normalizeShellSnippetForExecution(snippet);
+
+	if (process.platform === "win32") {
+		runResult = await runSnippetInSystemShell(pi, ctx, normalizedSnippet);
+	} else {
+		let sandboxResult: CommandRunResult | null = null;
+		try {
+			sandboxResult = await runSnippetInSandbox(normalizedSnippet, ctx.cwd);
+		} catch {
+			sandboxResult = null;
+		}
+
+		if (!sandboxResult) {
+			runResult = await runSnippetInSystemShell(pi, ctx, normalizedSnippet);
+		} else if (sandboxResult.code !== 0 && looksLikeMissingCommand(sandboxResult.stderr)) {
+			const stderrPreview = (sandboxResult.stderr ?? "").trim().slice(0, 500);
+			const proceed = await ctx.ui.confirm(
+				"Sandbox missing command",
+				"The just-bash sandbox could not run this snippet because one or more commands are unsupported.\n\n" +
+					`Snippet:\n${normalizedSnippet}\n\n` +
+					(stderrPreview.length > 0 ? `Sandbox error:\n${stderrPreview}\n\n` : "") +
+					"Run it in your real shell instead?",
+			);
+
+			if (proceed) {
+				runResult = await runSnippetInSystemShell(pi, ctx, normalizedSnippet);
+			} else {
+				runResult = sandboxResult;
+			}
+		} else {
+			runResult = sandboxResult;
+		}
+	}
+
+	const output = truncateLines(
+		formatOutput(runResult.commandLabel, {
+			stdout: runResult.stdout,
+			stderr: runResult.stderr,
+			code: runResult.code,
+		}),
+		200,
+	);
 
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 		const container = new Container();
