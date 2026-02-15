@@ -1,0 +1,34 @@
+{
+  "name": "pi-model-aware-compaction",
+  "version": "0.1.0",
+  "description": "Per-model context-usage thresholds for Pi's built-in auto-compaction, so models with different context windows and performance profiles compact at the right time",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "compaction", "context-window"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-model-aware-compaction"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/model-aware-compaction/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/model-aware-compaction/index.ts", "to": "extensions/model-aware-compaction/index.ts" },
+      { "from": "../../extensions/model-aware-compaction/README.md", "to": "extensions/model-aware-compaction/README.md" },
+      { "from": "../../extensions/model-aware-compaction/config.json.example", "to": "extensions/model-aware-compaction/config.json.example" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

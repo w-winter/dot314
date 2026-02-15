@@ -84,8 +84,12 @@ All available npm packages:
 | [pi-brave-search](https://www.npmjs.com/package/pi-brave-search) | brave-search |
 | [pi-command-center](https://www.npmjs.com/package/pi-command-center) | command-center |
 | [pi-ephemeral](https://www.npmjs.com/package/pi-ephemeral) | ephemeral-mode |
+| [pi-fork-from-first](https://www.npmjs.com/package/pi-fork-from-first) | fork-from-first |
 | [pi-md-export](https://www.npmjs.com/package/pi-md-export) | md |
+| [pi-model-aware-compaction](https://www.npmjs.com/package/pi-model-aware-compaction) | model-aware-compaction |
 | [pi-model-sysprompt-appendix](https://www.npmjs.com/package/pi-model-sysprompt-appendix) | model-sysprompt-appendix |
+| [pi-move-session](https://www.npmjs.com/package/pi-move-session) | move-session |
+| [pi-plan-modus](https://www.npmjs.com/package/pi-plan-modus) | plan-mode |
 | [pi-poly-notify](https://www.npmjs.com/package/pi-poly-notify) | poly-notify |
 | [pi-repoprompt-cli](https://www.npmjs.com/package/pi-repoprompt-cli) | repoprompt-cli |
 | [pi-repoprompt-mcp](https://www.npmjs.com/package/pi-repoprompt-mcp) | repoprompt-mcp |

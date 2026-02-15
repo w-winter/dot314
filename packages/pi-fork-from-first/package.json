@@ -1,0 +1,32 @@
+{
+  "name": "pi-fork-from-first",
+  "version": "0.1.0",
+  "description": "Fork the current Pi session from its first user message and switch into the new fork immediately, with sensible defaults in relation to pi-rewind-hook",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "session", "fork"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-fork-from-first"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/fork-from-first.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/fork-from-first.ts", "to": "extensions/fork-from-first.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}
