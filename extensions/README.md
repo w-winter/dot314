@@ -156,6 +156,10 @@
   - Skill command palette (`/skill`)
   - This version's scanning order matches Pi/Codex/Claude conventions and avoids symlink cycles when scanning skill dirs
 
+- ◐ [`session-switch.ts`](session-switch.ts) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
+  - Session switching (via `/switch` command) with live preview of selected session in the background
+  - This version mirrors the native `/resume` picker's layout, behaviors, and keybindings
+
 - ◐ [`tools/`](tools/) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/tools` interactive enable/disable UI
   - This version persists tool enablement globally ([`tools/tools.json`](tools/tools.json)) and per-session via session entries
