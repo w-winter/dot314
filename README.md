@@ -1,6 +1,6 @@
 # dot314
 
-Extensions, skills, prompts, and themes for [Pi coding agent](https://github.com/mariozechner/pi-coding-agent).  There is an emphasis here on making Pi and [RepoPrompt](https://repoprompt.com) co-operate well.
+Extensions, skills, prompts, and themes for [Pi coding agent](https://github.com/badlogic/pi-mono).  There is an emphasis here on making Pi and [RepoPrompt](https://repoprompt.com) co-operate well.
 
 > This is a personal collection.  Some items are original, some adapted from the Pi community, some used unadapted.  It's tailored to my workflow and may introduce breaking changes without notice.  Unadapted items may lag well behind their upstream versions.  Extensions published as [Pi packages](#install-individual-extensions-from-npm) receive more careful maintenance.
 
