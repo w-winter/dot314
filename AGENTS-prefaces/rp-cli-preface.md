@@ -98,6 +98,8 @@ Notes:
 - `search`/`file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
 - `structure`/`get_code_structure` line numbers match `read`/`read_file` and refresh after edits
 
+---
+
 ## Reading
 
 ### Default: rp_exec read
@@ -106,6 +108,16 @@ Notes:
 
 ### Edge case: files containing ``` fences
 RepoPrompt output is fenced; rare collision if the file itself contains ``` lines. Workaround: use `rawJson=true` and call `read_file` directly: `read_file path=path/to/file start_line=1 limit=160`
+
+### Readcache
+
+`rp_exec` file reads may return `[readcache: ...]` markers/diffs on repeat reads.
+
+Rules:
+- Don’t use `rawJson=true` unless debugging; it disables readcache
+- Need full content? rerun with `bypass_cache=true`
+- Cache only applies to **single-command** reads (no `&&` / `;` / `|`)
+- In cases of multi-root ambiguity: use absolute or specific relative paths
 
 ---
 
@@ -233,18 +245,6 @@ Common calls:
 - `rp-cli -c git -j '{"op":"diff","detail":"full"}'` — untruncated patch output
 - `rp-cli -c git -j '{"op":"diff","compare":"main"}'` — diff vs auto-detected trunk branch
 - `rp-cli -c git -j '{"op":"status","repo_root":"@main:feature-branch"}'` — target worktree by branch
-
----
-
-## Readcache
-
-`rp_exec` file reads may return `[readcache: ...]` markers/diffs on repeat reads.
-
-Rules:
-- Don’t use `rawJson=true` unless debugging; it disables readcache
-- Need full content? rerun with `bypass_cache=true`
-- Cache only applies to **single-command** reads (no `&&` / `;` / `|`)
-- In cases of multi-root ambiguity: use absolute or specific relative paths
 
 ---
 
