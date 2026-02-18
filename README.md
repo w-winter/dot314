@@ -108,9 +108,10 @@ This repo contains more resources than the package exports. When installed as a 
 | ◐ | `agentic-compaction/` | Summarizer explores conversation as a filesystem |
 | ● | `brave-search/` | Web search + content extraction. Requires `BRAVE_API_KEY`. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose agent search |
 | ● | `command-center/` | /command palette widget |
-| ● | `editor-enhancements/` | File picker, shell completions, raw paste |
+| ◐ | `editor-enhancements/` | File picker, shell completions, raw paste |
 | ● | `ephemeral-mode.ts` | Delete session on exit |
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
+| ◐ | `handover/` | Generate handover draft -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `md.ts` | Export session or last N turns to Markdown |
 | ● | `model-aware-compaction/` | Per-model compaction thresholds |
 | ● | `model-sysprompt-appendix/` | Per-model system prompt additions |
@@ -148,7 +149,7 @@ Then symlink what you want into `~/.pi/agent/`:
 
 ```bash
 # Example: add one extension (single-file)
-ln -s ~/path/to/dot314-agent/extensions/repoprompt-cli.ts ~/.pi/agent/extensions/
+ln -s ~/path/to/dot314-agent/extensions/move-session.ts ~/.pi/agent/extensions/
 
 # Example: add all skills from this repo
 ln -s ~/path/to/dot314-agent/skills/* ~/.pi/agent/skills/
@@ -177,6 +178,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ◐ | `editor-enhancements/` |
 | ● | `ephemeral-mode.ts` |
 | ● | `fork-from-first.ts` |
+| ◐ | `handover/` |
 | ○ | `inline-bash.ts` |
 | ○ | `interactive-shell.ts` |
 | ○ | `mac-system-theme.ts` |

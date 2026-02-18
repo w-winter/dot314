@@ -1,0 +1,12 @@
+## What to include
+- **Context**: what we were trying to accomplish and why
+- **Current state**: what is implemented/working right now
+- **Key decisions & constraints**: APIs chosen, patterns to follow, gotchas
+- **Files & code hotspots**: paths and what they contain (only important ones)
+- **Open questions / risks**: unknowns, edge cases, failures encountered
+- **Next steps**: concrete, ordered checklist for continuing
+
+## Style
+- Be concise but high-density
+- Prefer bullets and short sections
+- Include exact file paths / commands only when they materially help

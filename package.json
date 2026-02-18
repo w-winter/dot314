@@ -25,6 +25,7 @@
       "./extensions/editor-enhancements/index.ts",
       "./extensions/ephemeral-mode.ts",
       "./extensions/fork-from-first.ts",
+      "./extensions/handover/index.ts",
       "./extensions/agentic-compaction/index.ts",
       "./extensions/protect-paths.ts",
       "./extensions/md.ts",
