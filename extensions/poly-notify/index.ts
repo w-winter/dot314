@@ -14,6 +14,7 @@
  * - Popup and sound can be toggled independently
  * - Volume modes: "constant" (always max) or "timeScaled" (louder for longer responses)
  * - Pushover integration for Apple Watch / iOS notifications
+ * - interactiveOnly mode: skip notifications in non-interactive contexts (subagents, print mode)
  * - Status indicator in footer (♫ sound, ↥ popup, ⚡︎ pushover)
  *
  * Configuration file: ~/.pi/agent/extensions/poly-notify/notify.json
@@ -77,6 +78,7 @@ interface NotifyConfig {
 	minDurationSeconds: number;
 	sound: string; // alias reference
 	showPopup: boolean;
+	interactiveOnly: boolean;
 	sounds: SoundEntry[];
 	volume: VolumeConfig;
 	pushover: PushoverConfig;
@@ -99,6 +101,7 @@ const DEFAULT_CONFIG: NotifyConfig = {
 	minDurationSeconds: 10,
 	sound: "silent",
 	showPopup: false,
+	interactiveOnly: true,
 	sounds: [
 		{ alias: "silent" },
 		{ alias: "random" },
@@ -305,6 +308,7 @@ function notify(title: string, body: string, config: NotifyConfig, elapsedSecond
 export default function notifyExtension(pi: ExtensionAPI) {
 	let config: NotifyConfig;
 	let agentStartTime: number | null = null;
+	let isInteractive: boolean = false;
 
 	// =========================================================================
 	// Status Display
@@ -609,7 +613,7 @@ export default function notifyExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async () => {
-		if (!config.enabled || agentStartTime === null) {
+		if (!config.enabled || agentStartTime === null || (config.interactiveOnly && !isInteractive)) {
 			agentStartTime = null;
 			return;
 		}
@@ -628,6 +632,7 @@ export default function notifyExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		config = loadConfig();
+		isInteractive = ctx.hasUI;
 		updateStatus(ctx);
 	});
 }

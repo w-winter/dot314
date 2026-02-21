@@ -3,6 +3,7 @@
   "minDurationSeconds": 10,
   "sound": "silent",
   "showPopup": false,
+  "interactiveOnly": true,
   "sounds": [
     {
       "alias": "silent"
