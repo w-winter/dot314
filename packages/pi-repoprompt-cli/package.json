@@ -1,6 +1,6 @@
 {
   "name": "pi-repoprompt-cli",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Integrates RepoPrompt with Pi via RepoPrompt's `rp-cli` executable",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt"],
   "license": "MIT",
@@ -42,6 +42,10 @@
       {
         "from": "../../extensions/repoprompt-cli/types.ts",
         "to": "extensions/repoprompt-cli/types.ts"
+      },
+      {
+        "from": "../../extensions/repoprompt-cli/auto-select.ts",
+        "to": "extensions/repoprompt-cli/auto-select.ts"
       },
       {
         "from": "../../extensions/repoprompt-cli/README.md",

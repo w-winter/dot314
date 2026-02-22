@@ -9,6 +9,8 @@ It provides two Pi tools:
 
 Diff blocks in `rp_exec` output use `delta` when installed (honoring the user's global git/delta color config), with graceful fallback otherwise
 
+When enabled (default), `rp_exec` also auto-tracks `read` / `cat` / `read_file` calls and updates RepoPrompt selection with owned file/slice context. The owned selection state is branch-safe across `/tree` and `/fork`, and replays after reconnect/restart using workspace-aware rebinding
+
 ## Optional: readcache for `rp_exec read`
 
 If enabled, `rp_exec` will apply [Gurpartap/pi-readcache](https://github.com/Gurpartap/pi-readcache)-like token savings for single-command file reads, returning:
@@ -25,7 +27,8 @@ Create:
 
 ```json
 {
-  "readcacheReadFile": true
+  "readcacheReadFile": true,
+  "autoSelectReadSlices": true
 }
 ```
 
@@ -50,6 +53,20 @@ Add `bypass_cache=true` to the `cmd`:
 ```text
 rp_exec cmd="read path=src/main.ts start_line=1 limit=120 bypass_cache=true"
 ```
+
+## Auto-selection with branch-safe replay
+
+This feature is enabled by default (no config change needed). To disable it, set `"autoSelectReadSlices": false` in your `config.json`.
+
+Behavior:
+
+- `read_file`/`read`/`cat` with range → tracked as slice selection in the RP app (e.g., for use as context in RP Chat)
+- full reads (no representable range) → tracked as full-file selection in the RP app
+- tail reads (`start_line < 0`) convert to explicit ranges when file line count is available
+- replay is owned-state-only: only paths/slices added by the extension are reconciled (manual selection outside owned state is preserved)
+- for a path already managed by this feature, later branch replay may restore that path to the branch snapshot (including overriding manual tweaks on that same path)
+- branch-local snapshots are restored across `/tree` navigation and `/fork` branch divergence
+- if RepoPrompt restarts and window IDs change, replay remaps by workspace identity when possible
 
 ## Readcache gotchas
 

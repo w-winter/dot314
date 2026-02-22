@@ -1,3 +1,4 @@
 {
-  "readcacheReadFile": false
+  "readcacheReadFile": false,
+  "autoSelectReadSlices": true
 }

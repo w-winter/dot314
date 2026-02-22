@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import * as path from "node:path";
 
 import type { ExtensionAPI, ExtensionContext, ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
 import { highlightCode, Theme } from "@mariozechner/pi-coding-agent";
@@ -7,13 +8,25 @@ import { Type } from "@sinclair/typebox";
 import * as Diff from "diff";
 
 import { loadConfig } from "./config.js";
+import {
+  computeSliceRangeFromReadArgs,
+  countFileLines,
+  inferSelectionStatus,
+  toPosixPath,
+} from "./auto-select.js";
 import { RP_READCACHE_CUSTOM_TYPE, SCOPE_FULL, scopeRange } from "./readcache/constants.js";
 import { buildInvalidationV1 } from "./readcache/meta.js";
 import { getStoreStats, pruneObjectsOlderThan } from "./readcache/object-store.js";
 import { readFileWithCache } from "./readcache/read-file.js";
 import { clearReplayRuntimeState, createReplayRuntimeState } from "./readcache/replay.js";
-import { resolveReadFilePath } from "./readcache/resolve.js";
+import { clearRootsCache, resolveReadFilePath } from "./readcache/resolve.js";
 import type { RpReadcacheMetaV1, ScopeKey } from "./readcache/types.js";
+import type {
+  AutoSelectionEntryData,
+  AutoSelectionEntryRangeData,
+  AutoSelectionEntrySliceData,
+  RpCliBindingEntryData,
+} from "./types.js";
 
 let parseBash: ((input: string) => any) | null = null;
 let justBashLoadPromise: Promise<void> | null = null;
@@ -247,6 +260,16 @@ function hasPipeOutsideQuotes(script: string): boolean {
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12000;
 const BINDING_CUSTOM_TYPE = "repoprompt-binding";
+const AUTO_SELECTION_CUSTOM_TYPE = "repoprompt-cli-auto-selection";
+const WINDOWS_CACHE_TTL_MS = 5000;
+const BINDING_VALIDATION_TTL_MS = 5000;
+
+interface RpCliWindow {
+  windowId: number;
+  workspaceId?: string;
+  workspaceName?: string;
+  rootFolderPaths?: string[];
+}
 
 const BindParams = Type.Object({
   windowId: Type.Number({ description: "RepoPrompt window id (from `rp-cli -e windows`)" }),
@@ -1250,94 +1273,1385 @@ export default function (pi: ExtensionAPI) {
     clearReplayRuntimeState(readcacheRuntimeState);
   };
 
+  let activeAutoSelectionState: AutoSelectionEntryData | null = null;
+
   let boundWindowId: number | undefined;
   let boundTab: string | undefined;
+  let boundWorkspaceId: string | undefined;
+  let boundWorkspaceName: string | undefined;
+  let boundWorkspaceRoots: string[] | undefined;
 
-  const setBinding = (windowId: number, tab: string) => {
-    boundWindowId = windowId;
-    boundTab = tab;
-  };
+  let windowsCache: { windows: RpCliWindow[]; fetchedAtMs: number } | null = null;
+  let lastBindingValidationAtMs = 0;
 
-  const persistBinding = (windowId: number, tab: string) => {
-    // Persist binding across session reloads without injecting extra text into the model context
-    if (boundWindowId === windowId && boundTab === tab) return;
+  function sameOptionalText(a?: string, b?: string): boolean {
+    return (a ?? undefined) === (b ?? undefined);
+  }
 
-    setBinding(windowId, tab);
-    pi.appendEntry(BINDING_CUSTOM_TYPE, { windowId, tab });
-  };
+  function clearWindowsCache(): void {
+    windowsCache = null;
+  }
 
-  const reconstructBinding = (ctx: ExtensionContext) => {
+  function markBindingValidationStale(): void {
+    lastBindingValidationAtMs = 0;
+  }
+
+  function shouldRevalidateBinding(): boolean {
+    const now = Date.now();
+    return (now - lastBindingValidationAtMs) >= BINDING_VALIDATION_TTL_MS;
+  }
+
+  function markBindingValidatedNow(): void {
+    lastBindingValidationAtMs = Date.now();
+  }
+
+  function normalizeWorkspaceRoots(roots: string[] | undefined): string[] {
+    if (!Array.isArray(roots)) {
+      return [];
+    }
+
+    return [...new Set(roots.map((root) => toPosixPath(String(root).trim())).filter(Boolean))].sort();
+  }
+
+  function workspaceRootsEqual(left: string[] | undefined, right: string[] | undefined): boolean {
+    const leftNormalized = normalizeWorkspaceRoots(left);
+    const rightNormalized = normalizeWorkspaceRoots(right);
+    return JSON.stringify(leftNormalized) === JSON.stringify(rightNormalized);
+  }
+
+  function workspaceIdentityMatches(
+    left: { workspaceId?: string; workspaceName?: string; workspaceRoots?: string[] },
+    right: { workspaceId?: string; workspaceName?: string; workspaceRoots?: string[] }
+  ): boolean {
+    if (left.workspaceId && right.workspaceId) {
+      return left.workspaceId === right.workspaceId;
+    }
+
+    const leftRoots = normalizeWorkspaceRoots(left.workspaceRoots);
+    const rightRoots = normalizeWorkspaceRoots(right.workspaceRoots);
+
+    if (leftRoots.length > 0 && rightRoots.length > 0) {
+      return JSON.stringify(leftRoots) === JSON.stringify(rightRoots);
+    }
+
+    if (left.workspaceName && right.workspaceName) {
+      return left.workspaceName === right.workspaceName;
+    }
+
+    return false;
+  }
+
+  function getCurrentBinding(): RpCliBindingEntryData | null {
+    if (boundWindowId === undefined || !boundTab) {
+      return null;
+    }
+
+    return {
+      windowId: boundWindowId,
+      tab: boundTab,
+      workspaceId: boundWorkspaceId,
+      workspaceName: boundWorkspaceName,
+      workspaceRoots: boundWorkspaceRoots,
+    };
+  }
+
+  function normalizeBindingEntry(binding: RpCliBindingEntryData): RpCliBindingEntryData {
+    return {
+      windowId: binding.windowId,
+      tab: binding.tab,
+      workspaceId: typeof binding.workspaceId === "string" ? binding.workspaceId : undefined,
+      workspaceName: typeof binding.workspaceName === "string" ? binding.workspaceName : undefined,
+      workspaceRoots: normalizeWorkspaceRoots(binding.workspaceRoots),
+    };
+  }
+
+  function bindingEntriesEqual(a: RpCliBindingEntryData | null, b: RpCliBindingEntryData | null): boolean {
+    if (!a && !b) {
+      return true;
+    }
+
+    if (!a || !b) {
+      return false;
+    }
+
+    const left = normalizeBindingEntry(a);
+    const right = normalizeBindingEntry(b);
+
+    return (
+      left.windowId === right.windowId &&
+      left.tab === right.tab &&
+      sameOptionalText(left.workspaceId, right.workspaceId) &&
+      sameOptionalText(left.workspaceName, right.workspaceName) &&
+      workspaceRootsEqual(left.workspaceRoots, right.workspaceRoots)
+    );
+  }
+
+  function setBinding(binding: RpCliBindingEntryData | null): void {
+    const previousWindowId = boundWindowId;
+
+    if (!binding) {
+      boundWindowId = undefined;
+      boundTab = undefined;
+      boundWorkspaceId = undefined;
+      boundWorkspaceName = undefined;
+      boundWorkspaceRoots = undefined;
+    } else {
+      const normalized = normalizeBindingEntry(binding);
+      boundWindowId = normalized.windowId;
+      boundTab = normalized.tab;
+      boundWorkspaceId = normalized.workspaceId;
+      boundWorkspaceName = normalized.workspaceName;
+      boundWorkspaceRoots = normalized.workspaceRoots;
+    }
+
+    if (previousWindowId !== boundWindowId) {
+      if (previousWindowId !== undefined) {
+        clearRootsCache(previousWindowId);
+      }
+
+      if (boundWindowId !== undefined) {
+        clearRootsCache(boundWindowId);
+      }
+
+      clearWindowsCache();
+    }
+
+    markBindingValidationStale();
+  }
+
+  function parseBindingEntryData(value: unknown): RpCliBindingEntryData | null {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const obj = value as Record<string, unknown>;
+
+    const windowId = typeof obj.windowId === "number" ? obj.windowId : undefined;
+    const tab = typeof obj.tab === "string" ? obj.tab : undefined;
+
+    if (windowId === undefined || !tab) {
+      return null;
+    }
+
+    const workspaceId = typeof obj.workspaceId === "string"
+      ? obj.workspaceId
+      : (typeof obj.workspaceID === "string" ? obj.workspaceID : undefined);
+
+    const workspaceName = typeof obj.workspaceName === "string"
+      ? obj.workspaceName
+      : (typeof obj.workspace === "string" ? obj.workspace : undefined);
+
+    const workspaceRoots = Array.isArray(obj.workspaceRoots)
+      ? obj.workspaceRoots.filter((root): root is string => typeof root === "string")
+      : (Array.isArray(obj.rootFolderPaths)
+        ? obj.rootFolderPaths.filter((root): root is string => typeof root === "string")
+        : undefined);
+
+    return normalizeBindingEntry({
+      windowId,
+      tab,
+      workspaceId,
+      workspaceName,
+      workspaceRoots,
+    });
+  }
+
+  function persistBinding(binding: RpCliBindingEntryData): void {
+    const normalized = normalizeBindingEntry(binding);
+    const current = getCurrentBinding();
+
+    if (bindingEntriesEqual(current, normalized)) {
+      return;
+    }
+
+    setBinding(normalized);
+    pi.appendEntry(BINDING_CUSTOM_TYPE, normalized);
+  }
+
+  function reconstructBinding(ctx: ExtensionContext): void {
     // Prefer persisted binding (appendEntry) from the *current branch*, then fall back to prior rp_bind tool results
     // Branch semantics: if the current branch has no binding state, stay unbound
-    boundWindowId = undefined;
-    boundTab = undefined;
+    setBinding(null);
 
-    let reconstructedWindowId: number | undefined;
-    let reconstructedTab: string | undefined;
+    let reconstructed: RpCliBindingEntryData | null = null;
 
     for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "custom" || entry.customType !== BINDING_CUSTOM_TYPE) continue;
+      if (entry.type !== "custom" || entry.customType !== BINDING_CUSTOM_TYPE) {
+        continue;
+      }
 
-      const data = entry.data as { windowId?: unknown; tab?: unknown } | undefined;
-      const windowId = typeof data?.windowId === "number" ? data.windowId : undefined;
-      const tab = typeof data?.tab === "string" ? data.tab : undefined;
-      if (windowId !== undefined && tab) {
-        reconstructedWindowId = windowId;
-        reconstructedTab = tab;
+      const parsed = parseBindingEntryData(entry.data);
+      if (parsed) {
+        reconstructed = parsed;
       }
     }
 
-    if (reconstructedWindowId !== undefined && reconstructedTab !== undefined) {
-      setBinding(reconstructedWindowId, reconstructedTab);
+    if (reconstructed) {
+      setBinding(reconstructed);
       return;
     }
 
     for (const entry of ctx.sessionManager.getBranch()) {
-      if (entry.type !== "message") continue;
-      const msg = entry.message;
-      if (msg.role !== "toolResult" || msg.toolName !== "rp_bind") continue;
+      if (entry.type !== "message") {
+        continue;
+      }
 
-      const details = msg.details as { windowId?: number; tab?: string } | undefined;
-      if (details?.windowId !== undefined && details?.tab) {
-        persistBinding(details.windowId, details.tab);
+      const msg = entry.message;
+      if (msg.role !== "toolResult" || msg.toolName !== "rp_bind") {
+        continue;
+      }
+
+      const parsed = parseBindingEntryData(msg.details);
+      if (parsed) {
+        persistBinding(parsed);
       }
     }
-  };
+  }
+
+  function parseWindowsRawJson(raw: string): RpCliWindow[] {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return [];
+    }
+
+    const pickRows = (value: unknown): unknown[] => {
+      if (Array.isArray(value)) {
+        return value;
+      }
+
+      if (!value || typeof value !== "object") {
+        return [];
+      }
+
+      const obj = value as Record<string, unknown>;
+
+      const directArrayKeys = ["windows", "items", "data", "result"];
+      for (const key of directArrayKeys) {
+        const candidate = obj[key];
+        if (Array.isArray(candidate)) {
+          return candidate;
+        }
+      }
+
+      const nested = obj.data;
+      if (nested && typeof nested === "object") {
+        const nestedObj = nested as Record<string, unknown>;
+        if (Array.isArray(nestedObj.windows)) {
+          return nestedObj.windows;
+        }
+      }
+
+      return [];
+    };
+
+    const rows = pickRows(parsed);
+
+    return rows
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return null;
+        }
+
+        const obj = row as Record<string, unknown>;
+        const windowId = typeof obj.windowID === "number"
+          ? obj.windowID
+          : (typeof obj.windowId === "number" ? obj.windowId : undefined);
+
+        if (windowId === undefined) {
+          return null;
+        }
+
+        const workspaceId = typeof obj.workspaceID === "string"
+          ? obj.workspaceID
+          : (typeof obj.workspaceId === "string" ? obj.workspaceId : undefined);
+
+        const workspaceName = typeof obj.workspaceName === "string"
+          ? obj.workspaceName
+          : (typeof obj.workspace === "string" ? obj.workspace : undefined);
+
+        const rootFolderPaths = Array.isArray(obj.rootFolderPaths)
+          ? obj.rootFolderPaths.filter((root): root is string => typeof root === "string")
+          : (Array.isArray(obj.roots)
+            ? obj.roots.filter((root): root is string => typeof root === "string")
+            : undefined);
+
+        return {
+          windowId,
+          workspaceId,
+          workspaceName,
+          rootFolderPaths,
+        } as RpCliWindow;
+      })
+      .filter((window): window is RpCliWindow => window !== null);
+  }
+
+  async function fetchWindowsFromCli(forceRefresh = false): Promise<RpCliWindow[]> {
+    const now = Date.now();
+
+    if (!forceRefresh && windowsCache && (now - windowsCache.fetchedAtMs) < WINDOWS_CACHE_TTL_MS) {
+      return windowsCache.windows;
+    }
+
+    try {
+      const result = await pi.exec("rp-cli", ["--raw-json", "-q", "-e", "windows"], { timeout: 10_000 });
+
+      if ((result.code ?? 0) !== 0) {
+        return windowsCache?.windows ?? [];
+      }
+
+      const stdout = result.stdout ?? "";
+      const stderr = result.stderr ?? "";
+
+      const fromStdout = parseWindowsRawJson(stdout);
+      const parsed = fromStdout.length > 0 ? fromStdout : parseWindowsRawJson(stderr);
+
+      windowsCache = {
+        windows: parsed,
+        fetchedAtMs: now,
+      };
+
+      return parsed;
+    } catch {
+      return windowsCache?.windows ?? [];
+    }
+  }
+
+  function windowToBinding(window: RpCliWindow, tab: string): RpCliBindingEntryData {
+    return normalizeBindingEntry({
+      windowId: window.windowId,
+      tab,
+      workspaceId: window.workspaceId,
+      workspaceName: window.workspaceName,
+      workspaceRoots: window.rootFolderPaths,
+    });
+  }
+
+  async function enrichBinding(windowId: number, tab: string): Promise<RpCliBindingEntryData> {
+    const windows = await fetchWindowsFromCli();
+    const match = windows.find((window) => window.windowId === windowId);
+
+    if (!match) {
+      return normalizeBindingEntry({ windowId, tab });
+    }
+
+    return windowToBinding(match, tab);
+  }
+
+  async function ensureBindingTargetsLiveWindow(
+    ctx: ExtensionContext,
+    forceRefresh = false
+  ): Promise<RpCliBindingEntryData | null> {
+    const binding = getCurrentBinding();
+    if (!binding) {
+      return null;
+    }
+
+    const windows = await fetchWindowsFromCli(forceRefresh);
+    if (windows.length === 0) {
+      return binding;
+    }
+
+    const sameWindow = windows.find((window) => window.windowId === binding.windowId);
+    if (sameWindow) {
+      const hydrated = windowToBinding(sameWindow, binding.tab);
+
+      if (binding.workspaceId && hydrated.workspaceId && binding.workspaceId !== hydrated.workspaceId) {
+        // Window IDs were recycled to a different workspace. Fall through to workspace-based remap
+      } else {
+        if (!bindingEntriesEqual(binding, hydrated)) {
+          persistBinding(hydrated);
+          return hydrated;
+        }
+
+        setBinding(hydrated);
+        return hydrated;
+      }
+    }
+
+    const workspaceCandidates = windows.filter((window) => workspaceIdentityMatches(
+      {
+        workspaceId: binding.workspaceId,
+        workspaceName: binding.workspaceName,
+        workspaceRoots: binding.workspaceRoots,
+      },
+      {
+        workspaceId: window.workspaceId,
+        workspaceName: window.workspaceName,
+        workspaceRoots: window.rootFolderPaths,
+      }
+    ));
+
+    if (workspaceCandidates.length === 1) {
+      const rebound = windowToBinding(workspaceCandidates[0], binding.tab);
+      persistBinding(rebound);
+      return rebound;
+    }
+
+    setBinding(null);
+
+    if (ctx.hasUI) {
+      const workspaceLabel = binding.workspaceName ?? binding.workspaceId ?? `window ${binding.windowId}`;
+
+      if (workspaceCandidates.length > 1) {
+        ctx.ui.notify(
+          `repoprompt-cli: binding for ${workspaceLabel} is ambiguous after restart. Re-bind with /rpbind`,
+          "warning"
+        );
+      } else {
+        ctx.ui.notify(
+          `repoprompt-cli: ${workspaceLabel} not found after restart. Re-bind with /rpbind`,
+          "warning"
+        );
+      }
+    }
+
+    return null;
+  }
+
+  async function maybeEnsureBindingTargetsLiveWindow(ctx: ExtensionContext): Promise<RpCliBindingEntryData | null> {
+    const binding = getCurrentBinding();
+    if (!binding) {
+      return null;
+    }
+
+    if (!shouldRevalidateBinding()) {
+      return binding;
+    }
+
+    const validated = await ensureBindingTargetsLiveWindow(ctx, true);
+
+    if (validated) {
+      markBindingValidatedNow();
+    }
+
+    return validated;
+  }
+
+  function sameBindingForAutoSelection(
+    binding: RpCliBindingEntryData | null,
+    state: AutoSelectionEntryData | null
+  ): boolean {
+    if (!binding || !state) {
+      return false;
+    }
+
+    if (!sameOptionalText(binding.tab, state.tab)) {
+      return false;
+    }
+
+    if (binding.windowId === state.windowId) {
+      return true;
+    }
+
+    return workspaceIdentityMatches(
+      {
+        workspaceId: binding.workspaceId,
+        workspaceName: binding.workspaceName,
+        workspaceRoots: binding.workspaceRoots,
+      },
+      {
+        workspaceId: state.workspaceId,
+        workspaceName: state.workspaceName,
+        workspaceRoots: state.workspaceRoots,
+      }
+    );
+  }
+
+  function makeEmptyAutoSelectionState(binding: RpCliBindingEntryData): AutoSelectionEntryData {
+    return {
+      windowId: binding.windowId,
+      tab: binding.tab,
+      workspaceId: binding.workspaceId,
+      workspaceName: binding.workspaceName,
+      workspaceRoots: normalizeWorkspaceRoots(binding.workspaceRoots),
+      fullPaths: [],
+      slicePaths: [],
+    };
+  }
+
+  function normalizeAutoSelectionRanges(ranges: AutoSelectionEntryRangeData[]): AutoSelectionEntryRangeData[] {
+    const normalized = ranges
+      .map((range) => ({
+        start_line: Number(range.start_line),
+        end_line: Number(range.end_line),
+      }))
+      .filter((range) => Number.isFinite(range.start_line) && Number.isFinite(range.end_line))
+      .filter((range) => range.start_line > 0 && range.end_line >= range.start_line)
+      .sort((a, b) => {
+        if (a.start_line !== b.start_line) {
+          return a.start_line - b.start_line;
+        }
+
+        return a.end_line - b.end_line;
+      });
+
+    const merged: AutoSelectionEntryRangeData[] = [];
+    for (const range of normalized) {
+      const last = merged[merged.length - 1];
+      if (!last) {
+        merged.push(range);
+        continue;
+      }
+
+      if (range.start_line <= last.end_line + 1) {
+        last.end_line = Math.max(last.end_line, range.end_line);
+        continue;
+      }
+
+      merged.push(range);
+    }
+
+    return merged;
+  }
+
+  function normalizeAutoSelectionState(state: AutoSelectionEntryData): AutoSelectionEntryData {
+    const fullPaths = [...new Set(state.fullPaths.map((p) => toPosixPath(String(p).trim())).filter(Boolean))].sort();
+
+    const fullSet = new Set(fullPaths);
+
+    const sliceMap = new Map<string, AutoSelectionEntryRangeData[]>();
+    for (const item of state.slicePaths) {
+      const pathKey = toPosixPath(String(item.path ?? "").trim());
+      if (!pathKey || fullSet.has(pathKey)) {
+        continue;
+      }
+
+      const existing = sliceMap.get(pathKey) ?? [];
+      existing.push(...normalizeAutoSelectionRanges(item.ranges ?? []));
+      sliceMap.set(pathKey, existing);
+    }
+
+    const slicePaths: AutoSelectionEntrySliceData[] = [...sliceMap.entries()]
+      .map(([pathKey, ranges]) => ({
+        path: pathKey,
+        ranges: normalizeAutoSelectionRanges(ranges),
+      }))
+      .filter((item) => item.ranges.length > 0)
+      .sort((a, b) => a.path.localeCompare(b.path));
+
+    return {
+      windowId: state.windowId,
+      tab: state.tab,
+      workspaceId: typeof state.workspaceId === "string" ? state.workspaceId : undefined,
+      workspaceName: typeof state.workspaceName === "string" ? state.workspaceName : undefined,
+      workspaceRoots: normalizeWorkspaceRoots(state.workspaceRoots),
+      fullPaths,
+      slicePaths,
+    };
+  }
+
+  function autoSelectionStatesEqual(a: AutoSelectionEntryData | null, b: AutoSelectionEntryData | null): boolean {
+    if (!a && !b) {
+      return true;
+    }
+
+    if (!a || !b) {
+      return false;
+    }
+
+    const left = normalizeAutoSelectionState(a);
+    const right = normalizeAutoSelectionState(b);
+
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  function parseAutoSelectionEntryData(
+    value: unknown,
+    binding: RpCliBindingEntryData
+  ): AutoSelectionEntryData | null {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const obj = value as Record<string, unknown>;
+
+    const windowId = typeof obj.windowId === "number" ? obj.windowId : undefined;
+    const tab = typeof obj.tab === "string" ? obj.tab : undefined;
+
+    const workspaceId = typeof obj.workspaceId === "string"
+      ? obj.workspaceId
+      : (typeof obj.workspaceID === "string" ? obj.workspaceID : undefined);
+
+    const workspaceName = typeof obj.workspaceName === "string"
+      ? obj.workspaceName
+      : (typeof obj.workspace === "string" ? obj.workspace : undefined);
+
+    const workspaceRoots = Array.isArray(obj.workspaceRoots)
+      ? obj.workspaceRoots.filter((root): root is string => typeof root === "string")
+      : (Array.isArray(obj.rootFolderPaths)
+        ? obj.rootFolderPaths.filter((root): root is string => typeof root === "string")
+        : undefined);
+
+    const tabMatches = sameOptionalText(tab, binding.tab);
+    const windowMatches = windowId === binding.windowId;
+    const workspaceMatches = workspaceIdentityMatches(
+      {
+        workspaceId: binding.workspaceId,
+        workspaceName: binding.workspaceName,
+        workspaceRoots: binding.workspaceRoots,
+      },
+      {
+        workspaceId,
+        workspaceName,
+        workspaceRoots,
+      }
+    );
+
+    if (!tabMatches || (!windowMatches && !workspaceMatches)) {
+      return null;
+    }
+
+    const fullPaths = Array.isArray(obj.fullPaths)
+      ? obj.fullPaths.filter((item): item is string => typeof item === "string")
+      : [];
+
+    const slicePathsRaw = Array.isArray(obj.slicePaths) ? obj.slicePaths : [];
+    const slicePaths: AutoSelectionEntrySliceData[] = slicePathsRaw
+      .map((raw) => {
+        if (!raw || typeof raw !== "object") {
+          return null;
+        }
+
+        const row = raw as Record<string, unknown>;
+        const pathValue = typeof row.path === "string" ? row.path : null;
+        const rangesRaw = Array.isArray(row.ranges) ? row.ranges : [];
+
+        if (!pathValue) {
+          return null;
+        }
+
+        const ranges: AutoSelectionEntryRangeData[] = rangesRaw
+          .map((rangeRaw) => {
+            if (!rangeRaw || typeof rangeRaw !== "object") {
+              return null;
+            }
+
+            const rangeObj = rangeRaw as Record<string, unknown>;
+            const start = typeof rangeObj.start_line === "number" ? rangeObj.start_line : NaN;
+            const end = typeof rangeObj.end_line === "number" ? rangeObj.end_line : NaN;
+
+            if (!Number.isFinite(start) || !Number.isFinite(end)) {
+              return null;
+            }
+
+            return {
+              start_line: start,
+              end_line: end,
+            };
+          })
+          .filter((range): range is AutoSelectionEntryRangeData => range !== null);
+
+        return {
+          path: pathValue,
+          ranges,
+        };
+      })
+      .filter((item): item is AutoSelectionEntrySliceData => item !== null);
+
+    return normalizeAutoSelectionState({
+      windowId: binding.windowId,
+      tab: binding.tab,
+      workspaceId: binding.workspaceId ?? workspaceId,
+      workspaceName: binding.workspaceName ?? workspaceName,
+      workspaceRoots: binding.workspaceRoots ?? workspaceRoots,
+      fullPaths,
+      slicePaths,
+    });
+  }
+
+  function getAutoSelectionStateFromBranch(
+    ctx: ExtensionContext,
+    binding: RpCliBindingEntryData
+  ): AutoSelectionEntryData {
+    const entries = ctx.sessionManager.getBranch();
+
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i];
+      if (entry.type !== "custom" || entry.customType !== AUTO_SELECTION_CUSTOM_TYPE) {
+        continue;
+      }
+
+      const parsed = parseAutoSelectionEntryData(entry.data, binding);
+      if (parsed) {
+        return parsed;
+      }
+    }
+
+    return makeEmptyAutoSelectionState(binding);
+  }
+
+  function persistAutoSelectionState(state: AutoSelectionEntryData): void {
+    const normalized = normalizeAutoSelectionState(state);
+    activeAutoSelectionState = normalized;
+    pi.appendEntry(AUTO_SELECTION_CUSTOM_TYPE, normalized);
+  }
+
+  function autoSelectionManagedPaths(state: AutoSelectionEntryData): string[] {
+    const fromSlices = state.slicePaths.map((item) => item.path);
+    return [...new Set([...state.fullPaths, ...fromSlices])];
+  }
+
+  function autoSelectionSliceKey(item: AutoSelectionEntrySliceData): string {
+    return JSON.stringify(normalizeAutoSelectionRanges(item.ranges));
+  }
+
+  function bindingForAutoSelectionState(state: AutoSelectionEntryData): RpCliBindingEntryData {
+    return {
+      windowId: state.windowId,
+      tab: state.tab ?? "Compose",
+      workspaceId: state.workspaceId,
+      workspaceName: state.workspaceName,
+      workspaceRoots: state.workspaceRoots,
+    };
+  }
+
+  async function runRpCliForBinding(
+    binding: RpCliBindingEntryData,
+    cmd: string,
+    rawJson = false,
+    timeout = 10_000
+  ): Promise<{ stdout: string; stderr: string; exitCode: number; output: string }> {
+    const args: string[] = ["-w", String(binding.windowId)];
+
+    if (binding.tab) {
+      args.push("-t", binding.tab);
+    }
+
+    args.push("-q", "--fail-fast");
+
+    if (rawJson) {
+      args.push("--raw-json");
+    }
+
+    args.push("-e", cmd);
+
+    const result = await pi.exec("rp-cli", args, { timeout });
+
+    const stdout = result.stdout ?? "";
+    const stderr = result.stderr ?? "";
+    const exitCode = result.code ?? 0;
+    const output = [stdout, stderr].filter(Boolean).join("\n").trim();
+
+    if (exitCode !== 0) {
+      throw new Error(output || `rp-cli exited with status ${exitCode}`);
+    }
+
+    return { stdout, stderr, exitCode, output };
+  }
+
+  async function callManageSelection(binding: RpCliBindingEntryData, args: Record<string, unknown>): Promise<string> {
+    const cmd = `call manage_selection ${JSON.stringify(args)}`;
+    const result = await runRpCliForBinding(binding, cmd, false);
+    return result.output;
+  }
+
+  async function getSelectionFilesText(binding: RpCliBindingEntryData): Promise<string | null> {
+    try {
+      const text = await callManageSelection(binding, {
+        op: "get",
+        view: "files",
+      });
+
+      return text.length > 0 ? text : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function buildSelectionPathFromResolved(
+    inputPath: string,
+    resolved: { absolutePath: string | null; repoRoot: string | null }
+  ): string {
+    if (!resolved.absolutePath || !resolved.repoRoot) {
+      return inputPath;
+    }
+
+    const rel = path.relative(resolved.repoRoot, resolved.absolutePath);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+      return inputPath;
+    }
+
+    const rootHint = path.basename(resolved.repoRoot);
+    const relPosix = rel.split(path.sep).join("/");
+
+    return `${rootHint}/${relPosix}`;
+  }
+
+  function updateAutoSelectionStateAfterFullRead(binding: RpCliBindingEntryData, selectionPath: string): void {
+    const normalizedPath = toPosixPath(selectionPath);
+
+    const baseState = sameBindingForAutoSelection(binding, activeAutoSelectionState)
+      ? (activeAutoSelectionState as AutoSelectionEntryData)
+      : makeEmptyAutoSelectionState(binding);
+
+    const nextState: AutoSelectionEntryData = {
+      ...baseState,
+      fullPaths: [...baseState.fullPaths, normalizedPath],
+      slicePaths: baseState.slicePaths.filter((entry) => entry.path !== normalizedPath),
+    };
+
+    const normalizedNext = normalizeAutoSelectionState(nextState);
+    if (autoSelectionStatesEqual(baseState, normalizedNext)) {
+      activeAutoSelectionState = normalizedNext;
+      return;
+    }
+
+    persistAutoSelectionState(normalizedNext);
+  }
+
+  function existingSliceRangesForRead(
+    binding: RpCliBindingEntryData,
+    selectionPath: string
+  ): AutoSelectionEntryRangeData[] | null {
+    const normalizedPath = toPosixPath(selectionPath);
+
+    const baseState = sameBindingForAutoSelection(binding, activeAutoSelectionState)
+      ? (activeAutoSelectionState as AutoSelectionEntryData)
+      : makeEmptyAutoSelectionState(binding);
+
+    if (baseState.fullPaths.includes(normalizedPath)) {
+      return null;
+    }
+
+    const existing = baseState.slicePaths.find((entry) => entry.path === normalizedPath);
+    return normalizeAutoSelectionRanges(existing?.ranges ?? []);
+  }
+
+  function subtractCoveredRanges(
+    incomingRange: AutoSelectionEntryRangeData,
+    existingRanges: AutoSelectionEntryRangeData[]
+  ): AutoSelectionEntryRangeData[] {
+    let pending: AutoSelectionEntryRangeData[] = [incomingRange];
+
+    for (const existing of normalizeAutoSelectionRanges(existingRanges)) {
+      const nextPending: AutoSelectionEntryRangeData[] = [];
+
+      for (const candidate of pending) {
+        const overlapStart = Math.max(candidate.start_line, existing.start_line);
+        const overlapEnd = Math.min(candidate.end_line, existing.end_line);
+
+        if (overlapStart > overlapEnd) {
+          nextPending.push(candidate);
+          continue;
+        }
+
+        if (candidate.start_line < overlapStart) {
+          nextPending.push({
+            start_line: candidate.start_line,
+            end_line: overlapStart - 1,
+          });
+        }
+
+        if (candidate.end_line > overlapEnd) {
+          nextPending.push({
+            start_line: overlapEnd + 1,
+            end_line: candidate.end_line,
+          });
+        }
+      }
+
+      pending = nextPending;
+      if (pending.length === 0) {
+        return [];
+      }
+    }
+
+    return normalizeAutoSelectionRanges(pending);
+  }
+
+  function updateAutoSelectionStateAfterSliceRead(
+    binding: RpCliBindingEntryData,
+    selectionPath: string,
+    range: AutoSelectionEntryRangeData
+  ): void {
+    const normalizedPath = toPosixPath(selectionPath);
+
+    const baseState = sameBindingForAutoSelection(binding, activeAutoSelectionState)
+      ? (activeAutoSelectionState as AutoSelectionEntryData)
+      : makeEmptyAutoSelectionState(binding);
+
+    if (baseState.fullPaths.includes(normalizedPath)) {
+      return;
+    }
+
+    const existing = baseState.slicePaths.find((entry) => entry.path === normalizedPath);
+
+    const nextSlicePaths = baseState.slicePaths.filter((entry) => entry.path !== normalizedPath);
+    nextSlicePaths.push({
+      path: normalizedPath,
+      ranges: [...(existing?.ranges ?? []), range],
+    });
+
+    const nextState: AutoSelectionEntryData = {
+      ...baseState,
+      fullPaths: [...baseState.fullPaths],
+      slicePaths: nextSlicePaths,
+    };
+
+    const normalizedNext = normalizeAutoSelectionState(nextState);
+    if (autoSelectionStatesEqual(baseState, normalizedNext)) {
+      activeAutoSelectionState = normalizedNext;
+      return;
+    }
+
+    persistAutoSelectionState(normalizedNext);
+  }
+
+  async function removeAutoSelectionPaths(state: AutoSelectionEntryData, paths: string[]): Promise<void> {
+    if (paths.length === 0) {
+      return;
+    }
+
+    const binding = bindingForAutoSelectionState(state);
+    await callManageSelection(binding, { op: "remove", paths });
+  }
+
+  async function addAutoSelectionFullPaths(state: AutoSelectionEntryData, paths: string[]): Promise<void> {
+    if (paths.length === 0) {
+      return;
+    }
+
+    const binding = bindingForAutoSelectionState(state);
+    await callManageSelection(binding, {
+      op: "add",
+      mode: "full",
+      paths,
+    });
+  }
+
+  async function addAutoSelectionSlices(
+    state: AutoSelectionEntryData,
+    slices: AutoSelectionEntrySliceData[]
+  ): Promise<void> {
+    if (slices.length === 0) {
+      return;
+    }
+
+    const binding = bindingForAutoSelectionState(state);
+    await callManageSelection(binding, {
+      op: "add",
+      slices,
+    });
+  }
+
+  async function reconcileAutoSelectionWithinBinding(
+    currentState: AutoSelectionEntryData,
+    desiredState: AutoSelectionEntryData
+  ): Promise<void> {
+    const currentModeByPath = new Map<string, "full" | "slices">();
+    for (const p of currentState.fullPaths) {
+      currentModeByPath.set(p, "full");
+    }
+
+    for (const s of currentState.slicePaths) {
+      if (!currentModeByPath.has(s.path)) {
+        currentModeByPath.set(s.path, "slices");
+      }
+    }
+
+    const desiredModeByPath = new Map<string, "full" | "slices">();
+    for (const p of desiredState.fullPaths) {
+      desiredModeByPath.set(p, "full");
+    }
+
+    for (const s of desiredState.slicePaths) {
+      if (!desiredModeByPath.has(s.path)) {
+        desiredModeByPath.set(s.path, "slices");
+      }
+    }
+
+    const desiredSliceByPath = new Map<string, AutoSelectionEntrySliceData>();
+    for (const s of desiredState.slicePaths) {
+      desiredSliceByPath.set(s.path, s);
+    }
+
+    const currentSliceByPath = new Map<string, AutoSelectionEntrySliceData>();
+    for (const s of currentState.slicePaths) {
+      currentSliceByPath.set(s.path, s);
+    }
+
+    const removePaths = new Set<string>();
+    const addFullPaths: string[] = [];
+    const addSlices: AutoSelectionEntrySliceData[] = [];
+
+    for (const [pathKey] of currentModeByPath) {
+      if (!desiredModeByPath.has(pathKey)) {
+        removePaths.add(pathKey);
+      }
+    }
+
+    for (const [pathKey, mode] of desiredModeByPath) {
+      const currentMode = currentModeByPath.get(pathKey);
+
+      if (mode === "full") {
+        if (currentMode === "full") {
+          continue;
+        }
+
+        if (currentMode === "slices") {
+          removePaths.add(pathKey);
+        }
+
+        addFullPaths.push(pathKey);
+        continue;
+      }
+
+      const desiredSlice = desiredSliceByPath.get(pathKey);
+      if (!desiredSlice) {
+        continue;
+      }
+
+      if (currentMode === "full") {
+        removePaths.add(pathKey);
+        addSlices.push(desiredSlice);
+        continue;
+      }
+
+      if (currentMode === "slices") {
+        const currentSlice = currentSliceByPath.get(pathKey);
+        if (currentSlice && autoSelectionSliceKey(currentSlice) === autoSelectionSliceKey(desiredSlice)) {
+          continue;
+        }
+
+        removePaths.add(pathKey);
+        addSlices.push(desiredSlice);
+        continue;
+      }
+
+      addSlices.push(desiredSlice);
+    }
+
+    await removeAutoSelectionPaths(currentState, [...removePaths]);
+    await addAutoSelectionFullPaths(desiredState, addFullPaths);
+    await addAutoSelectionSlices(desiredState, addSlices);
+  }
+
+  async function reconcileAutoSelectionStates(
+    currentState: AutoSelectionEntryData | null,
+    desiredState: AutoSelectionEntryData | null
+  ): Promise<void> {
+    if (autoSelectionStatesEqual(currentState, desiredState)) {
+      return;
+    }
+
+    if (currentState && desiredState) {
+      const sameBinding =
+        currentState.windowId === desiredState.windowId &&
+        sameOptionalText(currentState.tab, desiredState.tab);
+
+      if (sameBinding) {
+        await reconcileAutoSelectionWithinBinding(currentState, desiredState);
+        return;
+      }
+
+      try {
+        await removeAutoSelectionPaths(currentState, autoSelectionManagedPaths(currentState));
+      } catch {
+        // Old binding/window may no longer exist after RepoPrompt app restart
+      }
+
+      await addAutoSelectionFullPaths(desiredState, desiredState.fullPaths);
+      await addAutoSelectionSlices(desiredState, desiredState.slicePaths);
+      return;
+    }
+
+    if (currentState && !desiredState) {
+      try {
+        await removeAutoSelectionPaths(currentState, autoSelectionManagedPaths(currentState));
+      } catch {
+        // Old binding/window may no longer exist after RepoPrompt app restart
+      }
+      return;
+    }
+
+    if (!currentState && desiredState) {
+      await addAutoSelectionFullPaths(desiredState, desiredState.fullPaths);
+      await addAutoSelectionSlices(desiredState, desiredState.slicePaths);
+    }
+  }
+
+  async function syncAutoSelectionToCurrentBranch(ctx: ExtensionContext): Promise<void> {
+    if (config.autoSelectReadSlices !== true) {
+      activeAutoSelectionState = null;
+      return;
+    }
+
+    const binding = await ensureBindingTargetsLiveWindow(ctx);
+    const desiredState = binding ? getAutoSelectionStateFromBranch(ctx, binding) : null;
+
+    try {
+      await reconcileAutoSelectionStates(activeAutoSelectionState, desiredState);
+    } catch {
+      // Fail-open
+    }
+
+    activeAutoSelectionState = desiredState;
+  }
+
+  function parseReadOutputHints(readOutputText: string | undefined): {
+    selectionPath: string | null;
+    totalLines: number | null;
+  } {
+    if (!readOutputText) {
+      return { selectionPath: null, totalLines: null };
+    }
+
+    const pathMatch =
+      /\*\*Path\*\*:\s*`([^`]+)`/i.exec(readOutputText) ??
+      /\*\*Path\*\*:\s*([^\n]+)$/im.exec(readOutputText);
+
+    const selectionPath = pathMatch?.[1]?.trim() ?? null;
+
+    const linesRegexes = [
+      /\*\*Lines\*\*:\s*(\d+)\s*[–—-]\s*(\d+)\s+of\s+(\d+)/i,
+      /Lines(?:\s*:)?\s*(\d+)\s*[–—-]\s*(\d+)\s+of\s+(\d+)/i,
+    ];
+
+    let totalLines: number | null = null;
+
+    for (const rx of linesRegexes) {
+      const match = rx.exec(readOutputText);
+      if (!match) {
+        continue;
+      }
+
+      const parsed = Number.parseInt(match[3] ?? "", 10);
+      if (Number.isFinite(parsed)) {
+        totalLines = parsed;
+        break;
+      }
+    }
+
+    return { selectionPath, totalLines };
+  }
+
+  async function autoSelectReadFileInRepoPromptSelection(
+    ctx: ExtensionContext,
+    inputPath: string,
+    startLine: number | undefined,
+    limit: number | undefined,
+    readOutputText: string | undefined
+  ): Promise<void> {
+    if (config.autoSelectReadSlices !== true) {
+      return;
+    }
+
+    const outputHints = parseReadOutputHints(readOutputText);
+
+    const binding = await maybeEnsureBindingTargetsLiveWindow(ctx);
+    if (!binding) {
+      return;
+    }
+
+    const selectionText = await getSelectionFilesText(binding);
+    if (selectionText === null) {
+      return;
+    }
+
+    const resolved = await resolveReadFilePath(pi, inputPath, ctx.cwd, binding.windowId, binding.tab);
+
+    const resolvedSelectionPath = buildSelectionPathFromResolved(inputPath, resolved);
+    const selectionPath =
+      outputHints.selectionPath && outputHints.selectionPath.trim().length > 0
+        ? outputHints.selectionPath
+        : resolvedSelectionPath;
+
+    const candidatePaths = new Set<string>();
+    candidatePaths.add(toPosixPath(selectionPath));
+    candidatePaths.add(toPosixPath(resolvedSelectionPath));
+    candidatePaths.add(toPosixPath(inputPath));
+
+    if (outputHints.selectionPath) {
+      candidatePaths.add(toPosixPath(outputHints.selectionPath));
+    }
+
+    if (resolved.absolutePath) {
+      candidatePaths.add(toPosixPath(resolved.absolutePath));
+    }
+
+    if (resolved.absolutePath && resolved.repoRoot) {
+      const rel = path.relative(resolved.repoRoot, resolved.absolutePath);
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        candidatePaths.add(toPosixPath(rel.split(path.sep).join("/")));
+      }
+    }
+
+    let selectionStatus: ReturnType<typeof inferSelectionStatus> = null;
+
+    for (const candidate of candidatePaths) {
+      const status = inferSelectionStatus(selectionText, candidate);
+      if (!status) {
+        continue;
+      }
+
+      if (status.mode === "full") {
+        selectionStatus = status;
+        break;
+      }
+
+      if (status.mode === "codemap_only" && status.codemapManual === true) {
+        selectionStatus = status;
+        break;
+      }
+
+      if (selectionStatus === null) {
+        selectionStatus = status;
+        continue;
+      }
+
+      if (selectionStatus.mode === "codemap_only" && status.mode === "slices") {
+        selectionStatus = status;
+      }
+    }
+
+    if (selectionStatus?.mode === "full") {
+      return;
+    }
+
+    if (selectionStatus?.mode === "codemap_only" && selectionStatus.codemapManual === true) {
+      return;
+    }
+
+    let totalLines: number | undefined;
+
+    if (typeof startLine === "number" && startLine < 0) {
+      if (resolved.absolutePath) {
+        try {
+          totalLines = await countFileLines(resolved.absolutePath);
+        } catch {
+          totalLines = undefined;
+        }
+      }
+
+      if (totalLines === undefined && typeof outputHints.totalLines === "number") {
+        totalLines = outputHints.totalLines;
+      }
+    }
+
+    const sliceRange = computeSliceRangeFromReadArgs(startLine, limit, totalLines);
+
+
+    if (sliceRange) {
+      const existingRanges = existingSliceRangesForRead(binding, selectionPath);
+      if (!existingRanges) {
+        return;
+      }
+
+      const uncoveredRanges = subtractCoveredRanges(sliceRange, existingRanges);
+
+      if (uncoveredRanges.length === 0) {
+        updateAutoSelectionStateAfterSliceRead(binding, selectionPath, sliceRange);
+        return;
+      }
+
+      // Add only uncovered ranges to avoid touching unrelated selection state
+      // (and to avoid global set semantics)
+      const payload = {
+        op: "add",
+        slices: [
+          {
+            path: toPosixPath(selectionPath),
+            ranges: uncoveredRanges,
+          },
+        ],
+      };
+
+      try {
+        await callManageSelection(binding, payload);
+      } catch {
+        // Fail-open
+        return;
+      }
+
+      updateAutoSelectionStateAfterSliceRead(binding, selectionPath, sliceRange);
+      return;
+    }
+
+    const payload = {
+      op: "add",
+      mode: "full",
+      paths: [toPosixPath(selectionPath)],
+    };
+
+    try {
+      await callManageSelection(binding, payload);
+    } catch {
+      // Fail-open
+      return;
+    }
+
+    updateAutoSelectionStateAfterFullRead(binding, selectionPath);
+  }
+
 
   pi.on("session_start", async (_event, ctx) => {
     config = loadConfig();
     clearReadcacheCaches();
+    clearWindowsCache();
+    markBindingValidationStale();
+    reconstructBinding(ctx);
+
+    const binding = getCurrentBinding();
+    activeAutoSelectionState =
+      config.autoSelectReadSlices === true && binding
+        ? getAutoSelectionStateFromBranch(ctx, binding)
+        : null;
+
     if (config.readcacheReadFile === true) {
       void pruneObjectsOlderThan(ctx.cwd).catch(() => {
         // Fail-open
       });
     }
-    reconstructBinding(ctx);
+
+    try {
+      await syncAutoSelectionToCurrentBranch(ctx);
+    } catch {
+      // Fail-open
+    }
   });
 
   pi.on("session_switch", async (_event, ctx) => {
     config = loadConfig();
     clearReadcacheCaches();
+    clearWindowsCache();
+    markBindingValidationStale();
     reconstructBinding(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx);
   });
 
   // session_fork is the current event name; keep session_branch for backwards compatibility
   pi.on("session_fork", async (_event, ctx) => {
     config = loadConfig();
     clearReadcacheCaches();
+    clearWindowsCache();
+    markBindingValidationStale();
     reconstructBinding(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx);
   });
 
   pi.on("session_branch", async (_event, ctx) => {
     config = loadConfig();
     clearReadcacheCaches();
+    clearWindowsCache();
+    markBindingValidationStale();
     reconstructBinding(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx);
   });
 
   pi.on("session_tree", async (_event, ctx) => {
     config = loadConfig();
     clearReadcacheCaches();
+    clearWindowsCache();
+    markBindingValidationStale();
     reconstructBinding(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx);
   });
 
   pi.on("session_compact", async () => {
@@ -1346,6 +2660,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async () => {
     clearReadcacheCaches();
+    clearWindowsCache();
+    activeAutoSelectionState = null;
+    setBinding(null);
   });
 
   pi.registerCommand("rpbind", {
@@ -1357,10 +2674,23 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      persistBinding(parsed.windowId, parsed.tab);
-      ctx.ui.notify(`Bound rp_exec → window ${boundWindowId}, tab "${boundTab}"`, "success");
+      const binding = await enrichBinding(parsed.windowId, parsed.tab);
+      persistBinding(binding);
+
+      try {
+        await syncAutoSelectionToCurrentBranch(ctx);
+      } catch {
+        // Fail-open
+      }
+
+      ctx.ui.notify(
+        `Bound rp_exec → window ${boundWindowId}, tab "${boundTab}"` +
+          (boundWorkspaceName ? ` (${boundWorkspaceName})` : ""),
+        "success"
+      );
     },
   });
+
 
   pi.registerCommand("rpcli-readcache-status", {
     description: "Show repoprompt-cli read_file cache status",
@@ -1370,6 +2700,7 @@ export default function (pi: ExtensionAPI) {
       let msg = "repoprompt-cli read_file cache\n";
       msg += "──────────────────────────\n";
       msg += `Enabled: ${config.readcacheReadFile === true ? "✓" : "✗"}\n`;
+      msg += `Auto-select reads: ${config.autoSelectReadSlices === true ? "✓" : "✗"}\n`;
 
       if (config.readcacheReadFile !== true) {
         msg += "\nEnable by creating ~/.pi/agent/extensions/repoprompt-cli/config.json\n";
@@ -1420,10 +2751,8 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const windowId = boundWindowId;
-      const tab = boundTab;
-
-      if (windowId === undefined) {
+      const binding = await ensureBindingTargetsLiveWindow(ctx);
+      if (!binding) {
         ctx.ui.notify("rp_exec is not bound. Bind first via /rpbind or rp_bind", "error");
         return;
       }
@@ -1446,7 +2775,7 @@ export default function (pi: ExtensionAPI) {
         scopeKey = scopeRange(start, end);
       }
 
-      const resolved = await resolveReadFilePath(pi, pathInput, ctx.cwd, windowId, tab);
+      const resolved = await resolveReadFilePath(pi, pathInput, ctx.cwd, binding.windowId, binding.tab);
       if (!resolved.absolutePath) {
         ctx.ui.notify(`Could not resolve path: ${pathInput}`, "error");
         return;
@@ -1471,11 +2800,25 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       await ensureJustBashLoaded();
       maybeWarnAstUnavailable(ctx);
-      persistBinding(params.windowId, params.tab);
+
+      const binding = await enrichBinding(params.windowId, params.tab);
+      persistBinding(binding);
+
+      try {
+        await syncAutoSelectionToCurrentBranch(ctx);
+      } catch {
+        // Fail-open
+      }
 
       return {
         content: [{ type: "text", text: `Bound rp_exec → window ${boundWindowId}, tab "${boundTab}"` }],
-        details: { windowId: boundWindowId, tab: boundTab },
+        details: {
+          windowId: boundWindowId,
+          tab: boundTab,
+          workspaceId: boundWorkspaceId,
+          workspaceName: boundWorkspaceName,
+          workspaceRoots: boundWorkspaceRoots,
+        },
       };
     },
   });
@@ -1490,6 +2833,14 @@ export default function (pi: ExtensionAPI) {
       // Routing: prefer call-time overrides, otherwise fall back to the last persisted binding
       await ensureJustBashLoaded();
       maybeWarnAstUnavailable(ctx);
+
+      if (params.windowId === undefined && params.tab === undefined) {
+        try {
+          await maybeEnsureBindingTargetsLiveWindow(ctx);
+        } catch {
+          // Fail-open
+        }
+      }
 
       const windowId = params.windowId ?? boundWindowId;
       const tab = params.tab ?? boundTab;
@@ -1593,10 +2944,10 @@ export default function (pi: ExtensionAPI) {
       let rpReadcache: RpReadcacheMetaV1 | null = null;
 
       if (
-          config.readcacheReadFile === true &&
-          readRequest !== null &&
-          readRequest.cacheable === true &&
-          !execError &&
+        config.readcacheReadFile === true &&
+        readRequest !== null &&
+        readRequest.cacheable === true &&
+        !execError &&
         exitCode === 0 &&
         windowId !== undefined &&
         tab !== undefined
@@ -1624,6 +2975,30 @@ export default function (pi: ExtensionAPI) {
           }
         } catch {
           // Fail-open: caching must never break the baseline command output
+        }
+      }
+
+      const shouldAutoSelectRead =
+        config.autoSelectReadSlices === true &&
+        readRequest !== null &&
+        !execError &&
+        exitCode === 0 &&
+        windowId !== undefined &&
+        tab !== undefined &&
+        params.windowId === undefined &&
+        params.tab === undefined;
+
+      if (shouldAutoSelectRead) {
+        try {
+          await autoSelectReadFileInRepoPromptSelection(
+            ctx,
+            readRequest.path,
+            readRequest.startLine,
+            readRequest.limit,
+            combinedOutput,
+          );
+        } catch {
+          // Fail-open
         }
       }
 

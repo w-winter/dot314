@@ -8,6 +8,7 @@ import type { RpCliConfig } from "./types.js";
 
 const DEFAULT_CONFIG: Required<RpCliConfig> = {
     readcacheReadFile: false,
+    autoSelectReadSlices: true,
 };
 
 const CONFIG_LOCATIONS = [

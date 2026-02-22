@@ -10,6 +10,7 @@ Optional:
 - Diff blocks in `rp_exec` output use `delta` when installed (honoring the user's global git/delta color config), with graceful fallback otherwise
 - [Gurpartap/pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for `rp_exec` calls that read files (`read` / `cat` / `read_file`) to save on tokens
   - returns unchanged markers and diffs on repeat reads
+- Auto-selection (in the RP app, e.g. for use in RP Chat) of slices/files the agent has read; these selections are also branch-safe across `/tree` navigation and `/fork`ed session
 
 Also provides convenience commands:
 - `/rpbind <window_id> <tab>`
@@ -54,7 +55,8 @@ Create `~/.pi/agent/extensions/repoprompt-cli/config.json`:
 
 ```json
 {
-  "readcacheReadFile": true
+  "readcacheReadFile": true,
+  "autoSelectReadSlices": true
 }
 ```
 
@@ -95,6 +97,8 @@ Notes:
 - Readcache only triggers for **single-command** reads. Compound commands (`&&`, `;`, `|`) fail open to baseline output
 - When `just-bash` AST parsing is unavailable, caching only applies to unquoted/unescaped single-command reads; quoted/escaped forms fail open
 - `rawJson=true` disables caching
+- Read-driven selection replay is enabled by default (`autoSelectReadSlices: true`); set it to `false` to disable
+- Manual selection is always preserved for paths not managed by this feature; for managed paths, branch replay may restore the branch snapshot
 
 ## Readcache gotchas
 
