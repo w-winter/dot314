@@ -177,6 +177,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ● | `dedup-agents-files.ts` |
 | ◐ | `editor-enhancements/` |
 | ● | `ephemeral-mode.ts` |
+| ◐ | `extension-stats.ts` |
 | ● | `fork-from-first.ts` |
 | ◐ | `handover/` |
 | ○ | `inline-bash.ts` |

@@ -161,6 +161,15 @@
   - Optional auto-submit countdown (typing or `Esc` cancels; `Enter` submits normally)
   - Plays well with [`session-ask/`](session-ask/) (because the fork lineage is preserved, `session-ask` can optionally inject fork hints and `session_ask` can consult parent sessions when needed)
 
+- ◐ [`extension-stats.ts`](extension-stats.ts)
+  - `/extension-stats` shows rolling 7/30/60/90-day usage metrics from session logs, grouped by extension and tool
+  - Use ↑/↓ to page, press `m` to toggle whether the metric is based on count of tool calls or on tokens attributed to tool calls
+  - Adapted from `session-breakdown.ts` of [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff) (breadowns by)
+
+<p align="center">
+  <img width="720" alt="extension stats widget" src="https://github.com/user-attachments/assets/b1a2b8eb-0880-44f5-8ae2-2b8aa8221318" />
+</p>
+
 - ◐ [`plan-mode.ts`](plan-mode.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/plan` (and `ctrl+alt+p`) toggles a read-only sandbox
   - No todo extraction or step execution prompting (planning stays on the user)
