@@ -2,6 +2,8 @@
  * iTerm2 tab color with two-state behavior:
  * - runningColor: while Pi agent is running
  * - notRunningColor: when Pi agent is not running
+ *
+ * Uses agent_start/agent_end (same lifecycle as titlebar-spinner), not turn events
  */
 import type {
 	AgentEndEvent,
@@ -11,7 +13,6 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SessionSwitchEvent,
-	TurnEndEvent,
 } from "@mariozechner/pi-coding-agent";
 
 const OSC = "\x1b]";
@@ -81,11 +82,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (_event: AgentEndEvent, ctx: ExtensionContext) => {
-		setNotRunning(ctx);
-	});
-
-	// Extra safety: some flows surface turn end more reliably than agent_end
-	pi.on("turn_end", async (_event: TurnEndEvent, ctx: ExtensionContext) => {
 		setNotRunning(ctx);
 	});
 
