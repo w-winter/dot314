@@ -112,6 +112,7 @@ text. This file provides a consolidated overview.
 - **Used in:**
   - `extensions/todos.ts` (○ unmodified copy)
   - `extensions/handover/` (◐ borrows from handoff prompt concept)
+  - `extensions/extension-stats.ts` (◐ borrows from `session-breakdown.ts`)
 - **Changes:** `todos.ts` is an unmodified copy. `handover/` is a new
   implementation that borrows conceptual approach from the handoff prompt.
 
