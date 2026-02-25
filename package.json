@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [

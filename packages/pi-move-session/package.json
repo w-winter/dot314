@@ -1,6 +1,6 @@
 {
   "name": "pi-move-session",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Move a live Pi session to a different working directory without losing context and jump into the new session",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session"],
   "license": "MIT",

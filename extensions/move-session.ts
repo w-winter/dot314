@@ -5,11 +5,12 @@
  *
  * Implementation strategy:
  *  1) Fork the current session file into the target cwd bucket using SessionManager.forkFrom()
- *  2) Tear down the parent's terminal usage (pop kitty protocol, reset modes)
- *  3) Spawn a new pi process in the target cwd with inherited stdio
- *  4) Once the child has spawned, trash the old session file
- *  5) Once the child has spawned, destroy the parent's stdin so it cannot steal key presses
- *  6) Parent stays alive as an inert wrapper, forwarding the child's exit code
+ *  2) Clear the fork header's parentSession pointer
+ *  3) Tear down the parent's terminal usage (pop kitty protocol, reset modes)
+ *  4) Spawn a new pi process in the target cwd with inherited stdio
+ *  5) Once the child has spawned, trash the old session file
+ *  6) Once the child has spawned, destroy the parent's stdin so it cannot steal key presses
+ *  7) Parent stays alive as an inert wrapper, forwarding the child's exit code
  *
  * Usage:
  *   /move-session <targetCwd>
@@ -18,9 +19,84 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import {
+    statSync,
+    openSync,
+    readSync,
+    writeSync,
+    closeSync,
+    renameSync,
+    unlinkSync,
+} from "node:fs";
 
 const TRASH_TIMEOUT_MS = 5000;
+const HEADER_READ_MAX = 8192;
+const COPY_CHUNK_SIZE = 65_536;
+
+/**
+ * Remove parentSession from the first JSONL header line without loading
+ * the entire file into memory
+ */
+function clearParentSession(sessionFile: string): void {
+    const fd = openSync(sessionFile, "r");
+    const headerBuffer = Buffer.alloc(HEADER_READ_MAX);
+    const bytesRead = readSync(fd, headerBuffer, 0, HEADER_READ_MAX, 0);
+    const headerChunk = headerBuffer.toString("utf-8", 0, bytesRead);
+    const newlineIndex = headerChunk.indexOf("\n");
+
+    if (newlineIndex === -1) {
+        closeSync(fd);
+        return;
+    }
+
+    const header = JSON.parse(headerChunk.slice(0, newlineIndex));
+    if (!header.parentSession) {
+        closeSync(fd);
+        return;
+    }
+
+    delete header.parentSession;
+    const newHeaderLine = JSON.stringify(header) + "\n";
+    const originalHeaderBytes = Buffer.byteLength(headerChunk.slice(0, newlineIndex + 1), "utf-8");
+
+    const temporaryPath = sessionFile + ".move-session-tmp";
+    let writeFd: number | undefined;
+    try {
+        writeFd = openSync(temporaryPath, "w");
+        const newHeaderBuffer = Buffer.from(newHeaderLine, "utf-8");
+        writeSync(writeFd, newHeaderBuffer, 0, newHeaderBuffer.length);
+
+        const copyBuffer = Buffer.alloc(COPY_CHUNK_SIZE);
+        let position = originalHeaderBytes;
+        while (true) {
+            const readCount = readSync(fd, copyBuffer, 0, COPY_CHUNK_SIZE, position);
+            if (readCount === 0) break;
+            writeSync(writeFd, copyBuffer, 0, readCount);
+            position += readCount;
+        }
+
+        closeSync(writeFd);
+        writeFd = undefined;
+        closeSync(fd);
+        renameSync(temporaryPath, sessionFile);
+    } catch (error) {
+        if (writeFd !== undefined) {
+            try {
+                closeSync(writeFd);
+            } catch {
+                // ignore cleanup close errors
+            }
+        }
+
+        closeSync(fd);
+        try {
+            unlinkSync(temporaryPath);
+        } catch {
+            // ignore cleanup unlink errors
+        }
+        throw error;
+    }
+}
 
 export default function (pi: ExtensionAPI) {
     const trashFileBestEffort = async (filePath: string) => {
@@ -89,6 +165,17 @@ export default function (pi: ExtensionAPI) {
                 if (!destSessionFile) {
                     ctx.ui.notify("Internal error: forkFrom() produced no session file", "error");
                     return;
+                }
+
+                // We intend to move/replace the original session, so avoid leaving
+                // a parentSession pointer that may dangle after trashing the source.
+                try {
+                    clearParentSession(destSessionFile);
+                } catch (error: any) {
+                    ctx.ui.notify(
+                        `Warning: could not clear parent session reference: ${error?.message ?? String(error)}`,
+                        "warning"
+                    );
                 }
 
                 // --- Tear down the parent's terminal usage ---
