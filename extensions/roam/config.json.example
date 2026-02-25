@@ -1,0 +1,6 @@
+{
+  "tailscale": {
+    "account": "you@example.com",
+    "binary": "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+  }
+}

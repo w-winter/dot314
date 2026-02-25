@@ -33,6 +33,7 @@
       "./extensions/model-aware-compaction/index.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
       "./extensions/move-session.ts",
+      "./extensions/roam/index.ts",
       "./extensions/poly-notify/index.ts",
       "./extensions/oracle.ts",
       "./extensions/plan-mode.ts",

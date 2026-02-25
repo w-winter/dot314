@@ -70,6 +70,14 @@
   - Uses `trash` to delete the old session file (best-effort); if `trash` isn't available, it leaves the old file in place
   - Supports `~` expansion (e.g. `/session-move ~/code/my-project`)
 
+- ● [`roam/`](roam/) ([README](./roam/README.md))
+  - `/roam [window-name]` post-hoc moves the current live Pi session into a dedicated tmux server (`tmux -L pi`) for remote continuation (e.g. Termius over Tailscale) -- convenient if you find yourself wishing you had already started Pi inside tmux
+  - Forks the session, clears the fork header's `parentSession` pointer, starts/joins tmux session `pi`, then best-effort trashes the original session file to avoid `/resume` duplicates
+  - Writes/refreshes tmux config at `~/.config/pi-tmux/tmux.conf` with dual prefixes (`Ctrl+S` + `Ctrl+B`) and mobile-friendly defaults
+  - Optional per-user Tailscale config at `~/.pi/agent/extensions/roam/config.json` (example: [`roam/config.json.example`](./roam/config.json.example)):
+    - `tailscale.account`: run `tailscale switch <account>` before `tailscale up`
+    - `tailscale.binary`: override Tailscale CLI path (default macOS app binary)
+
 - ● [`command-center/`](command-center/) ([README](./command-center/README.md))
   - Scrollable widget above the editor displaying all /commands from extensions, prompts, and skills
   - Configure keybindings etc. via `config.json`
