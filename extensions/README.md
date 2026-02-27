@@ -193,7 +193,7 @@
   - This version adds a thinking-level picker and fixes text-overflow crashes (CJK-safe wrapping)
 
 - ◐ [`session-switch.ts`](session-switch.ts) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
-  - Session switching (via `/switch-session` command) with live preview of selected session in the background
+  - Session switching (via `/switch-session` command) with a live preview of the highlighted session below the picker
   - This version mirrors the native `/resume` picker's layout, behaviors, and keybindings
 
 - ◐ [`tools/`](tools/) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))

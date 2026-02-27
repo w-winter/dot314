@@ -1,8 +1,8 @@
 /**
- * Session Switcher — session picker with live background preview
+ * Session Switcher — session picker with live session preview
  *
  * Goal: mirror Pi's native /resume picker behaviors + keybindings, while adding
- * a dimmed background preview of the currently highlighted session.
+ * a dimmed preview of the currently highlighted session below the picker.
  *
  * Notes:
  * - The foreground UI is Pi's native SessionSelectorComponent
@@ -121,25 +121,25 @@ class ResumeOverlay implements Focusable {
 	render(width: number): string[] {
 		const height = this.getTermHeight();
 		const selectedPath = this.selector.getSessionList().getSelectedSessionPath();
-		const bg = renderBackground(selectedPath, this.sessionByPath, width, height, this.theme);
 
-		// Render the native /resume UI at full terminal width.
-		// This matches the native /resume picker width (no centered narrow panel).
-		const boxW = width;
-		const boxLines = this.selector.render(boxW);
-
-		const boxStartRow = Math.max(0, Math.floor((height - boxLines.length) / 2));
-		const leftPad = "";
-
-		for (let i = 0; i < boxLines.length; i++) {
-			const row = boxStartRow + i;
-			if (row < 0 || row >= bg.length) {
-				continue;
-			}
-			bg[row] = truncateToWidth(leftPad + boxLines[i], width);
+		// Render the native /resume UI at full terminal width, but pin it to the top
+		// so the session preview can use the remaining terminal space below.
+		const selectorLines = this.selector.render(width);
+		if (selectorLines.length >= height) {
+			return selectorLines.slice(0, height);
 		}
 
-		return bg;
+		const separator = truncateToWidth(this.theme.fg("dim", "─".repeat(width)), width);
+		const previewHeight = Math.max(0, height - selectorLines.length - 1);
+		const previewLines =
+			previewHeight > 0
+				? renderBackground(selectedPath, this.sessionByPath, width, previewHeight, this.theme)
+				: [];
+
+		const lines = [...selectorLines, separator, ...previewLines];
+		while (lines.length < height) lines.push("");
+		if (lines.length > height) lines.length = height;
+		return lines;
 	}
 
 	invalidate(): void {
@@ -154,7 +154,7 @@ class ResumeOverlay implements Focusable {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("switch-session", {
-		description: "Session picker (mirrors /resume) with live background preview",
+		description: "Session picker (mirrors /resume) with live preview",
 		handler: async (_args, ctx: ExtensionCommandContext) => {
 			if (!ctx.hasUI) {
 				return;
