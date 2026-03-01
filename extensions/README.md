@@ -196,6 +196,15 @@
   - Session switching (via `/switch-session` command) with a live preview of the highlighted session below the picker
   - This version mirrors the native `/resume` picker's layout, behaviors, and keybindings
 
+- ● [`multicopy/`](multicopy/) ([`index.ts`](multicopy/index.ts), [`config.json`](multicopy/config.json))
+  - `/multicopy` opens a session tree picker with a live preview so you can verify nodes before copying
+  - Supports multi-select copy (`Space` to select, `Shift+C` to copy selected or focused nodes)
+  - Supports clearing selection (`Shift+X` clears selection no matter how many nodes are selected)
+  - Supports inline node labeling (`Shift+L`), with labels persisted via `pi.setLabel(...)`
+  - Keybindings are customizable in `multicopy/config.json`
+  - `/multicopy safe` (or `/multicopy --no-preview`) disables preview for a low-latency fallback
+  - Intentionally does **not** navigate branches or trigger `/tree` summarization; it is inspection-first UX
+
 - ◐ [`tools/`](tools/) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/tools` interactive enable/disable UI
   - This version persists tool enablement globally ([`tools/tools.json`](tools/tools.json)) and per-session via session entries

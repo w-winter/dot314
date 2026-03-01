@@ -1,0 +1,7 @@
+{
+  "keys": {
+    "toggleSelect": "space",
+    "copy": "shift+c",
+    "clear": "shift+x"
+  }
+}
