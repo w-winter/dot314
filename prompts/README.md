@@ -15,11 +15,3 @@
   - Uses `context_builder` when reviewer suggestions need clarification
 
 Related: `skills/repoprompt-tool-guidance-refresh/rp-cli-prompts/` contains CLI-specific prompt variants for use with the `repoprompt-cli` extension.
-
-## Other
-
-- ○ [`handoff.md`](handoff.md) (upstream: [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff))
-  - Write a handoff summary to a file under `~/.pi/agent/handoffs/`
-
-- ○ [`pickup.md`](pickup.md) (upstream: [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff))
-  - Resume from a handoff file

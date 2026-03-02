@@ -245,8 +245,6 @@ See [prompts/README.md](prompts/README.md) for full descriptions.
 
 | | Prompt |
 |---|---|
-| ○ | `handoff.md` |
-| ○ | `pickup.md` |
 | ● | `rp-address-review.md` |
 | ● | `rp-plan.md` |
 | ● | `rp-review-chat.md` |
