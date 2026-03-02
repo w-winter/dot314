@@ -10,14 +10,25 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, SessionInfo } from "@mariozechner/pi-coding-agent";
-import { SessionManager, SessionSelectorComponent } from "@mariozechner/pi-coding-agent";
+import { getMarkdownTheme, SessionManager, SessionSelectorComponent } from "@mariozechner/pi-coding-agent";
 
 import type { Focusable } from "@mariozechner/pi-tui";
-import { truncateToWidth } from "@mariozechner/pi-tui";
+import { Markdown, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 
 type PreviewCacheEntry = {
 	lines: string[];
 };
+
+type RenderCacheEntry = {
+	path: string;
+	width: number;
+	renderedLines: string[];
+};
+
+const PREVIEW_SCROLL_UP = "shift+up";
+const PREVIEW_SCROLL_DOWN = "shift+down";
+const PREVIEW_PAGE_UP = "shift+left";
+const PREVIEW_PAGE_DOWN = "shift+right";
 
 const previewCache = new Map<string, PreviewCacheEntry>();
 
@@ -56,6 +67,9 @@ const renderBackground = (
 	width: number,
 	height: number,
 	theme: any,
+	renderCache: RenderCacheEntry | null,
+	setRenderCache: (next: RenderCacheEntry | null) => void,
+	scrollFromBottom: number,
 ): string[] => {
 	const blank = Array.from({ length: height }, () => "");
 	if (!selectedPath) {
@@ -72,15 +86,40 @@ const renderBackground = (
 		return blank;
 	}
 
-	// Only format the visible slice (avoid O(n) formatting on every cursor move)
-	const start = Math.max(0, preview.lines.length - height);
-	const visible = preview.lines.slice(start);
-
-	const styled = visible.map((line) => truncateToWidth(theme.fg("dim", line), width));
-	while (styled.length < height) {
-		styled.unshift("");
+	let renderedLines: string[];
+	if (renderCache && renderCache.path === selectedPath && renderCache.width === width) {
+		renderedLines = renderCache.renderedLines;
+	} else {
+		const markdown = new Markdown(preview.lines.join("\n"), 0, 0, getMarkdownTheme());
+		renderedLines = markdown.render(width);
+		setRenderCache({ path: selectedPath, width, renderedLines });
 	}
-	return styled;
+
+	// Scrolling: scrollFromBottom=0 means "follow tail" (default)
+	const maxOffset = Math.max(0, renderedLines.length - height);
+	const clampedScroll = Math.max(0, Math.min(scrollFromBottom, maxOffset));
+	const start = Math.max(0, maxOffset - clampedScroll);
+	const end = Math.min(renderedLines.length, start + height);
+
+	let visible = renderedLines.slice(start, end);
+	const above = start;
+	const below = renderedLines.length - end;
+
+	if (height > 0) {
+		if (above > 0) {
+			const indicator = truncateToWidth(theme.fg("muted", `… ${above} line(s) above`), width);
+			visible = height === 1 ? [indicator] : [indicator, ...visible.slice(0, height - 1)];
+		}
+		if (below > 0) {
+			const indicator = truncateToWidth(theme.fg("muted", `… ${below} line(s) below`), width);
+			visible = height === 1 ? [indicator] : [...visible.slice(0, height - 1), indicator];
+		}
+	}
+
+	while (visible.length < height) {
+		visible.unshift("");
+	}
+	return visible;
 };
 
 class ResumeOverlay implements Focusable {
@@ -89,6 +128,10 @@ class ResumeOverlay implements Focusable {
 	private getTermHeight: () => number;
 	private requestRender: () => void;
 	private theme: any;
+	private renderCache: RenderCacheEntry | null = null;
+	private previewScrollFromBottom = 0;
+	private lastPreviewHeight = 0;
+	private lastSelectedPath: string | undefined = undefined;
 
 	_focused = false;
 	get focused(): boolean {
@@ -114,6 +157,29 @@ class ResumeOverlay implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (matchesKey(data, PREVIEW_SCROLL_UP)) {
+			this.previewScrollFromBottom += 1;
+			this.requestRender();
+			return;
+		}
+		if (matchesKey(data, PREVIEW_SCROLL_DOWN)) {
+			this.previewScrollFromBottom = Math.max(0, this.previewScrollFromBottom - 1);
+			this.requestRender();
+			return;
+		}
+		if (matchesKey(data, PREVIEW_PAGE_UP)) {
+			const step = Math.max(1, (this.lastPreviewHeight > 0 ? this.lastPreviewHeight : 10) - 1);
+			this.previewScrollFromBottom += step;
+			this.requestRender();
+			return;
+		}
+		if (matchesKey(data, PREVIEW_PAGE_DOWN)) {
+			const step = Math.max(1, (this.lastPreviewHeight > 0 ? this.lastPreviewHeight : 10) - 1);
+			this.previewScrollFromBottom = Math.max(0, this.previewScrollFromBottom - step);
+			this.requestRender();
+			return;
+		}
+
 		this.selector.handleInput(data);
 		this.requestRender();
 	}
@@ -121,6 +187,13 @@ class ResumeOverlay implements Focusable {
 	render(width: number): string[] {
 		const height = this.getTermHeight();
 		const selectedPath = this.selector.getSessionList().getSelectedSessionPath();
+
+		if (selectedPath !== this.lastSelectedPath) {
+			this.lastSelectedPath = selectedPath;
+			this.previewScrollFromBottom = 0;
+			this.lastPreviewHeight = 0;
+			this.renderCache = null;
+		}
 
 		// Render the native /resume UI at full terminal width, but pin it to the top
 		// so the session preview can use the remaining terminal space below.
@@ -130,24 +203,55 @@ class ResumeOverlay implements Focusable {
 		}
 
 		const separator = truncateToWidth(this.theme.fg("dim", "─".repeat(width)), width);
-		const previewHeight = Math.max(0, height - selectorLines.length - 1);
+		const helpLine = truncateToWidth(
+			this.theme.fg(
+				"dim",
+				"  Shift+Up/Down: scroll • Shift+Left/Right: page",
+			),
+			width,
+		);
+
+		const remainingHeight = height - selectorLines.length - 1;
+		const showHelp = remainingHeight > 0;
+		const previewHeight = Math.max(0, remainingHeight - (showHelp ? 1 : 0));
+		this.lastPreviewHeight = previewHeight;
+
 		const previewLines =
 			previewHeight > 0
-				? renderBackground(selectedPath, this.sessionByPath, width, previewHeight, this.theme)
+				? renderBackground(
+					selectedPath,
+					this.sessionByPath,
+					width,
+					previewHeight,
+					this.theme,
+					this.renderCache,
+					(next) => {
+						this.renderCache = next;
+					},
+					this.previewScrollFromBottom,
+				)
 				: [];
 
-		const lines = [...selectorLines, separator, ...previewLines];
+		const lines = showHelp
+			? [...selectorLines, separator, helpLine, ...previewLines]
+			: [...selectorLines, separator, ...previewLines];
 		while (lines.length < height) lines.push("");
 		if (lines.length > height) lines.length = height;
 		return lines;
 	}
 
 	invalidate(): void {
+		this.renderCache = null;
+		this.previewScrollFromBottom = 0;
+		this.lastPreviewHeight = 0;
 		this.selector.invalidate();
 	}
 
 	dispose(): void {
 		previewCache.clear();
+		this.renderCache = null;
+		this.previewScrollFromBottom = 0;
+		this.lastPreviewHeight = 0;
 		this.selector.dispose();
 	}
 }

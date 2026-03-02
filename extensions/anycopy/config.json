@@ -1,0 +1,11 @@
+{
+  "keys": {
+    "toggleSelect": "space",
+    "copy": "shift+c",
+    "clear": "shift+x",
+    "scrollUp": "shift+up",
+    "scrollDown": "shift+down",
+    "pageUp": "shift+left",
+    "pageDown": "shift+right"
+  }
+}

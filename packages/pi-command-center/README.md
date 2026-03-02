@@ -4,6 +4,10 @@ A scrollable overview of available /commands (from extensions, prompts, skills) 
 
 See source repo for more documentation.
 
+<p align="center">
+  <img width="333" alt="command center demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/command-center-demo.gif" />
+</p>
+
 ## Install
 
 From npm:

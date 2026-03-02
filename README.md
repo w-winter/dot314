@@ -54,7 +54,7 @@ After installing, use `pi config` to enable/disable individual extensions, skill
         "extensions/repoprompt-mcp/src/index.ts",
         "extensions/rp-native-tools-lock/index.ts",
         "extensions/session-ask/index.ts",
-        "extensions/vog/index.ts"
+        "extensions/anycopy/index.ts"
       ]
     }
   ]
@@ -81,6 +81,7 @@ All available npm packages:
 
 | npm package | Extension |
 |---|---|
+| [pi-anycopy](https://www.npmjs.com/package/pi-anycopy) | anycopy |
 | [pi-brave-search](https://www.npmjs.com/package/pi-brave-search) | brave-search |
 | [pi-command-center](https://www.npmjs.com/package/pi-command-center) | command-center |
 | [pi-ephemeral](https://www.npmjs.com/package/pi-ephemeral) | ephemeral-mode |
@@ -96,7 +97,6 @@ All available npm packages:
 | [pi-repoprompt-tools-lock](https://www.npmjs.com/package/pi-repoprompt-tools-lock) | rp-native-tools-lock |
 | [pi-roam](https://www.npmjs.com/package/pi-roam) | roam |
 | [pi-session-ask](https://www.npmjs.com/package/pi-session-ask) | session-ask |
-| [pi-voice-of-god](https://www.npmjs.com/package/pi-voice-of-god) | vog |
 
 ### What the Pi package includes
 
@@ -107,6 +107,7 @@ This repo contains more resources than the package exports. When installed as a 
 | | Extension | Notes |
 |---|---|---|
 | ◐ | `agentic-compaction/` | Summarizer explores conversation as a filesystem |
+| ● | `anycopy/` | Browse session tree with scrollable per-message/node preview and copy to clipboard any single node, or multiple selected nodes |
 | ● | `brave-search/` | Web search + content extraction. Requires `BRAVE_API_KEY`. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose agent search |
 | ● | `command-center/` | /command palette widget |
 | ◐ | `editor-enhancements/` | File picker, shell completions, raw paste |
@@ -114,7 +115,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
 | ◐ | `handover/` | Generate handover draft -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `iterm-tab-color.ts` | Two-state tab coloring (running vs. not-running) for iTerm2 |
-| ● | `md.ts` | Export session or last N turns to Markdown |
+| ● | `md.ts` | Export full session branch or its last N turns to Markdown file, or as Markdown to clipboard |
 | ● | `model-aware-compaction/` | Per-model compaction thresholds |
 | ● | `model-sysprompt-appendix/` | Per-model system prompt additions |
 | ● | `move-session.ts` | Move session to a different cwd |
@@ -131,7 +132,6 @@ This repo contains more resources than the package exports. When installed as a 
 | ◐ | `session-switch.ts` | `/resume`-style session picker (via `/switch-session`), with live background preview of selected session |
 | ◐ | `tools/` | Interactive tool enable/disable |
 | ◐ | `usage-bar.ts` | Provider quota overlay |
-| ● | `vog/` | Inject custom system prompt message |
 
 **Themes**
 
@@ -173,6 +173,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | | Extension |
 |---|---|
 | ◐ | `agentic-compaction/` |
+| ● | `anycopy/` |
 | ◐ | `branch-term.ts` |
 | ● | `brave-search/` |
 | ○ | `code-actions/` |
@@ -217,7 +218,6 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ◐ | `tools/` |
 | ◐ | `ultrathink.ts` |
 | ◐ | `usage-bar.ts` |
-| ● | `vog/` |
 
 ### Skills
 

@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.1.9",
+  "version": "0.2.1",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -20,6 +20,7 @@
   "homepage": "https://github.com/w-winter/dot314#readme",
   "pi": {
     "extensions": [
+      "./extensions/anycopy/index.ts",
       "./extensions/brave-search/index.ts",
       "./extensions/command-center/index.ts",
       "./extensions/editor-enhancements/index.ts",
@@ -33,7 +34,6 @@
       "./extensions/model-aware-compaction/index.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
       "./extensions/move-session.ts",
-      "./extensions/multicopy/index.ts",
       "./extensions/roam/index.ts",
       "./extensions/poly-notify/index.ts",
       "./extensions/oracle.ts",
@@ -45,8 +45,7 @@
       "./extensions/session-ask/index.ts",
       "./extensions/session-switch.ts",
       "./extensions/tools/index.ts",
-      "./extensions/usage-bar.ts",
-      "./extensions/vog/index.ts"
+      "./extensions/usage-bar.ts"
     ],
     "skills": [],
     "prompts": [],

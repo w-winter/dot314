@@ -54,6 +54,18 @@
   <img width="225" alt="rp native tools lock" src="https://github.com/user-attachments/assets/881cb6f1-1258-4bd6-b8f3-532381ac1ab1" />
 </p>
 
+- ● [`anycopy/`](anycopy/) ([README](./anycopy/README.md))
+  - `/anycopy` browses the session tree with a live syntax-highlighted preview of each node's content and copies any node(s) to the clipboard
+  - `Space` select/unselect, `Shift+C` copy (selected or focused), `Shift+X` clear entire (multi-)selection, `Shift+L` label node
+  - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
+  - Multi-selected nodes are auto-sorted chronologically (by tree position)
+  - Keybindings customizable in `anycopy/config.json`
+  - Reoffers node labeling but is not a full `/tree` reproduction otherwise (branch switching, summarization, etc. are not included)
+
+<p align="center">
+  <img width="450" alt="anycopy demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif" />
+</p>
+
 - ● [`md.ts`](md.ts)
   - `/md` exports the current Pi session to a legible Markdown transcript in `~/.pi/agent/pi-sessions-extracted/`
   - `/md t*` includes thinking blocks (any arg starting with `t`, e.g. `/md t`, `/md think`, `/md thinking`)
@@ -83,7 +95,7 @@
   - Configure keybindings etc. via `config.json`
 
 <p align="center">
-  <img width="333" alt="command center demo" src="https://github.com/user-attachments/assets/f9ed3649-ac5b-4658-836b-86091e4985a1" />
+  <img width="333" alt="command center demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/command-center-demo.gif" />
 </p>
 
 - ● [`ephemeral-mode.ts`](ephemeral-mode.ts)
@@ -94,14 +106,6 @@
   - Appends a per-model appendix to the system prompt (exact match or default), right before the "# Project Context" section that leads into the contents of AGENTS.md.  Helpful, for example, for Claude models with confused identities (e.g. Opus 4.5, without a system prompt guiding it otherwise, assuming itself to be Sonnet 3.5 and low in capability)
   - `/model-sysprompt-appendix reload|status`
   - Configurations stored in [`model-sysprompt-appendix/model-sysprompt-appendix.json`](model-sysprompt-appendix/model-sysprompt-appendix.json)
-
-- ● [`vog/`](vog/)
-  - Adds a user-controlled message to the system prompt (inserted just before "# Project Context"), applied across all models (unlike `model-sysprompt-appendix`, which is configurable per-model)
-  - `/vog on|off|<message>`
-    - `/vog on` / `/vog off` toggle whether the VoG is applied
-    - `/vog` with any other argument sets the message and enables the VoG
-    - `/vog` with no args opens an interactive menu to toggle and edit the message (multi-line editor)
-  - Persists config at [`vog/vog.json`](vog/vog.json) (cross-session, directly editable)
 
 - ● [`poly-notify/`](poly-notify/)
   - Desktop / sound / Pushover notifications (e.g. to smart watch) when an agent turn completes and exceeds a duration threshold
@@ -194,16 +198,12 @@
 
 - ◐ [`session-switch.ts`](session-switch.ts) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
   - Session switching (via `/switch-session` command) with a live preview of the highlighted session below the picker
+  - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
   - This version mirrors the native `/resume` picker's layout, behaviors, and keybindings
 
-- ● [`multicopy/`](multicopy/) ([`index.ts`](multicopy/index.ts), [`config.json`](multicopy/config.json))
-  - `/multicopy` opens a session tree picker with a live preview so you can verify nodes before copying
-  - Supports multi-select copy (`Space` to select, `Shift+C` to copy selected or focused nodes)
-  - Supports clearing selection (`Shift+X` clears selection no matter how many nodes are selected)
-  - Supports inline node labeling (`Shift+L`), with labels persisted via `pi.setLabel(...)`
-  - Keybindings are customizable in `multicopy/config.json`
-  - `/multicopy safe` (or `/multicopy --no-preview`) disables preview for a low-latency fallback
-  - Intentionally does **not** navigate branches or trigger `/tree` summarization; it is inspection-first UX
+<p align="center">
+  <img width="450" alt="/switch-session demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/switch-session-demo.gif" />
+</p>
 
 - ◐ [`tools/`](tools/) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/tools` interactive enable/disable UI
