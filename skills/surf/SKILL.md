@@ -1,7 +1,6 @@
 ---
-disable-model-invocation: true
 name: surf
-description: Control Chrome browser via CLI for testing, automation, and debugging. Use when the user needs browser automation, screenshots, form filling, page inspection, network/CPU emulation, DevTools streaming, or AI queries via ChatGPT/Gemini/Perplexity/Grok.
+description: Control Chrome browser via CLI for testing, automation, and debugging. Use when the user needs browser automation, screenshots, form filling, page inspection, network/CPU emulation, DevTools streaming, or AI queries via ChatGPT/Gemini/Perplexity/Grok/AI Studio.
 ---
 
 # Surf Browser Automation
@@ -73,7 +72,7 @@ surf perplexity "latest news" --model sonar       # Model selection (Pro)
 ### Grok (via x.com - requires X.com login in Chrome)
 ```bash
 surf grok "what are the latest AI trends on X"    # Search X posts
-surf grok "analyze @username recent activity"     # Profile analysis
+surf grok "analyze @username recent activity"     # Profile analysis  
 surf grok "summarize this page" --with-page       # Include page context
 surf grok "find viral AI posts" --deep-search     # DeepSearch mode
 surf grok "quick question" --model fast           # Models: auto, fast, expert, thinking (default)
@@ -88,13 +87,42 @@ surf grok --validate
 surf grok --validate --save-models
 ```
 
+### AI Studio (via aistudio.google.com - requires Google login in Chrome)
+```bash
+surf aistudio "explain quantum computing"
+surf aistudio "redteam this" --with-page          # Include current page context
+surf aistudio "quick answer" --model gemini-3-flash-preview  # Model selection
+surf aistudio "analyze" --timeout 600             # Custom timeout (default: 300s)
+```
+
+**Why AI Studio over Gemini?** AI Studio gives access to less restricted Gemini models. For Gemini 3 Pro the difference can be significant with certain prompts. Downside: aggressive per-day rate limits on Pro and Flash models.
+
+**Model selection is best-effort:** Pass any AI Studio model id (e.g. `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-flash-lite-latest`). If the model isn't found, AI Studio uses whatever model was last selected in the UI.
+
+### AI Studio App Builder
+```bash
+surf aistudio.build "build a portfolio site"
+surf aistudio.build "todo app" --model gemini-3.1-pro-preview   # Model override
+surf aistudio.build "crm dashboard" --output ./out              # Extract zip to directory
+surf aistudio.build "game" --keep-open --timeout 600            # Keep tab open, 10min timeout
+```
+
+Automates AI Studio's App Builder at `aistudio.google.com/apps`. Types your prompt, clicks Build, waits for completion, downloads the generated zip, and optionally extracts it.
+
+- `--output <dir>` extracts the zip to a directory
+- `--model <id>` overrides the model in Advanced Settings
+- `--timeout <seconds>` build timeout (default: 600s)
+- `--keep-open` leaves the AI Studio tab open after completion
+
+Returns `zipPath`, `extractedPath`, `model`, `buildDuration`, and `tookMs`.
+
 ### AI Tool Troubleshooting
 
 When AI queries fail, check these common issues:
 
-1. **Not logged in**: The error "login required" means you need to log into the service in Chrome
+1. **Not logged in**: The error "login required" means you need to log into the service in Chrome (chatgpt.com, gemini.google.com, perplexity.ai, x.com, or aistudio.google.com)
 2. **Model selection failed**: The UI may have changed. Run `surf grok --validate` to check
-3. **Response timeout**: Thinking models (ChatGPT o1, Grok thinking) can take 45+ seconds
+3. **Response timeout**: Thinking models (ChatGPT o1, Grok thinking) can take 45+ seconds. AI Studio builds can take several minutes.
 4. **Element not found**: The service's UI changed. Check for surf-cli updates
 
 **Debugging workflow for agents:**
@@ -231,7 +259,7 @@ surf element.styles ".card"            # Or by CSS selector
 
 ```bash
 surf scroll.bottom
-surf scroll.top
+surf scroll.top  
 surf scroll.to --y 500         # Scroll to Y position
 surf scroll.to --ref e5        # Scroll element into view
 surf scroll.by --y 200         # Scroll by amount
@@ -265,7 +293,7 @@ surf dialog.dismiss            # Dismiss (Cancel)
 surf emulate.network slow-3g   # Presets: slow-3g, fast-3g, 4g, offline
 surf emulate.network reset     # Disable throttling
 
-# CPU throttling
+# CPU throttling  
 surf emulate.cpu 4             # 4x slower
 surf emulate.cpu 1             # Reset
 
@@ -468,17 +496,17 @@ surf workflow.validate workflow.json
   "steps": [
     // Capture step output for later use
     { "tool": "js", "args": { "code": "return [1,2,3]" }, "as": "items" },
-
+    
     // Fixed iterations
     { "repeat": 5, "steps": [
       { "tool": "click", "args": { "ref": "e5" } }
     ]},
-
+    
     // Iterate over array
     { "each": "%{items}", "as": "item", "steps": [
       { "tool": "js", "args": { "code": "console.log('%{item}')" } }
     ]},
-
+    
     // Repeat until condition
     { "repeat": 20, "until": { "tool": "js", "args": { "code": "return done" } }, "steps": [...] }
   ]
@@ -516,7 +544,7 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 ```bash
 --tab-id <id>         # Target specific tab
 --window-id <id>      # Target specific window
---json                # Raw JSON output
+--json                # Raw JSON output  
 --auto-capture        # Screenshot + console on error
 --timeout <ms>        # Override default timeout
 ```
@@ -528,14 +556,15 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 3. **JS method for contenteditable** - Modern editors (ChatGPT, Claude, Notion) need `--method js`
 4. **Named tabs for workflows** - `tab.name app` then `tab.switch app`
 5. **Auto-capture for debugging** - `--auto-capture` saves diagnostics on failure
-6. **AI tools use browser session** - Must be logged into the service, no API keys needed
+6. **AI tools use browser session** - Must be logged into the service (ChatGPT, Gemini, Perplexity, Grok, AI Studio), no API keys needed
 7. **Grok validation** - Run `surf grok --validate` if queries fail to check UI changes
-8. **Long timeouts for thinking models** - ChatGPT o1, Grok thinking can take 60+ seconds
-9. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
-10. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
-11. **Window isolation** - Use `window.new` + `--window-id` to keep agent work separate from your browsing
-12. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
-13. **Frame context** - Use `frame.switch` before interacting with iframe content
+8. **Long timeouts for thinking models** - ChatGPT o1, Grok thinking can take 60+ seconds. AI Studio builds default to 600s.
+9. **AI Studio for unrestricted Gemini** - `surf aistudio` gives less filtered responses than `surf gemini` for the same models
+10. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
+11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
+12. **Window isolation** - Use `window.new` + `--window-id` to keep agent work separate from your browsing
+13. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
+14. **Frame context** - Use `frame.switch` before interacting with iframe content
 
 ## Socket API
 
