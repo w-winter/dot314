@@ -2,7 +2,7 @@
  * Session Switcher — session picker with live session preview
  *
  * Goal: mirror Pi's native /resume picker behaviors + keybindings, while adding
- * a dimmed preview of the currently highlighted session below the picker.
+ * a scrollable preview of the currently highlighted session below the picker.
  *
  * Notes:
  * - The foreground UI is Pi's native SessionSelectorComponent
