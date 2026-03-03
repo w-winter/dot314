@@ -1,0 +1,14 @@
+508,509c508,510
+<     Repository root path or loaded root name (defaults to first loaded
+<     root). Supports @wt, @main, or @main:<branch> suffixes.
+---
+>     Repository root path inside a loaded root, or loaded root name
+>     (defaults to first loaded root). Supports @wt, @main, or
+>     @main:<branch> suffixes.
+512,513c513,515
+<     Multiple repository root paths or names (for multi-root
+<     operations). Supports @wt, @main, or @main:<branch> suffixes.
+---
+>     Multiple repository root paths inside loaded roots, or root names
+>     (for multi-root operations). Supports @wt, @main, or
+>     @main:<branch> suffixes.
