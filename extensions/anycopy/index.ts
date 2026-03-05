@@ -120,7 +120,7 @@ const getTextContent = (content: unknown): string => {
 		.join("");
 };
 
-const clipText = (text: string): string => {
+const clipTextForPreview = (text: string): string => {
 	if (text.length <= MAX_PREVIEW_CHARS) return text;
 	return `${text.slice(0, MAX_PREVIEW_CHARS)}\n… [truncated]`;
 };
@@ -309,12 +309,15 @@ const buildNodeOrder = (roots: SessionTreeNode[]): Map<string, number> => {
 	return order;
 };
 
-/** Clipboard text: role:\n\ncontent\n\n---\n\nrole:\n\ncontent */
+/** Clipboard text: role:\n\ncontent\n\n---\n\nrole:\n\ncontent
+ *
+ * Note: the preview pane is truncated for performance, but clipboard copy must never truncate
+ */
 const buildClipboardText = (nodes: SessionTreeNode[]): string => {
 	return nodes
 		.map((node) => {
 			const label = getEntryRoleLabel(node.entry);
-			const content = clipText(getEntryContent(node.entry));
+			const content = getEntryContent(node.entry);
 			return `${label}:\n\n${content}`;
 		})
 		.join("\n\n---\n\n");
@@ -537,7 +540,7 @@ class anycopyOverlay implements Focusable {
 			({ bodyLines, truncatedToMaxLines } = this.previewCache);
 		} else {
 			const content = getEntryContent(focused.entry);
-			const clipped = clipText(content);
+			const clipped = clipTextForPreview(content);
 			const rendered = renderPreviewBodyLines(clipped, focused.entry, width, this.theme, this.nodeById);
 
 			truncatedToMaxLines = rendered.length > MAX_PREVIEW_LINES;

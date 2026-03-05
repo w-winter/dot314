@@ -1,6 +1,6 @@
 {
   "name": "pi-anycopy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Copy any single message, or multiple selected messages, from the session tree, with scrollable message preview",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
