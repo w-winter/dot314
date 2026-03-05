@@ -45,8 +45,16 @@ type anycopyKeyConfig = {
 	pageUp: string;
 };
 
+type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+
 type anycopyConfig = {
 	keys?: Partial<anycopyKeyConfig>;
+	treeFilterMode?: TreeFilterMode;
+};
+
+type anycopyRuntimeConfig = {
+	keys: anycopyKeyConfig;
+	treeFilterMode: TreeFilterMode;
 };
 
 const DEFAULT_KEYS: anycopyKeyConfig = {
@@ -59,31 +67,45 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 	pageUp: "shift+left",
 };
 
+const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
+
 const getExtensionDir = (): string => {
 	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
 	if (typeof __dirname !== "undefined") return __dirname;
 	return dirname(fileURLToPath(import.meta.url));
 };
 
-const loadConfig = (): anycopyKeyConfig => {
+const loadConfig = (): anycopyRuntimeConfig => {
 	const configPath = join(getExtensionDir(), "config.json");
-	if (!existsSync(configPath)) return { ...DEFAULT_KEYS };
+	if (!existsSync(configPath)) {
+		return { keys: { ...DEFAULT_KEYS }, treeFilterMode: DEFAULT_TREE_FILTER_MODE };
+	}
 
 	try {
 		const raw = readFileSync(configPath, "utf8");
 		const parsed = JSON.parse(raw) as anycopyConfig;
 		const keys = parsed.keys ?? {};
+		const treeFilterModeRaw = parsed.treeFilterMode;
+		const validTreeFilterModes: TreeFilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
+		const treeFilterMode =
+			typeof treeFilterModeRaw === "string" && validTreeFilterModes.includes(treeFilterModeRaw as TreeFilterMode)
+				? (treeFilterModeRaw as TreeFilterMode)
+				: DEFAULT_TREE_FILTER_MODE;
+
 		return {
-			toggleSelect: typeof keys.toggleSelect === "string" ? keys.toggleSelect : DEFAULT_KEYS.toggleSelect,
-			copy: typeof keys.copy === "string" ? keys.copy : DEFAULT_KEYS.copy,
-			clear: typeof keys.clear === "string" ? keys.clear : DEFAULT_KEYS.clear,
-			scrollDown: typeof keys.scrollDown === "string" ? keys.scrollDown : DEFAULT_KEYS.scrollDown,
-			scrollUp: typeof keys.scrollUp === "string" ? keys.scrollUp : DEFAULT_KEYS.scrollUp,
-			pageDown: typeof keys.pageDown === "string" ? keys.pageDown : DEFAULT_KEYS.pageDown,
-			pageUp: typeof keys.pageUp === "string" ? keys.pageUp : DEFAULT_KEYS.pageUp,
+			keys: {
+				toggleSelect: typeof keys.toggleSelect === "string" ? keys.toggleSelect : DEFAULT_KEYS.toggleSelect,
+				copy: typeof keys.copy === "string" ? keys.copy : DEFAULT_KEYS.copy,
+				clear: typeof keys.clear === "string" ? keys.clear : DEFAULT_KEYS.clear,
+				scrollDown: typeof keys.scrollDown === "string" ? keys.scrollDown : DEFAULT_KEYS.scrollDown,
+				scrollUp: typeof keys.scrollUp === "string" ? keys.scrollUp : DEFAULT_KEYS.scrollUp,
+				pageDown: typeof keys.pageDown === "string" ? keys.pageDown : DEFAULT_KEYS.pageDown,
+				pageUp: typeof keys.pageUp === "string" ? keys.pageUp : DEFAULT_KEYS.pageUp,
+			},
+			treeFilterMode,
 		};
 	} catch {
-		return { ...DEFAULT_KEYS };
+		return { keys: { ...DEFAULT_KEYS }, treeFilterMode: DEFAULT_TREE_FILTER_MODE };
 	}
 };
 
@@ -626,7 +648,9 @@ class anycopyOverlay implements Focusable {
 }
 
 export default function anycopyExtension(pi: ExtensionAPI) {
-	const keys = loadConfig();
+	const config = loadConfig();
+	const keys = config.keys;
+	const treeFilterMode = config.treeFilterMode;
 
 	pi.registerCommand("anycopy", {
 		description: "Browse session tree with preview and copy any node(s) to clipboard",
@@ -675,6 +699,13 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				);
 
 				const treeList = selector.getTreeList();
+
+				// Set initial tree filter mode (same semantics as `/tree`)
+				const rawTreeList = treeList as any;
+				if (rawTreeList && typeof rawTreeList === "object") {
+					rawTreeList.filterMode = treeFilterMode;
+					if (typeof rawTreeList.applyFilter === "function") rawTreeList.applyFilter();
+				}
 
 				// Monkey-patch render to inject checkbox markers (✓/○) into tree rows
 				const originalRender = treeList.render.bind(treeList);

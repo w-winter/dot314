@@ -34,8 +34,13 @@ Notes:
 
 Edit `~/.pi/agent/extensions/anycopy/config.json`:
 
+- `treeFilterMode`: initial tree filter mode when opening `/anycopy` (idea sourced from [lajarre](https://github.com/lajarre)'s [pi-mono/issues/1845](https://github.com/badlogic/pi-mono/issues/1845))
+  - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
+- `keys`: keybindings (see above)
+
 ```json
 {
+  "treeFilterMode": "default",
   "keys": {
     "toggleSelect": "space",
     "copy": "shift+c",

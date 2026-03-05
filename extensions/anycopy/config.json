@@ -1,4 +1,5 @@
 {
+  "treeFilterMode": "no-tools",
   "keys": {
     "toggleSelect": "space",
     "copy": "shift+c",

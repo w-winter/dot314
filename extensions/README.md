@@ -59,7 +59,9 @@
   - `Space` select/unselect, `Shift+C` copy (selected or focused), `Shift+X` clear entire (multi-)selection, `Shift+L` label node
   - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
   - Multi-selected nodes are auto-sorted chronologically (by tree position)
-  - Keybindings customizable in `anycopy/config.json`
+  - Configurable in `anycopy/config.json`:
+    - `keys` (keybindings)
+    - `treeFilterMode` (initial filter when opening `/anycopy`; idea sourced from [lajarre](https://github.com/lajarre)'s [pi-mono/issues/1845](https://github.com/badlogic/pi-mono/issues/1845))
   - Reoffers node labeling but is not a full `/tree` reproduction otherwise (branch switching, summarization, etc. are not included)
 
 <p align="center">
