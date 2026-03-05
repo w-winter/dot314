@@ -310,8 +310,7 @@ const buildNodeOrder = (roots: SessionTreeNode[]): Map<string, number> => {
 };
 
 /** Clipboard text: role:\n\ncontent\n\n---\n\nrole:\n\ncontent
- *
- * Note: the preview pane is truncated for performance, but clipboard copy must never truncate
+ * The preview pane is truncated for performance, while the clipboard copy is not
  */
 const buildClipboardText = (nodes: SessionTreeNode[]): string => {
 	return nodes
