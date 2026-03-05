@@ -95,6 +95,7 @@ Paths may be absolute, `RootName:rel/path`, or unambiguous repo-relative (`rel/p
 If a relative path could match multiple loaded roots, use `RootName:rel/path`.
 
 Notes:
+- `search`/`file_search path="..."` is an alias for `search`/`file_search filter.paths=["..."]`
 - `search`/`file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
 - `structure`/`get_code_structure` line numbers match `read`/`read_file` and refresh after edits
 
