@@ -112,6 +112,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `command-center/` | /command palette widget |
 | ◐ | `editor-enhancements/` | File picker, shell completions, raw paste |
 | ● | `ephemeral-mode.ts` | Delete session on exit |
+| ◐ | `files-touched.ts` | Widget listing files read/edited/written, extended to also track reads/edits/writes by the tools of `repoprompt-cli` and `repoprompt-mcp` |
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
 | ◐ | `handover/` | Generate handover draft -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `iterm-tab-color.ts` | Two-state tab coloring (running vs. not-running) for iTerm2 |
@@ -182,6 +183,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ◐ | `editor-enhancements/` |
 | ● | `ephemeral-mode.ts` |
 | ◐ | `extension-stats.ts` |
+| ◐ | `files-touched.ts` |
 | ● | `fork-from-first.ts` |
 | ◐ | `handover/` |
 | ○ | `inline-bash.ts` |

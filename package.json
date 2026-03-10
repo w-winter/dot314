@@ -25,6 +25,7 @@
       "./extensions/command-center/index.ts",
       "./extensions/editor-enhancements/index.ts",
       "./extensions/ephemeral-mode.ts",
+      "./extensions/files-touched.ts",
       "./extensions/fork-from-first.ts",
       "./extensions/handover/index.ts",
       "./extensions/iterm-tab-color.ts",

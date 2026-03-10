@@ -14,6 +14,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2025 Mario Zechner
 - **Used in:**
+  - `extensions/files-touched.ts` (◐ modified)
   - `extensions/plan-mode.ts` (◐ modified)
   - `extensions/tools/` (◐ modified)
   - `extensions/sandbox/` (◐ modified)

@@ -156,6 +156,10 @@
   - Agentic compaction via a virtual filesystem: mounts `/conversation.json` and lets a summarizer model explore it with portable bash/zsh commands
   - Emphasizes deterministic, tool-result-verified modified-file tracking (native + `rp`), filters likely temp artifacts, supports `/compact <note>`, and can parallelize tool calls via `toolCallConcurrency`
 
+- ◐ [`files-touched.ts`](files-touched.ts) (upstream: [badlogic/pi-mono `.pi/extensions/files.ts`](https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/files.ts))
+  - `/files-touched` shows files read/written/edited in the active session branch and opens the selected file in VS Code
+  - This version extends the upstream original to also detect file reads/edits/writes performed through the tools of `repoprompt-mcp` and `repoprompt-cli` (`rp`, `rp_exec`) and their `read_file` / `file_actions create` / `apply_edits` actions
+
 - ◐ [`branch-term.ts`](branch-term.ts) (upstream: [davidgasquez/dotfiles](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts))
   - `/branch` forks the current session into a new terminal, running `pi --session <fork>`
   - This version extends the upstream original's such that, beyond the existing `--branch-terminal` override and tmux behavior, it can open the branched session in a new tab in macOS iTerm2/iTerm (first) or Terminal.app (fallback), and only then fall back to opening a new Alacritty window
