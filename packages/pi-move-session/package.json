@@ -1,6 +1,6 @@
 {
   "name": "pi-move-session",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Move a live Pi session to a different working directory without losing context and jump into the new session",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session"],
   "license": "MIT",
@@ -26,6 +26,10 @@
   "dot314Prepack": {
     "copy": [
       { "from": "../../extensions/move-session.ts", "to": "extensions/move-session.ts" },
+      {
+        "from": "../../extensions/move-session-lib/normalize-target-cwd.ts",
+        "to": "extensions/move-session-lib/normalize-target-cwd.ts"
+      },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ]
   }
