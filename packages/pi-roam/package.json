@@ -1,6 +1,6 @@
 {
   "name": "pi-roam",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Post-hoc handoff of a live Pi session into tmux for remote continuation, with optional Tailscale account switching",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "tmux", "tailscale", "remote"],
   "license": "MIT",

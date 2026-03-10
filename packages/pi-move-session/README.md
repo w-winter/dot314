@@ -34,6 +34,8 @@ From the dot314 git bundle (filtered install):
 
 Supports `~` expansion (e.g. `/move-session ~/code/my-project`).
 
+If your current `/tree` selection is not the session file's default branch tip, the extension warns before proceeding because that selection is not preserved yet.
+
 ## How it works
 
 1. Forks the current session JSONL into the target cwd's session bucket via `SessionManager.forkFrom()`

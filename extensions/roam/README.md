@@ -39,6 +39,8 @@ Example:
 5. Attaches your terminal to tmux and leaves parent process as inert exit-code forwarder
 6. Best-effort trashes original session file (for standard `~/.pi/` session paths)
 
+If your current `/tree` selection is not the session file's default branch tip, the extension warns before proceeding because that selection is not preserved yet.
+
 ## Notes
 
 - Cross-platform tmux behavior; Tailscale integration is currently macOS-specific by default binary path

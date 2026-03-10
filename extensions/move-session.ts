@@ -35,6 +35,34 @@ const TRASH_TIMEOUT_MS = 5000;
 const HEADER_READ_MAX = 8192;
 const COPY_CHUNK_SIZE = 65_536;
 
+function getBranchSelectionWarning(
+    sourceSessionFile: string,
+    currentLeafId: string | null,
+    commandName: string,
+    actionName: string,
+): string | null {
+    try {
+        const persistedSession = SessionManager.open(sourceSessionFile);
+        const hasPersistedEntries = persistedSession.getEntries().length > 0;
+        if (!hasPersistedEntries) {
+            return null;
+        }
+
+        const persistedLeafId = persistedSession.getLeafId() as string | null;
+        if (currentLeafId === null) {
+            return `${commandName} will not preserve the current /tree root selection. It reopens at the session file's default branch tip. Consider /fork first or continue from the branch tip before ${actionName}.`;
+        }
+
+        if (currentLeafId !== persistedLeafId) {
+            return `${commandName} will not preserve the current /tree selection. It reopens at the session file's default branch tip. Consider /fork first or continue from the branch tip before ${actionName}.`;
+        }
+    } catch {
+        // Ignore warning-detection failures
+    }
+
+    return null;
+}
+
 /**
  * Remove parentSession from the first JSONL header line without loading
  * the entire file into memory
@@ -156,6 +184,16 @@ export default function (pi: ExtensionAPI) {
             if (!sourceSessionFile) {
                 ctx.ui.notify("No persistent session file (maybe started with --no-session)", "error");
                 return;
+            }
+
+            const branchSelectionWarning = getBranchSelectionWarning(
+                sourceSessionFile,
+                (ctx.sessionManager.getLeafId?.() as string | null) ?? null,
+                "/move-session",
+                "moving",
+            );
+            if (branchSelectionWarning) {
+                ctx.ui.notify(branchSelectionWarning, "warning");
             }
 
             try {

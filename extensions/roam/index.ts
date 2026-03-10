@@ -58,6 +58,47 @@ const TRASH_TIMEOUT_MS = 5_000;
 const HEADER_READ_MAX = 8192;
 const COPY_CHUNK_SIZE = 65_536;
 
+function getBranchSelectionWarning(
+    sourceSessionFile: string,
+    currentLeafId: string | null,
+    commandName: string,
+    actionName: string,
+): { warning: string | null; hasPersistedEntries: boolean | null } {
+    try {
+        const persistedSession = SessionManager.open(sourceSessionFile);
+        const hasPersistedEntries = persistedSession.getEntries().length > 0;
+        if (!hasPersistedEntries) {
+            return { warning: null, hasPersistedEntries };
+        }
+
+        const persistedLeafId = persistedSession.getLeafId() as string | null;
+        if (currentLeafId === null) {
+            return {
+                warning:
+                    `${commandName} will not preserve the current /tree root selection. ` +
+                    `It reopens at the session file's default branch tip. ` +
+                    `Consider /fork first or continue from the branch tip before ${actionName}.`,
+                hasPersistedEntries,
+            };
+        }
+
+        if (currentLeafId !== persistedLeafId) {
+            return {
+                warning:
+                    `${commandName} will not preserve the current /tree selection. ` +
+                    `It reopens at the session file's default branch tip. ` +
+                    `Consider /fork first or continue from the branch tip before ${actionName}.`,
+                hasPersistedEntries,
+            };
+        }
+
+        return { warning: null, hasPersistedEntries };
+    } catch {
+        // Ignore warning-detection failures
+        return { warning: null, hasPersistedEntries: null };
+    }
+}
+
 const TMUX_CONFIG_CONTENT = [
     "# Pi roam config — only used by /roam sessions (dedicated socket: -L pi)",
     "# Does not affect your global ~/.tmux.conf or other tmux servers",
@@ -291,10 +332,19 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
-            const leafId = ctx.sessionManager.getLeafId();
-            if (!leafId) {
+            const leafId = (ctx.sessionManager.getLeafId?.() as string | null) ?? null;
+            const { warning: branchSelectionWarning, hasPersistedEntries } = getBranchSelectionWarning(
+                sourceSessionFile,
+                leafId,
+                "/roam",
+                "roaming",
+            );
+            if (leafId === null && hasPersistedEntries === false) {
                 ctx.ui.notify("No messages yet — nothing to roam", "error");
                 return;
+            }
+            if (branchSelectionWarning) {
+                ctx.ui.notify(branchSelectionWarning, "warning");
             }
 
             const cwd = ctx.cwd;
