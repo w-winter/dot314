@@ -28,10 +28,27 @@ import {
     renameSync,
     unlinkSync,
 } from "node:fs";
+import { resolve } from "node:path";
 
 const TRASH_TIMEOUT_MS = 5000;
 const HEADER_READ_MAX = 8192;
 const COPY_CHUNK_SIZE = 65_536;
+
+export function normalizeTargetCwd(
+    rawTargetCwd: string,
+    env: NodeJS.ProcessEnv = process.env,
+    cwd: string = process.cwd(),
+): string {
+    let targetCwd = rawTargetCwd;
+    if (/^~(?=$|\/)/.test(rawTargetCwd)) {
+        const home = env.HOME || env.USERPROFILE;
+        if (!home) {
+            throw new Error("Cannot expand '~': $HOME is not set");
+        }
+        targetCwd = rawTargetCwd.replace(/^~(?=$|\/)/, home);
+    }
+    return resolve(cwd, targetCwd);
+}
 
 /**
  * Remove parentSession from the first JSONL header line without loading
@@ -124,14 +141,12 @@ export default function (pi: ExtensionAPI) {
                 return;
             }
 
-            let targetCwd = rawTargetCwd;
-            if (/^~(?=$|\/)/.test(rawTargetCwd)) {
-                const home = process.env.HOME || process.env.USERPROFILE;
-                if (!home) {
-                    ctx.ui.notify("Cannot expand '~': $HOME is not set", "error");
-                    return;
-                }
-                targetCwd = rawTargetCwd.replace(/^~(?=$|\/)/, home);
+            let targetCwd: string;
+            try {
+                targetCwd = normalizeTargetCwd(rawTargetCwd);
+            } catch (error: any) {
+                ctx.ui.notify(error?.message ?? String(error), "error");
+                return;
             }
 
             let targetCwdStat;
