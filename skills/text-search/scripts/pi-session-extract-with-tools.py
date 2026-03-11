@@ -146,14 +146,21 @@ def _format_tool_call(name: str, args: Dict[str, Any]) -> str:
         return f"[{name}] {arg_str}"
 
 
-def _format_tool_result(name: str, is_error: bool, content: str) -> str:
+def _format_tool_result(
+    name: str,
+    is_error: bool,
+    content: str,
+    *,
+    max_lines: int = MAX_OUTPUT_LINES,
+    max_chars: int = MAX_OUTPUT_CHARS,
+) -> str:
     """Format tool result with status and truncated output"""
     status = "✗" if is_error else "✓"
-    
+
     if not content or content == "(no content)":
         return f"TOOL [{name}]: {status}"
-    
-    truncated = _truncate(content)
+
+    truncated = _truncate(content, max_lines=max_lines, max_chars=max_chars)
     # Indent continuation lines
     lines = truncated.split("\n")
     if len(lines) > 1:
@@ -163,7 +170,13 @@ def _format_tool_result(name: str, is_error: bool, content: str) -> str:
         return f"TOOL [{name}]: {status} {truncated}"
 
 
-def process_session(records: Iterable[Dict[str, Any]]) -> List[str]:
+def process_session(
+    records: Iterable[Dict[str, Any]],
+    *,
+    include_tool_results: bool,
+    max_lines: int,
+    max_chars: int,
+) -> List[str]:
     """Process session records into diagnostic output"""
     output = []
     pending_tools: Dict[str, Tuple[str, str]] = {}  # id -> (name, formatted_call)
@@ -236,16 +249,19 @@ def process_session(records: Iterable[Dict[str, Any]]) -> List[str]:
                 output.append("\n".join(lines))
         
         elif role == "toolResult":
+            if not include_tool_results:
+                continue
+
             tool_name = msg.get("toolName") or msg.get("tool_name") or "tool"
             tool_id = msg.get("toolCallId") or msg.get("tool_call_id") or ""
             is_error = bool(msg.get("isError") or msg.get("is_error"))
             content = _extract_text(msg.get("content"))
-            
+
             # Use pending tool info if available
             if tool_id in pending_tools:
                 tool_name, _ = pending_tools.pop(tool_id)
-            
-            formatted = _format_tool_result(tool_name, is_error, content)
+
+            formatted = _format_tool_result(tool_name, is_error, content, max_lines=max_lines, max_chars=max_chars)
             output.append(formatted)
     
     return output
@@ -292,6 +308,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Process the newest session under default root"
     )
     p.add_argument(
+        "--include-tool-results",
+        action="store_true",
+        help="Include tool result/output blocks (default: omitted)"
+    )
+    p.add_argument(
         "--max-lines",
         type=int,
         default=MAX_OUTPUT_LINES,
@@ -332,7 +353,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
         records = list(_iter_jsonl(jsonl_path))
     
-    output = process_session(records)
+    output = process_session(
+        records,
+        include_tool_results=args.include_tool_results,
+        max_lines=args.max_lines,
+        max_chars=args.max_chars,
+    )
     
     if not output:
         print("No conversation found", file=sys.stderr)

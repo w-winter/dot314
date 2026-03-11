@@ -16,7 +16,7 @@
   - Search indexed text corpora (sessions, docs, logs) using qmd. Use instead of grep.
   - Contents:
     - [`SKILL.md`](text-search/SKILL.md)
-    - [`scripts/session-view`](text-search/scripts/session-view) — dispatcher for diagnostic session views (auto-detects format)
+    - [`scripts/session-view`](text-search/scripts/session-view) — dispatcher for token-lightweight diagnostic session views (auto-detects format, by default excludes tool call outputs)
     - [`scripts/analyze-sessions.sh`](text-search/scripts/analyze-sessions.sh) — time-window filtering + aggregation/reporting
     - [`scripts/pi-session-extract-with-tools.py`](text-search/scripts/pi-session-extract-with-tools.py) — extract Pi sessions with tool calls
     - [`scripts/codex-session-extract-with-tools.py`](text-search/scripts/codex-session-extract-with-tools.py) — extract Codex sessions with tool calls

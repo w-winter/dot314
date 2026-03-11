@@ -117,9 +117,13 @@ Use `get`, `multi-get`, and `ls` to retrieve or browse content after discovery.
 For session logs, use this inspection path:
 
 ```bash
+# Default: omit tool result/output blocks
 qmd get "qmd://sessions/pi/...jsonl" --full | session-view - pi
 qmd get "qmd://sessions/codex/...jsonl" --full | session-view - codex
 qmd get "qmd://sessions/claude/...jsonl" --full | session-view - claude
+
+# Opt-in: include tool result/output blocks
+qmd get "qmd://sessions/pi/...jsonl" --full | session-view --include-tool-results - pi
 ```
 
 This is the canonical, reliable path. Do not manually guess filesystem paths from `qmd://` paths.
@@ -151,9 +155,13 @@ Do **not** try to understand a session from raw JSONL snippets alone.
 Use one reliable inspection path:
 
 ```bash
+# Default: omit tool result/output blocks (cleaner to read)
 qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view - pi
 qmd get "qmd://sessions/codex/2025/10/30/rollout-....jsonl" --full | session-view - codex
 qmd get "qmd://sessions/claude/1234....jsonl" --full | session-view - claude
+
+# Opt-in: include tool result/output blocks (noisy, but useful for debugging)
+qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view --include-tool-results - pi
 ```
 
 Format mapping:
@@ -229,27 +237,39 @@ qmd ls sessions/pi
 Use this path:
 
 ```bash
+# Default: omit tool result/output blocks
 qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view - pi
 qmd get "qmd://sessions/codex/2025/10/30/rollout-2025-10-30t15-36-39-....jsonl" --full | session-view - codex
 qmd get "qmd://sessions/claude/1234....jsonl" --full | session-view - claude
+
+# Opt-in: include tool result/output blocks
+qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view --include-tool-results - pi
 ```
 
 You can also inspect the latest local session directly:
 
 ```bash
+# Default: omit tool result/output blocks
 session-view --latest pi
 session-view --latest codex
 session-view --latest claude
+
+# Opt-in: include tool result/output blocks
+session-view --include-tool-results --latest pi
 ```
 
-Rendered output looks like this:
+Rendered output looks like this (tool calls are shown; tool results are omitted by default):
 
 ```text
 USER: message
 
 A: response text
   [tool_name] key_args
+```
 
+If you opt-in to tool results with `--include-tool-results`, you'll also see:
+
+```text
 TOOL [name]: ✓ truncated_output
 ```
 

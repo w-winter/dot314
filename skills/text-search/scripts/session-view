@@ -10,12 +10,16 @@
 #   session-view --latest [pi|codex|claude]
 #   cat session.jsonl | session-view - [pi|codex|claude]
 #
+# Options:
+#   --include-tool-results   Include tool result/output blocks (default: omitted)
+#
 # Examples:
 #   session-view ~/.pi/agent/sessions/foo/bar.jsonl
 #   session-view ~/.codex/sessions/2025/11/04/session.jsonl
 #   session-view ~/.claude/projects/-Users-ww-foo/session.jsonl
 #   session-view --latest pi
 #   qmd get sessions/file.jsonl --full | session-view - pi
+#   qmd get sessions/file.jsonl --full | session-view --include-tool-results - pi
 
 set -e
 
@@ -43,8 +47,11 @@ Arguments:
   [format]    Force format: pi, codex, or claude (auto-detected from path)
 
 Options:
-  --latest [format]   Process most recent session (default: pi)
-  --help              Show this help
+  --latest [format]          Process most recent session (default: pi)
+  --include-tool-results     Include tool result/output blocks (default: omitted)
+  --max-lines N              Max lines per tool output when included (default: 8)
+  --max-chars N              Max chars per tool output when included (default: 500)
+  --help                     Show this help
 
 Examples:
   session-view ~/.pi/agent/sessions/project/session.jsonl
@@ -97,14 +104,69 @@ run_processor() {
 }
 
 # Parse arguments
-if [[ $# -eq 0 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
-    usage
+latest=false
+latest_format="pi"
+extra_args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            usage
+            ;;
+        --latest)
+            latest=true
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                latest_format="$2"
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        --include-tool-results|--with-tool-results)
+            extra_args+=("--include-tool-results")
+            shift
+            ;;
+        --max-lines)
+            if [[ $# -lt 2 ]]; then
+                echo "--max-lines requires a value" >&2
+                exit 1
+            fi
+            extra_args+=("--max-lines" "$2")
+            shift 2
+            ;;
+        --max-chars)
+            if [[ $# -lt 2 ]]; then
+                echo "--max-chars requires a value" >&2
+                exit 1
+            fi
+            extra_args+=("--max-chars" "$2")
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -)
+            # stdin file indicator; treat as positional arg
+            break
+            ;;
+        -* )
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if $latest; then
+    run_processor "$latest_format" "${extra_args[@]}" --latest
+    exit $?
 fi
 
-if [[ "$1" == "--latest" ]]; then
-    format="${2:-pi}"
-    run_processor "$format" --latest
-    exit $?
+if [[ $# -eq 0 ]]; then
+    usage
 fi
 
 file="$1"
@@ -116,7 +178,7 @@ if [[ "$file" == "-" ]]; then
         echo "Format required when reading from stdin: session-view - [pi|codex|claude]" >&2
         exit 1
     fi
-    run_processor "$format" -
+    run_processor "$format" "${extra_args[@]}" -
     exit $?
 fi
 
@@ -141,20 +203,51 @@ resolve_qmd_path() {
             echo "$HOME/.codex/sessions/$sub_path"
             ;;
         pi/*)
-            # qmd://sessions/pi/users-ww-foo/file.jsonl → ~/.pi/agent/sessions/--Users-ww-foo--/file.jsonl
+            # qmd://sessions/pi/users-ww-foo/<session>.jsonl → ~/.pi/agent/sessions/--Users-ww-foo--/<session>.jsonl
+            # Note: on disk we often store Pi sessions as: 2026-03-10T22-06-46-590Z_<uuid>.jsonl
+            # while qmd paths often look like:           2026-03-10t22-06-46-590z-<uuid>.jsonl
             local sub_path="${rel_path#pi/}"
-            # Convert users-ww-foo to --Users-ww-foo--
+
             local dir_part=$(dirname "$sub_path")
             local file_part=$(basename "$sub_path")
-            # Capitalize and add dashes
-            dir_part=$(echo "$dir_part" | sed 's/^/--/; s/$/--/; s/-ww-/-ww-/g')
-            # Try to find with case-insensitive match
+
+            # Convert users-ww-foo to --Users-ww-foo--
+            dir_part=$(echo "$dir_part" | sed 's/^/--/; s/$/--/')
+
+            # Try to find directory with case-insensitive match
+            local dir_path="$HOME/.pi/agent/sessions/$dir_part"
             local found=$(find "$HOME/.pi/agent/sessions" -maxdepth 1 -iname "$dir_part" -type d 2>/dev/null | head -1)
             if [[ -n "$found" ]]; then
-                echo "$found/$file_part"
-            else
-                echo "$HOME/.pi/agent/sessions/$dir_part/$file_part"
+                dir_path="$found"
             fi
+
+            local candidate="$dir_path/$file_part"
+            if [[ -f "$candidate" ]]; then
+                echo "$candidate"
+                return
+            fi
+
+            # Try to map qmd-style <timestamp>-<uuid>.jsonl → on-disk <timestamp>_<uuid>.jsonl
+            local uuid=$(echo "$file_part" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+            if [[ -n "$uuid" ]]; then
+                local ts_part="${file_part%-${uuid}.jsonl}"
+                ts_part=$(echo "$ts_part" | sed 's/t/T/; s/z$/Z/')
+                local alt_file_part="${ts_part}_${uuid}.jsonl"
+                local alt_candidate="$dir_path/$alt_file_part"
+                if [[ -f "$alt_candidate" ]]; then
+                    echo "$alt_candidate"
+                    return
+                fi
+
+                # Last resort: match by uuid in the directory
+                local by_uuid=$(find "$dir_path" -maxdepth 1 -iname "*${uuid}*.jsonl" -type f 2>/dev/null | head -1)
+                if [[ -n "$by_uuid" ]]; then
+                    echo "$by_uuid"
+                    return
+                fi
+            fi
+
+            echo "$candidate"
             ;;
         claude/*)
             # qmd://sessions/claude/-Users-ww-foo/file.jsonl → ~/.claude/projects/-Users-ww-foo/file.jsonl
@@ -194,4 +287,4 @@ if [[ "$file" == qmd://* ]]; then
     format=$(detect_format "$file")
 fi
 
-run_processor "$format" "$file"
+run_processor "$format" "${extra_args[@]}" "$file"
