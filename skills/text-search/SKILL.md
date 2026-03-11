@@ -1,82 +1,136 @@
 ---
 disable-model-invocation: true
 name: text-search
-description: "Search indexed text corpora (sessions, docs, logs). Use instead of grep."
+description: "Search indexed text corpora with qmd. For indexed content, prefer qmd over grep."
 ---
 
 # text-search
 
-Search indexed text using qmd (BM25 + vectors + hybrid). Better than grep: ranked results, semantic similarity, structured queries.
+Use qmd to search indexed text corpora such as session logs, notes, docs, and logs. For indexed content, use qmd for discovery instead of raw `grep`.
 
-## What's Already Indexed
+## First checks
 
-| Collection | Contents |
-|------------|----------|
-| `sessions` | Pi, Codex, and Claude Code session logs |
-
-Sources: `~/.pi/agent/sessions`, `~/.codex/sessions`, `~/.claude/projects`
-
-Check with `qmd status`. Helper scripts in this folder complement qmd searches.
-
-## Reach for qmd Instead of grep When
-
-- Searching anything in an indexed collection
-- You want semantic similarity, not just keyword matching
-- You need ranked results, not a wall of matches
-
-## Guardrails
-
-**Do not** use `grep`/`find`/`jq`/`cat` directly on indexed files to search content or extract meaning. Use qmd (or collection-specific scripts like `analyze-sessions.sh`) for discovery.
-
-Legitimate shell usage that's fine:
-- Piping tool output through grep/head/etc. for filtering
-- Using find for file targeting, cleanup, or housekeeping
-- Grepping non-indexed files (though consider indexing them)
-
-## Indexing
+Before searching, confirm what is indexed:
 
 ```bash
-# Add a collection (example: markdown docs)
-qmd collection add /path --name docs --mask "**/*.md"
+qmd status
+qmd collection list
+qmd context list
+```
 
-# Update index
-qmd update
+Do not assume collection names, paths, or contexts.
 
-# Status
+## Core rule
+
+For indexed corpora, use qmd for discovery.
+
+Do **not** use `grep`/`find`/`jq`/`cat` directly on indexed files to search for meaning. This is especially important for session JSONL, which is noisy and hard to interpret raw.
+
+Shell usage is still fine for:
+- filtering tool output after discovery
+- housekeeping and file targeting
+- non-indexed content
+- helper scripts in this skill
+
+## Choose the right qmd command
+
+For exact clues, start with `qmd search`.
+
+- Use `qmd search` for exact clues: tool names, error strings, repo names, JSON fields, literal phrases
+- Use `qmd query` when lexical search is weak, the request is conceptual, or you want hybrid retrieval + reranking
+- Use `qmd vsearch` only when you specifically want pure semantic similarity
+
+```bash
+qmd search '"toolName":"rp_exec"'
+qmd search 'apply_edits'
+qmd query "OAuth redirect flow"
+qmd vsearch "the session where we changed direction"
+```
+
+Operational notes:
+- `qmd query` may trigger local model startup or model downloads, so it is not always the fastest first step
+- For session discovery, prefer `--files` first so you get compact path output instead of long snippets
+
+## Build better queries
+
+### Use `--intent` when the request is ambiguous
+
+`intent` is a steering hint. Use it when the same words could refer to multiple things or when the user remembers the topic better than the exact wording.
+
+```bash
+qmd query --intent "Pi/Codex/Claude agent sessions about repo editing failures" \
+  -c sessions \
+  "apply_edits error"
+```
+
+### Use structured query documents for important searches
+
+Multi-line query documents are useful when you have both exact clues and fuzzy memory.
+
+- `lex:` exact terms, phrases, identifiers, JSON fields
+- `vec:` natural-language meaning
+- `hyde:` what the answer likely looked like
+- `intent:` optional steering context
+
+```bash
+qmd query $'intent: agent sessions about RepoPrompt edits and patch failures
+lex: apply_edits rp_exec "search block not found"
+vec: debugging failed file edits in agent sessions
+hyde: The agent tried to edit a file several times, the edit did not match, and it switched to a narrower or different approach'
+```
+
+Operational details:
+- The first typed query gets 2x fusion weight, so put the strongest signal first
+- `expand:` must stand alone; do not mix it with typed lines
+- lex queries support quoted phrases and exclusions such as `-sports` or `-"test data"`
+
+### Useful output and tuning flags
+
+```bash
+qmd query --files -n 20 "agent session about flaky tests"
+qmd query --json -n 10 "session where we redesigned the search flow"
+qmd query --json --explain -c sessions "apply_edits error"
+qmd query -C 20 --min-score 0.3 -c sessions "OAuth redirect flow"
+```
+
+Use:
+- `--files` for compact discovery output and path-based follow-up
+- `--json` for structured inspection when you need scores/snippets
+- `--explain` when ranking looks wrong
+- `-C, --candidate-limit` to reduce reranking work
+- `--min-score` to drop weak matches
+- `-c, --collection` to scope the search
+
+For session hunting, `--files` is usually the best first output mode.
+
+## Retrieval commands
+
+```bash
+qmd get "#abc123"
+qmd multi-get "docs/*.md" --json
+qmd ls sessions
+qmd ls sessions/claude
+```
+
+Use `get`, `multi-get`, and `ls` to retrieve or browse content after discovery.
+
+For session logs, use this inspection path:
+
+```bash
+qmd get "qmd://sessions/pi/...jsonl" --full | session-view - pi
+qmd get "qmd://sessions/codex/...jsonl" --full | session-view - codex
+qmd get "qmd://sessions/claude/...jsonl" --full | session-view - claude
+```
+
+This is the canonical, reliable path. Do not manually guess filesystem paths from `qmd://` paths.
+
+## If qmd is missing
+
+```bash
+npm install -g @tobilu/qmd
+qmd --version
 qmd status
 ```
-
-## Search
-
-```bash
-# BM25 (keyword)
-qmd search "query"
-
-# Vector similarity (semantic)
-qmd vsearch "query"
-
-# Hybrid (usually best)
-qmd query "query"
-
-# Get a snippet (or use --full)
-qmd get docs/path.md:10 -l 40
-qmd get docs/path.md --full
-```
-
-### Useful options
-
-```bash
--n NUM          # Number of results (default: 5)
---full          # Show full document instead of snippet
---files         # Output file paths only (for piping)
---line-numbers  # Add line numbers to output
---min-score N   # Filter by minimum similarity score
-```
-
-## Notes
-
-- Embeddings/rerank use Ollama at `OLLAMA_URL` (default `http://localhost:11434`).
-- Index lives under `~/.cache/qmd` by default.
 
 ---
 
@@ -84,98 +138,113 @@ qmd get docs/path.md --full
 
 Session logs are indexed as the `sessions` collection.
 
-## Critical: Pass qmd:// paths directly to session-view
+## Required workflow
 
-When qmd returns a path like `qmd://sessions/codex/2025/10/30/rollout-....jsonl`, pass it directly:
+Use this two-step process:
+1. **Discover** candidate sessions with qmd or `analyze-sessions.sh`
+2. **Inspect** a chosen session with `session-view`
 
-```bash
-# ✓ CORRECT — pass qmd:// path directly
-session-view "qmd://sessions/codex/2025/10/30/rollout-2025-10-30t15-36-39-....jsonl"
+Do **not** try to understand a session from raw JSONL snippets alone.
 
-# ✗ WRONG — do not manually translate to filesystem paths
-session-view ~/.pi/agent/sessions/codex/2025/10/30/...  # WILL FAIL - wrong path structure
-```
+## Inspecting `qmd://` session paths
 
-session-view resolves qmd:// paths automatically. Manual path translation will fail because:
-- Codex sessions live in `~/.codex/sessions/`, not `~/.pi/agent/sessions/codex/`
-- Claude sessions live in `~/.claude/projects/`, not `~/.pi/agent/sessions/claude/`
-- Case sensitivity differs between qmd paths and filesystem
-
-## Hard constraint
-
-**Do not** `grep`/`find`/`jq`/`cat` raw session JSONL to search or extract content. The format is nested, encoded, and unreadable — you'll waste cycles and get garbage.
-
-**Do use:**
-- `qmd` or `analyze-sessions.sh` → for discovery (finding which sessions match)
-- `session-view` → for inspection (pass qmd:// paths directly)
-
-Filtering session-view output is fine and encouraged:
-```bash
-session-view <path> | grep -iE 'USER:.*(error|bug)'
-```
-
-## Two-step workflow
-
-1. **Discover** → find session paths using qmd or analyze-sessions.sh
-2. **Inspect** → render with session-view to read actual content
-
-Raw search results are JSONL fragments — timestamps, thinking signatures, encoded metadata. They tell you *which* sessions matched, not *what happened*. You cannot analyze sessions from search snippets alone.
-
-## Before searching: interview when intent is vague
-
-If the user's query is conceptual or imprecise, **ask clarifying questions before searching.** Useful clarifications: approximate timeframe, which tool/CLI produced the session, project or repo context, and any remembered phrases or error messages.
-
-**After 2-3 unsuccessful searches, stop iterating on keywords and ask the user.** They likely have context that will narrow the search dramatically. Don't burn tokens on query variations when a single question could resolve it.
-
-## Step 1: Discover
-
-Two peer tools for different use cases:
-
-**qmd** — when you don't know exact words, want semantic similarity, or need to search across long time ranges:
-```bash
-qmd search "apply_edits" -n 20          # keyword
-qmd vsearch "investigated flaky tests"  # semantic
-qmd query "OAuth redirect flow" -n 10   # hybrid (usually best)
-```
-
-### Choosing search vs vsearch vs query
-
-| User's query looks like... | Use | Why |
-|----------------------------|-----|-----|
-| Exact keywords, tool names, error strings, JSON fields | `search` | Precise lexical matching; no embedding needed |
-| Conceptual or fuzzy ("the session where I decided to pivot") | `vsearch` | Semantic similarity finds it even without exact words |
-| Unclear, or you want both precision and recall | `query` | Hybrid combines lexical + vector ranking |
-
-Default to `query` when unsure, but prefer `vsearch` for conceptual queries and `search` for exact patterns.
-
-**analyze-sessions.sh** — when you know the pattern (regex, tool names, error flags) or want time-windowed operational reports:
-```bash
-./scripts/analyze-sessions.sh --hours 24 --report
-./scripts/analyze-sessions.sh --hours 48 --pattern "error|failed"
-./scripts/analyze-sessions.sh --hours 24 --tool-stats
-```
-
-Results give you session paths like `qmd://sessions/pi/users-ww-project/2026-01-20....jsonl`
-
-## Step 2: Inspect with session-view
-
-**session-view accepts qmd:// paths directly** — no manual path translation needed:
+Use one reliable inspection path:
 
 ```bash
-# Pass the qmd:// path from search results directly
-session-view "qmd://sessions/codex/2025/10/30/rollout-2025-10-30t15-36-39-....jsonl"
-session-view "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl"
+qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view - pi
+qmd get "qmd://sessions/codex/2025/10/30/rollout-....jsonl" --full | session-view - codex
+qmd get "qmd://sessions/claude/1234....jsonl" --full | session-view - claude
 ```
 
-Filesystem paths also work if you already have them (e.g., from `--latest`):
+Format mapping:
+- `qmd://sessions/pi/...` → `session-view - pi`
+- `qmd://sessions/codex/...` → `session-view - codex`
+- `qmd://sessions/claude/...` → `session-view - claude`
+
+Do not manually guess a filesystem path from a `qmd://` session path.
+
+Filtering rendered output is fine:
+
 ```bash
-session-view ~/.pi/agent/sessions/--Users-ww-project--/2026-01-20....jsonl
+qmd get "qmd://sessions/pi/...jsonl" --full | session-view - pi | grep -iE 'USER:.*(error|bug|regression)'
 ```
 
-But for qmd search results, always use the qmd:// path directly.
+## Session search playbook
 
-Output:
+### Ask for narrowing clues when memory is vague
+
+If the request is fuzzy, ask for:
+- approximate timeframe
+- which agent/tool produced the session
+- repo or project involved
+- remembered phrase, error text, or tool name
+
+After 2-3 bad searches, stop iterating blindly and ask for more context.
+
+### Exact session search
+
+Start here when you have hard clues. Use `--files` first to avoid wasting tokens on snippets. If lexical search returns an obvious hit, inspect it immediately instead of escalating to `query`.
+
+```bash
+qmd search -c sessions --files '"toolName":"rp_exec"' -n 20
+qmd search -c sessions --files '"isError":true' -n 20
+qmd search -c sessions --files '"role":"user"' -n 20
+qmd search -c sessions --files 'apply_edits' -n 20
 ```
+
+If lexical search returns many same-score candidates because the clue is broad or common, do not keep repeating broad lexical searches. Tighten the query with a more distinctive phrase, tool name, error string, or timeframe clue, or switch to `qmd query --intent ...`.
+
+### Escalate when lexical search is weak
+
+Use `query`, add `intent`, and scope to `sessions` when exact search is weak or the request is conceptual. Keep `--files` on unless you specifically need snippets.
+
+```bash
+qmd query --intent "Pi/Codex/Claude agent sessions about git trouble during implementation work" \
+  -c sessions \
+  --files \
+  -n 10 \
+  "git rebase gone wrong"
+```
+
+### Mixed exact + fuzzy session search
+
+```bash
+qmd query -c sessions --files $'intent: agent sessions about broken code edits in RepoPrompt workflows
+lex: apply_edits rp_exec "oldText" "search block not found"
+vec: session where file edits failed repeatedly and the agent had to retry'
+```
+
+### Browse after narrowing
+
+```bash
+qmd ls sessions
+qmd ls sessions/claude
+qmd ls sessions/pi
+```
+
+## Inspect with `session-view`
+
+`session-view` lives at `~/.pi/agent/skills/text-search/scripts/session-view`.
+
+Use this path:
+
+```bash
+qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view - pi
+qmd get "qmd://sessions/codex/2025/10/30/rollout-2025-10-30t15-36-39-....jsonl" --full | session-view - codex
+qmd get "qmd://sessions/claude/1234....jsonl" --full | session-view - claude
+```
+
+You can also inspect the latest local session directly:
+
+```bash
+session-view --latest pi
+session-view --latest codex
+session-view --latest claude
+```
+
+Rendered output looks like this:
+
+```text
 USER: message
 
 A: response text
@@ -184,70 +253,51 @@ A: response text
 TOOL [name]: ✓ truncated_output
 ```
 
-Shortcuts:
-```bash
-session-view --latest pi      # most recent Pi session
-session-view --latest codex   # most recent Codex session
-session-view --latest claude  # most recent Claude Code session
-```
+## Example workflows
 
-Located at `~/.pi/agent/skills/text-search/scripts/session-view`. Supports Pi, Codex, Claude Code formats (auto-detects from path or qmd:// prefix).
-
-## Example workflow
+### Find a specific session with hard clues
 
 ```bash
-# 1. Search
-qmd query "git rebase gone wrong" -n 10
-# → qmd://sessions/pi/users-ww-dot314/2026-01-21....jsonl
+# 1. Start with lexical search and compact path output
+qmd search -c sessions --files 'git rebase' -n 20
 
-# 2. Read (pass qmd:// path directly)
-session-view "qmd://sessions/pi/users-ww-dot314/2026-01-21....jsonl"
+# 2. Inspect a chosen result
+qmd get "qmd://sessions/pi/users-ww-dot314/2026-01-21....jsonl" --full | session-view - pi
 ```
 
-Both steps, every time. Manual path translation is not needed.
-
-## Field-oriented searches
-
-Structured queries for specific patterns:
+### Escalate when lexical search is weak
 
 ```bash
-qmd search '"role":"user"' -n 20         # user messages
-qmd search '"toolName":"rp_exec"' -n 20  # specific tool usage
-qmd search '"isError":true' -n 20        # tool errors
+qmd query --intent "Pi/Codex/Claude sessions about git trouble during coding work" \
+  -c sessions \
+  --files \
+  -n 20 \
+  "git rebase gone wrong"
 ```
 
-These return JSONL fragments — read matches with session-view.
-
-## analyze-sessions.sh reference
+## Supplemental helper: `analyze-sessions.sh`
 
 Location: `~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh`
 
-Full option set:
+Use it for time-windowed or operational reporting rather than ranked corpus search.
+
 ```bash
-# Report for last 24 hours
-./analyze-sessions.sh --hours 24 --report
-
-# Sessions matching a regex pattern (ranked by match count)
-./analyze-sessions.sh --hours 48 --pattern "apply_edits|rp_exec"
-
-# Edit-related activity diagnostics
-./analyze-sessions.sh --hours 36 --edit-diagnostics
-
-# Tool usage statistics
-./analyze-sessions.sh --hours 24 --tool-stats
-
-# Restrict to a project (derived from session path)
-./analyze-sessions.sh --hours 72 --report --project pi-mono
-
-# Restrict to sessions that used a specific tool
-./analyze-sessions.sh --hours 72 --tool-stats --tool rp_exec
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 24 --report
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 48 --pattern "apply_edits|rp_exec"
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 36 --edit-diagnostics
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 48 --tool-errors
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 24 --tool-stats
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 72 --report --project pi-mono
+~/.pi/agent/skills/text-search/scripts/analyze-sessions.sh --hours 72 --tool-stats --tool rp_exec
 ```
 
-## Session JSONL structure (reference)
+Use qmd for ranked discovery across the corpus. Use `analyze-sessions.sh` for recent-window reports and regex-style operational triage.
+
+## Session JSONL structure reference
 
 Each JSONL line has a `type` field:
 
-| Type | Key Fields |
+| Type | Key fields |
 |------|------------|
 | `message` | `role`, `content`, `toolCall` |
 | `toolResult` | `toolName`, `isError`, `content` |
