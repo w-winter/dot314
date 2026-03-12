@@ -227,7 +227,7 @@
 
 - ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
 
-- ● [`protect-paths.ts`](protect-paths.ts) - standalone directory/command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-extensions)
+- ● [`protect-paths.ts`](protect-paths.ts) - standalone directory/command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails)
   - 🔄 **Replaces the directory protection and brew prevention hooks from the old `guardrails/` directory.** For `.env` file protection and AST-based dangerous command gates (the other components of the old `guardrails/`), install upstream: `pi install npm:@aliou/pi-guardrails`
   - Hard blocks: `.git/` and `node_modules/` directory access (file tools + bash command parsing), Homebrew install/upgrade commands
   - Uses just-bash AST analysis (requires `just-bash` >= 2) to inspect nested command structures (including substitutions/functions/conditionals)

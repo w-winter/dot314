@@ -193,14 +193,4 @@ request addition of an open-source license.
 
 ---
 
-## Referenced but Not Derived
-
-The following projects are referenced in documentation or complement this
-repository's extensions/skills but no code is copied or derived from them:
-
-- **nicobailon/pi-web-access** (MIT) — https://github.com/nicobailon/pi-web-access
-- **aliou/pi-extensions** (no license) — https://github.com/aliou/pi-extensions
-
----
-
 Legend: ● = original, ◐ = modified fork, ○ = unmodified copy
