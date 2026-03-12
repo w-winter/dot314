@@ -9,6 +9,7 @@ import type { RpCliConfig } from "./types.js";
 const DEFAULT_CONFIG: Required<RpCliConfig> = {
     readcacheReadFile: false,
     autoSelectReadSlices: true,
+    collapsedMaxLines: 15,
 };
 
 const CONFIG_LOCATIONS = [

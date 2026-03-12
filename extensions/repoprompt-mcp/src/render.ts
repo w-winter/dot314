@@ -610,6 +610,39 @@ function renderMarkdownText(text: string, theme: Theme): string {
 const DEFAULT_COLLAPSED_MAX_LINES = 15;
 const DEFAULT_COLLAPSED_MAX_CHARS = 2000;
 
+function stripNoiseForCollapsedView(lines: string[]): string[] {
+  const filtered: string[] = [];
+  let consecutiveEmpty = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Drop markdown fence lines like ``` or ```ts or ```diff
+    if (trimmed.startsWith("```")) {
+      continue;
+    }
+
+    if (trimmed.length === 0) {
+      consecutiveEmpty += 1;
+      if (consecutiveEmpty > 1) {
+        continue;
+      }
+      filtered.push("");
+      continue;
+    }
+
+    consecutiveEmpty = 0;
+    filtered.push(line);
+  }
+
+  // Trim trailing empties
+  while (filtered.length > 0 && filtered[filtered.length - 1]?.trim().length === 0) {
+    filtered.pop();
+  }
+
+  return filtered;
+}
+
 /**
  * Prepare output for collapsed view (truncate if needed)
  */
@@ -618,21 +651,32 @@ export function prepareCollapsedView(
   theme: Theme,
   maxLines: number = DEFAULT_COLLAPSED_MAX_LINES
 ): { content: string; truncated: boolean; totalLines: number } {
-  const lines = text.split("\n");
+  const rawLines = text.split("\n");
+  const lines = stripNoiseForCollapsedView(rawLines);
   const totalLines = lines.length;
-  
-  if (lines.length <= maxLines && text.length <= DEFAULT_COLLAPSED_MAX_CHARS) {
+
+  if (maxLines <= 0) {
     return {
-      content: renderRpOutput(text, theme),
+      content: "",
+      truncated: totalLines > 0,
+      totalLines,
+    };
+  }
+
+  const normalizedText = lines.join("\n");
+
+  if (lines.length <= maxLines && normalizedText.length <= DEFAULT_COLLAPSED_MAX_CHARS) {
+    return {
+      content: renderRpOutput(normalizedText, theme),
       truncated: false,
       totalLines,
     };
   }
-  
+
   // Truncate to maxLines
   const truncatedText = lines.slice(0, maxLines).join("\n");
   const content = renderRpOutput(truncatedText, theme);
-  
+
   return {
     content,
     truncated: true,

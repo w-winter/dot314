@@ -69,9 +69,12 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
   "persistBinding": true,
   "confirmDeletes": true,
   "confirmEdits": false,
-  "readcacheReadFile": true
+  "readcacheReadFile": true,
+  "collapsedMaxLines": 3
 }
 ```
+
+`collapsedMaxLines` controls how many lines of RepoPrompt tool output Pi shows in collapsed view before you expand the result. It applies across `rp(...)` calls, so it is the main knob for keeping window listings, reads, and other RepoPrompt responses compact in the TUI. `3` is the best default if you want maximally compressed but still informative output.
 
 If the MCP server is not auto-detected, set `command` explicitly:
 

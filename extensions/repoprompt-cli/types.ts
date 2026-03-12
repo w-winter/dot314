@@ -7,6 +7,9 @@ export interface RpCliConfig {
   // Optional context UX: automatically update RepoPrompt selection based on read_file calls
   // (tracks read slices/full files so chat has context without manual selection)
   autoSelectReadSlices?: boolean; // default: true
+
+  // Lines shown in collapsed rp_exec output previews
+  collapsedMaxLines?: number; // default: 15
 }
 
 export interface RpCliBindingEntryData {

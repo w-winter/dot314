@@ -97,6 +97,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   let config: RpConfig = loadConfig();
   let initPromise: Promise<void> | null = null;
 
+  pi.on("before_agent_start", async () => {
+    // Reload config so display knobs (collapsedMaxLines etc.) apply without requiring /reload
+    config = loadConfig();
+  });
+
   // Replay-aware read_file caching state (optional; guarded by config.readcacheReadFile)
   const readcacheRuntimeState = createReplayRuntimeState();
 
@@ -1152,7 +1157,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       // Handle errors (check both result.isError and details.isError)
       const isError = result.isError || details.isError;
       if (isError) {
-        return new Text(theme.fg("error", "✗ " + textContent), 0, 0);
+        return new Text(theme.fg("error", "↳ " + textContent), 0, 0);
       }
 
       // Handle raw mode
@@ -1161,23 +1166,45 @@ Mode priority: call > describe > search > windows > bind > status`,
       }
 
       // Success case - apply rendering
-      const successPrefix = theme.fg("success", "✓");
+      const successPrefix = theme.fg("success", "↳ ");
+
+      const prefixFirstLine = (value: string, prefix: string): string => {
+        if (!value) {
+          return prefix.trimEnd();
+        }
+        const idx = value.indexOf("\n");
+        if (idx < 0) {
+          return `${prefix}${value}`;
+        }
+        return `${prefix}${value.slice(0, idx)}${value.slice(idx)}`;
+      };
+
+      const collapsedMaxLines = config.collapsedMaxLines;
 
       // Collapsed view
       if (!options.expanded) {
         const { content, truncated, totalLines } = prepareCollapsedView(
           textContent,
           theme,
-          config.collapsedMaxLines
+          collapsedMaxLines
         );
 
-        if (truncated) {
-          const remaining = totalLines - (config.collapsedMaxLines ?? 15);
-          const moreText = theme.fg("muted", `\n… (${remaining} more lines)`);
-          return new Text(`${successPrefix}\n${content}${moreText}`, 0, 0);
+        const maxLines = collapsedMaxLines ?? 15;
+
+        if (maxLines === 0) {
+          const remaining = totalLines;
+          const hidden = theme.fg("muted", "(output hidden)");
+          const moreText = remaining > 0 ? theme.fg("muted", `\n… (${remaining} more lines)`) : "";
+          return new Text(`${successPrefix}${hidden}${moreText}`, 0, 0);
         }
 
-        return new Text(`${successPrefix}\n${content}`, 0, 0);
+        if (truncated) {
+          const remaining = totalLines - maxLines;
+          const moreText = theme.fg("muted", `\n… (${remaining} more lines)`);
+          return new Text(`${prefixFirstLine(content, successPrefix)}${moreText}`, 0, 0);
+        }
+
+        return new Text(prefixFirstLine(content, successPrefix), 0, 0);
       }
 
       // Expanded view - full rendering

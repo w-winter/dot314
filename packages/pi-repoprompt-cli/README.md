@@ -56,9 +56,12 @@ Create `~/.pi/agent/extensions/repoprompt-cli/config.json`:
 ```json
 {
   "readcacheReadFile": true,
-  "autoSelectReadSlices": true
+  "autoSelectReadSlices": true,
+  "collapsedMaxLines": 3
 }
 ```
+
+`collapsedMaxLines` controls how many lines of `rp_exec` output Pi shows in collapsed view before you expand the result. It applies across RepoPrompt CLI commands, so it is the main knob for keeping reads, window listings, and other verbose CLI responses compact in the TUI. Recommended setting: `3` for maximally compressed but still informative output.
 
 ## Quick start
 

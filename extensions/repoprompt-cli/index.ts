@@ -1260,11 +1260,79 @@ function renderRpExecOutput(text: string, theme: Theme): string {
 }
 
 // Collapsed output settings
-const COLLAPSED_MAX_LINES = 15;
+const DEFAULT_COLLAPSED_MAX_LINES = 15;
 const COLLAPSED_MAX_CHARS = 2000;
+
+function stripNoiseForCollapsedView(lines: string[]): string[] {
+  const filtered: string[] = [];
+  let consecutiveEmpty = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      continue;
+    }
+
+    if (trimmed.length === 0) {
+      consecutiveEmpty += 1;
+      if (consecutiveEmpty > 1) {
+        continue;
+      }
+      filtered.push("");
+      continue;
+    }
+
+    consecutiveEmpty = 0;
+    filtered.push(line);
+  }
+
+  while (filtered.length > 0 && filtered[filtered.length - 1]?.trim().length === 0) {
+    filtered.pop();
+  }
+
+  return filtered;
+}
+
+function prepareCollapsedView(
+  text: string,
+  theme: Theme,
+  maxLines: number = DEFAULT_COLLAPSED_MAX_LINES
+): { content: string; truncated: boolean; totalLines: number } {
+  const lines = stripNoiseForCollapsedView(text.split("\n"));
+  const totalLines = lines.length;
+
+  if (maxLines <= 0) {
+    return {
+      content: "",
+      truncated: totalLines > 0,
+      totalLines,
+    };
+  }
+
+  const normalizedText = lines.join("\n");
+
+  if (lines.length <= maxLines && normalizedText.length <= COLLAPSED_MAX_CHARS) {
+    return {
+      content: renderRpExecOutput(normalizedText, theme),
+      truncated: false,
+      totalLines,
+    };
+  }
+
+  return {
+    content: renderRpExecOutput(lines.slice(0, maxLines).join("\n"), theme),
+    truncated: true,
+    totalLines,
+  };
+}
 
 export default function (pi: ExtensionAPI) {
   let config = loadConfig();
+
+  pi.on("before_agent_start", async () => {
+    config = loadConfig();
+  });
 
   // Replay-aware read_file caching state (optional; guarded by config.readcacheReadFile)
   const readcacheRuntimeState = createReplayRuntimeState();
@@ -3114,25 +3182,45 @@ export default function (pi: ExtensionAPI) {
 
       // Success case
       const truncatedNote = truncated ? theme.fg("warning", " (truncated)") : "";
-      const successPrefix = theme.fg("success", "✓");
-
-      // Collapsed view: show line count
-      if (!options.expanded) {
-        const lines = textContent.split("\n");
-        if (lines.length > COLLAPSED_MAX_LINES || textContent.length > COLLAPSED_MAX_CHARS) {
-          const preview = renderRpExecOutput(
-            lines.slice(0, COLLAPSED_MAX_LINES).join("\n"),
-            theme
-          );
-          const remaining = lines.length - COLLAPSED_MAX_LINES;
-          const moreText = remaining > 0 ? theme.fg("muted", `\n… (${remaining} more lines)`) : "";
-          return new Text(`${successPrefix}${truncatedNote}\n${preview}${moreText}`, 0, 0);
+      const successPrefix = theme.fg("success", "✓ ");
+      const prefixFirstLine = (value: string, prefix: string): string => {
+        if (!value) {
+          return prefix.trimEnd();
         }
+        const idx = value.indexOf("\n");
+        if (idx < 0) {
+          return `${prefix}${value}`;
+        }
+        return `${prefix}${value.slice(0, idx)}${value.slice(idx)}`;
+      };
+
+      if (!options.expanded) {
+        const collapsedMaxLines = config.collapsedMaxLines;
+        const maxLines = collapsedMaxLines ?? DEFAULT_COLLAPSED_MAX_LINES;
+        const { content, truncated: collapsedTruncated, totalLines } = prepareCollapsedView(
+          textContent,
+          theme,
+          collapsedMaxLines
+        );
+
+        if (maxLines === 0) {
+          const hidden = theme.fg("muted", "(output hidden)");
+          const moreText = totalLines > 0 ? theme.fg("muted", `\n… (${totalLines} more lines)`) : "";
+          return new Text(`${successPrefix}${truncatedNote}${hidden}${moreText}`, 0, 0);
+        }
+
+        if (collapsedTruncated) {
+          const remaining = totalLines - maxLines;
+          const moreText = remaining > 0 ? theme.fg("muted", `\n… (${remaining} more lines)`) : "";
+          return new Text(`${prefixFirstLine(content, `${successPrefix}${truncatedNote}`)}${moreText}`, 0, 0);
+        }
+
+        return new Text(prefixFirstLine(content, `${successPrefix}${truncatedNote}`), 0, 0);
       }
 
       // Expanded view or short output: render with syntax highlighting
       const highlighted = renderRpExecOutput(textContent, theme);
-      return new Text(`${successPrefix}${truncatedNote}\n${highlighted}`, 0, 0);
+      return new Text(prefixFirstLine(highlighted, `${successPrefix}${truncatedNote}`), 0, 0);
     },
   });
 }

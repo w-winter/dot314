@@ -1,4 +1,5 @@
 {
   "readcacheReadFile": false,
-  "autoSelectReadSlices": true
+  "autoSelectReadSlices": true,
+  "collapsedMaxLines": 3
 }

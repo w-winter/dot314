@@ -28,9 +28,12 @@ Create:
 ```json
 {
   "readcacheReadFile": true,
-  "autoSelectReadSlices": true
+  "autoSelectReadSlices": true,
+  "collapsedMaxLines": 3
 }
 ```
+
+`collapsedMaxLines` controls how many lines of `rp_exec` output Pi shows in collapsed view before you expand the result. It applies across RepoPrompt CLI commands, so it is the main knob for keeping reads, window listings, and other verbose CLI responses compact in the TUI. Recommended setting: `3` for maximally compressed but still informative output.
 
 Note: when enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under
 `<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded,

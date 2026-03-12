@@ -172,10 +172,12 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
   "autoSelectReadSlices": true,
   "oracleDefaultMode": "chat",
 
-  "collapsedMaxLines": 15,
+  "collapsedMaxLines": 3,
   "suppressHostDisconnectedLog": true
 }
 ```
+
+`collapsedMaxLines` controls how many lines of RepoPrompt tool output Pi shows before the result is expanded. This applies to the collapsed preview for all `rp(...)` calls, including commands like window listings and file reads.  **Recommended setting for maximally compressed** but still informative output: `3`.
 
 Options:
 
