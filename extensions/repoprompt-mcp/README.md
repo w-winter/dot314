@@ -6,7 +6,7 @@ This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools t
 
 ### Window binding
 
-- Auto-bind to the RepoPrompt window that matches `process.cwd()` (by workspace roots)
+- Auto-bind to the RepoPrompt window that matches `process.cwd()` (by workspace roots, resolving symlinks to their real paths before matching)
 - If multiple windows match, prompt you to pick one (interactive mode):
 - Persist binding across Pi session reloads (optional)
 - Manual binding via `/rp bind` or `rp({ bind: ... })`

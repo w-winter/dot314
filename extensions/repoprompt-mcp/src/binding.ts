@@ -2,6 +2,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
+import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -433,6 +434,16 @@ export function parseRootList(text: string): string[] {
   return [...roots];
 }
 
+function canonicalizePathForMatching(inputPath: string): string {
+  const resolvedPath = path.resolve(inputPath);
+
+  try {
+    return realpathSync.native(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
 /**
  * Get workspace roots for a specific window
  */
@@ -465,8 +476,8 @@ export async function fetchWindowRoots(windowId: number): Promise<string[]> {
  * Check if a directory is within or equal to a root path
  */
 function isPathWithinRoot(dir: string, root: string): boolean {
-  const normalizedDir = path.resolve(dir);
-  const normalizedRoot = path.resolve(root);
+  const normalizedDir = canonicalizePathForMatching(dir);
+  const normalizedRoot = canonicalizePathForMatching(root);
 
   // Exact match
   if (normalizedDir === normalizedRoot) {
@@ -495,7 +506,8 @@ export interface FindMatchingWindowResult {
  * Find the best matching window for the current working directory
  */
 export function findMatchingWindow(windows: RpWindow[], cwd: string): FindMatchingWindowResult {
-  const cwdDepth = path.resolve(cwd).split(path.sep).filter(Boolean).length;
+  const canonicalCwd = canonicalizePathForMatching(cwd);
+  const cwdDepth = canonicalCwd.split(path.sep).filter(Boolean).length;
 
   const matches: WindowMatch[] = [];
 
@@ -508,8 +520,8 @@ export function findMatchingWindow(windows: RpWindow[], cwd: string): FindMatchi
         continue;
       }
 
-      const resolvedRoot = path.resolve(root);
-      const rootDepth = resolvedRoot.split(path.sep).filter(Boolean).length;
+      const canonicalRoot = canonicalizePathForMatching(root);
+      const rootDepth = canonicalRoot.split(path.sep).filter(Boolean).length;
 
       // Prefer more specific roots (closer to cwd)
       if (rootDepth > bestRootDepth && rootDepth <= cwdDepth) {

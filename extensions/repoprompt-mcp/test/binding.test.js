@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import os from "node:os";
 import path from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { findMatchingWindow, parseRootList, parseWindowList } from "../dist/binding.js";
@@ -86,6 +87,35 @@ test("findMatchingWindow matches when cwd equals the root", () => {
   assert.equal(result.ambiguous, false);
   assert.equal(result.window?.id, 1);
   assert.equal(result.root, dot314Root);
+});
+
+test("findMatchingWindow resolves symlinked roots before matching cwd", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "rp-binding-"));
+
+  try {
+    const realRoot = path.join(tempDir, "real-root");
+    const symlinkRoot = path.join(tempDir, "symlink-root");
+    const realCwd = path.join(realRoot, "agent");
+
+    mkdirSync(realCwd, { recursive: true });
+    symlinkSync(realRoot, symlinkRoot);
+
+    const windows = [
+      {
+        id: 5,
+        workspace: "pi-agent",
+        roots: [symlinkRoot],
+      },
+    ];
+
+    const result = findMatchingWindow(windows, realCwd);
+
+    assert.equal(result.ambiguous, false);
+    assert.equal(result.window?.id, 5);
+    assert.equal(result.root, symlinkRoot);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("findMatchingWindow returns null when cwd is outside all roots", () => {
