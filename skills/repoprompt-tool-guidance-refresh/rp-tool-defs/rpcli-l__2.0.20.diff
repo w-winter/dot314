@@ -1,0 +1,97 @@
+140c140,142
+< - `chat_id`: Required for `log` action
+---
+> - `scope`: `workspace` | `tab` (default: `workspace`)
+> - `tab_id`: Optional compose tab UUID filter; when omitted with `scope=tab`, the current bound tab is used if available, otherwise the active UI tab
+> - `chat_id`: Optional for `log`; when omitted, returns the most recent existing chat in scope
+145c147
+< - Chat ID, name, selected files, last activity, bound tab
+---
+> - Chat ID, name, selected files, last activity, bound tab, and whether the chat is active for its tab
+149c151,153
+< - View history: `{"action":"log","chat_id":"abc123","limit":10}`
+---
+> - List chats for the current tab: `{"action":"list","scope":"tab"}`
+> - View most recent tab-scoped history: `{"action":"log","scope":"tab","limit":10}`
+> - View a specific chat: `{"action":"log","chat_id":"abc123","limit":10}`
+166a171,176
+> 
+>   scope (string): workspace | tab
+>     Scope for list/log operations
+> 
+>   tab_id (string)
+>     Optional compose tab UUID filter
+633,634c643,646
+< • list_tabs  – List compose tabs for the active workspace in a window
+< • select_tab – Bind this MCP connection to a specific compose tab
+---
+> • list_tabs   – List compose tabs for the active workspace in a window
+> • select_tab  – Bind this MCP connection to a specific compose tab
+> • create_tab  – Create a new compose tab in the background
+> • close_tab   – Close a compose tab safely
+637c649
+< - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" (required)
+---
+> - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" | "create_tab" | "close_tab" (required)
+639c651
+< - name: string                                  (required for 'create'; the new workspace name)
+---
+> - name: string                                  (required for 'create'; optional for 'create_tab')
+641c653,658
+< - tab: string                                   (required for 'select_tab'; UUID or name)
+---
+> - tab: string                                   (required for 'select_tab' and 'close_tab'; UUID or name)
+> - mode: "blank" | "fork"                      (optional for 'create_tab'; default "blank")
+> - source_tab: string                            (optional for 'create_tab' when mode="fork"; UUID or name)
+> - bind: boolean                                 (optional for 'create_tab'; default true)
+> - focus: boolean                                (optional for 'select_tab' or 'create_tab'; default false)
+> - allow_active: boolean                         (optional for 'close_tab'; default false)
+643d659
+< - focus: boolean                                (optional for 'select_tab'; default false)
+650c666
+< After selecting a window (via select_window), use list_tabs and select_tab to pin your connection to a specific compose tab. This ensures your tools operate on consistent context even if the user changes the active tab in the UI.
+---
+> After selecting a window (via select_window), use list_tabs and select_tab to pin your connection to a specific compose tab. This ensures your tools operate on consistent context even if the user changes the active tab in the UI. Use create_tab for safe background tab creation and close_tab for explicit tab cleanup.
+654a671
+> • create_tab defaults to bind=true and focus=false so automation can create isolated background tabs without stealing UI focus.
+661c678
+< IMPORTANT: The 'focus' parameter switches the visible tab in the UI, which can be disruptive to the user's workflow. Only set focus=true when the user explicitly requests to see or switch to a specific tab. For background operations, omit focus or set it to false.
+---
+> IMPORTANT: The 'focus' parameter switches the visible tab in the UI, which can be disruptive to the user's workflow. Only set focus=true when the user explicitly requests to see or switch to a specific tab. For background operations, omit focus or set it to false. The 'close_tab' action refuses to close the last remaining tab, the active visible tab unless allow_active=true, or any tab with a live bound run.
+667c684,685
+<     'add_folder', 'remove_folder', 'list_tabs', or 'select_tab'
+---
+>     'add_folder', 'remove_folder', 'list_tabs', 'select_tab',
+>     'create_tab', or 'close_tab'
+668a687,693
+>   allow_active (boolean)
+>     For 'close_tab': allow closing the currently active visible tab
+> 
+>   bind (boolean)
+>     For 'create_tab': if true, bind this MCP connection to the new tab
+>     (default true)
+> 
+674,675c699,700
+<     For 'select_tab': if true, also switches the UI to show the
+<     selected tab
+---
+>     For 'select_tab' or 'create_tab': if true, also switches the UI to
+>     show the tab
+680a706,708
+>   mode (string)
+>     For 'create_tab': creation mode ('blank' or 'fork')
+> 
+682c710,711
+<     Name for new workspace (required for 'create')
+---
+>     Name for new workspace (required for 'create'; optional for
+>     'create_tab')
+687a717,719
+>   source_tab (string)
+>     For 'create_tab' with mode='fork': source compose tab UUID or name
+> 
+693c725,726
+<     Compose tab UUID or name (required for 'select_tab')
+---
+>     Compose tab UUID or name (required for 'select_tab' and
+>     'close_tab')
