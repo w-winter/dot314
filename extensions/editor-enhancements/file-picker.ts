@@ -8,7 +8,8 @@
  * - @ shortcut opens file browser (replaces built-in)
  * - Directory navigation with Enter
  * - Space to toggle selection
- * - Tab to toggle options panel (gitignore, hidden files)
+ * - Shift+Tab to toggle options panel (gitignore, hidden files)
+	* - Tab completion in search input (one word-part at a time, closest alphanumeric prefix match)
  * - Fuzzy search and glob patterns
  * - Git-aware file listing (respects .gitignore)
  * - Selected files injected as context on prompt submit
@@ -615,7 +616,7 @@ class FileBrowserComponent {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, "tab")) {
+		if (matchesKey(data, "shift+tab")) {
 			const visibleOptions = this.getVisibleOptions();
 			if (visibleOptions.length > 0) {
 				this.focusOnOptions = !this.focusOnOptions;
@@ -640,7 +641,7 @@ class FileBrowserComponent {
 			return;
 		}
 
-		if (matchesKey(data, "up")) {
+		if (matchesKey(data, "up") || matchesKey(data, "left")) {
 			if (visibleOptions.length > 0) {
 				this.selectedOption = this.selectedOption === 0
 					? visibleOptions.length - 1
@@ -649,7 +650,7 @@ class FileBrowserComponent {
 			return;
 		}
 
-		if (matchesKey(data, "down")) {
+		if (matchesKey(data, "down") || matchesKey(data, "right")) {
 			if (visibleOptions.length > 0) {
 				this.selectedOption = this.selectedOption === visibleOptions.length - 1
 					? 0
@@ -742,6 +743,11 @@ class FileBrowserComponent {
 			return;
 		}
 
+		if (matchesKey(data, "tab")) {
+			this.completeQueryToClosestMatch();
+			return;
+		}
+
 		if (matchesKey(data, "backspace")) {
 			if (this.query.length > 0) {
 				this.query = this.query.slice(0, -1);
@@ -756,6 +762,112 @@ class FileBrowserComponent {
 			this.query += data;
 			this.updateFilter();
 		}
+	}
+
+	private completeQueryToClosestMatch(): void {
+		if (!this.query.trim()) return;
+
+		const closestMatch = this.findClosestCompletionMatch(this.query);
+		if (!closestMatch) return;
+
+		const completedQuery = this.completeOneWordPart(this.query, closestMatch.path);
+		if (!completedQuery || completedQuery === this.query) return;
+
+		this.query = completedQuery;
+		this.updateFilter();
+	}
+
+	private findClosestCompletionMatch(query: string): { path: string; isDirectory: boolean } | null {
+		const queryLower = query.toLowerCase();
+		const withSlash = this.allFilesRecursive.map((entry) => ({
+			path: entry.isDirectory ? `${entry.relativePath}/` : entry.relativePath,
+			isDirectory: entry.isDirectory,
+		}));
+
+		const directPrefixMatches = withSlash
+			.filter((entry) => entry.path.toLowerCase().startsWith(queryLower))
+			.sort((a, b) => this.compareCompletionEntries(a, b));
+		if (directPrefixMatches.length > 0) return directPrefixMatches[0];
+
+		const normalizedQuery = this.normalizeAlnum(query);
+		if (!normalizedQuery) return null;
+
+		const normalizedPrefixMatches = withSlash
+			.filter((entry) => this.normalizeAlnum(entry.path).startsWith(normalizedQuery))
+			.sort((a, b) => this.compareCompletionEntries(a, b));
+		return normalizedPrefixMatches[0] ?? null;
+	}
+
+	private compareCompletionEntries(
+		a: { path: string; isDirectory: boolean },
+		b: { path: string; isDirectory: boolean }
+	): number {
+		if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+		if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+		return a.path.localeCompare(b.path);
+	}
+
+	private completeOneWordPart(query: string, completionPath: string): string {
+		const queryLower = query.toLowerCase();
+		const completionLower = completionPath.toLowerCase();
+
+		if (completionLower.startsWith(queryLower)) {
+			const end = this.nextWordPartBoundary(completionPath, query.length);
+			return completionPath.slice(0, end);
+		}
+
+		const longestCommonPrefix = this.commonPrefixLength(queryLower, completionLower);
+		if (longestCommonPrefix === 0) return query;
+
+		const end = this.nextWordPartBoundary(completionPath, longestCommonPrefix);
+		return completionPath.slice(0, end);
+	}
+
+	private nextWordPartBoundary(text: string, start: number): number {
+		if (start >= text.length) return text.length;
+
+		let index = start;
+		if (this.isAlphaNumeric(text[index])) {
+			while (index < text.length && this.isAlphaNumeric(text[index])) {
+				index += 1;
+			}
+			if (index < text.length && this.isWordSeparator(text[index])) {
+				index += 1;
+			}
+			return index;
+		}
+
+		while (index < text.length && this.isWordSeparator(text[index])) {
+			index += 1;
+		}
+		while (index < text.length && this.isAlphaNumeric(text[index])) {
+			index += 1;
+		}
+		if (index < text.length && this.isWordSeparator(text[index])) {
+			index += 1;
+		}
+		return index;
+	}
+
+	private isAlphaNumeric(char: string | undefined): boolean {
+		return char !== undefined && /[a-zA-Z0-9]/.test(char);
+	}
+
+	private isWordSeparator(char: string | undefined): boolean {
+		return char !== undefined && /[\/_.\-]/.test(char);
+	}
+
+	private normalizeAlnum(value: string): string {
+		return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+	}
+
+	private commonPrefixLength(left: string, right: string): number {
+		let index = 0;
+		const maxLength = Math.min(left.length, right.length);
+		while (index < maxLength && left[index] === right[index]) {
+			index += 1;
+		}
+		return index;
 	}
 
 	private updateFilter(): void {
@@ -843,7 +955,9 @@ class FileBrowserComponent {
 				optParts.push(`${prefix}${checkbox} ${label}`);
 			}
 			const optionsStr = optParts.join(" ");
-			const tabHint = this.focusOnOptions ? hint(" (space toggle, esc exit)") : hint(" (tab)");
+			const tabHint = this.focusOnOptions
+				? hint(" (←→/↑↓ move, space toggle, esc exit, shift+tab)")
+				: hint(" (shift+tab options)");
 			lines.push(row(` ${optionsStr}${tabHint}`));
 		} else {
 			lines.push(row(""));
@@ -924,7 +1038,7 @@ class FileBrowserComponent {
 
 		// Footer
 		lines.push(border(`├${"─".repeat(innerW)}┤`));
-		lines.push(row(hint(" ↑↓ navigate  ←→ dirs  space toggle  enter select  esc done")));
+		lines.push(row(hint(" ↑↓ navigate  ←→ dirs  tab complete  shift+tab options  space toggle  enter select  esc done")));
 
 		// Bottom border
 		lines.push(border(`╰${"─".repeat(innerW)}╯`));

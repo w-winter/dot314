@@ -13,7 +13,7 @@
  *   Esc       - close
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
 import {
 	copyToClipboard,
 	getLanguageFromPath,
@@ -48,11 +48,13 @@ type anycopyKeyConfig = {
 type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
 type anycopyConfig = {
+	shortcut?: string | null;
 	keys?: Partial<anycopyKeyConfig>;
 	treeFilterMode?: TreeFilterMode;
 };
 
 type anycopyRuntimeConfig = {
+	shortcut: string | null;
 	keys: anycopyKeyConfig;
 	treeFilterMode: TreeFilterMode;
 };
@@ -68,6 +70,7 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 };
 
 const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
+const DEFAULT_SHORTCUT = "ctrl+`";
 
 const getExtensionDir = (): string => {
 	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -78,13 +81,19 @@ const getExtensionDir = (): string => {
 const loadConfig = (): anycopyRuntimeConfig => {
 	const configPath = join(getExtensionDir(), "config.json");
 	if (!existsSync(configPath)) {
-		return { keys: { ...DEFAULT_KEYS }, treeFilterMode: DEFAULT_TREE_FILTER_MODE };
+		return {
+			shortcut: DEFAULT_SHORTCUT,
+			keys: { ...DEFAULT_KEYS },
+			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
+		};
 	}
 
 	try {
 		const raw = readFileSync(configPath, "utf8");
 		const parsed = JSON.parse(raw) as anycopyConfig;
 		const keys = parsed.keys ?? {};
+		const shortcut =
+			parsed.shortcut === null ? null : typeof parsed.shortcut === "string" ? parsed.shortcut : DEFAULT_SHORTCUT;
 		const treeFilterModeRaw = parsed.treeFilterMode;
 		const validTreeFilterModes: TreeFilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 		const treeFilterMode =
@@ -93,6 +102,7 @@ const loadConfig = (): anycopyRuntimeConfig => {
 				: DEFAULT_TREE_FILTER_MODE;
 
 		return {
+			shortcut,
 			keys: {
 				toggleSelect: typeof keys.toggleSelect === "string" ? keys.toggleSelect : DEFAULT_KEYS.toggleSelect,
 				copy: typeof keys.copy === "string" ? keys.copy : DEFAULT_KEYS.copy,
@@ -105,7 +115,11 @@ const loadConfig = (): anycopyRuntimeConfig => {
 			treeFilterMode,
 		};
 	} catch {
-		return { keys: { ...DEFAULT_KEYS }, treeFilterMode: DEFAULT_TREE_FILTER_MODE };
+		return {
+			shortcut: DEFAULT_SHORTCUT,
+			keys: { ...DEFAULT_KEYS },
+			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
+		};
 	}
 };
 
@@ -363,6 +377,8 @@ class anycopyOverlay implements Focusable {
 		private getTree: () => SessionTreeNode[],
 		private nodeById: Map<string, SessionTreeNode>,
 		private keys: anycopyKeyConfig,
+		private closeShortcut: string | null,
+		private onClose: () => void,
 		private getTermHeight: () => number,
 		private requestRender: () => void,
 		private theme: any,
@@ -381,6 +397,10 @@ class anycopyOverlay implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.closeShortcut && matchesKey(data, this.closeShortcut)) {
+			this.onClose();
+			return;
+		}
 		if (matchesKey(data, this.keys.toggleSelect)) {
 			this.toggleSelectedFocusedNode();
 			return;
@@ -531,11 +551,12 @@ class anycopyOverlay implements Focusable {
 	}
 
 	private renderTreeHeaderHint(width: number): string {
+		const closeHint = this.closeShortcut ? `${formatKeyHint(this.closeShortcut)}/Esc: close` : "Esc: close";
 		const hint =
 			`   │ ${formatKeyHint(this.keys.toggleSelect)}: select` +
 			` • ${formatKeyHint(this.keys.copy)}: copy` +
 			` • ${formatKeyHint(this.keys.clear)}: clear` +
-			" • Esc: close";
+			` • ${closeHint}`;
 		return truncateToWidth(this.theme.fg("dim", hint), width);
 	}
 
@@ -649,111 +670,125 @@ class anycopyOverlay implements Focusable {
 
 export default function anycopyExtension(pi: ExtensionAPI) {
 	const config = loadConfig();
+	const shortcut = config.shortcut;
 	const keys = config.keys;
 	const treeFilterMode = config.treeFilterMode;
 
-	pi.registerCommand("anycopy", {
-		description: "Browse session tree with preview and copy any node(s) to clipboard",
-		handler: async (args, ctx: ExtensionCommandContext) => {
-			if (!ctx.hasUI) return;
+	const openAnycopy = async (ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
 
-			const initialTree = ctx.sessionManager.getTree() as SessionTreeNode[];
-			if (initialTree.length === 0) {
-				ctx.ui.notify("No entries in session", "warning");
-				return;
+		const initialTree = ctx.sessionManager.getTree() as SessionTreeNode[];
+		if (initialTree.length === 0) {
+			ctx.ui.notify("No entries in session", "warning");
+			return;
+		}
+
+		const getTree = () => ctx.sessionManager.getTree() as SessionTreeNode[];
+		const currentLeafId = ctx.sessionManager.getLeafId();
+
+		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			const termRows = tui.terminal?.rows ?? 40;
+			// Pass reduced height so tree takes ~35% of terminal (it uses floor(h/2) internally)
+			const treeTermHeight = Math.floor(termRows * 0.65);
+
+			const selector = new TreeSelectorComponent(
+				initialTree,
+				currentLeafId,
+				treeTermHeight,
+				() => {
+					// Intentionally ignore Enter: closing on Enter is counterintuitive here.
+					// Use Esc to close the overlay.
+				},
+				() => done(),
+				(entryId, label) => {
+					pi.setLabel(entryId, label);
+				},
+			);
+
+			// Build a node map once for parent traversal (toolResult → parent assistant toolCall args)
+			const nodeById = buildNodeMap(initialTree);
+
+			const overlay = new anycopyOverlay(
+				selector,
+				getTree,
+				nodeById,
+				keys,
+				shortcut,
+				() => done(),
+				() => tui.terminal?.rows ?? 40,
+				() => tui.requestRender(),
+				theme,
+			);
+
+			const treeList = selector.getTreeList();
+
+			// Set initial tree filter mode (same semantics as `/tree`)
+			const rawTreeList = treeList as any;
+			if (rawTreeList && typeof rawTreeList === "object") {
+				rawTreeList.filterMode = treeFilterMode;
+				if (typeof rawTreeList.applyFilter === "function") rawTreeList.applyFilter();
 			}
 
-			const getTree = () => ctx.sessionManager.getTree() as SessionTreeNode[];
-			const currentLeafId = ctx.sessionManager.getLeafId();
+			// Monkey-patch render to inject checkbox markers (✓/○) into tree rows
+			const originalRender = treeList.render.bind(treeList);
+			treeList.render = (width: number) => {
+				const innerWidth = Math.max(10, width - 2);
+				const lines = originalRender(innerWidth);
 
-			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-				const termRows = tui.terminal?.rows ?? 40;
-				// Pass reduced height so tree takes ~35% of terminal (it uses floor(h/2) internally)
-				const treeTermHeight = Math.floor(termRows * 0.65);
-
-				const selector = new TreeSelectorComponent(
-					initialTree,
-					currentLeafId,
-					treeTermHeight,
-					() => {
-						// Intentionally ignore Enter: closing on Enter is counterintuitive here.
-						// Use Esc to close the overlay.
-					},
-					() => done(),
-					(entryId, label) => {
-						pi.setLabel(entryId, label);
-					},
-				);
-
-				// Build a node map once for parent traversal (toolResult → parent assistant toolCall args)
-				const nodeById = buildNodeMap(initialTree);
-
-				const overlay = new anycopyOverlay(
-					selector,
-					getTree,
-					nodeById,
-					keys,
-					() => tui.terminal?.rows ?? 40,
-					() => tui.requestRender(),
-					theme,
-				);
-
-				const treeList = selector.getTreeList();
-
-				// Set initial tree filter mode (same semantics as `/tree`)
-				const rawTreeList = treeList as any;
-				if (rawTreeList && typeof rawTreeList === "object") {
-					rawTreeList.filterMode = treeFilterMode;
-					if (typeof rawTreeList.applyFilter === "function") rawTreeList.applyFilter();
+				const tl = treeList as any;
+				const filteredRaw = tl.filteredNodes;
+				if (!Array.isArray(filteredRaw) || filteredRaw.length === 0) {
+					return lines.map((line: string) => "  " + line);
 				}
+				const filtered = filteredRaw as { node: SessionTreeNode }[];
 
-				// Monkey-patch render to inject checkbox markers (✓/○) into tree rows
-				const originalRender = treeList.render.bind(treeList);
-				treeList.render = (width: number) => {
-					const innerWidth = Math.max(10, width - 2);
-					const lines = originalRender(innerWidth);
+				const selectedIdxRaw = tl.selectedIndex;
+				const maxVisibleRaw = tl.maxVisibleLines;
+				const selectedIdx =
+					typeof selectedIdxRaw === "number" && Number.isFinite(selectedIdxRaw) ? selectedIdxRaw : 0;
+				const maxVisible =
+					typeof maxVisibleRaw === "number" && Number.isFinite(maxVisibleRaw) && maxVisibleRaw > 0
+						? maxVisibleRaw
+						: filtered.length;
 
-					const tl = treeList as any;
-					const filteredRaw = tl.filteredNodes;
-					if (!Array.isArray(filteredRaw) || filteredRaw.length === 0) {
-						return lines.map((line: string) => "  " + line);
-					}
-					const filtered = filteredRaw as { node: SessionTreeNode }[];
+				const startIdx = Math.max(
+					0,
+					Math.min(selectedIdx - Math.floor(maxVisible / 2), filtered.length - maxVisible),
+				);
+				const treeRowCount = Math.max(0, lines.length - 1);
 
-					const selectedIdxRaw = tl.selectedIndex;
-					const maxVisibleRaw = tl.maxVisibleLines;
-					const selectedIdx =
-						typeof selectedIdxRaw === "number" && Number.isFinite(selectedIdxRaw) ? selectedIdxRaw : 0;
-					const maxVisible =
-						typeof maxVisibleRaw === "number" && Number.isFinite(maxVisibleRaw) && maxVisibleRaw > 0
-							? maxVisibleRaw
-							: filtered.length;
+				return lines.map((line: string, i: number) => {
+					if (i >= treeRowCount) return "  " + line;
 
-					const startIdx = Math.max(
-						0,
-						Math.min(selectedIdx - Math.floor(maxVisible / 2), filtered.length - maxVisible),
-					);
-					const treeRowCount = Math.max(0, lines.length - 1);
+					const nodeIdx = startIdx + i;
+					const node = filtered[nodeIdx]?.node as SessionTreeNode | undefined;
+					const nodeId = node?.entry?.id;
+					if (typeof nodeId !== "string") return "  " + line;
 
-					return lines.map((line: string, i: number) => {
-						if (i >= treeRowCount) return "  " + line;
+					const selected = overlay.isSelectedNode(nodeId);
+					const marker = selected ? theme.fg("success", "\u2713 ") : theme.fg("dim", "\u25CB ");
+					return marker + line;
+				});
+			};
 
-						const nodeIdx = startIdx + i;
-						const node = filtered[nodeIdx]?.node as SessionTreeNode | undefined;
-						const nodeId = node?.entry?.id;
-						if (typeof nodeId !== "string") return "  " + line;
+			tui.setFocus?.(overlay);
+			return overlay;
+		});
+	};
 
-						const selected = overlay.isSelectedNode(nodeId);
-						const marker = selected
-							? theme.fg("success", "\u2713 ")
-							: theme.fg("dim", "\u25CB ");
-						return marker + line;
-					});
-				};
-
-				tui.setFocus?.(overlay);
-				return overlay;
-			});
+	pi.registerCommand("anycopy", {
+		description: "Browse session tree with preview and copy any node(s) to clipboard",
+		handler: async (_args, ctx: ExtensionCommandContext) => {
+			await openAnycopy(ctx);
 		},
 	});
+
+	if (shortcut) {
+		pi.registerShortcut(shortcut as any, {
+			description: "Open anycopy session tree overlay",
+			handler: async (ctx) => {
+				await openAnycopy(ctx);
+			},
+		});
+	}
 }

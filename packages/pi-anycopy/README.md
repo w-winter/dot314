@@ -42,6 +42,8 @@ Restart Pi after installation.
 /anycopy
 ```
 
+You can also open the overlay via the configurable shortcut in `config.json` without clearing the current editor draft. The default is **ctrl+`**.
+
 ## Keys
 
 Defaults (customizable in `config.json`):
@@ -54,7 +56,7 @@ Defaults (customizable in `config.json`):
 | `Shift+L` | Label node (native tree behavior) |
 | `Shift+Up` / `Shift+Down` | Scroll node preview by line |
 | `Shift+Left` / `Shift+Right` | Page through node preview |
-| `Esc` | Close |
+| `Esc`, or configured global `shortcut` | Close |
 
 Notes:
 - If no nodes are selected, `Shift+C` copies the focused node
@@ -66,12 +68,16 @@ Notes:
 
 Edit `~/.pi/agent/extensions/anycopy/config.json`:
 
+- `shortcut`: global shortcut that opens the `/anycopy` overlay while preserving whatever is currently in the editor
+  - default: **ctrl+`**
+  - set to `null` to disable it, or change it to another Pi key id such as `ctrl+a`
 - `treeFilterMode`: initial tree filter mode when opening `/anycopy` (idea sourced from [lajarre](https://github.com/lajarre)'s [pi-mono/issues/1845](https://github.com/badlogic/pi-mono/issues/1845))
   - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
-- `keys`: keybindings (see above)
+- `keys`: keybindings used inside the `/anycopy` overlay (see above)
 
 ```json
 {
+  "shortcut": "ctrl+`",
   "treeFilterMode": "default",
   "keys": {
     "toggleSelect": "space",

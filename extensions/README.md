@@ -60,7 +60,8 @@
   - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
   - Multi-selected nodes are auto-sorted chronologically (by tree position)
   - Configurable in `anycopy/config.json`:
-    - `keys` (keybindings)
+    - `shortcut` (defaults to **ctrl+`**; opens the overlay without clearing the current editor draft)
+    - `keys` (overlay keybindings)
     - `treeFilterMode` (initial filter when opening `/anycopy`; idea sourced from [lajarre](https://github.com/lajarre)'s [pi-mono/issues/1845](https://github.com/badlogic/pi-mono/issues/1845))
   - Reoffers node labeling but is not a full `/tree` reproduction otherwise (branch switching, summarization, etc. are not included)
 
@@ -144,6 +145,10 @@
     - ◐ `file-picker` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
        - type `@` to open an overlay file browser and insert `@path` refs
        - This version adds zsh support and enables compatibility with the other two
+       - It also has these different keybindings:
+         - `shift+tab` (not `tab`) toggles the options panel
+         - `tab` performs one-word-part-at-a-time search-input completion using closest alphanumeric prefix matches
+         - In options mode, both `←/→` and `↑/↓` move between options
     - ◐ `shell-completions` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
       - native shell completions in `!`/`!!` bash mode
       - This version adds zsh support and enables compatibility with the other two

@@ -1,4 +1,5 @@
 {
+  "shortcut": "ctrl+`",
   "treeFilterMode": "no-tools",
   "keys": {
     "toggleSelect": "space",
