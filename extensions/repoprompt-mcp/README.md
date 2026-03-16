@@ -1,17 +1,22 @@
 # RepoPrompt MCP integration for Pi
 
-This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools to Pi (using the token-efficient proxy pattern of [nicobailon's pi-mcp-adapter](https://github.com/nicobailon/)), adds window binding (auto-detect by `cwd`, persist/restore, and interactive selection), renders RepoPrompt tool outputs (syntax + diff highlighting), and applies guardrails for destructive operations.
+This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools to Pi (using the token-efficient proxy pattern of [nicobailon's pi-mcp-adapter](https://github.com/nicobailon/)), includes branch-safe window and tab binding (auto-detect and bind to window by `cwd`, auto-bind to safe tab, persist and restore across sessions and session tree nodes, and interactive selection of windows and tabs) and batches of read files (automatically selected as context in the RepoPrompt desktop app), renders RepoPrompt tool outputs (syntax + diff highlighting), and applies guardrails for destructive operations.
+
+The extension's window- and tab-related management features allow a workflow where new Pi sessions automatically attach to the required workspace and tab without clobbering your, or other agents', parallel usage of RepoPrompt.  Because it recovers the window, tab, and auto-selected read-files context when you rewind via `/tree` or restore a session, all the context the agent has built up (and automatically selected in the RepoPrompt app) by reading files and slices up to that point always remains available in the app for RP Chat (see `/rp oracle` below) or external "oracle" (e.g. GPT-x Pro) use cases.  **Note: this recovery currently requires the original workspace (but not necessarily its original tabs) to be open, not just any workspace containing the same required root(s).**
 
 ## Features
 
-### Window binding
+### Window and tab binding
 
-- Auto-bind to the RepoPrompt window that matches `process.cwd()` (by workspace roots, resolving symlinks to their real paths before matching)
-- If multiple windows match, prompt you to pick one (interactive mode):
-- Persist binding across Pi session reloads (optional)
-- Manual binding via `/rp bind` or `rp({ bind: ... })`
+- Auto-binds to the RepoPrompt window that matches `process.cwd()` (by workspace roots, resolving symlinks to their real paths before matching)
+  - If multiple windows match, you're prompted to pick one
+  - Window binding is (optionally) persisted across session reloads and session tree nodes
+- If a bound window has a completely blank tab, the extension binds to that tab; if the tab is dirty, then it provisions a new tab and binds to that
+- Deterministically reconciles the session tree node's bound tab, and can restore the tab already associated with that node or provision a new safe tab when needed
+- User-driven binding via `/rp bind` (windows) or `/rp tab` (tabs); agents can use `rp({ bind: ... })`
+- In addition to window bindings, tab bindings and auto-selected read-files context is stored and automatically recovered across node rewinds via `/tree`, different sessions (e.g., created via `/fork`), and resumed sessions
 
-Binding is **non-invasive**: it does not change RepoPrompt’s globally active window. This matters when multiple clients (or you manually using RepoPrompt) share the same RepoPrompt instance and need to target different workspaces/windows without interference. Tool calls are scoped by injecting `_windowID` / `_tabID`.
+Forked sessions inherit the parent session-plus-node's window, tab, and auto-selected context snapshot at the fork point (unless you rewind in the forked session and switch window/tab/etc.), then can diverge independently as later reads or manual tab switches are performed in the child session.  Binding is non-invasive, in that it doesn't change RepoPrompt's globally active window, and automatic tab provisioning uses background tabs (`focus=false`) without stealing UI focus.  This is to prevent interference when multiple agents (or your manual usage of RepoPrompt in parallel to a Pi session) are using this extension and need to target different windows or tabs simultaneously.
 
 ### Output rendering
 
@@ -32,17 +37,17 @@ Binding is **non-invasive**: it does not change RepoPrompt’s globally active w
   - If the server is not configured/auto-detected, the extension will still load, but `rp(...)` will error until you configure it
 - `rp-cli` available in `PATH` is recommended (used as a fallback for window discovery)
 
-### Compatibility notes (capability assumptions)
+### Compatibility notes
 
-This extension tries to be tolerant of **tool name prefixing** (e.g. `RepoPrompt_list_windows` vs `list_windows`), but it is still dependent on a small set of “capability” tools and their semantics remaining reasonably stable across RepoPrompt versions:
+This extension tries to be tolerant of **tool name prefixing** (e.g. `RepoPrompt_list_windows` vs `list_windows`), but it is still dependent on a small set of capabilities and their semantics remaining reasonably stable across RepoPrompt versions:
 
 - **Window discovery**: `list_windows`
   - If `list_windows` is not exposed by the MCP server, the extension falls back to `rp-cli -e 'windows'`
   - If neither is available, window listing/binding features will be limited
 - **Workspace root discovery (auto-bind by cwd)**: `get_file_tree` with `{ type: "roots" }` (scoped by `_windowID`)
   - If unavailable (or if parameters/semantics change), auto-binding may be disabled or less accurate
-- **Selection summary (optional status enrichment)**: `manage_selection` with `{ op: "get", view: "summary" }`
-  - If unavailable (or if parameters/semantics change), the status output will omit file/token counts
+- Selection summary: `manage_selection` with `{ op: "get", view: "files" }` and `{ op: "get", view: "summary" }`
+  - If these are unavailable (or if parameters/semantics change), the status output may omit file/token counts
 
 If RepoPrompt renames/removes these tools or changes their required parameters/output formats, this extension may need updates
 
@@ -95,10 +100,10 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 
 ### Commands
 
-- `/rp status` — show status (connection + binding)
+- `/rp status` — show status (connection + binding), including the currently bound tab name and a label like `[bound, in-focus]` or `[bound, out-of-focus]`, plus current selected file counts and estimated token counts
 
 <p align="center">
-  <img width="120" alt="status" src="https://github.com/user-attachments/assets/b44caebd-a514-4e81-9761-fe2fd32cd557" />
+  <img width="120" alt="status" src="https://github.com/user-attachments/assets/d05977a2-4ed8-4749-bc70-84a7ea4c82ee" />
 </p>
 
 - `/rp windows` — list available RepoPrompt windows
@@ -107,13 +112,16 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
   <img width="200" alt="windows" src="https://github.com/user-attachments/assets/38510cff-4aa2-4250-83b0-fe7d5daa101d" />
 </p>
 
-- `/rp bind` — pick a window to bind (interactive)
+- `/rp bind` — interactive workflow for choosing the RepoPrompt window
 
 <p align="center">
   <img width="250" alt="bind popup" src="https://github.com/user-attachments/assets/2aa712ba-f989-4e22-97c3-a595f40a087a" />
 </p>
 
-- `/rp bind <id> [tab]` — bind directly
+- `/rp bind <id> [tab]` — direct option if you already know the target window id (and optionally an exact tab name or tab id); when `[tab]` is omitted, the extension restores the branch's tab for that window or provisions a fresh background tab once
+- `/rp tab` — interactive tab picker for the current bound window, with `Create new tab` as the first option followed by existing tab names
+- `/rp tab new` — create and bind a fresh tab on the current bound window
+- `/rp tab <name-or-id>` — bind an existing tab on the current bound window by name or id
 - `/rp oracle [--mode <chat|plan|edit|review>] [--name <chat name>] [--continue|--chat-id <id>] <message>` — ask RepoPrompt chat with current selection context.  If `--mode` not specified, uses `oracleDefaultMode` config.
 - `/rp reconnect` — reconnect to RepoPrompt
 
@@ -130,6 +138,9 @@ rp({ windows: true })
 
 // Bind to a specific window (does not change RepoPrompt active window)
 rp({ bind: { window: 3 } })
+
+// Bind to an exact tab in that window
+rp({ bind: { window: 3, tab: "T2" } })
 
 // Search or describe tools
 rp({ search: "file" })
@@ -186,8 +197,8 @@ Options:
 | `command` | auto-detect | MCP server command |
 | `args` | `[]` | MCP server args |
 | `env` | unset | Extra environment variables for the MCP server |
-| `autoBindOnStart` | `true` | Auto-detect and bind on session start |
-| `persistBinding` | `true` | Persist binding in Pi session history |
+| `autoBindOnStart` | `true` | Auto-detect and bind on session start, then reconcile the branch-safe tab for the chosen window |
+| `persistBinding` | `true` | Persist window and tab bindings in Pi session history for branch-safe replay |
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |
 | `confirmEdits` | `false` | Block edit-like operations unless `confirmEdits: true` |
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
@@ -195,6 +206,8 @@ Options:
 | `oracleDefaultMode` | `"chat"` | Default mode for `/rp oracle` when `--mode` is omitted (`chat`, `plan`, `edit`, or `review`) |
 | `collapsedMaxLines` | `15` | Lines shown in collapsed view |
 | `suppressHostDisconnectedLog` | `true` | Filter noisy stderr from macOS `repoprompt-mcp` (disconnect/retry bootstrap logs) |
+
+Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface.
 
 Note: when `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under
 `<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded,

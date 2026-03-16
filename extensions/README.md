@@ -17,12 +17,15 @@
 
 - ● [`repoprompt-mcp/`](repoprompt-mcp/) ([README](./repoprompt-mcp/README.md))
   - Pi-compatible, token-efficient proxy for the RepoPrompt MCP server with:
-    - Window/tab binding that prevents user/agent or agent/agent clobbering: auto-detects by `cwd`, optional persistence and restoration per session, interactive binding resolution in case of multiple windows containing the required root, and manual selection via `/rp bind`
-      - Bindings are also branch-safe across navigation of the session DAG via `/tree` and across `/fork`ed sessions
+    - Window and tab binding that prevents user/agent or agent/agent clobbering: auto-detects by `cwd`, binds to a blank existing tab or provisions a new background tab if the active tab is dirty, optional persistence and restoration per session, interactive binding resolution in case of multiple windows containing the required root, and manual selection via `/rp bind` (windows) or `/rp tab` (tabs)
+      - Bindings are branch-safe across navigation of the session DAG via `/tree` and `/fork`ed sessions; forked sessions inherit the parent node's window, tab, and auto-selected context snapshot at fork time and diverge independently from there
+      - On rewind or session restore, the bound tab for that session tree node is deterministically restored, or a fresh background tab is provisioned if needed
+    - `/rp status` shows the currently bound tab name with a `[bound, in-focus]` or `[bound, out-of-focus]` label, plus selected file/token counts when available
+    - `/rp oracle [--mode chat|plan|edit|review] ...` — send a message to RepoPrompt chat using the current selection context
     - Output rendering: diff highlighting (`delta` if installed, honoring the user's global git/delta color config, with fallback otherwise), syntax highlighting (file reads and codemaps)
     - Safety guardrails: blocks deletes unless `allowDelete: true`, optional edit confirmation gate (`confirmEdits`)
     - Optional [Gurpartap/pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat)
-    - Optional auto-selection (in the RP app, e.g. for use in RP Chat) of slices/files the agent has read; these selections are also branch-safe across `/tree` navigation and `/fork`ed session
+    - Optional auto-selection (in the RP app, e.g. for use in RP Chat) of slices/files the agent has read; these selections are also branch-safe across `/tree` navigation and `/fork`ed sessions
 
 - ● [`repoprompt-cli/`](repoprompt-cli/)
   - [RepoPrompt](https://repoprompt.com/docs) bridge for Pi: `rp_bind` + `rp_exec`

@@ -3,6 +3,12 @@
 import * as fs from "node:fs";
 import { stat } from "node:fs/promises";
 
+import type {
+  AutoSelectionEntryData,
+  AutoSelectionEntryRangeData,
+  AutoSelectionEntrySliceData,
+} from "./types.js";
+
 export type SelectionMode = "full" | "slices" | "codemap_only";
 
 export interface SelectionStatus {
@@ -118,8 +124,128 @@ export function inferSelectionStatus(selectionText: string, selectionPath: strin
       continue;
     }
 
-    const parentPrefix = prefixes[indentDepth] ?? baseDir;
-    if (!parentPrefix) {
+    const parentPrefix = prefixes[indentDepth] ?? baseDir ?? (indentDepth === 0 ? "" : null);
+    if (parentPrefix === null) {
+      continue;
+    }
+
+    const nodePath = joinPath(parentPrefix, name);
+
+    if (name.endsWith("/")) {
+      prefixes[indentDepth + 1] = normalizeDir(nodePath);
+      prefixes.length = indentDepth + 2;
+      continue;
+    }
+
+    const match = considerMatch(nodePath, rest);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+export function inferSelectionSliceRanges(
+  selectionText: string,
+  selectionPath: string
+): AutoSelectionEntryRangeData[] | null {
+  if (!selectionText || !selectionPath) {
+    return null;
+  }
+
+  const target = toPosixPath(selectionPath).replace(/\/+$/, "");
+
+  const normalizeDir = (dir: string): string => {
+    const normalized = toPosixPath(dir).trim();
+    return normalized.endsWith("/") ? normalized : `${normalized}/`;
+  };
+
+  const joinPath = (dir: string, name: string): string => {
+    if (!dir) {
+      return name;
+    }
+    return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+  };
+
+  const lines = selectionText.split("\n");
+
+  let section: "selected" | "codemaps" | null = null;
+
+  let baseDir: string | null = null;
+  const prefixes: string[] = [];
+
+  const considerMatch = (nodePath: string, rest: string): AutoSelectionEntryRangeData[] | null => {
+    const normalizedNode = toPosixPath(nodePath).replace(/\/+$/, "");
+    if (normalizedNode !== target) {
+      return null;
+    }
+
+    if (section !== "selected") {
+      return null;
+    }
+
+    const allRangesMatch = rest.match(/\(lines\s+([^)]*)\)/i);
+    if (!allRangesMatch) {
+      return null;
+    }
+
+    const rangesText = allRangesMatch[1] ?? "";
+    const ranges = [...rangesText.matchAll(/(\d+)\s*[-–—]\s*(\d+)/g)]
+      .map((m) => ({
+        start_line: Number(m[1]),
+        end_line: Number(m[2]),
+      }))
+      .filter((range) => Number.isFinite(range.start_line) && Number.isFinite(range.end_line))
+      .filter((range) => range.start_line > 0 && range.end_line >= range.start_line);
+
+    return ranges.length > 0 ? ranges : null;
+  };
+
+  for (const rawLine of lines) {
+    const line = toPosixPath(rawLine).trimEnd();
+
+    if (line.includes("### Selected Files")) {
+      section = "selected";
+      baseDir = null;
+      prefixes.length = 0;
+      continue;
+    }
+
+    if (line.includes("### Codemaps")) {
+      section = "codemaps";
+      baseDir = null;
+      prefixes.length = 0;
+      continue;
+    }
+
+    if (line.endsWith("/") && !line.includes("──") && !line.includes(" — ")) {
+      baseDir = normalizeDir(line);
+      prefixes.length = 0;
+      prefixes.push(baseDir);
+      continue;
+    }
+
+    const markerMatch = line.match(/(├──|└──)\s+(.*)$/);
+    if (!markerMatch) {
+      continue;
+    }
+
+    const marker = markerMatch[1] ?? "";
+    const markerIdx = line.indexOf(marker);
+    const indentPrefix = markerIdx >= 0 ? line.slice(0, markerIdx) : "";
+
+    const indentDepth = Math.floor(indentPrefix.length / 4);
+
+    const rest = (markerMatch[2] ?? "").trim();
+    const name = rest.split(" — ")[0]?.trim() ?? "";
+
+    if (!name) {
+      continue;
+    }
+
+    const parentPrefix = prefixes[indentDepth] ?? baseDir ?? (indentDepth === 0 ? "" : null);
+    if (parentPrefix === null) {
       continue;
     }
 
@@ -203,12 +329,40 @@ export async function countFileLines(absolutePath: string): Promise<number> {
   return lines;
 }
 
+export function isWholeFileReadFromArgs(
+  startLine: number | undefined,
+  limit: number | undefined,
+  totalLines: number | undefined
+): boolean {
+  if (typeof totalLines !== "number" || totalLines <= 0 || typeof startLine !== "number") {
+    return false;
+  }
+
+  if (startLine > 0) {
+    if (typeof limit !== "number" || limit <= 0) {
+      return false;
+    }
+
+    return startLine === 1 && totalLines <= limit;
+  }
+
+  if (startLine < 0) {
+    return Math.abs(startLine) >= totalLines;
+  }
+
+  return false;
+}
+
 export function computeSliceRangeFromReadArgs(
   startLine: number | undefined,
   limit: number | undefined,
   totalLines: number | undefined
 ): SliceRange | null {
   if (typeof startLine !== "number") {
+    return null;
+  }
+
+  if (isWholeFileReadFromArgs(startLine, limit, totalLines)) {
     return null;
   }
 
@@ -240,4 +394,81 @@ export function computeSliceRangeFromReadArgs(
   }
 
   return null;
+}
+
+function normalizeSelectionRanges(ranges: AutoSelectionEntryRangeData[]): AutoSelectionEntryRangeData[] {
+  const normalized = ranges
+    .map((range) => ({
+      start_line: Number(range.start_line),
+      end_line: Number(range.end_line),
+    }))
+    .filter((range) => Number.isFinite(range.start_line) && Number.isFinite(range.end_line))
+    .filter((range) => range.start_line > 0 && range.end_line >= range.start_line)
+    .sort((a, b) => {
+      if (a.start_line !== b.start_line) {
+        return a.start_line - b.start_line;
+      }
+      return a.end_line - b.end_line;
+    });
+
+  const merged: AutoSelectionEntryRangeData[] = [];
+  for (const range of normalized) {
+    const last = merged[merged.length - 1];
+    if (!last) {
+      merged.push(range);
+      continue;
+    }
+
+    if (range.start_line <= last.end_line + 1) {
+      last.end_line = Math.max(last.end_line, range.end_line);
+      continue;
+    }
+
+    merged.push(range);
+  }
+
+  return merged;
+}
+
+export function applyFullReadToSelectionState(
+  state: AutoSelectionEntryData,
+  selectionPath: string
+): AutoSelectionEntryData {
+  const normalizedPath = toPosixPath(selectionPath);
+
+  return {
+    ...state,
+    fullPaths: [...state.fullPaths, normalizedPath],
+    slicePaths: state.slicePaths.filter((entry) => entry.path !== normalizedPath),
+  };
+}
+
+export function applySliceReadToSelectionState(
+  state: AutoSelectionEntryData,
+  selectionPath: string,
+  range: AutoSelectionEntryRangeData
+): AutoSelectionEntryData {
+  const normalizedPath = toPosixPath(selectionPath);
+
+  if (state.fullPaths.includes(normalizedPath)) {
+    return {
+      ...state,
+      fullPaths: [...state.fullPaths],
+      slicePaths: [...state.slicePaths],
+    };
+  }
+
+  const existing = state.slicePaths.find((entry) => entry.path === normalizedPath);
+
+  const nextSlicePaths: AutoSelectionEntrySliceData[] = state.slicePaths.filter((entry) => entry.path !== normalizedPath);
+  nextSlicePaths.push({
+    path: normalizedPath,
+    ranges: normalizeSelectionRanges([...(existing?.ranges ?? []), range]),
+  });
+
+  return {
+    ...state,
+    fullPaths: [...state.fullPaths],
+    slicePaths: nextSlicePaths,
+  };
 }

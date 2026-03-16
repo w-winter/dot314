@@ -18,6 +18,8 @@ export interface RpTab {
   id: string;
   name: string;
   isActive?: boolean;
+  isBound?: boolean;
+  selectedFileCount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

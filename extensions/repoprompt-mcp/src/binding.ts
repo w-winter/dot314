@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-import type { BindingEntryData, RpBinding, RpConfig, RpWindow } from "./types.js";
-import { BINDING_ENTRY_TYPE } from "./types.js";
+import type { BindingEntryData, RpBinding, RpConfig, RpTab, RpWindow } from "./types.js";
+import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "./types.js";
 import { getRpClient } from "./client.js";
 import { extractJsonContent, extractTextContent } from "./mcp-json.js";
 import { resolveToolName } from "./tool-names.js";
@@ -29,6 +29,62 @@ export function getBinding(): RpBinding | null {
 
 export function clearBinding(): void {
   currentBinding = null;
+}
+
+function bindingFromEntryData(data: BindingEntryData, autoDetected = false): RpBinding {
+  return {
+    windowId: data.windowId,
+    tab: data.tab,
+    workspace: data.workspace,
+    autoDetected,
+  };
+}
+
+function bindingFromAutoSelectionEntryData(raw: unknown): RpBinding | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const data = raw as Record<string, unknown>;
+  if (typeof data.windowId !== "number" || typeof data.tab !== "string" || !data.tab) {
+    return null;
+  }
+
+  return {
+    windowId: data.windowId,
+    tab: data.tab,
+    workspace: typeof data.workspace === "string" ? data.workspace : undefined,
+  };
+}
+
+function findMostRecentAutoSelectionBindingWithTab(
+  entries: Array<{ type: string; customType?: string; data?: unknown }>,
+  windowId?: number,
+  workspace?: string
+): RpBinding | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.type !== "custom" || entry.customType !== AUTO_SELECTION_ENTRY_TYPE) {
+      continue;
+    }
+
+    const binding = bindingFromAutoSelectionEntryData(entry.data);
+    if (!binding) {
+      continue;
+    }
+
+    if (windowId !== undefined && binding.windowId !== windowId) {
+      continue;
+    }
+
+    if (workspace && binding.workspace && binding.workspace !== workspace) {
+      continue;
+    }
+
+    return binding;
+  }
+
+  return null;
 }
 
 /**
@@ -73,12 +129,23 @@ export function restoreBinding(ctx: ExtensionContext, config: RpConfig): RpBindi
       continue;
     }
 
-    restored = {
-      windowId: data.windowId,
-      tab: data.tab,
-      workspace: data.workspace,
-    };
+    restored = bindingFromEntryData(data);
     break;
+  }
+
+  const autoSelectionBinding = findMostRecentAutoSelectionBindingWithTab(
+    entries,
+    restored?.windowId,
+    restored?.workspace
+  );
+
+  if (restored && !restored.tab && autoSelectionBinding) {
+    restored = {
+      ...restored,
+      tab: autoSelectionBinding.tab,
+    };
+  } else if (!restored && autoSelectionBinding) {
+    restored = autoSelectionBinding;
   }
 
   // Branch semantics: if the branch has no saved binding, stay unbound
@@ -390,6 +457,18 @@ export async function fetchWindows(pi?: ExtensionAPI): Promise<RpWindow[]> {
   return await fetchWindowsViaCli(pi);
 }
 
+async function fetchWindowsForBinding(
+  pi: ExtensionAPI,
+  client: ReturnType<typeof getRpClient>
+): Promise<RpWindow[]> {
+  const windowsFromMcp = await fetchWindowsViaMcp(client);
+  if (windowsFromMcp) {
+    return windowsFromMcp;
+  }
+
+  return await fetchWindowsViaCli(pi);
+}
+
 function normalizeRootLine(line: string): string | null {
   let trimmed = line.trim();
 
@@ -470,6 +549,535 @@ export async function fetchWindowRoots(windowId: number): Promise<string[]> {
 
   const text = extractTextContent(result.content);
   return parseRootList(text);
+}
+
+function parseBooleanMaybe(raw: unknown): boolean | undefined {
+  if (typeof raw === "boolean") {
+    return raw;
+  }
+
+  if (typeof raw === "number") {
+    if (raw === 1) return true;
+    if (raw === 0) return false;
+  }
+
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (["true", "yes", "1", "active", "bound", "in-focus", "focused"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "no", "0", "out-of-focus", "inactive"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return undefined;
+}
+
+const TAB_STATE_TOKENS = new Set(["active", "bound", "in-focus", "out-of-focus"]);
+
+function stripTrailingTabStateAnnotations(name: string): string {
+  let stripped = name.trim();
+
+  while (true) {
+    const match = stripped.match(/\s*\[([^\]]+)\]\s*$/);
+    if (!match) {
+      return stripped;
+    }
+
+    const tokens = match[1]
+      .split(",")
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean);
+
+    if (tokens.length === 0 || tokens.some((token) => !TAB_STATE_TOKENS.has(token))) {
+      return stripped;
+    }
+
+    stripped = stripped.slice(0, stripped.length - match[0].length).trimEnd();
+  }
+}
+
+function parseFileCountMaybe(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.replace(/,/g, "").trim();
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+}
+
+function parseTabFromJson(raw: unknown): RpTab | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const idRaw = obj.id ?? obj.tabId ?? obj.tab_id ?? obj.uuid;
+  if (typeof idRaw !== "string" || !idRaw.trim()) {
+    return null;
+  }
+
+  const nameRaw = obj.name ?? obj.title ?? obj.tab ?? obj.label;
+  const name =
+    typeof nameRaw === "string" && nameRaw.trim()
+      ? stripTrailingTabStateAnnotations(nameRaw)
+      : idRaw.trim();
+
+  return {
+    id: idRaw.trim(),
+    name: name || idRaw.trim(),
+    isActive: parseBooleanMaybe(obj.isActive ?? obj.active ?? obj.selected ?? obj.is_active ?? obj.inFocus ?? obj.in_focus),
+    isBound: parseBooleanMaybe(obj.isBound ?? obj.bound ?? obj.pinned ?? obj.is_bound),
+    selectedFileCount: parseFileCountMaybe(
+      obj.selectedFileCount ?? obj.selected_file_count ?? obj.fileCount ?? obj.file_count
+    ),
+  };
+}
+
+function collectTabsFromJson(raw: unknown): RpTab[] {
+  if (Array.isArray(raw)) {
+    return raw.map(parseTabFromJson).filter((tab): tab is RpTab => tab !== null);
+  }
+
+  if (!raw || typeof raw !== "object") {
+    return [];
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const containers = [obj.tabs, obj.tab, obj.createdTab, obj.created_tab, obj.selectedTab, obj.selected_tab];
+
+  for (const candidate of containers) {
+    const parsed = collectTabsFromJson(candidate);
+    if (parsed.length > 0) {
+      return parsed;
+    }
+  }
+
+  const tab = parseTabFromJson(obj);
+  return tab ? [tab] : [];
+}
+
+function mergeTabFlag(left?: boolean, right?: boolean): boolean | undefined {
+  if (left === true || right === true) {
+    return true;
+  }
+
+  if (left === false || right === false) {
+    return false;
+  }
+
+  return undefined;
+}
+
+function dedupeTabs(tabs: RpTab[]): RpTab[] {
+  const deduped = new Map<string, RpTab>();
+
+  for (const tab of tabs) {
+    const existing = deduped.get(tab.id);
+    if (!existing) {
+      deduped.set(tab.id, { ...tab });
+      continue;
+    }
+
+    deduped.set(tab.id, {
+      id: tab.id,
+      name: existing.name || tab.name,
+      isActive: mergeTabFlag(existing.isActive, tab.isActive),
+      isBound: mergeTabFlag(existing.isBound, tab.isBound),
+      selectedFileCount: tab.selectedFileCount ?? existing.selectedFileCount,
+    });
+  }
+
+  return [...deduped.values()];
+}
+
+function parseTabLine(line: string): RpTab | null {
+  const trimmed = line.trim();
+  if (!trimmed || !trimmed.includes("`")) {
+    return null;
+  }
+
+  if (!trimmed.includes("•") && !trimmed.toLowerCase().includes("tab")) {
+    return null;
+  }
+
+  const idMatch = trimmed.match(/`([^`]+)`/);
+  if (!idMatch?.[1]) {
+    return null;
+  }
+
+  const id = idMatch[1].trim();
+  const afterId = trimmed.slice((idMatch.index ?? 0) + idMatch[0].length);
+  const bulletIndex = afterId.indexOf("•");
+  const rawName = bulletIndex >= 0 ? afterId.slice(bulletIndex + 1) : afterId;
+  const name = stripTrailingTabStateAnnotations(rawName.replace(/^[:\-\s]+/, "").trim()) || id;
+
+  const isActive = /\[(?:[^\]]*\bactive\b[^\]]*|[^\]]*\bin-focus\b[^\]]*)\]/i.test(trimmed)
+    ? true
+    : /\[[^\]]*\bout-of-focus\b[^\]]*\]/i.test(trimmed)
+      ? false
+      : undefined;
+  const isBound = /\[[^\]]*\bbound\b[^\]]*\]/i.test(trimmed) ? true : undefined;
+
+  return {
+    id,
+    name,
+    isActive,
+    isBound,
+  };
+}
+
+export function parseTabList(text: string): RpTab[] {
+  const tabs: RpTab[] = [];
+  let lastTab: RpTab | null = null;
+
+  for (const line of text.split("\n")) {
+    const parsedTab = parseTabLine(line);
+    if (parsedTab) {
+      tabs.push(parsedTab);
+      lastTab = parsedTab;
+      continue;
+    }
+
+    if (!lastTab) {
+      continue;
+    }
+
+    const fileCountMatch = line.match(/•\s*([\d,]+)\s+files\b/i);
+    if (fileCountMatch?.[1]) {
+      lastTab.selectedFileCount = parseFileCountMaybe(fileCountMatch[1]);
+    }
+  }
+
+  return dedupeTabs(tabs);
+}
+
+function parseTabsFromJson(value: unknown): RpTab[] | null {
+  const tabs = collectTabsFromJson(value);
+  return tabs.length > 0 ? dedupeTabs(tabs) : null;
+}
+
+function findLiveTab(tabs: RpTab[], reference: string | undefined): RpTab | null {
+  if (!reference) {
+    return null;
+  }
+
+  return tabs.find((tab) => tab.id === reference || tab.name === reference) ?? null;
+}
+
+function findSoleEmptyTab(tabs: RpTab[]): RpTab | null {
+  if (tabs.length !== 1) {
+    return null;
+  }
+
+  const [tab] = tabs;
+  return tab.selectedFileCount === 0 ? tab : null;
+}
+
+function findEmptyBoundTab(tabs: RpTab[]): RpTab | null {
+  return tabs.find((tab) => tab.isBound === true && tab.selectedFileCount === 0) ?? null;
+}
+
+function findReusableEmptyTab(tabs: RpTab[]): RpTab | null {
+  const emptyTabs = tabs.filter((tab) => tab.selectedFileCount === 0);
+  if (emptyTabs.length === 0) {
+    return null;
+  }
+
+  return (
+    emptyTabs.find((tab) => tab.isBound === true) ??
+    emptyTabs.find((tab) => tab.isActive === true) ??
+    emptyTabs[0]
+  );
+}
+
+function findPreferredActiveTab(tabs: RpTab[]): RpTab | null {
+  return tabs.find((tab) => tab.isActive === true && (tab.selectedFileCount ?? 0) > 0) ?? null;
+}
+
+function bindingWindowArgs(windowId: number): Record<string, unknown> {
+  return {
+    _windowID: windowId,
+  };
+}
+
+function findMostRecentBindingWithTabForWindow(ctx: ExtensionContext, windowId: number): RpBinding | null {
+  const entries = ctx.sessionManager.getBranch();
+
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.type !== "custom" || entry.customType !== BINDING_ENTRY_TYPE) {
+      continue;
+    }
+
+    const data = entry.data as BindingEntryData | undefined;
+    if (data?.windowId !== windowId || typeof data.tab !== "string" || !data.tab) {
+      continue;
+    }
+
+    return bindingFromEntryData(data);
+  }
+
+  return null;
+}
+
+export async function fetchWindowTabs(
+  windowId: number,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<RpTab[]> {
+  if (!client.isConnected) {
+    throw new Error("Not connected to RepoPrompt");
+  }
+
+  const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
+  if (!manageWorkspacesToolName) {
+    return [];
+  }
+
+  const result = await client.callTool(manageWorkspacesToolName, {
+    action: "list_tabs",
+    ...bindingWindowArgs(windowId),
+  });
+
+  if (result.isError) {
+    return [];
+  }
+
+  const json = extractJsonContent(result.content);
+  const tabsFromJson = parseTabsFromJson(json);
+  if (tabsFromJson) {
+    return tabsFromJson;
+  }
+
+  return parseTabList(extractTextContent(result.content));
+}
+
+async function selectTab(
+  windowId: number,
+  tabId: string,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<void> {
+  const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
+  if (!manageWorkspacesToolName) {
+    return;
+  }
+
+  const result = await client.callTool(manageWorkspacesToolName, {
+    action: "select_tab",
+    tab: tabId,
+    focus: false,
+    ...bindingWindowArgs(windowId),
+  });
+
+  if (result.isError) {
+    const text = extractTextContent(result.content);
+    throw new Error(text || `Failed to bind RepoPrompt tab ${tabId}`);
+  }
+}
+
+async function createBoundTab(
+  windowId: number,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<RpTab> {
+  const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
+  if (!manageWorkspacesToolName) {
+    throw new Error("RepoPrompt manage_workspaces tool not available");
+  }
+
+  const tabsBeforeCreate = await fetchWindowTabs(windowId, client);
+
+  const result = await client.callTool(manageWorkspacesToolName, {
+    action: "create_tab",
+    bind: true,
+    focus: false,
+    ...bindingWindowArgs(windowId),
+  });
+
+  if (result.isError) {
+    const text = extractTextContent(result.content);
+    throw new Error(text || "Failed to create RepoPrompt tab");
+  }
+
+  const createdTabs = parseTabsFromJson(extractJsonContent(result.content)) ?? parseTabList(extractTextContent(result.content));
+  let createdTab = createdTabs[0] ?? null;
+
+  if (!createdTab) {
+    const tabsAfterCreate = await fetchWindowTabs(windowId, client);
+    const previousIds = new Set(tabsBeforeCreate.map((tab) => tab.id));
+    const newTabs = tabsAfterCreate.filter((tab) => !previousIds.has(tab.id));
+
+    if (newTabs.length !== 1) {
+      throw new Error("RepoPrompt did not report the created tab unambiguously");
+    }
+
+    createdTab = newTabs[0];
+  }
+
+  await selectTab(windowId, createdTab.id, client);
+  const tabs = await fetchWindowTabs(windowId, client);
+  return findLiveTab(tabs, createdTab.id) ?? { ...createdTab, isBound: true };
+}
+
+export async function bindToTab(
+  pi: ExtensionAPI,
+  windowId: number,
+  tabReference: string,
+  config: RpConfig,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<RpBinding> {
+  const windows = await fetchWindowsForBinding(pi, client);
+  const window = windows.find((w) => w.id === windowId);
+
+  if (!window && windows.length > 0) {
+    throw new Error(`RepoPrompt window ${windowId} not found`);
+  }
+
+  const tabs = await fetchWindowTabs(windowId, client);
+  const liveTab = findLiveTab(tabs, tabReference);
+  if (!liveTab) {
+    throw new Error(`RepoPrompt tab ${JSON.stringify(tabReference)} not found in window ${windowId}`);
+  }
+
+  if (liveTab.isBound !== true) {
+    await selectTab(windowId, liveTab.id, client);
+  }
+
+  const binding: RpBinding = {
+    windowId,
+    tab: liveTab.id,
+    workspace: window?.workspace || undefined,
+    autoDetected: false,
+  };
+
+  persistBinding(pi, binding, config);
+  return binding;
+}
+
+export async function createAndBindTab(
+  pi: ExtensionAPI,
+  windowId: number,
+  config: RpConfig,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<RpBinding> {
+  const windows = await fetchWindowsForBinding(pi, client);
+  const window = windows.find((w) => w.id === windowId);
+
+  if (!window && windows.length > 0) {
+    throw new Error(`RepoPrompt window ${windowId} not found`);
+  }
+
+  const createdTab = await createBoundTab(windowId, client);
+  const binding: RpBinding = {
+    windowId,
+    tab: createdTab.id,
+    workspace: window?.workspace || undefined,
+    autoDetected: false,
+  };
+
+  persistBinding(pi, binding, config);
+  return binding;
+}
+
+export async function ensureBindingHasTab(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  config: RpConfig,
+  client: ReturnType<typeof getRpClient> = getRpClient(),
+  options: { createIfMissing?: boolean; recoverIfMissing?: boolean; reuseSoleEmptyTab?: boolean } = {}
+): Promise<RpBinding | null> {
+  const binding = currentBinding;
+  if (!binding || !client.isConnected) {
+    return binding;
+  }
+
+  const createIfMissing = options.createIfMissing !== false;
+  const recoverIfMissing = options.recoverIfMissing === true;
+  const reuseSoleEmptyTab = options.reuseSoleEmptyTab === true;
+
+  const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
+  if (!manageWorkspacesToolName) {
+    return binding;
+  }
+
+  const liveTabs = await fetchWindowTabs(binding.windowId, client);
+
+  const adoptTab = async (tab: RpTab, persist: boolean): Promise<RpBinding> => {
+    if (tab.isBound !== true) {
+      await selectTab(binding.windowId, tab.id, client);
+    }
+
+    const nextBinding: RpBinding = {
+      ...binding,
+      tab: tab.id,
+    };
+
+    currentBinding = nextBinding;
+    if (persist) {
+      persistBinding(pi, nextBinding, config);
+    }
+
+    return nextBinding;
+  };
+
+  const currentTab = findLiveTab(liveTabs, binding.tab);
+  if (currentTab) {
+    const shouldPersist = binding.tab !== currentTab.id;
+    return await adoptTab(currentTab, shouldPersist);
+  }
+
+  if (liveTabs.length === 0 && binding.tab) {
+    const unknownCurrentTab: RpTab = {
+      id: binding.tab,
+      name: binding.tab,
+    };
+    return await adoptTab(unknownCurrentTab, false);
+  }
+
+  if (!binding.tab) {
+    const preferredActiveTab = findPreferredActiveTab(liveTabs);
+    if (preferredActiveTab) {
+      return await adoptTab(preferredActiveTab, true);
+    }
+  }
+
+  const branchTabBinding =
+    findMostRecentBindingWithTabForWindow(ctx, binding.windowId) ??
+    findMostRecentAutoSelectionBindingWithTab(ctx.sessionManager.getBranch(), binding.windowId, binding.workspace);
+  const branchTab = findLiveTab(liveTabs, branchTabBinding?.tab);
+  if (branchTab) {
+    return await adoptTab(branchTab, true);
+  }
+
+  if (liveTabs.length === 0 && branchTabBinding?.tab) {
+    const unknownBranchTab: RpTab = {
+      id: branchTabBinding.tab,
+      name: branchTabBinding.tab,
+    };
+    return await adoptTab(unknownBranchTab, true);
+  }
+
+  const soleEmptyTab = findSoleEmptyTab(liveTabs);
+  if (soleEmptyTab && (reuseSoleEmptyTab || (recoverIfMissing && Boolean(binding.tab)))) {
+    return await adoptTab(soleEmptyTab, true);
+  }
+
+  const reusableEmptyTab = findReusableEmptyTab(liveTabs);
+  if (reusableEmptyTab && (!binding.tab || reuseSoleEmptyTab || recoverIfMissing)) {
+    return await adoptTab(reusableEmptyTab, true);
+  }
+
+  if (!createIfMissing && !(recoverIfMissing && binding.tab)) {
+    return binding;
+  }
+
+  const createdTab = await createBoundTab(binding.windowId, client);
+  return await adoptTab(createdTab, true);
 }
 
 /**

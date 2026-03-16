@@ -125,7 +125,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `poly-notify/` | Desktop / sound / Pushover notifications |
 | ● | `protect-paths.ts` | Directory protection, brew prevention, extra command gates. 🔄 Replaces the path/brew hooks from old `guardrails/`; install [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` protection + AST-based dangerous command gates |
 | ● | `repoprompt-cli/` | RepoPrompt bridge via rp-cli with syntax/diff rendering, read-cache token savings, branch-safe binding, and branch-safe auto-selection replay for read slices/files |
-| ● | `repoprompt-mcp/` | RepoPrompt MCP proxy with syntax and diff rendering, read-cache token savings, and branch-safe window binding and auto-selection of slices read for RP Chat |
+| ● | `repoprompt-mcp/` | RepoPrompt MCP proxy with syntax and diff rendering, read-cache token savings, automated and branch-safe window and tab binding, and automated branch-safe selection of files and slices read for RP Chat |
 | ● | `roam/` | Post-hoc tmux handoff for remote (e.g. mobile) continuation of Pi sessions |
 | ● | `rp-native-tools-lock/` | Prefer RP tools over Pi native tools |
 | ◐ | `sandbox/` | OS-level sandboxing |

@@ -5,8 +5,8 @@
   "persistBinding": true,
   "confirmDeletes": true,
   "confirmEdits": false,
-  "collapsedMaxLines": 15,
-  "readcacheReadFile": true,
+  "collapsedMaxLines": 3,
+  "readcacheReadFile": false,
   "autoSelectReadSlices": true,
   "oracleDefaultMode": "chat"
 }

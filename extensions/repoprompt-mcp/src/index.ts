@@ -23,6 +23,7 @@ import type {
   RpConfig,
   RpBinding,
   RpWindow,
+  RpTab,
   RpToolMeta,
   McpContent,
   AutoSelectionEntryData,
@@ -38,6 +39,10 @@ import {
   restoreBinding,
   autoDetectAndBind,
   bindToWindow,
+  bindToTab,
+  createAndBindTab,
+  ensureBindingHasTab,
+  fetchWindowTabs,
   fetchWindows,
   getBindingArgs,
 } from "./binding.js";
@@ -55,11 +60,456 @@ import { getStoreStats, pruneObjectsOlderThan } from "./readcache/object-store.j
 import { resolveReadFilePath } from "./readcache/resolve.js";
 
 import {
+  applyFullReadToSelectionState,
+  applySliceReadToSelectionState,
   computeSliceRangeFromReadArgs,
   countFileLines,
   inferSelectionStatus,
+  inferSelectionSliceRanges,
+  isWholeFileReadFromArgs,
   toPosixPath,
 } from "./auto-select.js";
+
+function parseSummaryCount(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().replaceAll(",", "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseSelectionSummaryNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    return parseSummaryCount(value);
+  }
+
+  return undefined;
+}
+
+export function parseWorkspaceContextSelectionSummaryFromText(
+  text: string
+): { fileCount?: number; tokens?: number } | null {
+  const selectedFilesMatch = text.match(/\bSelected files:\s*([\d,]+)\s+total\b/i);
+  const selectionTokensMatch = text.match(/\bSelection:\s*([\d,]+)/i);
+  const selectionLineMatch = text.match(/(?:^|\n)###\s+Selection\s*\n([\d,]+)\s+files\s+•\s+([\d,]+)\s+tokens\b/i);
+
+  const fileCount = selectedFilesMatch
+    ? parseSummaryCount(selectedFilesMatch[1])
+    : selectionLineMatch
+      ? parseSummaryCount(selectionLineMatch[1])
+      : undefined;
+  const tokens = selectionTokensMatch
+    ? parseSummaryCount(selectionTokensMatch[1])
+    : selectionLineMatch
+      ? parseSummaryCount(selectionLineMatch[2])
+      : undefined;
+
+  if (fileCount === undefined && tokens === undefined) {
+    return null;
+  }
+
+  return { fileCount, tokens };
+}
+
+export function parseSelectionSummaryFromJson(
+  value: unknown
+): { fileCount?: number; tokens?: number } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const root = value as Record<string, unknown>;
+  const selection =
+    root.selection && typeof root.selection === "object"
+      ? (root.selection as Record<string, unknown>)
+      : null;
+  const summary =
+    root.summary && typeof root.summary === "object" ? (root.summary as Record<string, unknown>) : null;
+
+  const candidates = [root, selection, summary].filter(Boolean) as Array<Record<string, unknown>>;
+
+  let fileCount: number | undefined;
+  let tokens: number | undefined;
+
+  for (const candidate of candidates) {
+    fileCount ??= parseSelectionSummaryNumber(candidate.fileCount ?? candidate.file_count);
+    tokens ??= parseSelectionSummaryNumber(candidate.tokens ?? candidate.totalTokens ?? candidate.total_tokens);
+
+    if (fileCount !== undefined && tokens !== undefined) {
+      break;
+    }
+  }
+
+  if (fileCount === undefined && tokens === undefined) {
+    return null;
+  }
+
+  return { fileCount, tokens };
+}
+
+export function recoverAutoSelectionStateForTabRecovery(
+  previousState: AutoSelectionEntryData | null,
+  previousBinding: RpBinding | null,
+  nextBinding: RpBinding | null
+): AutoSelectionEntryData | null {
+  if (!previousState || !previousBinding?.tab || !nextBinding?.tab || previousBinding.tab === nextBinding.tab) {
+    return null;
+  }
+
+  if (previousState.fullPaths.length === 0 && previousState.slicePaths.length === 0) {
+    return null;
+  }
+
+  return {
+    ...previousState,
+    windowId: nextBinding.windowId,
+    tab: nextBinding.tab,
+    workspace: nextBinding.workspace,
+  };
+}
+
+export function buildSelectionPathFromResolved(
+  inputPath: string,
+  resolved: { absolutePath: string | null; repoRoot: string | null }
+): string {
+  if (!resolved.absolutePath || !resolved.repoRoot) {
+    return toPosixPath(inputPath);
+  }
+
+  const rel = path.relative(resolved.repoRoot, resolved.absolutePath);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return toPosixPath(inputPath);
+  }
+
+  const rootHint = path.basename(resolved.repoRoot);
+  const relPosix = rel.split(path.sep).join("/");
+
+  return `${rootHint}/${relPosix}`;
+}
+
+export function deriveRepoRelativePathFromInput(
+  inputPath: string,
+  binding: RpBinding | null,
+  resolved: { repoRoot: string | null }
+): string | null {
+  const normalized = toPosixPath(inputPath).replace(/^\/+/, "");
+  if (!normalized) {
+    return null;
+  }
+
+  const rootHints = new Set<string>();
+  if (binding?.workspace) {
+    rootHints.add(binding.workspace);
+  }
+  if (resolved.repoRoot) {
+    rootHints.add(path.basename(resolved.repoRoot));
+  }
+
+  const colonIdx = normalized.indexOf(":");
+  if (colonIdx > 0) {
+    const rootHint = normalized.slice(0, colonIdx).trim();
+    const relPath = normalized.slice(colonIdx + 1).replace(/^\/+/, "");
+    if (rootHints.has(rootHint) && relPath) {
+      return relPath;
+    }
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length >= 2) {
+    const [rootHint, ...rest] = segments;
+    const relPath = rest.join("/");
+    if (rootHint && rootHints.has(rootHint) && relPath) {
+      return relPath;
+    }
+  }
+
+  return null;
+}
+
+export interface AutoSelectSlicePlan {
+  candidatePaths: string[];
+  selectionMode: "full" | "slices" | "codemap_only" | null;
+  observedRanges: AutoSelectionEntryRangeData[] | null;
+  baseStateTracksSelectionPath: boolean;
+  uiAlreadyCoversNewSlice: boolean;
+  normalizedSelectionPath: string;
+  nextState: AutoSelectionEntryData;
+  desiredSlice: AutoSelectionEntrySliceData | null;
+  removeVariants: string[];
+  repoRel: string | null;
+}
+
+function inferObservedSliceRangesForCandidates(
+  selectionText: string,
+  candidatePaths: string[]
+): AutoSelectionEntryRangeData[] | null {
+  for (const candidate of candidatePaths) {
+    const ranges = inferSelectionSliceRanges(selectionText, candidate);
+    if (ranges) {
+      return ranges;
+    }
+  }
+
+  return null;
+}
+
+function selectionRangesEqual(
+  left: AutoSelectionEntryRangeData[] | null | undefined,
+  right: AutoSelectionEntryRangeData[] | null | undefined
+): boolean {
+  return JSON.stringify(normalizeAutoSelectionRangesForPlan(left ?? [])) ===
+    JSON.stringify(normalizeAutoSelectionRangesForPlan(right ?? []));
+}
+
+function normalizeAutoSelectionRangesForPlan(
+  ranges: AutoSelectionEntryRangeData[]
+): AutoSelectionEntryRangeData[] {
+  const normalized = ranges
+    .map((range) => ({
+      start_line: Number(range.start_line),
+      end_line: Number(range.end_line),
+    }))
+    .filter((range) => Number.isFinite(range.start_line) && Number.isFinite(range.end_line))
+    .filter((range) => range.start_line > 0 && range.end_line >= range.start_line)
+    .sort((a, b) => {
+      if (a.start_line !== b.start_line) {
+        return a.start_line - b.start_line;
+      }
+      return a.end_line - b.end_line;
+    });
+
+  const merged: AutoSelectionEntryRangeData[] = [];
+  for (const range of normalized) {
+    const last = merged[merged.length - 1];
+    if (!last) {
+      merged.push(range);
+      continue;
+    }
+
+    if (range.start_line <= last.end_line + 1) {
+      last.end_line = Math.max(last.end_line, range.end_line);
+      continue;
+    }
+
+    merged.push(range);
+  }
+
+  return merged;
+}
+
+function autoSelectionStateTracksAnyCandidatePath(
+  state: AutoSelectionEntryData,
+  candidatePaths: Iterable<string>
+): boolean {
+  const candidatePathKeys = new Set([...candidatePaths].map((p) => toPosixPath(p).replace(/\/+$/, "")));
+
+  return state.fullPaths.some((p) => candidatePathKeys.has(toPosixPath(p).replace(/\/+$/, ""))) ||
+    state.slicePaths.some((item) => candidatePathKeys.has(toPosixPath(item.path).replace(/\/+$/, "")));
+}
+
+function normalizeAutoSelectionStateForPlan(state: AutoSelectionEntryData): AutoSelectionEntryData {
+  const fullPaths = [...new Set(state.fullPaths.map((p) => toPosixPath(String(p).trim())).filter(Boolean))].sort();
+  const fullSet = new Set(fullPaths);
+  const sliceMap = new Map<string, AutoSelectionEntryRangeData[]>();
+
+  for (const item of state.slicePaths) {
+    const pathKey = toPosixPath(String(item.path).trim());
+    if (!pathKey || fullSet.has(pathKey)) {
+      continue;
+    }
+
+    const existing = sliceMap.get(pathKey) ?? [];
+    existing.push(...normalizeAutoSelectionRangesForPlan(item.ranges ?? []));
+    sliceMap.set(pathKey, existing);
+  }
+
+  const slicePaths: AutoSelectionEntrySliceData[] = [...sliceMap.entries()]
+    .map(([pathKey, ranges]) => ({
+      path: pathKey,
+      ranges: normalizeAutoSelectionRangesForPlan(ranges),
+    }))
+    .filter((item: AutoSelectionEntrySliceData) => item.ranges.length > 0)
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  return {
+    ...state,
+    fullPaths,
+    slicePaths,
+  };
+}
+
+export function planAutoSelectSliceUpdate(args: {
+  selectionText: string;
+  inputPath: string;
+  selectionPath: string;
+  binding: RpBinding | null;
+  resolved: { absolutePath: string | null; repoRoot: string | null };
+  baseState: AutoSelectionEntryData;
+  sliceRange: AutoSelectionEntryRangeData;
+}): AutoSelectSlicePlan {
+  const { selectionText, inputPath, selectionPath, binding, resolved, baseState, sliceRange } = args;
+
+  const candidatePaths = new Set<string>();
+  candidatePaths.add(toPosixPath(selectionPath));
+  candidatePaths.add(toPosixPath(inputPath));
+
+  if (resolved.absolutePath) {
+    candidatePaths.add(toPosixPath(resolved.absolutePath));
+  }
+
+  const derivedRepoRel = deriveRepoRelativePathFromInput(inputPath, binding, resolved);
+  if (derivedRepoRel) {
+    candidatePaths.add(toPosixPath(derivedRepoRel));
+  }
+
+  if (resolved.absolutePath && resolved.repoRoot) {
+    const rel = path.relative(resolved.repoRoot, resolved.absolutePath);
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+      candidatePaths.add(toPosixPath(rel.split(path.sep).join("/")));
+    }
+  }
+
+  let selectionStatus: ReturnType<typeof inferSelectionStatus> = null;
+
+  for (const candidate of candidatePaths) {
+    const status = inferSelectionStatus(selectionText, candidate);
+    if (!status) {
+      continue;
+    }
+
+    if (status.mode === "full") {
+      selectionStatus = status;
+      break;
+    }
+
+    if (status.mode === "codemap_only" && status.codemapManual === true) {
+      selectionStatus = status;
+      break;
+    }
+
+    if (selectionStatus === null) {
+      selectionStatus = status;
+      continue;
+    }
+
+    if (selectionStatus.mode === "codemap_only" && status.mode === "slices") {
+      selectionStatus = status;
+    }
+  }
+
+  const normalizedSelectionPath = toPosixPath(selectionPath);
+  const baseStateTracksSelectionPath = autoSelectionStateTracksAnyCandidatePath(baseState, candidatePaths);
+
+  const observedRanges =
+    selectionStatus?.mode === "slices"
+      ? inferObservedSliceRangesForCandidates(selectionText, [...candidatePaths])
+      : null;
+
+  let mergeState = baseState;
+  if (observedRanges) {
+    const candidatePathKeys = new Set([...candidatePaths].map((p) => toPosixPath(p).replace(/\/+$/, "")));
+
+    mergeState = {
+      ...baseState,
+      fullPaths: baseState.fullPaths.filter((p) => !candidatePathKeys.has(toPosixPath(p).replace(/\/+$/, ""))),
+      slicePaths: baseState.slicePaths.filter(
+        (item) => !candidatePathKeys.has(toPosixPath(item.path).replace(/\/+$/, ""))
+      ),
+    };
+
+    for (const range of observedRanges) {
+      mergeState = applySliceReadToSelectionState(mergeState, normalizedSelectionPath, range);
+    }
+  }
+
+  const nextState = normalizeAutoSelectionStateForPlan(
+    applySliceReadToSelectionState(mergeState, normalizedSelectionPath, sliceRange)
+  );
+
+  const repoRel =
+    resolved.absolutePath && resolved.repoRoot
+      ? toPosixPath(path.relative(resolved.repoRoot, resolved.absolutePath).split(path.sep).join("/"))
+      : derivedRepoRel;
+
+  const rootHint = resolved.repoRoot ? path.basename(resolved.repoRoot) : null;
+  const rootScoped = rootHint && repoRel ? `${rootHint}/${repoRel}` : null;
+
+  const removeVariants = new Set<string>();
+  removeVariants.add(normalizedSelectionPath);
+
+  if (repoRel) {
+    removeVariants.add(repoRel);
+  }
+
+  if (rootScoped) {
+    removeVariants.add(rootScoped);
+  }
+
+  if (rootHint && repoRel) {
+    removeVariants.add(`${rootHint}:${repoRel}`);
+  }
+
+  if (resolved.absolutePath) {
+    removeVariants.add(toPosixPath(resolved.absolutePath));
+  }
+
+  const normalizedInput = toPosixPath(inputPath);
+  if (path.isAbsolute(inputPath) || normalizedInput.includes("/")) {
+    removeVariants.add(normalizedInput);
+  }
+
+  const desiredSlice = nextState.slicePaths.find((item) => item.path === normalizedSelectionPath) ?? null;
+  const uiAlreadyCoversNewSlice = selectionRangesEqual(observedRanges, desiredSlice?.ranges);
+
+  return {
+    candidatePaths: [...candidatePaths],
+    selectionMode: selectionStatus?.mode ?? null,
+    observedRanges,
+    baseStateTracksSelectionPath,
+    uiAlreadyCoversNewSlice,
+    normalizedSelectionPath,
+    nextState,
+    desiredSlice,
+    removeVariants: [...removeVariants],
+    repoRel,
+  };
+}
+
+async function resolveLiveBindingTabLabel(binding: RpBinding | null): Promise<string | null> {
+  const client = getRpClient();
+  if (!binding?.tab) {
+    return null;
+  }
+
+  const fallbackLabel = `${binding.tab} [bound]`;
+  if (!client.isConnected) {
+    return fallbackLabel;
+  }
+
+  try {
+    const tabs = await fetchWindowTabs(binding.windowId, client);
+    const liveTab = tabs.find((tab) => tab.id === binding.tab || tab.name === binding.tab);
+    if (!liveTab) {
+      return fallbackLabel;
+    }
+
+    if (liveTab.isActive === true) {
+      return `${liveTab.name} [bound, in-focus]`;
+    }
+    if (liveTab.isActive === false) {
+      return `${liveTab.name} [bound, out-of-focus]`;
+    }
+    return `${liveTab.name} [bound]`;
+  } catch {
+    return fallbackLabel;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool Parameters Schema
@@ -309,12 +759,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     });
   }
 
-  function getAutoSelectionStateFromBranch(
-    ctx: ExtensionContext,
+  function findAutoSelectionStateInEntries(
+    entries: Array<{ type: string; customType?: string; data?: unknown }>,
     binding: RpBinding
-  ): AutoSelectionEntryData {
-    const entries = ctx.sessionManager.getBranch();
-
+  ): AutoSelectionEntryData | null {
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];
       if (entry.type !== "custom" || entry.customType !== AUTO_SELECTION_ENTRY_TYPE) {
@@ -327,7 +775,15 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       }
     }
 
-    return makeEmptyAutoSelectionState(binding);
+    return null;
+  }
+
+  function getAutoSelectionStateFromBranch(
+    ctx: ExtensionContext,
+    binding: RpBinding
+  ): AutoSelectionEntryData {
+    const entries = ctx.sessionManager.getBranch();
+    return findAutoSelectionStateInEntries(entries, binding) ?? makeEmptyAutoSelectionState(binding);
   }
 
   function persistAutoSelectionState(state: AutoSelectionEntryData): void {
@@ -560,7 +1016,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     }
   }
 
-  async function ensureBindingTargetsLiveWindow(ctx: ExtensionContext): Promise<RpBinding | null> {
+  async function ensureBindingTargetsLiveWindow(
+    ctx: ExtensionContext,
+    options: { provisionTab?: boolean; recoverClosedTab?: boolean; reuseSoleEmptyTab?: boolean; hasRecoverableState?: boolean } = {}
+  ): Promise<RpBinding | null> {
     const binding = getBinding();
     if (!binding) {
       return null;
@@ -582,143 +1041,145 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       return binding;
     }
 
-    if (windows.some((w) => w.id === binding.windowId)) {
-      return binding;
-    }
+    let liveBinding = binding;
 
-    if (!binding.workspace) {
-      clearBinding();
-      return null;
-    }
-
-    const workspaceMatches = windows.filter((w) => w.workspace === binding.workspace);
-
-    if (workspaceMatches.length === 1) {
-      const match = workspaceMatches[0];
-
-      try {
-        const rebound = await bindToWindow(pi, match.id, binding.tab, config);
-        return rebound;
-      } catch {
+    if (!windows.some((w) => w.id === binding.windowId)) {
+      if (!binding.workspace) {
         clearBinding();
+        return null;
+      }
+
+      const workspaceMatches = windows.filter((w) => w.workspace === binding.workspace);
+
+      if (workspaceMatches.length === 1) {
+        const match = workspaceMatches[0];
+
+        try {
+          liveBinding = await bindToWindow(pi, match.id, binding.tab, config);
+        } catch {
+          clearBinding();
+          return null;
+        }
+      } else {
+        clearBinding();
+
+        if (ctx.hasUI) {
+          if (workspaceMatches.length > 1) {
+            ctx.ui.notify(
+              `RepoPrompt: binding for workspace "${binding.workspace}" is ambiguous after restart. Re-bind with /rp bind.`,
+              "warning"
+            );
+          } else {
+            ctx.ui.notify(
+              `RepoPrompt: workspace "${binding.workspace}" not found after restart. Re-bind with /rp bind.`,
+              "warning"
+            );
+          }
+        }
+
         return null;
       }
     }
 
-    clearBinding();
-
-    if (ctx.hasUI) {
-      if (workspaceMatches.length > 1) {
+    try {
+      return await ensureBindingHasTab(pi, ctx, config, undefined, {
+        createIfMissing: options.provisionTab !== false,
+        recoverIfMissing: options.recoverClosedTab === true && options.hasRecoverableState === true,
+        reuseSoleEmptyTab: options.reuseSoleEmptyTab === true,
+      });
+    } catch {
+      if (ctx.hasUI && options.provisionTab !== false) {
         ctx.ui.notify(
-          `RepoPrompt: binding for workspace "${binding.workspace}" is ambiguous after restart. Re-bind with /rp bind.`,
-          "warning"
-        );
-      } else {
-        ctx.ui.notify(
-          `RepoPrompt: workspace "${binding.workspace}" not found after restart. Re-bind with /rp bind.`,
+          `RepoPrompt: failed to provision a safe tab for window ${liveBinding.windowId}; keeping current binding.`,
           "warning"
         );
       }
+      return getBinding();
     }
-
-    return null;
   }
 
-  async function syncAutoSelectionToCurrentBranch(ctx: ExtensionContext): Promise<void> {
+  async function syncAutoSelectionToCurrentBranch(
+    ctx: ExtensionContext,
+    options: { provisionTab?: boolean; recoverClosedTab?: boolean; reuseSoleEmptyTab?: boolean } = {}
+  ): Promise<RpBinding | null> {
+    const previousBinding = getBinding();
+    const previousState = previousBinding
+      ? findAutoSelectionStateInEntries(ctx.sessionManager.getBranch(), previousBinding)
+      : null;
+
+    const hasRecoverableState = Boolean(previousState && autoSelectionManagedPaths(previousState).length > 0);
+    const binding = await ensureBindingTargetsLiveWindow(ctx, {
+      ...options,
+      hasRecoverableState,
+    });
+
     if (config.autoSelectReadSlices !== true) {
       activeAutoSelectionState = null;
-      return;
+      return binding;
     }
 
-    const binding = await ensureBindingTargetsLiveWindow(ctx);
-    const desiredState = binding ? getAutoSelectionStateFromBranch(ctx, binding) : null;
+    let desiredState = binding?.tab ? getAutoSelectionStateFromBranch(ctx, binding) : null;
+    let recoveredState = false;
 
+    if (binding?.tab && desiredState && autoSelectionManagedPaths(desiredState).length === 0) {
+      const recovered = recoverAutoSelectionStateForTabRecovery(previousState, previousBinding, binding);
+      if (recovered) {
+        desiredState = recovered;
+        recoveredState = true;
+      }
+    }
+
+    if (!binding?.tab) {
+      activeAutoSelectionState = desiredState;
+      return binding;
+    }
+
+    let reconcileSucceeded = true;
     try {
       await reconcileAutoSelectionStates(activeAutoSelectionState, desiredState);
     } catch {
-      // Fail-open
+      reconcileSucceeded = false;
+    }
+
+    if (recoveredState && desiredState && reconcileSucceeded) {
+      persistAutoSelectionState(desiredState);
+      return binding;
     }
 
     activeAutoSelectionState = desiredState;
+    return binding;
   }
 
-  function updateAutoSelectionStateAfterFullRead(binding: RpBinding, selectionPath: string): void {
-    const normalizedPath = toPosixPath(selectionPath);
-
-    const baseState = sameBindingForAutoSelection(binding, activeAutoSelectionState)
-      ? (activeAutoSelectionState as AutoSelectionEntryData)
-      : makeEmptyAutoSelectionState(binding);
-
-    const nextState: AutoSelectionEntryData = {
-      ...baseState,
-      fullPaths: [...baseState.fullPaths, normalizedPath],
-      slicePaths: baseState.slicePaths.filter((entry) => entry.path !== normalizedPath),
-    };
-
-    const normalizedNext = normalizeAutoSelectionState(nextState);
-    if (autoSelectionStatesEqual(baseState, normalizedNext)) {
-      activeAutoSelectionState = normalizedNext;
-      return;
+  function getBaseAutoSelectionState(
+    ctx: ExtensionContext | undefined,
+    binding: RpBinding
+  ): AutoSelectionEntryData {
+    if (sameBindingForAutoSelection(binding, activeAutoSelectionState)) {
+      return activeAutoSelectionState as AutoSelectionEntryData;
     }
 
-    persistAutoSelectionState(normalizedNext);
+    if (ctx) {
+      return getAutoSelectionStateFromBranch(ctx, binding);
+    }
+
+    return makeEmptyAutoSelectionState(binding);
   }
 
-  function mergedRangesForSliceRead(
-    binding: RpBinding,
-    selectionPath: string,
-    range: AutoSelectionEntryRangeData
-  ): AutoSelectionEntryRangeData[] | null {
-    const normalizedPath = toPosixPath(selectionPath);
+  async function ensureTabScopedBinding(
+    ctx: ExtensionContext,
+    reason = "RepoPrompt binding has no tab. Re-bind with /rp bind."
+  ): Promise<RpBinding> {
+    const binding = await syncAutoSelectionToCurrentBranch(ctx);
 
-    const baseState = sameBindingForAutoSelection(binding, activeAutoSelectionState)
-      ? (activeAutoSelectionState as AutoSelectionEntryData)
-      : makeEmptyAutoSelectionState(binding);
-
-    if (baseState.fullPaths.includes(normalizedPath)) {
-      return null;
+    if (!binding) {
+      throw new Error("RepoPrompt is not bound. Use /rp bind first.");
     }
 
-    const existing = baseState.slicePaths.find((entry) => entry.path === normalizedPath);
-    return normalizeAutoSelectionRanges([...(existing?.ranges ?? []), range]);
-  }
-
-  function updateAutoSelectionStateAfterSliceRead(
-    binding: RpBinding,
-    selectionPath: string,
-    range: AutoSelectionEntryRangeData
-  ): void {
-    const normalizedPath = toPosixPath(selectionPath);
-
-    const baseState = sameBindingForAutoSelection(binding, activeAutoSelectionState)
-      ? (activeAutoSelectionState as AutoSelectionEntryData)
-      : makeEmptyAutoSelectionState(binding);
-
-    if (baseState.fullPaths.includes(normalizedPath)) {
-      return;
+    if (!binding.tab) {
+      throw new Error(reason);
     }
 
-    const existing = baseState.slicePaths.find((entry) => entry.path === normalizedPath);
-
-    const nextSlicePaths = baseState.slicePaths.filter((entry) => entry.path !== normalizedPath);
-    nextSlicePaths.push({
-      path: normalizedPath,
-      ranges: [...(existing?.ranges ?? []), range],
-    });
-
-    const nextState: AutoSelectionEntryData = {
-      ...baseState,
-      fullPaths: [...baseState.fullPaths],
-      slicePaths: nextSlicePaths,
-    };
-
-    const normalizedNext = normalizeAutoSelectionState(nextState);
-    if (autoSelectionStatesEqual(baseState, normalizedNext)) {
-      activeAutoSelectionState = normalizedNext;
-      return;
-    }
-
-    persistAutoSelectionState(normalizedNext);
+    return binding;
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -780,7 +1241,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   pi.on("session_switch", async (_event: unknown, ctx: ExtensionContext) => {
     clearReadcacheCaches();
     restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx, {
+      provisionTab: false,
+      recoverClosedTab: true,
+      reuseSoleEmptyTab: true,
+    });
     if (ctx.hasUI) {
       ctx.ui.setStatus("rp", undefined);
     }
@@ -790,7 +1255,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   pi.on("session_fork", async (_event: unknown, ctx: ExtensionContext) => {
     clearReadcacheCaches();
     restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx, {
+      provisionTab: false,
+      recoverClosedTab: true,
+      reuseSoleEmptyTab: true,
+    });
     if (ctx.hasUI) {
       ctx.ui.setStatus("rp", undefined);
     }
@@ -800,7 +1269,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   (pi as any).on("session_branch", async (_event: unknown, ctx: ExtensionContext) => {
     clearReadcacheCaches();
     restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx, {
+      provisionTab: false,
+      recoverClosedTab: true,
+      reuseSoleEmptyTab: true,
+    });
     if (ctx.hasUI) {
       ctx.ui.setStatus("rp", undefined);
     }
@@ -809,7 +1282,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   pi.on("session_tree", async (_event: unknown, ctx: ExtensionContext) => {
     clearReadcacheCaches();
     restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx);
+    await syncAutoSelectionToCurrentBranch(ctx, {
+      provisionTab: false,
+      recoverClosedTab: true,
+      reuseSoleEmptyTab: true,
+    });
     if (ctx.hasUI) {
       ctx.ui.setStatus("rp", undefined);
     }
@@ -820,7 +1297,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   // ───────────────────────────────────────────────────────────────────────────
 
   pi.registerCommand("rp", {
-    description: "RepoPrompt status and commands. Usage: /rp [status|windows|bind [id]|oracle|reconnect|readcache-status|readcache-refresh]",
+    description: "RepoPrompt status and commands. Usage: /rp [status|windows|bind [id] [tab]|tab [new|name]|oracle|reconnect|readcache-status|readcache-refresh]",
     handler: async (args, ctx) => {
       const parts = args?.trim().split(/\s+/) ?? [];
       const subcommand = parts[0]?.toLowerCase() ?? "status";
@@ -858,7 +1335,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
         case "bind": {
           const windowIdArg = parts[1];
-          const tab = windowIdArg ? parts[2] : undefined;
+          const tab = windowIdArg ? parts.slice(2).join(" ") || undefined : undefined;
 
           let windowId: number | null = null;
 
@@ -896,16 +1373,73 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           }
 
           try {
-            const binding = await bindToWindow(pi, windowId, tab, config);
-            await syncAutoSelectionToCurrentBranch(ctx);
+            if (tab) {
+              await bindToTab(pi, windowId, tab, config);
+            } else {
+              await bindToWindow(pi, windowId, undefined, config);
+            }
+
+            const binding = await syncAutoSelectionToCurrentBranch(ctx);
+            const tabLabel = await resolveBindingTabLabel(binding);
             ctx.ui.notify(
-              `Bound to window ${binding.windowId}` +
-              (binding.workspace ? ` (${binding.workspace})` : "") +
-              (binding.tab ? `, tab "${binding.tab}"` : ""),
+              `Bound to window ${binding?.windowId ?? windowId}` +
+              (binding?.workspace ? ` (${binding.workspace})` : "") +
+              (tabLabel ? `, tab "${tabLabel}"` : ""),
               "info"
             );
           } catch (err) {
             ctx.ui.notify(`Failed to bind: ${err instanceof Error ? err.message : err}`, "error");
+          }
+          break;
+        }
+
+        case "tab": {
+          const rawArgs = args?.trim() ?? "";
+          const rest = rawArgs.replace(/^tab\b/i, "").trim();
+          const argv = splitCommandLine(rest);
+          const requested = argv.join(" ").trim();
+
+          try {
+            const window = await resolveWindowForTabCommand(ctx, pi);
+            if (!window) {
+              ctx.ui.notify("No RepoPrompt windows found", "warning");
+              return;
+            }
+
+            let binding: RpBinding | null = null;
+
+            if (!requested) {
+              if (!ctx.hasUI) {
+                ctx.ui.notify("Usage: /rp tab [new|<tab name or id>]", "error");
+                return;
+              }
+
+              const tabs = await fetchWindowTabs(window.id);
+              const selected = await promptForTabSelection(ctx, tabs);
+              if (!selected) {
+                ctx.ui.notify("Cancelled", "info");
+                return;
+              }
+
+              binding = selected.kind === "create"
+                ? await createAndBindTab(pi, window.id, config)
+                : await bindToTab(pi, window.id, selected.tab.id, config);
+            } else if (/^new$/i.test(requested)) {
+              binding = await createAndBindTab(pi, window.id, config);
+            } else {
+              binding = await bindToTab(pi, window.id, requested, config);
+            }
+
+            binding = (await syncAutoSelectionToCurrentBranch(ctx)) ?? binding;
+            const tabLabel = await resolveBindingTabLabel(binding);
+            ctx.ui.notify(
+              `Bound to window ${binding?.windowId ?? window.id}` +
+              (binding?.workspace ? ` (${binding.workspace})` : "") +
+              (tabLabel ? `, tab "${tabLabel}"` : ""),
+              "info"
+            );
+          } catch (err) {
+            ctx.ui.notify(`Failed to switch tab: ${err instanceof Error ? err.message : err}`, "error");
           }
           break;
         }
@@ -978,14 +1512,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           }
 
           const client = getRpClient();
-          const binding = getBinding();
-
-          if (!binding) {
-            ctx.ui.notify("RepoPrompt is not bound. Use /rp bind first.", "error");
-            return;
-          }
 
           try {
+            await ensureTabScopedBinding(ctx, "RepoPrompt binding has no tab. Use /rp bind or /rp tab new first.");
+
             const chatSendToolName = resolveToolName(client.tools, "chat_send");
             if (!chatSendToolName) {
               ctx.ui.notify("RepoPrompt tool 'chat_send' not available", "error");
@@ -1035,8 +1565,8 @@ export default function repopromptMcp(pi: ExtensionAPI) {
             "RepoPrompt commands:\n" +
             "  /rp status                               - Show connection and binding status\n" +
             "  /rp windows                              - List available windows\n" +
-            "  /rp bind                                 - Pick a window to bind (interactive)\n" +
-            "  /rp bind <id> [tab]                      - Bind to a specific window\n" +
+            "  /rp bind                                 - Open the interactive picker and bind\n" +
+            "  /rp bind <id> [tab]                      - Direct/advanced bind when you already know the ids\n" +
             "  /rp oracle [opts] <message>              - Start/continue a RepoPrompt chat with current selection\n" +
             "  /rp reconnect                            - Reconnect to RepoPrompt\n" +
             "  /rp readcache-status                     - Show read_file cache status\n" +
@@ -1096,7 +1626,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       if (params.bind) {
         return executeBinding(pi, params.bind.window, params.bind.tab, _ctx as ExtensionContext | undefined);
       }
-      return executeStatus();
+      return executeStatus(_ctx as ExtensionContext | undefined);
     },
 
     renderCall(args: Record<string, unknown>, theme: Theme) {
@@ -1321,66 +1851,22 @@ Mode priority: call > describe > search > windows > bind > status`,
     return args;
   }
 
-  function parseSelectionSummaryFromJson(
-    value: unknown
-  ): { fileCount?: number; tokens?: number } | null {
-    if (!value || typeof value !== "object") {
-      return null;
-    }
-
-    const root = value as Record<string, unknown>;
-    const selection =
-      root.selection && typeof root.selection === "object"
-        ? (root.selection as Record<string, unknown>)
-        : null;
-    const summary =
-      root.summary && typeof root.summary === "object" ? (root.summary as Record<string, unknown>) : null;
-
-    const candidates = [root, selection, summary].filter(Boolean) as Array<Record<string, unknown>>;
-
-    for (const candidate of candidates) {
-      const fileCount = parseNumber(candidate.fileCount ?? candidate.files ?? candidate.file_count);
-      const tokens = parseNumber(candidate.tokens ?? candidate.totalTokens ?? candidate.total_tokens);
-
-      if (fileCount !== undefined || tokens !== undefined) {
-        return { fileCount, tokens };
-      }
-    }
-
-    return null;
-  }
-
-  function parseSelectionSummaryFromText(text: string): { fileCount?: number; tokens?: number } | null {
-    const fileMatch = text.match(/\bFiles:\s*([\d,]+)/i);
-    const tokenMatch = text.match(/\b([\d,]+)\s+total\s+tokens\b/i);
-
-    const fileCount = fileMatch ? parseNumber(fileMatch[1]) : undefined;
-    const tokens = tokenMatch ? parseNumber(tokenMatch[1]) : undefined;
-
-    if (fileCount === undefined && tokens === undefined) {
-      return null;
-    }
-
-    return { fileCount, tokens };
-  }
-
   async function getSelectionSummary(): Promise<{ fileCount?: number; tokens?: number } | null> {
     const binding = getBinding();
     const client = getRpClient();
 
-    if (!binding || !client.isConnected) {
+    if (!binding?.tab || !client.isConnected) {
       return null;
     }
 
     try {
-      const manageSelectionToolName = resolveToolName(client.tools, "manage_selection");
-      if (!manageSelectionToolName) {
+      const workspaceContextToolName = resolveToolName(client.tools, "workspace_context");
+      if (!workspaceContextToolName) {
         return null;
       }
 
-      const result = await client.callTool(manageSelectionToolName, {
-        op: "get",
-        view: "summary",
+      const result = await client.callTool(workspaceContextToolName, {
+        include: ["selection", "tokens"],
         ...getBindingArgs(),
       });
 
@@ -1395,17 +1881,19 @@ Mode priority: call > describe > search > windows > bind > status`,
       }
 
       const text = extractTextContent(result.content);
-      return parseSelectionSummaryFromText(text);
+      return parseWorkspaceContextSelectionSummaryFromText(text);
     } catch {
       return null;
     }
   }
 
-  async function getSelectionFilesText(): Promise<string | null> {
-    const binding = getBinding();
+  async function getSelectionFilesText(
+    binding: RpBinding | null,
+    bindingArgsOverride?: Record<string, unknown>
+  ): Promise<string | null> {
     const client = getRpClient();
 
-    if (!binding || !client.isConnected) {
+    if (!binding?.tab || !client.isConnected) {
       return null;
     }
 
@@ -1418,7 +1906,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       const result = await client.callTool(manageSelectionToolName, {
         op: "get",
         view: "files",
-        ...getBindingArgs(),
+        ...(bindingArgsOverride ?? getBindingArgs()),
       });
 
       if (result.isError) {
@@ -1431,42 +1919,20 @@ Mode priority: call > describe > search > windows > bind > status`,
     }
   }
 
-  function buildSelectionPathFromResolved(
-    inputPath: string,
-    resolved: { absolutePath: string | null; repoRoot: string | null }
-  ): string {
-    if (!resolved.absolutePath || !resolved.repoRoot) {
-      return inputPath;
-    }
-
-    const rel = path.relative(resolved.repoRoot, resolved.absolutePath);
-    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) {
-      return inputPath;
-    }
-
-    const rootHint = path.basename(resolved.repoRoot);
-    const relPosix = rel.split(path.sep).join("/");
-
-    return `${rootHint}/${relPosix}`;
-  }
-
   async function autoSelectReadFileInRepoPromptSelection(
-    ctx: ExtensionContext,
+    ctx: ExtensionContext | undefined,
+    binding: RpBinding | null,
     inputPath: string,
     startLine: number | undefined,
-    limit: number | undefined
+    limit: number | undefined,
+    bindingArgsOverride?: Record<string, unknown>
   ): Promise<void> {
     if (config.autoSelectReadSlices !== true) {
       return;
     }
 
     const client = getRpClient();
-    if (!client.isConnected) {
-      return;
-    }
-
-    const binding = getBinding();
-    if (!binding) {
+    if (!client.isConnected || !binding?.tab) {
       return;
     }
 
@@ -1475,10 +1941,12 @@ Mode priority: call > describe > search > windows > bind > status`,
       return;
     }
 
-    const resolved = await resolveReadFilePath(inputPath, ctx.cwd, binding);
+    const cwd = ctx?.cwd ?? process.cwd();
+    const resolved = await resolveReadFilePath(inputPath, cwd, binding);
+    const baseState = getBaseAutoSelectionState(ctx, binding);
     const selectionPath = buildSelectionPathFromResolved(inputPath, resolved);
 
-    const selectionText = await getSelectionFilesText();
+    const selectionText = await getSelectionFilesText(binding, bindingArgsOverride);
     if (selectionText === null) {
       return;
     }
@@ -1489,6 +1957,11 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     if (resolved.absolutePath) {
       candidatePaths.add(toPosixPath(resolved.absolutePath));
+    }
+
+    const derivedRepoRel = deriveRepoRelativePathFromInput(inputPath, binding, resolved);
+    if (derivedRepoRel) {
+      candidatePaths.add(toPosixPath(derivedRepoRel));
     }
 
     if (resolved.absolutePath && resolved.repoRoot) {
@@ -1506,13 +1979,11 @@ Mode priority: call > describe > search > windows > bind > status`,
         continue;
       }
 
-      // Strongest signal: file is currently full
       if (status.mode === "full") {
         selectionStatus = status;
         break;
       }
 
-      // Respect user manual codemap-only choices
       if (status.mode === "codemap_only" && status.codemapManual === true) {
         selectionStatus = status;
         break;
@@ -1523,7 +1994,6 @@ Mode priority: call > describe > search > windows > bind > status`,
         continue;
       }
 
-      // Prefer slices over codemap-only if we see both signals
       if (selectionStatus.mode === "codemap_only" && status.mode === "slices") {
         selectionStatus = status;
       }
@@ -1539,56 +2009,98 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     let totalLines: number | undefined;
 
-    if (typeof startLine === "number" && startLine < 0) {
-      if (resolved.absolutePath) {
-        try {
-          totalLines = await countFileLines(resolved.absolutePath);
-        } catch {
-          totalLines = undefined;
-        }
+    if (typeof startLine === "number" && resolved.absolutePath) {
+      try {
+        totalLines = await countFileLines(resolved.absolutePath);
+      } catch {
+        totalLines = undefined;
       }
+    }
+
+    if (isWholeFileReadFromArgs(startLine, limit, totalLines)) {
+      const nextState = normalizeAutoSelectionState(
+        applyFullReadToSelectionState(baseState, selectionPath)
+      );
+
+      if (autoSelectionStatesEqual(baseState, nextState)) {
+        activeAutoSelectionState = nextState;
+        return;
+      }
+
+      await reconcileAutoSelectionWithinBinding(client, manageSelectionToolName, baseState, nextState);
+      persistAutoSelectionState(nextState);
+      return;
     }
 
     const sliceRange = computeSliceRangeFromReadArgs(startLine, limit, totalLines);
 
     if (sliceRange) {
-      const mergedRanges = mergedRangesForSliceRead(binding, selectionPath, sliceRange);
-      if (!mergedRanges || mergedRanges.length === 0) {
+      const currentBindingArgs = bindingArgsOverride ?? getBindingArgs();
+      const plan = planAutoSelectSliceUpdate({
+        selectionText,
+        inputPath,
+        selectionPath,
+        binding,
+        resolved,
+        baseState,
+        sliceRange,
+      });
+
+      if (plan.uiAlreadyCoversNewSlice) {
+        persistAutoSelectionState(plan.nextState);
         return;
       }
 
-      // Use set+mode=slices with merged ranges to avoid relying on server-specific
-      // "add slices" merge semantics
-      await client.callTool(manageSelectionToolName, {
-        op: "set",
-        mode: "slices",
-        slices: [
-          {
-            path: toPosixPath(selectionPath),
-            ranges: mergedRanges,
-          },
-        ],
-        ...getBindingArgs(),
-      });
+      if (!plan.desiredSlice) {
+        activeAutoSelectionState = plan.nextState;
+        return;
+      }
 
-      updateAutoSelectionStateAfterSliceRead(binding, selectionPath, sliceRange);
+      const removeResult = await client.callTool(manageSelectionToolName, {
+        op: "remove",
+        paths: plan.removeVariants,
+        strict: true,
+        ...currentBindingArgs,
+      });
+      if (removeResult.isError) {
+        throw new Error(extractTextContent(removeResult.content) || "RepoPrompt manage_selection remove failed");
+      }
+
+      const addResult = await client.callTool(manageSelectionToolName, {
+        op: "add",
+        slices: [plan.desiredSlice],
+        strict: true,
+        ...currentBindingArgs,
+      });
+      if (addResult.isError) {
+        throw new Error(extractTextContent(addResult.content) || "RepoPrompt manage_selection add(slices) failed");
+      }
+
+      persistAutoSelectionState(plan.nextState);
       return;
     }
 
-    // For reads without a representable range, fall back to selecting the full file
-    await client.callTool(manageSelectionToolName, {
-      op: "add",
-      mode: "full",
-      paths: [toPosixPath(selectionPath)],
-      ...getBindingArgs(),
-    });
+    const nextState = normalizeAutoSelectionState(
+      applyFullReadToSelectionState(baseState, selectionPath)
+    );
 
-    updateAutoSelectionStateAfterFullRead(binding, selectionPath);
+    if (autoSelectionStatesEqual(baseState, nextState)) {
+      activeAutoSelectionState = nextState;
+      return;
+    }
+
+    await reconcileAutoSelectionWithinBinding(client, manageSelectionToolName, baseState, nextState);
+    persistAutoSelectionState(nextState);
+  }
+
+  async function resolveBindingTabLabel(binding: RpBinding | null): Promise<string | null> {
+    return await resolveLiveBindingTabLabel(binding);
   }
 
   async function showStatus(ctx: ExtensionContext): Promise<void> {
     const client = getRpClient();
-    const binding = getBinding();
+    const binding = client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
+    const tabLabel = await resolveBindingTabLabel(binding);
 
     let msg = `RepoPrompt Status\n`;
     msg += `─────────────────\n`;
@@ -1599,7 +2111,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       msg += `\nBound to:\n`;
       msg += `  Window: ${binding.windowId}\n`;
       if (binding.workspace) msg += `  Workspace: ${binding.workspace}\n`;
-      if (binding.tab) msg += `  Tab: ${binding.tab}\n`;
+      if (tabLabel) msg += `  Tab: ${tabLabel}\n`;
       if (binding.autoDetected) msg += `  (auto-detected from cwd)\n`;
 
       const selectionSummary = await getSelectionSummary();
@@ -1613,7 +2125,7 @@ Mode priority: call > describe > search > windows > bind > status`,
         }
       }
     } else {
-      msg += `\nNot bound to any window. Use /rp bind <id> or rp({ windows: true })\n`;
+      msg += `\nNot bound to any window. Use /rp bind to open the interactive picker, or rp({ windows: true }) for the raw window list\n`;
     }
 
     ctx.ui.notify(msg, "info");
@@ -1710,7 +2222,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       msg += `  ${w.id}: ${w.workspace}${marker}\n`;
     }
 
-    msg += `\nUse /rp bind <id> to bind to a window`;
+    msg += `\nUse /rp bind to open the interactive picker`;
 
     ctx.ui.notify(msg, "info");
   }
@@ -1719,9 +2231,10 @@ Mode priority: call > describe > search > windows > bind > status`,
   // Tool Execution Modes
   // ───────────────────────────────────────────────────────────────────────────
 
-  async function executeStatus() {
+  async function executeStatus(ctx?: ExtensionContext) {
     const client = getRpClient();
-    const binding = getBinding();
+    const binding = ctx && client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
+    const tabLabel = await resolveBindingTabLabel(binding);
 
     const server = getServerCommand(config);
 
@@ -1738,9 +2251,10 @@ Mode priority: call > describe > search > windows > bind > status`,
     if (binding) {
       text += `\nBound to window ${binding.windowId}`;
       if (binding.workspace) text += ` (${binding.workspace})`;
+      if (tabLabel) text += `, tab ${JSON.stringify(tabLabel)}`;
       if (binding.autoDetected) text += " [auto-detected]";
     } else {
-      text += `\nNot bound. Use rp({ windows: true }) to list windows, then rp({ bind: { window: <id> } })`;
+      text += `\nNot bound. Human users should prefer /rp bind for the interactive picker; rp({ windows: true }) and rp({ bind: { window: <id> } }) remain available for direct/tool-driven routing`;
     }
 
     return {
@@ -1768,7 +2282,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       text += `- Window \`${w.id}\` • ${w.workspace}${marker}\n`;
     }
 
-    text += `\nUse rp({ bind: { window: <id> } }) to bind`;
+    text += `\nUse /rp bind for the interactive picker, or rp({ bind: { window: <id> } }) for direct/tool-driven binding`;
 
     return {
       content: [{ type: "text" as const, text }],
@@ -1782,16 +2296,20 @@ Mode priority: call > describe > search > windows > bind > status`,
     tab?: string,
     ctx?: ExtensionContext
   ) {
-    const binding = await bindToWindow(extensionApi, windowId, tab, config);
+    let binding = tab
+      ? await bindToTab(extensionApi, windowId, tab, config)
+      : await bindToWindow(extensionApi, windowId, undefined, config);
 
     if (ctx) {
-      await syncAutoSelectionToCurrentBranch(ctx);
+      binding = (await syncAutoSelectionToCurrentBranch(ctx)) ?? binding;
     }
+
+    const tabLabel = await resolveBindingTabLabel(binding);
 
     let text = `## Bound ✅\n`;
     text += `- **Window**: ${binding.windowId}\n`;
     if (binding.workspace) text += `- **Workspace**: ${binding.workspace}\n`;
-    if (binding.tab) text += `- **Tab**: ${binding.tab}\n`;
+    if (tabLabel) text += `- **Tab**: ${tabLabel}\n`;
 
     return {
       content: [{ type: "text" as const, text }],
@@ -1899,11 +2417,32 @@ Mode priority: call > describe > search > windows > bind > status`,
       };
     }
 
-    // Merge binding args with user args (strip wrapper-only args before forwarding)
-    const bindingArgs = getBindingArgs();
-
     const userArgs = (params.args ?? {}) as Record<string, unknown>;
     const normalizedTool = normalizeToolName(tool.name);
+
+    if (getBinding() && !getBinding()?.tab && normalizedTool !== "manage_workspaces" && normalizedTool !== "list_windows") {
+      if (!ctx) {
+        return {
+          content: [{ type: "text" as const, text: "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools." }],
+          details: { mode: "call", error: "missing_tab_binding", tool: tool.name },
+          isError: true,
+        };
+      }
+
+      try {
+        await ensureTabScopedBinding(ctx, "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: { mode: "call", error: "missing_tab_binding", tool: tool.name, message },
+          isError: true,
+        };
+      }
+    }
+
+    // Merge binding args with user args (strip wrapper-only args before forwarding)
+    const bindingArgs = getBindingArgs();
 
     const bypassCache = normalizedTool === "read_file" && userArgs.bypass_cache === true;
 
@@ -1961,7 +2500,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
       if (shouldAutoSelectRead && !result.isError) {
         try {
-          await autoSelectReadFileInRepoPromptSelection(ctx, pathArg, startLine, limit);
+          await autoSelectReadFileInRepoPromptSelection(ctx, getBinding(), pathArg, startLine, limit, bindingArgs);
         } catch {
           // Fail-open
         }
@@ -2030,6 +2569,138 @@ Mode priority: call > describe > search > windows > bind > status`,
 // ─────────────────────────────────────────────────────────────────────────────
 // Initialization
 // ─────────────────────────────────────────────────────────────────────────────
+
+type TabSelectionChoice =
+  | { kind: "create" }
+  | { kind: "existing"; tab: RpTab };
+
+function formatTabSelectionLabel(tab: RpTab): string {
+  const annotations: string[] = [];
+  if (tab.isBound === true) {
+    annotations.push("currently bound");
+  }
+  if (tab.isActive === true) {
+    annotations.push("in focus");
+  }
+
+  return annotations.length > 0 ? `${tab.name} — ${annotations.join(", ")}` : tab.name;
+}
+
+async function resolveWindowForTabCommand(
+  ctx: ExtensionContext,
+  pi: ExtensionAPI
+): Promise<RpWindow | null> {
+  const binding = getBinding();
+  if (binding) {
+    const windows = await fetchWindows(pi);
+    return (
+      windows.find((window) => window.id === binding.windowId) ?? {
+        id: binding.windowId,
+        workspace: binding.workspace ?? "",
+        roots: [],
+      }
+    );
+  }
+
+  if (!ctx.hasUI) {
+    throw new Error("Not bound to any RepoPrompt window. Use /rp bind <window_id> first");
+  }
+
+  const windows = await fetchWindows(pi);
+  if (windows.length === 0) {
+    return null;
+  }
+
+  return await promptForWindowSelection(ctx, windows);
+}
+
+async function promptForTabSelection(
+  ctx: ExtensionContext,
+  tabs: RpTab[]
+): Promise<TabSelectionChoice | null> {
+  if (!ctx.hasUI) {
+    return null;
+  }
+
+  const choices: TabSelectionChoice[] = [
+    { kind: "create" },
+    ...tabs.map((tab): TabSelectionChoice => ({ kind: "existing", tab })),
+  ];
+
+  return await ctx.ui.custom<TabSelectionChoice | null>(
+    (tui, theme, _kb, done) => {
+      let selectedIndex = 0;
+
+      return {
+        render(width: number) {
+          const w = Math.max(44, width);
+          const lines: string[] = [];
+
+          const header =
+            theme.fg("accent", theme.bold("RepoPrompt")) +
+            theme.fg("dim", " — select tab for current branch");
+
+          lines.push(theme.fg("dim", "┌" + "─".repeat(w - 2) + "┐"));
+          const headerPad = Math.max(0, w - 4 - visibleWidth(header));
+          lines.push(theme.fg("dim", "│ ") + header + " ".repeat(headerPad) + theme.fg("dim", " │"));
+          lines.push(theme.fg("dim", "├" + "─".repeat(w - 2) + "┤"));
+
+          for (let i = 0; i < choices.length; i++) {
+            const choice = choices[i];
+            const pointer = i === selectedIndex ? theme.fg("success", "❯ ") : "  ";
+            const label = choice.kind === "create"
+              ? theme.fg("accent", "Create new tab")
+              : formatTabSelectionLabel(choice.tab);
+            const row = pointer + label;
+            const rowPad = Math.max(0, w - 4 - visibleWidth(row));
+            lines.push(theme.fg("dim", "│ ") + row + " ".repeat(rowPad) + theme.fg("dim", " │"));
+          }
+
+          lines.push(theme.fg("dim", "├" + "─".repeat(w - 2) + "┤"));
+
+          const footer = theme.fg("dim", "↑↓/jk navigate • Enter select • Esc cancel");
+          const footerPad = Math.max(0, w - 4 - visibleWidth(footer));
+          lines.push(theme.fg("dim", "│ ") + footer + " ".repeat(footerPad) + theme.fg("dim", " │"));
+          lines.push(theme.fg("dim", "└" + "─".repeat(w - 2) + "┘"));
+
+          return lines;
+        },
+        handleInput(data: string) {
+          if (matchesKey(data, "escape") || data === "q" || data === "Q") {
+            done(null);
+            return;
+          }
+
+          if (matchesKey(data, "return") || matchesKey(data, "enter")) {
+            done(choices[selectedIndex] ?? null);
+            return;
+          }
+
+          if (matchesKey(data, "up") || data === "k") {
+            selectedIndex = Math.max(0, selectedIndex - 1);
+            tui.requestRender();
+            return;
+          }
+
+          if (matchesKey(data, "down") || data === "j") {
+            selectedIndex = Math.min(choices.length - 1, selectedIndex + 1);
+            tui.requestRender();
+            return;
+          }
+
+          if (data.length === 1 && data >= "1" && data <= "9") {
+            const idx = parseInt(data, 10) - 1;
+            if (idx >= 0 && idx < choices.length) {
+              done(choices[idx]);
+            }
+          }
+        },
+        invalidate() {},
+      };
+    },
+    { overlay: true }
+  );
+}
 
 async function promptForWindowSelection(
   ctx: ExtensionContext,
@@ -2169,18 +2840,34 @@ async function initializeExtension(
     try {
       const { binding, windows, ambiguity } = await autoDetectAndBind(pi, config);
 
-      if (binding && ctx.hasUI) {
-        ctx.ui.notify(
-          `RepoPrompt: auto-bound to window ${binding.windowId} (${binding.workspace ?? "unknown"})`,
-          "info"
-        );
+      if (binding) {
+        const reconciledBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
+          reuseSoleEmptyTab: true,
+        });
+
+        if (ctx.hasUI) {
+          const activeBinding = reconciledBinding ?? binding;
+          const tabLabel = await resolveLiveBindingTabLabel(activeBinding);
+          ctx.ui.notify(
+            `RepoPrompt: auto-bound to window ${activeBinding.windowId}` +
+            ` (${activeBinding.workspace ?? "unknown"})` +
+            (tabLabel ? `, tab "${tabLabel}"` : ""),
+            "info"
+          );
+        }
       } else if (ambiguity?.candidates?.length && ctx.hasUI) {
         const selected = await promptForWindowSelection(ctx, ambiguity.candidates);
 
         if (selected) {
           const chosenBinding = await bindToWindow(pi, selected.id, undefined, config);
+          const reconciledBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
+            reuseSoleEmptyTab: true,
+          });
+          const tabLabel = await resolveLiveBindingTabLabel(reconciledBinding ?? chosenBinding);
           ctx.ui.notify(
-            `RepoPrompt: bound to window ${chosenBinding.windowId} (${chosenBinding.workspace ?? "unknown"})`,
+            `RepoPrompt: bound to window ${(reconciledBinding ?? chosenBinding).windowId}` +
+            ` (${(reconciledBinding ?? chosenBinding).workspace ?? "unknown"})` +
+            (tabLabel ? `, tab "${tabLabel}"` : ""),
             "info"
           );
         } else {
@@ -2189,13 +2876,13 @@ async function initializeExtension(
             .join(", ");
 
           ctx.ui.notify(
-            `RepoPrompt: multiple matching windows for cwd (${candidatesText}). Use /rp bind <id> to choose.`,
+            `RepoPrompt: multiple matching windows for cwd (${candidatesText}). Use /rp bind to choose from the interactive picker.`,
             "warning"
           );
         }
       } else if (windows.length > 0 && ctx.hasUI) {
         ctx.ui.notify(
-          `RepoPrompt: ${windows.length} window(s) available. Use /rp bind <id> or rp({ windows: true })`,
+          `RepoPrompt: ${windows.length} window(s) available. Use /rp bind for the interactive picker or rp({ windows: true }) for the raw list`,
           "info"
         );
       }
