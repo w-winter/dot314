@@ -397,6 +397,12 @@ class anycopyOverlay implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.isEditingNodeLabel()) {
+			this.selector.handleInput(data);
+			this.requestRender();
+			return;
+		}
+
 		if (this.closeShortcut && matchesKey(data, this.closeShortcut)) {
 			this.onClose();
 			return;
@@ -439,6 +445,10 @@ class anycopyOverlay implements Focusable {
 
 		this.selector.handleInput(data);
 		this.requestRender();
+	}
+
+	private isEditingNodeLabel(): boolean {
+		return Boolean((this.selector as { labelInput?: unknown }).labelInput);
 	}
 
 	invalidate(): void {
