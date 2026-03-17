@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
-import type { RpConfig } from "./types.js";
+import { DIFF_VIEW_MODES, type DiffViewMode, type RpConfig } from "./types.js";
 
 // Default configuration
 const DEFAULT_CONFIG: RpConfig = {
@@ -12,7 +12,9 @@ const DEFAULT_CONFIG: RpConfig = {
   persistBinding: true,
   confirmDeletes: true,
   confirmEdits: false,
-  collapsedMaxLines: 15,
+  collapsedMaxLines: 3,
+  diffViewMode: "auto",
+  diffSplitMinWidth: 120,
   suppressHostDisconnectedLog: true,
 
   // Off by default: preserves RepoPrompt's default read_file behavior unless explicitly enabled
@@ -133,6 +135,20 @@ function findRepoPromptServer(): { command: string; args: string[] } | null {
   return null;
 }
 
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function toDiffViewMode(value: unknown): DiffViewMode {
+  return DIFF_VIEW_MODES.includes(value as DiffViewMode)
+    ? (value as DiffViewMode)
+    : (DEFAULT_CONFIG.diffViewMode as DiffViewMode);
+}
+
 /**
  * Load extension configuration
  */
@@ -180,6 +196,9 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
   if (overrides) {
     config = { ...config, ...overrides };
   }
+
+  config.diffViewMode = toDiffViewMode(config.diffViewMode);
+  config.diffSplitMinWidth = clampNumber(config.diffSplitMinWidth, 70, 240, DEFAULT_CONFIG.diffSplitMinWidth ?? 120);
 
   return config;
 }

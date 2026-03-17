@@ -6,6 +6,8 @@
   "confirmDeletes": true,
   "confirmEdits": false,
   "collapsedMaxLines": 3,
+  "diffViewMode": "auto",
+  "diffSplitMinWidth": 120,
   "readcacheReadFile": false,
   "autoSelectReadSlices": true,
   "oracleDefaultMode": "chat"

@@ -92,6 +92,9 @@ export interface RpConnection {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+export const DIFF_VIEW_MODES = ["auto", "split", "unified"] as const;
+export type DiffViewMode = (typeof DIFF_VIEW_MODES)[number];
+
 export interface RpConfig {
   // Server connection
   command?: string;
@@ -111,6 +114,8 @@ export interface RpConfig {
   
   // Display
   collapsedMaxLines?: number;      // Max lines in collapsed view (default: 15)
+  diffViewMode?: DiffViewMode;     // Diff layout mode: auto, split, unified (default: auto)
+  diffSplitMinWidth?: number;      // Minimum width before auto mode uses split diff layout (default: 120)
 
   // Optional read_file caching (pi-readcache-like behavior)
   readcacheReadFile?: boolean;     // When true, wrap read_file with hash/diff/unchanged caching (default: false)

@@ -7,6 +7,7 @@
 // - Safety guards for destructive operations
 // - Persistent window binding across sessions
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type {
@@ -46,8 +47,17 @@ import {
   fetchWindows,
   getBindingArgs,
 } from "./binding.js";
-import { renderRpOutput, prepareCollapsedView } from "./render.js";
+import {
+  createAdaptiveDiffAwareOutputComponent,
+  containsFencedDiffBlock,
+  renderRpOutput,
+  prepareCollapsedView,
+} from "./render.js";
 import { checkGuards, normalizeToolName, isNoopEdit, isEditOperation } from "./guards.js";
+import { normalizeToolResultText } from "./result-normalization.js";
+import { buildForwardedUserArgs } from "./tool-forwarding-policy.js";
+import { normalizeFileActionResult } from "./file-action-normalization.js";
+import { summarizeRpCall, summarizeRpResult } from "./presentation-summary.js";
 import { extractJsonContent, extractTextContent } from "./mcp-json.js";
 import { resolveToolName } from "./tool-names.js";
 
@@ -1631,6 +1641,12 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     renderCall(args: Record<string, unknown>, theme: Theme) {
       let text = theme.fg("toolTitle", theme.bold("rp"));
+      const summarizedCall = summarizeRpCall(args);
+
+      if (summarizedCall) {
+        text += " " + theme.fg("muted", summarizedCall);
+        return new Text(text, 0, 0);
+      }
 
       if (args.call) {
         text += " " + theme.fg("accent", String(args.call));
@@ -1671,32 +1687,66 @@ Mode priority: call > describe > search > windows > bind > status`,
       theme: Theme
     ) {
       const details = (result.details ?? {}) as Record<string, unknown>;
-      const mode = details.mode as string | undefined;
 
-      // Get text content
       const textContent = result.content
         .filter((c) => c.type === "text")
         .map((c) => c.text || "")
         .join("\n");
 
-      // Handle partial/streaming state
       if (options.isPartial) {
         return new Text(theme.fg("warning", "Running…"), 0, 0);
       }
 
-      // Handle errors (check both result.isError and details.isError)
       const isError = result.isError || details.isError;
       if (isError) {
         return new Text(theme.fg("error", "↳ " + textContent), 0, 0);
       }
 
-      // Handle raw mode
       if (details.raw) {
         return new Text(textContent, 0, 0);
       }
 
-      // Success case - apply rendering
       const successPrefix = theme.fg("success", "↳ ");
+      const collapsedMaxLines = config.collapsedMaxLines ?? 15;
+      const normalizedToolName = typeof details.tool === "string" ? normalizeToolName(details.tool) : undefined;
+      const detailsDiff = typeof details.diff === "string" ? details.diff : undefined;
+      const fileActionAction = normalizedToolName === "file_actions" && typeof details.args === "object" && details.args !== null
+        ? (details.args as Record<string, unknown>).action
+        : undefined;
+      const shouldBypassCollapsedTruncation = typeof detailsDiff === "string" && (
+        normalizedToolName === "apply_edits"
+        || (normalizedToolName === "file_actions" && (fileActionAction === "create" || fileActionAction === "delete"))
+      );
+      const useAdaptiveDiffRendering =
+        (normalizedToolName === "git" || normalizedToolName === "apply_edits" || normalizedToolName === "file_actions") &&
+        ((typeof detailsDiff === "string" && detailsDiff.trim().length > 0) || containsFencedDiffBlock(textContent));
+
+      if (useAdaptiveDiffRendering) {
+        return createAdaptiveDiffAwareOutputComponent(textContent, theme, {
+          toolName: normalizedToolName,
+          expanded: options.expanded === true,
+          collapsedMaxLines,
+          successPrefix,
+          diffText: detailsDiff,
+          diffFilePath: typeof details.filePath === "string" ? details.filePath : undefined,
+          disableCollapsedTruncation: shouldBypassCollapsedTruncation,
+          diffConfig: {
+            diffViewMode: config.diffViewMode ?? "auto",
+            diffSplitMinWidth: config.diffSplitMinWidth ?? 120,
+            addRowBgMixRatio: fileActionAction === "create" && typeof details.addRowBgMixRatio === "number"
+              ? details.addRowBgMixRatio
+              : undefined,
+            removeRowBgMixRatio: fileActionAction === "delete" && typeof details.removeRowBgMixRatio === "number"
+              ? details.removeRowBgMixRatio
+              : undefined,
+          },
+        });
+      }
+
+      const summarizedResult = summarizeRpResult(details);
+      if (!options.expanded && summarizedResult) {
+        return new Text(`${successPrefix}${summarizedResult.primary}`, 0, 0);
+      }
 
       const prefixFirstLine = (value: string, prefix: string): string => {
         if (!value) {
@@ -1709,9 +1759,6 @@ Mode priority: call > describe > search > windows > bind > status`,
         return `${prefix}${value.slice(0, idx)}${value.slice(idx)}`;
       };
 
-      const collapsedMaxLines = config.collapsedMaxLines;
-
-      // Collapsed view
       if (!options.expanded) {
         const { content, truncated, totalLines } = prepareCollapsedView(
           textContent,
@@ -1719,9 +1766,7 @@ Mode priority: call > describe > search > windows > bind > status`,
           collapsedMaxLines
         );
 
-        const maxLines = collapsedMaxLines ?? 15;
-
-        if (maxLines === 0) {
+        if (collapsedMaxLines === 0) {
           const remaining = totalLines;
           const hidden = theme.fg("muted", "(output hidden)");
           const moreText = remaining > 0 ? theme.fg("muted", `\n… (${remaining} more lines)`) : "";
@@ -1729,7 +1774,7 @@ Mode priority: call > describe > search > windows > bind > status`,
         }
 
         if (truncated) {
-          const remaining = totalLines - maxLines;
+          const remaining = totalLines - collapsedMaxLines;
           const moreText = theme.fg("muted", `\n… (${remaining} more lines)`);
           return new Text(`${prefixFirstLine(content, successPrefix)}${moreText}`, 0, 0);
         }
@@ -1737,7 +1782,6 @@ Mode priority: call > describe > search > windows > bind > status`,
         return new Text(prefixFirstLine(content, successPrefix), 0, 0);
       }
 
-      // Expanded view - full rendering
       const highlighted = renderRpOutput(textContent, theme);
       return new Text(`${successPrefix}\n${highlighted}`, 0, 0);
     },
@@ -2259,7 +2303,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text }],
-      details: { mode: "status", status: client.status, error: client.error, binding },
+      details: { mode: "status", status: client.status, error: client.error, binding, tabLabel, toolsCount: client.tools.length },
     };
   }
 
@@ -2313,7 +2357,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text }],
-      details: { mode: "bind", binding },
+      details: { mode: "bind", binding, tabLabel },
     };
   }
 
@@ -2446,12 +2490,26 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     const bypassCache = normalizedTool === "read_file" && userArgs.bypass_cache === true;
 
-    const forwardedUserArgs: Record<string, unknown> = { ...userArgs };
-    if (normalizedTool === "read_file") {
-      delete forwardedUserArgs.bypass_cache;
-    }
+    const forwardedUserArgs = buildForwardedUserArgs({
+      toolName: normalizedTool,
+      userArgs,
+      raw: params.raw,
+    });
 
     const mergedArgs = { ...forwardedUserArgs, ...bindingArgs };
+
+    const fileActionDeleteSnapshot = normalizedTool === "file_actions"
+      && userArgs.action === "delete"
+      && params.raw !== true
+      && typeof userArgs.path === "string"
+      ? (() => {
+        try {
+          return fs.readFileSync(userArgs.path, "utf8");
+        } catch {
+          return undefined;
+        }
+      })()
+      : undefined;
 
     onUpdate({
       content: [{ type: "text", text: `Calling ${tool.name}…` }],
@@ -2511,22 +2569,59 @@ Mode priority: call > describe > search > windows > bind > status`,
         .filter((c): c is { type: "text"; text: string } => c.type === "text")
         .map((c) => c.text)
         .join("\n");
+      const normalizedTextResult = result.isError
+        ? null
+        : normalizeToolResultText({
+          toolName: normalizedTool,
+          text: textContent,
+          raw: params.raw,
+        });
+      const normalizedFileActionResult = result.isError || params.raw === true
+        ? null
+        : normalizeFileActionResult({
+          action: userArgs.action,
+          path: userArgs.path,
+          content: userArgs.content,
+          deletedContent: fileActionDeleteSnapshot,
+        });
 
       // Check for noop edits
       const editNoop = isEditOperation(tool.name) && isNoopEdit(textContent);
 
       // Build response
-      const content = result.content.map((c) => {
+      type RpResponseContent =
+        | { type: "text"; text: string }
+        | { type: "image"; data: string; mimeType: string };
+
+      const content: RpResponseContent[] = result.content.map((c) => {
         if (c.type === "text") {
-          return { type: "text" as const, text: c.text };
+          return { type: "text", text: c.text };
         }
         if (c.type === "image") {
-          return { type: "image" as const, data: c.data, mimeType: c.mimeType };
+          return { type: "image", data: c.data, mimeType: c.mimeType };
         }
-        return { type: "text" as const, text: JSON.stringify(c) };
+        return { type: "text", text: JSON.stringify(c) };
       });
 
-      let responseContent = content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }];
+      const nonPrimaryContent: RpResponseContent[] = [];
+      for (const c of result.content) {
+        if (c.type === "text") {
+          continue;
+        }
+        if (c.type === "image") {
+          nonPrimaryContent.push({ type: "image", data: c.data, mimeType: c.mimeType });
+          continue;
+        }
+        nonPrimaryContent.push({ type: "text", text: JSON.stringify(c) });
+      }
+
+      let responseContent = normalizedTextResult
+        ? [{ type: "text" as const, text: normalizedTextResult.contentText }, ...nonPrimaryContent]
+        : normalizedFileActionResult?.contentText
+          ? [{ type: "text" as const, text: normalizedFileActionResult.contentText }, ...nonPrimaryContent]
+          : content.length > 0
+            ? content
+            : [{ type: "text" as const, text: "(empty result)" }];
 
       if (editNoop && !result.isError) {
         responseContent = [
@@ -2545,6 +2640,8 @@ Mode priority: call > describe > search > windows > bind > status`,
           editNoop,
           rpReadcache: rpReadcache ?? undefined,
           raw: params.raw,
+          ...(normalizedTextResult ? normalizedTextResult.details : {}),
+          ...(normalizedFileActionResult ?? {}),
         },
         isError: result.isError,
       };

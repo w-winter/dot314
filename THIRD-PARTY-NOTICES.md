@@ -102,6 +102,13 @@ text. This file provides a consolidated overview.
 - **Used in:**
   - `extensions/rewind/` (◐ modified — menu reorder)
 
+### MasuRii/pi-tool-display
+- **URL:** https://github.com/MasuRii/pi-tool-display
+- **License:** MIT (declared in package.json)
+- **Copyright:** © MasuRii
+- **Used in:**
+  - `extensions/repoprompt-mcp/` (◐ reuses its adaptive diff rendering logic)
+
 ---
 
 ## Apache 2.0 Licensed

@@ -22,7 +22,11 @@
       - On rewind or session restore, the bound tab for that session tree node is deterministically restored, or a fresh background tab is provisioned if needed
     - `/rp status` shows the currently bound tab name with a `[bound, in-focus]` or `[bound, out-of-focus]` label, plus selected file/token counts when available
     - `/rp oracle [--mode chat|plan|edit|review] ...` — send a message to RepoPrompt chat using the current selection context
-    - Output rendering: diff highlighting (`delta` if installed, honoring the user's global git/delta color config, with fallback otherwise), syntax highlighting (file reads and codemaps)
+    - Output rendering:
+      - Syntax highlighting for code blocks and codemaps
+      - Collapsed tool output summaries derived from request metadata for common non-mutating actions (`read_file`, `file_search`, `get_file_tree`, etc.)
+      - Adaptive diff rendering for `git` and `apply_edits` outputs)
+      - Token bloat prevented in the context window from outputs of `apply_edits` and `file_actions create/delete`, while their diffs are routed to Pi's `details.diff` so they are still displayed in full in the terminal
     - Safety guardrails: blocks deletes unless `allowDelete: true`, optional edit confirmation gate (`confirmEdits`)
     - Optional [Gurpartap/pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat)
     - Optional auto-selection (in the RP app, e.g. for use in RP Chat) of slices/files the agent has read; these selections are also branch-safe across `/tree` navigation and `/fork`ed sessions

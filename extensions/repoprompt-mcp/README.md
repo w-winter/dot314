@@ -20,10 +20,15 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 
 ### Output rendering
 
-- Syntax highlighting for read files' code blocks and for codemaps
-- Diff highlighting for diff blocks (`delta` when installed, honoring the user's global git/delta color config, graceful fallback otherwise)
+- Syntax highlighting for code blocks and codemaps in `read_file`, and for code blocks in outputs of `apply_edits`, `file_actions create/delete`, and `git`
+- Common non-mutating RepoPrompt actions (`read_file`, `file_search`, `get_file_tree`, `get_code_structure`, `workspace_context`, routing helpers like `manage_workspaces`, and control/discovery actions like `windows`/`bind`/`status`/`search`/`describe`) get concise request-driven call/result summaries in collapsed mode.  The call line carries intent while the result line carries outcome, so the transcript stays compact without echoing the same label twice.  These summaries are derived from the arguments Pi sent, not by parsing RepoPrompt's prose output, and unknown tools fall back to normal collapsed rendering
+<img width="270" height="936" alt="Image" src="https://github.com/user-attachments/assets/142ca6c2-c1cf-4f0b-b41b-3d52d623c78c" />
+- RepoPrompt `apply_edits` calls are forwarded with `verbose: true` by default (unless `raw: true`), while the returned diff is normalized into `details.diff` and presented to the agent as a terse summary.  The same is done for `file_actions create/delete` outputs, so you see all edited/created/deleted LOC with rich rendering but the extension prevents the context window from getting bloated by round-tripping tool I/O tokens
+- Adaptive diff rendering for RepoPrompt `git` and `apply_edits` outputs by default (`diffViewMode: "auto"` picks split, unified, compact, or summary at render time based on pane width).  This uses the active Pi theme’s `toolDiffAdded`, `toolDiffRemoved`, and `toolDiffContext` colors (typically mapped to chosen hues for green and red), and its visual design and rendering logic are indebted to [MasuRii/pi-tool-display](https://github.com/MasuRii/pi-tool-display).  Two different examples at different pane widths:
+<img width="1027" height="256" alt="horizontal" src="https://github.com/user-attachments/assets/31943d5b-475c-4254-813b-18bf9bd79d60" />
+<img width="629" height="302" alt="vertical" src="https://github.com/user-attachments/assets/fe4fc253-6bda-49e3-a37e-918244eb9e05" />
+- Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
 - Markdown-aware styling for headings and lists
-- Collapsed output by default (expand using Pi’s standard UI controls)
 
 ### Safety checks
 
@@ -103,7 +108,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 - `/rp status` — show status (connection + binding), including the currently bound tab name and a label like `[bound, in-focus]` or `[bound, out-of-focus]`, plus current selected file counts and estimated token counts
 
 <p align="center">
-  <img width="120" alt="status" src="https://github.com/user-attachments/assets/d05977a2-4ed8-4749-bc70-84a7ea4c82ee" />
+  <img width="210" alt="status" src="https://github.com/user-attachments/assets/bd59af9e-7df1-4572-8baf-edb6f8f7a0df" />
 </p>
 
 - `/rp windows` — list available RepoPrompt windows
@@ -184,11 +189,13 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
   "oracleDefaultMode": "chat",
 
   "collapsedMaxLines": 3,
+  "diffViewMode": "auto",
+  "diffSplitMinWidth": 120,
   "suppressHostDisconnectedLog": true
 }
 ```
 
-`collapsedMaxLines` controls how many lines of RepoPrompt tool output Pi shows before the result is expanded. This applies to the collapsed preview for all `rp(...)` calls, including commands like window listings and file reads.  **Recommended setting for maximally compressed** but still informative output: `3`.
+`collapsedMaxLines` controls how many rendered lines of RepoPrompt tool output Pi shows before the result is expanded for the generic fallback path.  In addition, the extension now emits hand-authored one-line or two-line collapsed summaries for common non-mutating actions like `read_file`, `file_search`, `get_file_tree`, `get_code_structure`, `workspace_context`, `windows`, `bind`, and `status`; these are derived from Pi's own request metadata rather than RepoPrompt's returned prose.  Unknown or unsupported tools still fall back to the normal `collapsedMaxLines` behavior.  LOC-changing operations are the other exception: verbose RepoPrompt `apply_edits` and rendered `file_actions create/delete` results ignore `collapsedMaxLines` once normalized into `details.diff`, so the full rendered code changes remain visible.
 
 Options:
 
@@ -204,10 +211,12 @@ Options:
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
 | `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `chat_send` (or a manually created chat in the RP app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
 | `oracleDefaultMode` | `"chat"` | Default mode for `/rp oracle` when `--mode` is omitted (`chat`, `plan`, `edit`, or `review`) |
-| `collapsedMaxLines` | `15` | Lines shown in collapsed view |
+| `collapsedMaxLines` | `3` | Lines shown in collapsed view |
+| `diffViewMode` | `"auto"` | Diff layout for RepoPrompt `git` / `apply_edits` fenced diff output (`auto`, `split`, `unified`) |
+| `diffSplitMinWidth` | `120` | Minimum render width before `diffViewMode: "auto"` uses split diff layout |
 | `suppressHostDisconnectedLog` | `true` | Filter noisy stderr from macOS `repoprompt-mcp` (disconnect/retry bootstrap logs) |
 
-Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface.
+Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 
 Note: when `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under
 `<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded,
