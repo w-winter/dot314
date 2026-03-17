@@ -5,7 +5,7 @@
 These instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.
 
 RepoPrompt MCP is the default for repo-scoped work. Use `rp`:
-- **Bind**: `rp({ windows: true })` → `rp({ bind: { window: N, tab: "Compose" } })`
+- **Bind**: `rp({ windows: true })` → `rp({ bind: { window: N } })`
 - **Call tools**: `rp({ call: "<tool>", args: { ... } })` (unless explicitly labeled as a Pi native tool)
 
 ### Note on native tool disablement (rp-tools-lock)
@@ -17,11 +17,12 @@ In some sessions, Pi may automatically disable the native repo-file tools (`read
 RepoPrompt (macOS app) organizes state as:
 - **Workspaces** → one or more root folders
 - **Windows** → each shows one workspace
-- **Compose tabs** → each tab has a prompt + file selection (selection is what chat/review sees)
+- **Tabs** → each tab has its own prompt + file selection; selections, slices, and codemaps are tab-scoped
+- **Chats** → each chat lives inside a tab and uses that tab's selected context
 
-MCP tools operate directly against this state, but in Pi you invoke them through `rp`. Bind to a specific window (and optionally a compose tab) with `rp({ bind: { window: N, tab: "Compose" } })`, then call tools via `rp({ call: "<tool>", args: { ... } })`.
+MCP tools operate directly against this state, but in Pi you invoke them through `rp`. Bind to the correct window with `rp({ bind: { window: N } })`, then call tools via `rp({ call: "<tool>", args: { ... } })`.
 
-**Mandatory routing check:** Do not infer availability of any repo of interest from workspace/window titles; workspaces may have more roots available than the title implies. Before any repo-scoped work, confirm the target repo/root is (or isn’t) present by checking workspace roots (e.g. `get_file_tree`). If it’s not confirmed, pause and resolve routing (bind the right window/tab or open the repo).
+**Mandatory routing check:** Do not infer availability of any repo of interest from workspace/window titles; workspaces may have more roots available than the title implies. Before any repo-scoped work, confirm the target repo/root is (or isn't) present by checking workspace roots (e.g. `get_file_tree`). If it's not confirmed, pause and resolve routing (bind the right window/tab or open the repo).
 
 ### Workspace Hygiene (Session Start Priority)
 
@@ -57,12 +58,12 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
-| Planning/review | `chat_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_name="..."]` | uses selection as context |
-| List chats | `chats action="list\|log" [chat_id="..."]` | view sessions or history |
+| Planning/review | `chat_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_name="..."]` | uses the current tab's selection as context |
+| List chats | `chats action="list\|log" [scope="workspace\|tab"] [tab_id="..."] [chat_id="..."]` | prefer `scope:"tab"` for session continuity; `log` can omit `chat_id` to read the most recent chat in scope |
 | Model presets | `list_models` | enumerate before chat_send |
 | Prompt management | `prompt op="get\|set\|append\|clear\|export\|list_presets\|select_preset"` | manage instructions |
-| Window routing | `rp({ windows: true })` then `rp({ bind: { window: N, tab: "Compose" } })` | bind before operating |
-| Workspace/tab mgmt | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|list_tabs\|select_tab"` | see workspace hygiene |
+| Window routing | `rp({ windows: true })` then `rp({ bind: { window: N } })` | if already bound and roots are correct, keep it |
+| Workspace/tab management | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|list_tabs\|select_tab\|create_tab\|close_tab"` | typically handled automatically; intervene manually only when binding is clearly wrong or the user explicitly wants a separate tab-level workspace |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | worktree support via `main`/`trunk` aliases, `@main:<branch>` |
 
@@ -81,10 +82,9 @@ Notes:
 If results look wrong, assume routing first—not tool failure.
 
 1. `rp({ windows: true })` — list available windows
-2. `rp({ bind: { window: N, tab: "Compose" } })` — bind to a window (and optionally a tab)
-3. `manage_workspaces action="list_tabs"` — see tabs in that window
-4. `manage_workspaces action="select_tab" tab="..."` — pin to a tab
-5. `get_file_tree` — confirm workspace roots
+2. If `rp` is already bound and the needed roots are present, keep it
+3. Otherwise `rp({ bind: { window: N } })` — bind to the right window
+4. `get_file_tree` — confirm workspace roots
 
 RepoPrompt only operates within workspace root folders.
 
@@ -99,7 +99,7 @@ Runs an agent to explore the codebase and curate file selection automatically.
 - `response_type="plan"`: Generates implementation plan, returns `chat_id`
 - `response_type="review"`: Generates a code review with git diff context, returns `chat_id`
 
-Use returned `chat_id` with `chat_send new_chat=false chat_id="..."` for followup.
+Use returned `chat_id` with `chat_send new_chat=false chat_id="..."` for followup. If you need to inspect or recover that thread, prefer `chats action:"log" scope:"tab"` so you stay inside the current tab's history instead of drifting to another tab or workspace-level chat.
 
 Token-costly—invoke explicitly when user requests or during planning phases, not automatically.
 
@@ -108,7 +108,7 @@ Token-costly—invoke explicitly when user requests or during planning phases, n
 `read_file` may return `[readcache: ...]` markers/diffs on repeat reads.
 
 Rules:
-- Don’t use `raw: true` (Pi wrapper flag) unless debugging; it disables readcache/rendering
+- Don't use `raw: true` (Pi wrapper flag) unless debugging; it disables readcache/rendering
 - Need full content? rerun `read_file` with `bypass_cache: true`
 - In cases of multi-root ambiguity: use absolute or specific relative paths (MCP `read_file` has no `RootName:rel/path` disambiguation)
 
@@ -124,7 +124,7 @@ Rules:
 When the task involves a repository, use `rp` as your toolkit for exploration, reading, editing, and file operations.
 
 1. `rp({ windows: true })`
-2. `rp({ bind: { window: N, tab: "Compose" } })`
+2. If already bound and roots are correct, keep it; otherwise `rp({ bind: { window: N } })`
 3. Then use `get_file_tree`, `file_search`, `read_file`, `apply_edits`
 
 Use Pi-native `ls/find/grep/read/edit/write` only when `rp` is unavailable after one retry.
