@@ -2,7 +2,7 @@
 
 This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools to Pi, includes branch-safe window and tab binding (auto-detect and bind to window by `cwd`, auto-bind to safe tab, persist and restore across sessions and session tree nodes, and interactive selection of windows and tabs) and batches of read files (automatically selected as context in the RepoPrompt desktop app), renders RepoPrompt tool outputs (syntax + diff highlighting), and applies guardrails for destructive operations.
 
-The extension's window- and tab-related management features allow a workflow where new Pi sessions automatically attach to the required workspace and tab without clobbering your, or other agents', parallel usage of RepoPrompt.  Because it recovers the window, tab, and auto-selected read-files context when you rewind via `/tree` or restore a session, all the context the agent has built up (and automatically selected in the RepoPrompt app) by reading files and slices up to that point always remains available in the app for RP Chat (see `/rp oracle` below) or external "oracle" (e.g. GPT-x Pro) use cases.  **Note: this recovery currently requires the original workspace (but not necessarily its original tabs) to be open, not just any workspace containing the same required root(s).**
+The extension's window- and tab-related management features allow a workflow where new Pi sessions automatically attach to the required workspace and tab without clobbering your, or other agents', parallel usage of RepoPrompt.  Because it recovers the window, tab, and auto-selected read-files context when you rewind via `/tree` or restore a session, all the context the agent has built up (and automatically selected in the RepoPrompt app) by reading files and slices up to that point always remains available in the app for RP Chat (see `/rp oracle` below) or external "oracle" (e.g. GPT-x Pro) use cases.  Recovery is based on the required root(s) of the saved selection state, so it can reattach to any open workspace that already contains those roots rather than requiring the original workspace name; if multiple open workspaces satisfy that requirement and `cwd` does not disambiguate them, then you should re-bind with `/rp bind`.
 
 ## Installation
 
@@ -37,7 +37,7 @@ Add to `~/.pi/agent/settings.json` (or replace an existing unfiltered `git:githu
 - Auto-binds to the RepoPrompt window that matches `process.cwd()` (by workspace roots, resolving symlinks to their real paths before matching)
   - If multiple windows match, you're prompted to pick one
   - Window binding is (optionally) persisted across session reloads and session tree nodes
-- If a bound window has a completely blank tab, the extension binds to that tab; if the tab is dirty, then it provisions a new tab and binds to that
+- If a bound window has an existing tab with zero selected files and no chats, the extension binds to that tab; otherwise it provisions a new tab and binds to that
 - Deterministically reconciles the session tree node's bound tab, and can restore the tab already associated with that node or provision a new safe tab when needed
 - User-driven binding via `/rp bind` (windows) or `/rp tab` (tabs); agents can use `rp({ bind: ... })`
 - In addition to window bindings, tab bindings and auto-selected read-files context is stored and automatically recovered across node rewinds via `/tree`, different sessions (e.g., created via `/fork`), and resumed sessions
