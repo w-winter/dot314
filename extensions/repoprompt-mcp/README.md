@@ -22,11 +22,21 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 
 - Syntax highlighting for code blocks and codemaps in `read_file`, and for code blocks in outputs of `apply_edits`, `file_actions create/delete`, and `git`
 - Common non-mutating RepoPrompt actions (`read_file`, `file_search`, `get_file_tree`, `get_code_structure`, `workspace_context`, routing helpers like `manage_workspaces`, and control/discovery actions like `windows`/`bind`/`status`/`search`/`describe`) get concise request-driven call/result summaries in collapsed mode.  The call line carries intent while the result line carries outcome, so the transcript stays compact without echoing the same label twice.  These summaries are derived from the arguments Pi sent, not by parsing RepoPrompt's prose output, and unknown tools fall back to normal collapsed rendering
-<img width="270" height="936" alt="Image" src="https://github.com/user-attachments/assets/142ca6c2-c1cf-4f0b-b41b-3d52d623c78c" />
+
+<p align="center">
+  <img width="270" height="936" alt="Image" src="https://github.com/user-attachments/assets/142ca6c2-c1cf-4f0b-b41b-3d52d623c78c" />
+</p>
+
 - RepoPrompt `apply_edits` calls are forwarded with `verbose: true` by default (unless `raw: true`), while the returned diff is normalized into `details.diff` and presented to the agent as a terse summary.  The same is done for `file_actions create/delete` outputs, so you see all edited/created/deleted LOC with rich rendering but the extension prevents the context window from getting bloated by round-tripping tool I/O tokens
 - Adaptive diff rendering for RepoPrompt `git` and `apply_edits` outputs by default (`diffViewMode: "auto"` picks split, unified, compact, or summary at render time based on pane width).  This uses the active Pi theme’s `toolDiffAdded`, `toolDiffRemoved`, and `toolDiffContext` colors (typically mapped to chosen hues for green and red), and its visual design and rendering logic are indebted to [MasuRii/pi-tool-display](https://github.com/MasuRii/pi-tool-display).  Two different examples at different pane widths:
-<img width="1027" height="256" alt="horizontal" src="https://github.com/user-attachments/assets/31943d5b-475c-4254-813b-18bf9bd79d60" />
-<img width="629" height="302" alt="vertical" src="https://github.com/user-attachments/assets/fe4fc253-6bda-49e3-a37e-918244eb9e05" />
+
+<p align="center">
+  <img width="1027" height="256" alt="horizontal" src="https://github.com/user-attachments/assets/31943d5b-475c-4254-813b-18bf9bd79d60" />
+</p>
+<p align="center">
+  <img width="629" height="302" alt="vertical" src="https://github.com/user-attachments/assets/fe4fc253-6bda-49e3-a37e-918244eb9e05" />
+</p>
+
 - Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
 - Markdown-aware styling for headings and lists
 
