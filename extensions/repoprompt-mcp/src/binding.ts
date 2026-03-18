@@ -3,6 +3,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { realpathSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -521,6 +522,141 @@ function canonicalizePathForMatching(inputPath: string): string {
   } catch {
     return resolvedPath;
   }
+}
+
+async function pathExists(absolutePath: string): Promise<boolean> {
+  try {
+    await access(absolutePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseSelectionRootPath(rawPath: string): { rootHint: string; relPath: string } | null {
+  const colonIdx = rawPath.indexOf(":");
+  if (colonIdx > 0) {
+    const rootHint = rawPath.slice(0, colonIdx).trim();
+    const relPath = rawPath.slice(colonIdx + 1).replace(/^\/+/, "");
+    if (rootHint && relPath) {
+      return { rootHint, relPath };
+    }
+  }
+
+  const parts = rawPath.split(/[\\/]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      rootHint: parts[0],
+      relPath: parts.slice(1).join("/"),
+    };
+  }
+
+  return null;
+}
+
+async function windowContainsSelectionPath(window: RpWindow, selectionPath: string, cwd: string): Promise<boolean> {
+  const normalizedPath = selectionPath.trim();
+  if (!normalizedPath) {
+    return false;
+  }
+
+  if (path.isAbsolute(normalizedPath)) {
+    return window.roots.some((root) => isPathWithinRoot(normalizedPath, root));
+  }
+
+  const rootScoped = parseSelectionRootPath(normalizedPath);
+  if (rootScoped) {
+    const matchingRoots = window.roots.filter((root) => path.basename(root) === rootScoped.rootHint);
+    for (const root of matchingRoots) {
+      if (await pathExists(path.join(root, rootScoped.relPath))) {
+        return true;
+      }
+    }
+  }
+
+  const cwdRelativePath = path.resolve(cwd, normalizedPath);
+  if (await pathExists(cwdRelativePath)) {
+    return window.roots.some((root) => isPathWithinRoot(cwdRelativePath, root));
+  }
+
+  for (const root of window.roots) {
+    if (await pathExists(path.join(root, normalizedPath))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export interface FindRecoveryWindowBySelectionPathsResult {
+  window: RpWindow | null;
+  ambiguous: boolean;
+  matches: RpWindow[];
+}
+
+export async function findRecoveryWindowBySelectionPaths(
+  windows: RpWindow[],
+  selectionPaths: string[],
+  cwd: string
+): Promise<FindRecoveryWindowBySelectionPathsResult> {
+  const requiredPaths = [...new Set(selectionPaths.map((item) => item.trim()).filter(Boolean))];
+  if (requiredPaths.length === 0) {
+    return {
+      window: null,
+      ambiguous: false,
+      matches: [],
+    };
+  }
+
+  await Promise.all(
+    windows.map(async (window) => {
+      if (window.roots.length === 0) {
+        window.roots = await fetchWindowRoots(window.id);
+      }
+    })
+  );
+
+  const matches: RpWindow[] = [];
+  for (const window of windows) {
+    const compatibility = await Promise.all(
+      requiredPaths.map((selectionPath) => windowContainsSelectionPath(window, selectionPath, cwd))
+    );
+
+    if (compatibility.every(Boolean)) {
+      matches.push(window);
+    }
+  }
+
+  if (matches.length === 0) {
+    return {
+      window: null,
+      ambiguous: false,
+      matches: [],
+    };
+  }
+
+  if (matches.length === 1) {
+    return {
+      window: matches[0],
+      ambiguous: false,
+      matches,
+    };
+  }
+
+  const cwdMatch = findMatchingWindow(matches, cwd);
+  if (cwdMatch.window && !cwdMatch.ambiguous) {
+    return {
+      window: cwdMatch.window,
+      ambiguous: false,
+      matches,
+    };
+  }
+
+  return {
+    window: null,
+    ambiguous: true,
+    matches,
+  };
 }
 
 /**

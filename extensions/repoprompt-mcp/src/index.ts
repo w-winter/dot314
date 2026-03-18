@@ -45,6 +45,7 @@ import {
   ensureBindingHasTab,
   fetchWindowTabs,
   fetchWindows,
+  findRecoveryWindowBySelectionPaths,
   getBindingArgs,
 } from "./binding.js";
 import {
@@ -1035,7 +1036,13 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
   async function ensureBindingTargetsLiveWindow(
     ctx: ExtensionContext,
-    options: { provisionTab?: boolean; recoverClosedTab?: boolean; reuseSoleEmptyTab?: boolean; hasRecoverableState?: boolean } = {}
+    options: {
+      provisionTab?: boolean;
+      recoverClosedTab?: boolean;
+      reuseSoleEmptyTab?: boolean;
+      hasRecoverableState?: boolean;
+      recoveryPaths?: string[];
+    } = {}
   ): Promise<RpBinding | null> {
     const binding = getBinding();
     if (!binding) {
@@ -1067,10 +1074,12 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       }
 
       const workspaceMatches = windows.filter((w) => w.workspace === binding.workspace);
+      const rootRecovery = options.recoveryPaths && options.recoveryPaths.length > 0
+        ? await findRecoveryWindowBySelectionPaths(windows, options.recoveryPaths, ctx.cwd)
+        : { window: null, ambiguous: false, matches: [] };
+      const match = workspaceMatches.length === 1 ? workspaceMatches[0] : rootRecovery.window;
 
-      if (workspaceMatches.length === 1) {
-        const match = workspaceMatches[0];
-
+      if (match) {
         try {
           liveBinding = await bindToWindow(pi, match.id, binding.tab, config);
         } catch {
@@ -1084,6 +1093,16 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           if (workspaceMatches.length > 1) {
             ctx.ui.notify(
               `RepoPrompt: binding for workspace "${binding.workspace}" is ambiguous after restart. Re-bind with /rp bind.`,
+              "warning"
+            );
+          } else if (rootRecovery.ambiguous) {
+            ctx.ui.notify(
+              "RepoPrompt: multiple open workspaces contain this session's required roots. Re-bind with /rp bind.",
+              "warning"
+            );
+          } else if (options.recoveryPaths && options.recoveryPaths.length > 0) {
+            ctx.ui.notify(
+              "RepoPrompt: no open workspace contains this session's required roots. Re-bind with /rp bind.",
               "warning"
             );
           } else {
@@ -1124,10 +1143,12 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       ? findAutoSelectionStateInEntries(ctx.sessionManager.getBranch(), previousBinding)
       : null;
 
-    const hasRecoverableState = Boolean(previousState && autoSelectionManagedPaths(previousState).length > 0);
+    const recoveryPaths = previousState ? autoSelectionManagedPaths(previousState) : [];
+    const hasRecoverableState = recoveryPaths.length > 0;
     const binding = await ensureBindingTargetsLiveWindow(ctx, {
       ...options,
       hasRecoverableState,
+      recoveryPaths,
     });
 
     if (config.autoSelectReadSlices !== true) {
@@ -2925,28 +2946,6 @@ async function initializeExtension(
   // Notify connection
   if (ctx.hasUI) {
     ctx.ui.notify(`RepoPrompt: connected (${client.tools.length} tools)`, "info");
-  }
-
-  // Validate restored binding (if any) still exists
-  const restoredBinding = getBinding();
-  if (restoredBinding) {
-    try {
-      const windows = await fetchWindows(pi);
-      if (windows.length > 0) {
-        const stillExists = windows.some((w) => w.id === restoredBinding.windowId);
-        if (!stillExists) {
-          clearBinding();
-          if (ctx.hasUI) {
-            ctx.ui.notify(
-              `RepoPrompt: restored binding to window ${restoredBinding.windowId} no longer exists; staying unbound`,
-              "warning"
-            );
-          }
-        }
-      }
-    } catch {
-      // Non-fatal; if window listing fails we keep the restored binding
-    }
   }
 
   // Auto-detect and bind if enabled
