@@ -11,7 +11,7 @@ The extension's window- and tab-related management features allow a workflow whe
 - Auto-binds to the RepoPrompt window that matches `process.cwd()` (by workspace roots, resolving symlinks to their real paths before matching)
   - If multiple windows match, you're prompted to pick one
   - Window binding is (optionally) persisted across session reloads and session tree nodes
-- If a bound window has a completely blank tab, the extension binds to that tab; if the tab is dirty, then it provisions a new tab and binds to that
+- If a bound window has an existing tab with zero selected files and no chats, the extension binds to that tab; otherwise it provisions a new tab and binds to that
 - Deterministically reconciles the session tree node's bound tab, and can restore the tab already associated with that node or provision a new safe tab when needed
 - User-driven binding via `/rp bind` (windows) or `/rp tab` (tabs); agents can use `rp({ bind: ... })`
 - In addition to window bindings, tab bindings and auto-selected read-files context is stored and automatically recovered across node rewinds via `/tree`, different sessions (e.g., created via `/fork`), and resumed sessions

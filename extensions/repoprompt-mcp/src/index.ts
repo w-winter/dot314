@@ -570,6 +570,13 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   };
 
   let activeAutoSelectionState: AutoSelectionEntryData | null = null;
+  let autoSelectionUpdateQueue: Promise<void> = Promise.resolve();
+
+  function runAutoSelectionUpdate(task: () => Promise<void>): Promise<void> {
+    const queued = autoSelectionUpdateQueue.then(task, task);
+    autoSelectionUpdateQueue = queued.catch(() => {});
+    return queued;
+  }
 
   function sameOptionalTab(a?: string, b?: string): boolean {
     return (a ?? undefined) === (b ?? undefined);
@@ -2557,8 +2564,18 @@ Mode priority: call > describe > search > windows > bind > status`,
         ctx !== undefined;
 
       if (shouldAutoSelectRead && !result.isError) {
+        const selectionBinding = getBinding();
         try {
-          await autoSelectReadFileInRepoPromptSelection(ctx, getBinding(), pathArg, startLine, limit, bindingArgs);
+          await runAutoSelectionUpdate(async () => {
+            await autoSelectReadFileInRepoPromptSelection(
+              ctx,
+              selectionBinding,
+              pathArg,
+              startLine,
+              limit,
+              bindingArgs
+            );
+          });
         } catch {
           // Fail-open
         }

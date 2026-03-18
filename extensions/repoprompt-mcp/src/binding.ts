@@ -598,7 +598,7 @@ function stripTrailingTabStateAnnotations(name: string): string {
   }
 }
 
-function parseFileCountMaybe(value: unknown): number | undefined {
+function parseCountMaybe(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -634,7 +634,7 @@ function parseTabFromJson(raw: unknown): RpTab | null {
     name: name || idRaw.trim(),
     isActive: parseBooleanMaybe(obj.isActive ?? obj.active ?? obj.selected ?? obj.is_active ?? obj.inFocus ?? obj.in_focus),
     isBound: parseBooleanMaybe(obj.isBound ?? obj.bound ?? obj.pinned ?? obj.is_bound),
-    selectedFileCount: parseFileCountMaybe(
+    selectedFileCount: parseCountMaybe(
       obj.selectedFileCount ?? obj.selected_file_count ?? obj.fileCount ?? obj.file_count
     ),
   };
@@ -751,7 +751,7 @@ export function parseTabList(text: string): RpTab[] {
 
     const fileCountMatch = line.match(/•\s*([\d,]+)\s+files\b/i);
     if (fileCountMatch?.[1]) {
-      lastTab.selectedFileCount = parseFileCountMaybe(fileCountMatch[1]);
+      lastTab.selectedFileCount = parseCountMaybe(fileCountMatch[1]);
     }
   }
 
@@ -763,6 +763,87 @@ function parseTabsFromJson(value: unknown): RpTab[] | null {
   return tabs.length > 0 ? dedupeTabs(tabs) : null;
 }
 
+function parseChatCountFromJson(value: unknown): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+
+  if (typeof value !== "object") {
+    return undefined;
+  }
+
+  const obj = value as Record<string, unknown>;
+  const directCount = parseCountMaybe(
+    obj.count ?? obj.chatCount ?? obj.chat_count ?? obj.total ?? obj.totalCount ?? obj.total_count
+  );
+  if (directCount !== undefined) {
+    return directCount;
+  }
+
+  for (const key of ["chats", "sessions", "items", "results"]) {
+    const candidate = obj[key];
+    if (Array.isArray(candidate)) {
+      return candidate.length;
+    }
+  }
+
+  return undefined;
+}
+
+function parseChatCountFromText(text: string): number | undefined {
+  const countMatch = text.match(/\bCount\b[^\d]*([\d,]+)/i);
+  if (countMatch?.[1]) {
+    return parseCountMaybe(countMatch[1]);
+  }
+
+  if (/\bNo chats\b/i.test(text)) {
+    return 0;
+  }
+
+  const sessionCount = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^•\s*\[[^\]]+\]/.test(line)).length;
+
+  return sessionCount > 0 ? sessionCount : undefined;
+}
+
+async function fetchTabChatCount(
+  tabId: string,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<number | undefined> {
+  if (!client.isConnected) {
+    return undefined;
+  }
+
+  const chatsToolName = resolveToolName(client.tools, "chats");
+  if (!chatsToolName) {
+    return undefined;
+  }
+
+  const result = await client.callTool(chatsToolName, {
+    action: "list",
+    scope: "tab",
+    tab_id: tabId,
+    limit: 1,
+  });
+
+  if (result.isError) {
+    return undefined;
+  }
+
+  const countFromJson = parseChatCountFromJson(extractJsonContent(result.content));
+  if (countFromJson !== undefined) {
+    return countFromJson;
+  }
+
+  return parseChatCountFromText(extractTextContent(result.content));
+}
+
 function findLiveTab(tabs: RpTab[], reference: string | undefined): RpTab | null {
   if (!reference) {
     return null;
@@ -771,34 +852,48 @@ function findLiveTab(tabs: RpTab[], reference: string | undefined): RpTab | null
   return tabs.find((tab) => tab.id === reference || tab.name === reference) ?? null;
 }
 
-function findSoleEmptyTab(tabs: RpTab[]): RpTab | null {
-  if (tabs.length !== 1) {
-    return null;
+function isExplicitlyEmptyTab(tab: RpTab): boolean {
+  return tab.selectedFileCount === 0;
+}
+
+async function isSafeReusableTab(
+  tab: RpTab,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<boolean> {
+  if (!isExplicitlyEmptyTab(tab)) {
+    return false;
   }
 
-  const [tab] = tabs;
-  return tab.selectedFileCount === 0 ? tab : null;
+  const chatCount = await fetchTabChatCount(tab.id, client);
+  return chatCount === 0;
 }
 
-function findEmptyBoundTab(tabs: RpTab[]): RpTab | null {
-  return tabs.find((tab) => tab.isBound === true && tab.selectedFileCount === 0) ?? null;
-}
-
-function findReusableEmptyTab(tabs: RpTab[]): RpTab | null {
-  const emptyTabs = tabs.filter((tab) => tab.selectedFileCount === 0);
+function orderReusableEmptyTabs(tabs: RpTab[]): RpTab[] {
+  const emptyTabs = tabs.filter(isExplicitlyEmptyTab);
   if (emptyTabs.length === 0) {
-    return null;
+    return [];
   }
 
-  return (
-    emptyTabs.find((tab) => tab.isBound === true) ??
-    emptyTabs.find((tab) => tab.isActive === true) ??
-    emptyTabs[0]
-  );
+  const ordered = [
+    ...emptyTabs.filter((tab) => tab.isBound === true),
+    ...emptyTabs.filter((tab) => tab.isBound !== true && tab.isActive === true),
+    ...emptyTabs.filter((tab) => tab.isBound !== true && tab.isActive !== true),
+  ];
+
+  return ordered.filter((tab, index) => ordered.findIndex((candidate) => candidate.id === tab.id) === index);
 }
 
-function findPreferredActiveTab(tabs: RpTab[]): RpTab | null {
-  return tabs.find((tab) => tab.isActive === true && (tab.selectedFileCount ?? 0) > 0) ?? null;
+async function findReusableSafeTab(
+  tabs: RpTab[],
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<RpTab | null> {
+  for (const tab of orderReusableEmptyTabs(tabs)) {
+    if (await isSafeReusableTab(tab, client)) {
+      return tab;
+    }
+  }
+
+  return null;
 }
 
 function bindingWindowArgs(windowId: number): Record<string, unknown> {
@@ -1039,37 +1134,30 @@ export async function ensureBindingHasTab(
     return await adoptTab(unknownCurrentTab, false);
   }
 
-  if (!binding.tab) {
-    const preferredActiveTab = findPreferredActiveTab(liveTabs);
-    if (preferredActiveTab) {
-      return await adoptTab(preferredActiveTab, true);
+  const allowHistoricalTabReuse = recoverIfMissing || Boolean(binding.tab);
+  if (allowHistoricalTabReuse) {
+    const branchTabBinding =
+      findMostRecentBindingWithTabForWindow(ctx, binding.windowId) ??
+      findMostRecentAutoSelectionBindingWithTab(ctx.sessionManager.getBranch(), binding.windowId, binding.workspace);
+    const branchTab = findLiveTab(liveTabs, branchTabBinding?.tab);
+    if (branchTab) {
+      return await adoptTab(branchTab, true);
+    }
+
+    if (liveTabs.length === 0 && branchTabBinding?.tab) {
+      const unknownBranchTab: RpTab = {
+        id: branchTabBinding.tab,
+        name: branchTabBinding.tab,
+      };
+      return await adoptTab(unknownBranchTab, true);
     }
   }
 
-  const branchTabBinding =
-    findMostRecentBindingWithTabForWindow(ctx, binding.windowId) ??
-    findMostRecentAutoSelectionBindingWithTab(ctx.sessionManager.getBranch(), binding.windowId, binding.workspace);
-  const branchTab = findLiveTab(liveTabs, branchTabBinding?.tab);
-  if (branchTab) {
-    return await adoptTab(branchTab, true);
-  }
-
-  if (liveTabs.length === 0 && branchTabBinding?.tab) {
-    const unknownBranchTab: RpTab = {
-      id: branchTabBinding.tab,
-      name: branchTabBinding.tab,
-    };
-    return await adoptTab(unknownBranchTab, true);
-  }
-
-  const soleEmptyTab = findSoleEmptyTab(liveTabs);
-  if (soleEmptyTab && (reuseSoleEmptyTab || (recoverIfMissing && Boolean(binding.tab)))) {
-    return await adoptTab(soleEmptyTab, true);
-  }
-
-  const reusableEmptyTab = findReusableEmptyTab(liveTabs);
-  if (reusableEmptyTab && (!binding.tab || reuseSoleEmptyTab || recoverIfMissing)) {
-    return await adoptTab(reusableEmptyTab, true);
+  if (!binding.tab || reuseSoleEmptyTab || recoverIfMissing) {
+    const reusableSafeTab = await findReusableSafeTab(liveTabs, client);
+    if (reusableSafeTab) {
+      return await adoptTab(reusableSafeTab, true);
+    }
   }
 
   if (!createIfMissing && !(recoverIfMissing && binding.tab)) {
