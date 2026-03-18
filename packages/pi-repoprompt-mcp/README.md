@@ -50,17 +50,17 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - Common non-mutating RepoPrompt actions (`read_file`, `file_search`, `get_file_tree`, `get_code_structure`, `workspace_context`, routing helpers like `manage_workspaces`, and control/discovery actions like `windows`/`bind`/`status`/`search`/`describe`) get concise request-driven call/result summaries in collapsed mode.  The call line carries intent while the result line carries outcome, so the transcript stays compact without echoing the same label twice.  These summaries are derived from the arguments Pi sent, not by parsing RepoPrompt's prose output, and unknown tools fall back to normal collapsed rendering
 
 <p align="center">
-  <img width="270" height="936" alt="Image" src="https://github.com/user-attachments/assets/142ca6c2-c1cf-4f0b-b41b-3d52d623c78c" />
+  <img width="270" height="936" alt="Collapsed call/result summaries" src="https://raw.githubusercontent.com/w-winter/dot314/main/packages/pi-repoprompt-mcp/docs/images/collapsed-summaries.png" />
 </p>
 
 - RepoPrompt `apply_edits` calls are forwarded with `verbose: true` by default (unless `raw: true`), while the returned diff is normalized into `details.diff` and presented to the agent as a terse summary.  The same is done for `file_actions create/delete` outputs, so you see all edited/created/deleted LOC with rich rendering but the extension prevents the context window from getting bloated by round-tripping tool I/O tokens
 - Adaptive diff rendering for RepoPrompt `git` and `apply_edits` outputs by default (`diffViewMode: "auto"` picks split, unified, compact, or summary at render time based on pane width).  This uses the active Pi theme's `toolDiffAdded`, `toolDiffRemoved`, and `toolDiffContext` colors (typically mapped to chosen hues for green and red), and its visual design and rendering logic are indebted to [MasuRii/pi-tool-display](https://github.com/MasuRii/pi-tool-display).  Two different examples at different pane widths:
 
 <p align="center">
-  <img width="1027" height="256" alt="horizontal" src="https://github.com/user-attachments/assets/31943d5b-475c-4254-813b-18bf9bd79d60" />
+  <img width="1027" height="256" alt="Split diff rendering" src="https://raw.githubusercontent.com/w-winter/dot314/main/packages/pi-repoprompt-mcp/docs/images/diff-split.png" />
 </p>
 <p align="center">
-  <img width="629" height="302" alt="vertical" src="https://github.com/user-attachments/assets/fe4fc253-6bda-49e3-a37e-918244eb9e05" />
+  <img width="629" height="302" alt="Unified diff rendering" src="https://raw.githubusercontent.com/w-winter/dot314/main/packages/pi-repoprompt-mcp/docs/images/diff-unified.png" />
 </p>
 
 - Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
@@ -99,7 +99,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 - `/rp status` — show status (connection + binding), including the currently bound tab name and a label like `[bound, in-focus]` or `[bound, out-of-focus]`, plus current selected file counts and estimated token counts
 
 <p align="center">
-  <img width="210" alt="status" src="https://github.com/user-attachments/assets/bd59af9e-7df1-4572-8baf-edb6f8f7a0df" />
+  <img width="210" alt="Status display" src="https://raw.githubusercontent.com/w-winter/dot314/main/packages/pi-repoprompt-mcp/docs/images/status.png" />
 </p>
 
 - `/rp windows` — list available RepoPrompt windows
