@@ -139,9 +139,7 @@
   - Search results are shown to the user but filtered out of LLM context via the `context` hook
   - **Recommendation:** For general-purpose web search with agents, I now prefer [nicobailon/pi-web-access](https://github.com/nicobailon/pi-web-access) — it uses Gemini search which provides better indexing and returns an AI-synthesized overview alongside citations, which works better for agent workflows. `brave-search` remains useful when you specifically need individual search results with per-result previews
 
-- ● [`dedup-agents-files.ts`](dedup-agents-files.ts)
-  - Removes duplicate AGENTS.md content from the system prompt when the same file is loaded via different paths (e.g., symlinks)
-  - **Why it's here:** This repo is symlinked to `~/.pi/agent/` (as suggested in the root README). Pi loads AGENTS.md from both `agentDir` and the cwd walk, but since they resolve to the same file, the content appears twice. This extension deduplicates by resolving real paths.
+- ● `reverse-thinking.ts` - Adds backward (e.g. 'med' -> 'low') cycling movement through thinking levels via `shift+alt+tab`
 
 - ● [`iterm-tab-color.ts`](iterm-tab-color.ts)
   - Uses iTerm2 OSC tab-color sequences to color each Pi tab's background per two configurable states (`runningColor` and `notRunningColor`, for when the agent is running or not running respectively); gracefully no-ops if another terminal emulator is used
