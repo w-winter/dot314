@@ -1,16 +1,21 @@
 import { CustomEditor, type ExtensionUIContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
-import { matchesKey, type AutocompleteItem, type AutocompleteProvider, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
+import { type AutocompleteItem, type AutocompleteProvider, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
 import * as Clipboard from "@mariozechner/clipboard";
-
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { openFilePicker } from "./file-picker.js";
 import {
     findCompletionShell,
     getShellCompletions,
-    type CompletionResult,
     type ShellInfo,
 } from "./shell-completions.js";
+
+type EnhancedEditorOptions = {
+    doubleEscapeCommand: string | null;
+    canTriggerDoubleEscapeCommand: () => boolean;
+    commandRemap: Record<string, string>;
+};
+
+const DOUBLE_ESCAPE_WINDOW_MS = 500;
 
 function isAtCompletionContext(lines: string[], cursorLine: number, cursorCol: number): boolean {
     const line = lines[cursorLine] ?? "";
@@ -118,6 +123,8 @@ export class EnhancedEditor extends CustomEditor {
     private readonly tuiInstance: TUI;
     private openingPicker = false;
     private wrappedAutocompleteProvider = false;
+    private lastEscapeTime = 0;
+    private _onSubmitOriginal?: (text: string) => void;
 
     private shell: ShellInfo;
 
@@ -126,14 +133,43 @@ export class EnhancedEditor extends CustomEditor {
         theme: EditorTheme,
         keybindings: KeybindingsManager,
         private ui: ExtensionUIContext,
-        private pi: ExtensionAPI,
+        private options: EnhancedEditorOptions,
+        private keybindingsManager: KeybindingsManager = keybindings,
     ) {
         super(tui, theme, keybindings);
         this.tuiInstance = tui;
         this.shell = findCompletionShell();
 
+        // Editor declares onSubmit as a class field, so super() creates an own data
+        // property on the instance that shadows any prototype getter/setter. Replace
+        // it with an instance accessor so remapCommand intercepts all submissions.
+        Object.defineProperty(this, "onSubmit", {
+            get: (): ((text: string) => void) | undefined => {
+                const original = this._onSubmitOriginal;
+                if (!original) return undefined;
+                return (text: string) => original(this.remapCommand(text));
+            },
+            set: (fn: ((text: string) => void) | undefined) => {
+                this._onSubmitOriginal = fn;
+            },
+            configurable: true,
+            enumerable: true,
+        });
+
         // You can disable this notify if it gets annoying
         this.ui.notify(`editor-enhancements loaded (shell: ${this.shell.type})`, "info");
+    }
+
+    private remapCommand(text: string): string {
+        const trimmed = text.trimStart();
+        if (!trimmed.startsWith("/")) return text;
+
+        const match = trimmed.match(/^\/([^\s:]+)(.*)/s);
+        if (!match) return text;
+
+        const [, cmd, rest] = match;
+        const target = this.options.commandRemap[cmd!];
+        return target ? `/${target}${rest}` : text;
     }
 
     setAutocompleteProvider(provider: AutocompleteProvider): void {
@@ -176,6 +212,15 @@ export class EnhancedEditor extends CustomEditor {
     handleInput(data: string): void {
         if (this.openingPicker) return;
 
+        if (this.shouldHandleConfiguredDoubleEscape(data)) {
+            this.handleConfiguredDoubleEscape();
+            return;
+        }
+
+        if (!this.keybindingsManager.matches(data, "app.interrupt")) {
+            this.lastEscapeTime = 0;
+        }
+
         // Intercept @ at token start to open picker
         if (data === "@" && this.shouldTriggerFilePicker()) {
             this.openingPicker = true;
@@ -190,6 +235,30 @@ export class EnhancedEditor extends CustomEditor {
         }
 
         super.handleInput(data);
+    }
+
+    private shouldHandleConfiguredDoubleEscape(data: string): boolean {
+        return Boolean(
+            this.options.doubleEscapeCommand &&
+                this.keybindingsManager.matches(data, "app.interrupt") &&
+                !this.isShowingAutocomplete() &&
+                !this.getText().trim() &&
+                this.options.canTriggerDoubleEscapeCommand(),
+        );
+    }
+
+    private handleConfiguredDoubleEscape(): void {
+        const now = Date.now();
+        if (now - this.lastEscapeTime >= DOUBLE_ESCAPE_WINDOW_MS) {
+            this.lastEscapeTime = now;
+            return;
+        }
+
+        this.lastEscapeTime = 0;
+        const command = this.options.doubleEscapeCommand;
+        if (!command || !this.onSubmit) return;
+
+        this.onSubmit(`/${command}`);
     }
 
     private shouldTriggerFilePicker(): boolean {
