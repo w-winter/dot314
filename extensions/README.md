@@ -144,8 +144,12 @@
 - ● [`iterm-tab-color.ts`](iterm-tab-color.ts)
   - Uses iTerm2 OSC tab-color sequences to color each Pi tab's background per two configurable states (`runningColor` and `notRunningColor`, for when the agent is running or not running respectively); gracefully no-ops if another terminal emulator is used
 
-- ◐ [`editor-enhancements/`](editor-enhancements/)
+- ◐ [`editor-enhancements/`](editor-enhancements/) ([README](./editor-enhancements/README.md))
   - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
+  - Configurable in `editor-enhancements/config.json`:
+    - Slash command remapping (e.g. make `/tree` execute `/anycopy` instead)
+    - `doubleEscapeCommand`: optional extension command name invoked by the editor's double-escape gesture when the editor is empty and Pi is idle (for example `"anycopy"`)
+    - Only extension commands registered via `pi.registerCommand()` are supported here; native built-ins like `/tree` are still handled by Pi itself
   - Includes a merged, single-editor implementation of:
     - ◐ `file-picker` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
        - type `@` to open an overlay file browser and insert `@path` refs
@@ -169,6 +173,7 @@
 - ◐ [`files-touched.ts`](files-touched.ts) (upstream: [badlogic/pi-mono `.pi/extensions/files.ts`](https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/files.ts))
   - `/files-touched` shows files read/written/edited in the active session branch and opens the selected file in VS Code
   - This version extends the upstream original to also detect file reads/edits/writes performed through the tools of `repoprompt-mcp` and `repoprompt-cli` (`rp`, `rp_exec`) and their `read_file` / `file_actions create` / `apply_edits` actions
+  - It also normalizes relative, root-prefixed, and absolute spellings of the same file before rendering, and carries touched paths through tracked file moves
 
 - ◐ [`branch-term.ts`](branch-term.ts) (upstream: [davidgasquez/dotfiles](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts))
   - `/branch` forks the current session into a new terminal, running `pi --session <fork>`

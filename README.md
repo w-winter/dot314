@@ -110,9 +110,9 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `anycopy/` | Browse session tree with scrollable per-message/node preview and copy to clipboard any single node, or multiple selected nodes |
 | ● | `brave-search/` | Web search + content extraction. Requires `BRAVE_API_KEY`. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose agent search |
 | ● | `command-center/` | /command palette widget |
-| ◐ | `editor-enhancements/` | File picker, shell completions, raw paste |
+| ◐ | `editor-enhancements/` | File picker, shell completions, raw paste, double-esc and slash command remapping |
 | ● | `ephemeral-mode.ts` | Delete session on exit |
-| ◐ | `files-touched.ts` | Widget listing files read/edited/written, extended to also track reads/edits/writes by the tools of `repoprompt-cli` and `repoprompt-mcp` |
+| ◐ | `files-touched.ts` | Widget listing files read/edited/written, with path normalizations and tracking of reads/edits/writes by the tools of `repoprompt-cli` and `repoprompt-mcp` |
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
 | ◐ | `handover/` | Generate handover draft -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `iterm-tab-color.ts` | Two-state tab coloring (running vs. not-running) for iTerm2 |
@@ -121,7 +121,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `model-sysprompt-appendix/` | Per-model system prompt additions |
 | ● | `move-session.ts` | Move session to a different cwd |
 | ◐ | `oracle.ts` | Second opinion from alternate model |
-| ◐ | `plan-mode.ts` | Read-only planning sandbox |
+| ◐ | `plan-mode.ts` | Read-only planning sandbox with support for RepoPrompt tools |
 | ● | `poly-notify/` | Desktop / sound / Pushover notifications |
 | ● | `protect-paths.ts` | Directory protection, brew prevention, extra command gates. 🔄 Replaces the path/brew hooks from old `guardrails/`; install [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` protection + AST-based dangerous command gates |
 | ● | `repoprompt-cli/` | RepoPrompt bridge via rp-cli with syntax/diff rendering, read-cache token savings, branch-safe binding, and branch-safe auto-selection replay for read slices/files |

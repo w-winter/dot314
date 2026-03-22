@@ -12,16 +12,51 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
+import { loadConfig } from "./config.js";
 import { EnhancedEditor } from "./enhanced-editor.js";
 
+function resolveDoubleEscapeCommand(
+    pi: ExtensionAPI,
+    ctx: ExtensionContext,
+    doubleEscapeCommand: string | null,
+): string | null {
+    if (!doubleEscapeCommand) return null;
+
+    const hasMatchingExtensionCommand = pi.getCommands().some(
+        (command) => command.source === "extension" && command.name === doubleEscapeCommand,
+    );
+
+    if (hasMatchingExtensionCommand) {
+        return doubleEscapeCommand;
+    }
+
+    ctx.ui.notify(
+        `editor-enhancements: configured doubleEscapeCommand '/${doubleEscapeCommand}' is not a registered extension command`,
+        "warning",
+    );
+    return null;
+}
+
 export default function (pi: ExtensionAPI) {
+    let activeContext: ExtensionContext | null = null;
     let activeEditor: EnhancedEditor | null = null;
 
     const attachEditor = (ctx: ExtensionContext) => {
         if (!ctx.hasUI) return;
 
+        activeContext = ctx;
+        const config = loadConfig();
+        const doubleEscapeCommand = resolveDoubleEscapeCommand(pi, ctx, config.doubleEscapeCommand);
+
         ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-            activeEditor = new EnhancedEditor(tui, theme, keybindings, ctx.ui, pi);
+            activeEditor = new EnhancedEditor(tui, theme, keybindings, ctx.ui, {
+                doubleEscapeCommand,
+                canTriggerDoubleEscapeCommand: () => {
+                    if (!activeContext) return false;
+                    return activeContext.isIdle() && !activeContext.hasPendingMessages();
+                },
+                commandRemap: config.commandRemap,
+            });
             return activeEditor;
         });
     };
@@ -32,19 +67,6 @@ export default function (pi: ExtensionAPI) {
 
     pi.on("session_switch", (_event, ctx) => {
         attachEditor(ctx);
-    });
-
-    // Keep /files command (useful even if @ intercept is disabled someday)
-    pi.registerCommand("files", {
-        description: "Browse and select files to reference (inserts @refs at cursor)",
-        handler: async (_args, ctx) => {
-            if (!ctx.hasUI) return;
-            if (!activeEditor) {
-                ctx.ui.notify("Editor not ready", "warning");
-                return;
-            }
-            await activeEditor.openFilePickerAtCursor();
-        },
     });
 
     // Provide alt+v raw clipboard paste (the only raw-paste feature you wanted)

@@ -1,0 +1,7 @@
+{
+  "doubleEscapeCommand": "anycopy",
+  "commandRemap": {
+    "tree": "anycopy",
+    "resume": "switch-session"
+  }
+}
