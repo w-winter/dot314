@@ -11,9 +11,9 @@
  * - Blocks destructive bash commands while plan mode is enabled (including redirects)
  * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e, rp_exec, or rp (repoprompt-mcp)
  * - Blocks rp-cli interactive REPL (-i/--interactive) to prevent bypassing the sandbox
- * - Injects a [PLAN MODE ACTIVE] context message when enabled, and a [PLAN MODE DISABLED] message after exiting
+ * - Adds plan-mode instructions via the system prompt only while plan mode is enabled
  * - Shows a "plan" indicator in the status line when active
- * - Persists plan mode state across turns via a session entry
+ * - Persists plan mode state only when toggled (and once at startup if --plan is used)
  *
  * Usage:
  * 1. Copy this file to ~/.pi/agent/extensions/ or your project's .pi/extensions/
@@ -516,7 +516,6 @@ function isSafeCommand(command: string): boolean {
 
 export default function planModeExtension(pi: ExtensionAPI) {
 	let planModeEnabled = false;
-	let justExitedPlanMode = false;
 
 	// Register --plan CLI flag
 	pi.registerFlag("plan", {
@@ -543,7 +542,6 @@ export default function planModeExtension(pi: ExtensionAPI) {
 	}
 
 	function togglePlanMode(ctx: ExtensionContext): void {
-		const wasEnabled = planModeEnabled;
 		planModeEnabled = !planModeEnabled;
 		applyToolMode();
 
@@ -556,11 +554,6 @@ export default function planModeExtension(pi: ExtensionAPI) {
 			} else {
 				ctx.ui.notify("Plan mode disabled. Full access restored.");
 			}
-		}
-
-		// Track that we just exited plan mode so the next turn can inject an exit message
-		if (wasEnabled && !planModeEnabled) {
-			justExitedPlanMode = true;
 		}
 
 		updateStatus(ctx);
@@ -638,72 +631,29 @@ export default function planModeExtension(pi: ExtensionAPI) {
 		updateStatus(ctx);
 	});
 
-	// Filter out stale plan mode context messages from LLM context
-	// This ensures the agent only sees the CURRENT state (plan mode on/off)
+	// Filter out legacy plan-mode custom messages from older sessions so only current mode applies
 	pi.on("context", async (event) => {
-		const filtered = event.messages.filter((m) => {
-			if (m.role === "user" && Array.isArray(m.content)) {
-				// When plan mode is OFF, filter out old "ACTIVE" messages
-				if (!planModeEnabled) {
-					const hasActiveMsg = m.content.some((c) => c.type === "text" && c.text.includes("[PLAN MODE ACTIVE]"));
-					if (hasActiveMsg) {
-						return false;
-					}
-				}
-				// When plan mode is ON, filter out old "DISABLED" messages
-				if (planModeEnabled) {
-					const hasExitMsg = m.content.some((c) => c.type === "text" && c.text.includes("[PLAN MODE DISABLED]"));
-					if (hasExitMsg) {
-						return false;
-					}
-				}
-			}
-			return true;
+		const filtered = event.messages.filter((message) => {
+			const customMessage = message as { role?: string; customType?: string };
+			return !(
+				customMessage.role === "custom"
+				&& (customMessage.customType === "plan-mode-context" || customMessage.customType === "plan-mode-exit")
+			);
 		});
 
 		return { messages: filtered };
 	});
 
-	// Inject plan mode context (or exit message if just exited)
-	pi.on("before_agent_start", async () => {
-		// If we just exited plan mode, inject an exit message so the agent knows restrictions are lifted
-		if (justExitedPlanMode) {
-			justExitedPlanMode = false;
-			return {
-				message: {
-					customType: "plan-mode-exit",
-					content: `[PLAN MODE DISABLED]
-You have exited plan mode. Full tool access is now restored.
-You now have write access again. Previous plan mode restrictions no longer apply.`,
-					display: false,
-				},
-			};
-		}
-
+	// Add plan-mode instructions through the system prompt only while plan mode is active
+	pi.on("before_agent_start", async (event) => {
 		if (!planModeEnabled) {
 			return;
 		}
 
 		return {
-			message: {
-				customType: "plan-mode-context",
-				content: `[PLAN MODE ACTIVE]
-	You are in plan mode - a read-only exploration mode for safe code analysis.
+			systemPrompt: `${event.systemPrompt}
 
-	Restrictions:
-	- Do not attempt to modify files
-	- Only use the allowed read-only tools (as provided by the environment)
-	- Bash is restricted to read-only commands (unsafe commands will be blocked)
-	- rp-cli interactive REPL (-i) is blocked
-
-	Prefer RepoPrompt tools when available:
-	- If repoprompt-mcp is available, use the \`rp\` tool for RepoPrompt MCP calls (e.g. \`rp({ windows: true })\`, \`rp({ bind: { window: 1 } })\`, \`rp({ call: "read_file", args: { ... } })\`)
-	- Otherwise: use \`rp-cli -e 'windows'\` to list windows; bind with \`rp_bind\`; use \`rp_exec\` for tree/search/read/structure
-	- In plan mode, RepoPrompt write operations are blocked (including via \`rp\`): \`apply_edits\` and \`file_actions\` (and rp-cli/rp_exec equivalents)
-
-	Do NOT attempt to make changes - just describe what you would do.`,
-				display: false,
-			},
+You are in plan mode (read-only). Describe what you would change rather than making changes directly.`,
 		};
 	});
 
@@ -717,8 +667,6 @@ You now have write access again. Previous plan mode restrictions no longer apply
 		ctx: ExtensionContext,
 		options?: { preferStartFlag?: boolean },
 	): void {
-		justExitedPlanMode = false;
-
 		// Optionally force plan mode on at startup
 		if (options?.preferStartFlag && pi.getFlag("plan") === true) {
 			planModeEnabled = true;
@@ -767,8 +715,4 @@ You now have write access again. Previous plan mode restrictions no longer apply
 		applyRestoredState(ctx);
 	});
 
-	// Persist state at start of each turn
-	pi.on("turn_start", async () => {
-		persistPlanModeState();
-	});
 }
