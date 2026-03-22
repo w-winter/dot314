@@ -114,7 +114,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `ephemeral-mode.ts` | Delete session on exit |
 | ◐ | `files-touched.ts` | Widget listing files read/edited/written, with path normalizations and tracking of reads/edits/writes by the tools of `repoprompt-cli` and `repoprompt-mcp` |
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
-| ◐ | `handover/` | Generate handover draft -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
+| ◐ | `handover/` | Generate handover draft with deterministic files-touched list -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `iterm-tab-color.ts` | Two-state tab coloring (running vs. not-running) for iTerm2 |
 | ● | `md.ts` | Export full session branch or its last N turns to Markdown file, or as Markdown to clipboard |
 | ● | `model-aware-compaction/` | Per-model compaction thresholds |

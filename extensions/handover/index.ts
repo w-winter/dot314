@@ -13,8 +13,11 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { Key, matchesKey } from "@mariozechner/pi-tui";
 
+import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-touched-core.ts";
+
 const STATUS_KEY = "handover";
 const DEFAULT_AUTO_SUBMIT_SECONDS = 10;
+const HANDOVER_TITLE = "Handover message ('this session' = previous)";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 
@@ -34,18 +37,36 @@ const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
 const PROMPT_OVERRIDE_PATH = path.join(EXTENSION_DIR, "prompt.md");
 
 const DEFAULT_STYLE_GUIDE = `
-## What to include
-- **Context**: what we were trying to accomplish and why
-- **Current state**: what is implemented/working right now
-- **Key decisions & constraints**: APIs chosen, patterns to follow, gotchas
-- **Files & code hotspots**: paths and what they contain (only important ones)
-- **Open questions / risks**: unknowns, edge cases, failures encountered
-- **Next steps**: concrete, ordered checklist for continuing
+# What to include
 
-## Style
-- Be concise but high-density
-- Prefer bullets and short sections
-- Include exact file paths / commands only when they materially help
+## Brief
+≤300 tokens. Current objective, current state, most important active constraint, immediate next action.
+
+## Goal & Scope Evolution
+What the user originally asked for. How the goal shifted during the session, if it did.
+
+## Key Decisions, Rejected Paths
+What was decided during the session (do not repeat decisions from pre-session plans) and why. Equally important: what approaches were considered and abandoned, what failed, and why those paths were closed.
+
+## Surprises, Uncertainties, Fragile Areas
+What contradicted expectations about the codebase, task, or dependencies—including gotchas and edge cases discovered. What you believe but with low confidence. What areas of the code are fragile or subtly coupled in non-obvious ways. Distinguish observed facts from inferences.
+
+## Status
+What is verified-done (user confirmed or tests passing), what is implemented but unverified, what is in progress, what is blocked. Check the last several user messages for unresolved requests before marking anything done.
+
+## Continuation Logistics
+Mandatory reading: exact file paths the next agent should open first. Environment context: ports, env vars, services, deployments in use. Skills actively used. Pending human decisions or approvals.
+
+## Rehydration Targets *(optional)*
+**If applicable**: files, decisions, or topics where this summary compresses too aggressively and rehydration via session_ask or git history is advisable before acting.
+
+## Next Steps
+Concrete, ordered actions for continuing. Note dependencies between steps.
+
+# Style
+* Be concise but high-density.
+* Prefer bullets and short sections.
+* Include exact commands only when they materially help.
 `;
 
 type ExtensionConfig = {
@@ -307,8 +328,76 @@ async function loadStyleGuide(): Promise<string> {
 }
 
 type DraftGenerationResult =
-    | { ok: true; draft: string }
+    | { ok: true; draft: string; filesTouchedManifestBlock: string }
     | { ok: false; error: string };
+
+function formatManifestOperations(file: FilesTouchedEntry): string {
+    const operations: string[] = [];
+    if (file.operations.has("read")) operations.push("R");
+    if (file.operations.has("write")) operations.push("W");
+    if (file.operations.has("edit")) operations.push("E");
+    return operations.join("").padEnd(2, " ");
+}
+
+function renderFilesTouchedManifestBlock(files: FilesTouchedEntry[]): string {
+    const lines = [
+        "## Files touched",
+        "R=read, W=write, E=edit",
+        "",
+        "```text",
+    ];
+
+    if (files.length === 0) {
+        lines.push("(no tracked files)");
+    } else {
+        for (const file of files) {
+            lines.push(`${formatManifestOperations(file)} ${file.displayPath}`);
+        }
+    }
+
+    lines.push("```");
+    return lines.join("\n");
+}
+
+function stripModelAuthoredFilesTouchedTail(draft: string): string {
+    let cleaned = draft.trimEnd();
+
+    const trailingPatterns = [
+        /\n{2,}---\n{1,}Files touched in this session[^\n]*:\n{1,}```text[\s\S]*?```\s*$/i,
+        /\n{2,}#{1,6}\s+Files touched[^\n]*\n(?:[^\n]*\n)*?```text[\s\S]*?```\s*$/i,
+        /\n{2,}Files touched in this session[^\n]*:\n{1,}```text[\s\S]*?```\s*$/i,
+    ];
+
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const pattern of trailingPatterns) {
+            const next = cleaned.replace(pattern, "").trimEnd();
+            if (next !== cleaned) {
+                cleaned = next;
+                changed = true;
+            }
+        }
+    }
+
+    return cleaned;
+}
+
+function prependHandoverTitle(draft: string): string {
+    const trimmedDraft = draft.trim();
+    const titleLine = `# ${HANDOVER_TITLE}`;
+    if (!trimmedDraft) {
+        return titleLine;
+    }
+
+    return trimmedDraft.startsWith(titleLine) ? trimmedDraft : `${titleLine}\n\n${trimmedDraft}`;
+}
+
+function finalizeDraft(draft: string, manifestBlock: string): string {
+    const cleanedDraft = stripModelAuthoredFilesTouchedTail(draft);
+    const titledDraft = prependHandoverTitle(cleanedDraft);
+    return `${titledDraft.trimEnd()}\n\n${manifestBlock}`;
+}
 
 function createNonce(): string {
     return `handover-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -318,9 +407,10 @@ function buildHandoverInstructionPrompt(params: {
     purpose: string;
     styleGuide: string;
     priorCompactionsAddendum: string;
+    filesTouchedManifestBlock: string;
     nonce: string;
 }): string {
-    const { purpose, styleGuide, priorCompactionsAddendum, nonce } = params;
+    const { purpose, styleGuide, priorCompactionsAddendum, filesTouchedManifestBlock, nonce } = params;
 
     const parts: string[] = [];
 
@@ -329,14 +419,19 @@ function buildHandoverInstructionPrompt(params: {
     parts.push(`<!-- handover-nonce: ${nonce} -->`);
     parts.push("");
 
-    parts.push("You are generating a single rich handover / rehydration message for continuing this work in a NEW Pi session.");
+    parts.push("You are generating a single rich handover / rehydration message for continuing this work in a new session.");
     parts.push("");
-    parts.push("Constraints:");
-    parts.push("- Do NOT call tools");
-    parts.push("- Do NOT write any files");
-    parts.push("- Do NOT include the handover-nonce marker in your output");
-    parts.push("- Output ONLY the final handover message in markdown (no <analysis> tags, no <plan> tags)");
-    parts.push("- Make it high-signal and self-contained (assume the new session has near-zero context)");
+    parts.push("# Constraints:");
+    parts.push("- do not call tools");
+    parts.push("- do not write any files");
+    parts.push("- do not include the handover-nonce marker in your output");
+    parts.push("- output only the final handover message in markdown");
+    parts.push("- do not add a document title; the final handover will be titled by the system");
+    parts.push("- make it high-signal and self-contained; the agent reading it in the new session will have near-zero context");
+    parts.push("- use the files-touched list below as factual input; it will be appended verbatim to the final handover draft");
+    parts.push("- mention in \"Mandatory reading\" only the subset that matters for continuation; do not restate the full list");
+    parts.push("- do not add a files-touched section, files modified section, files changed section, or any other exhaustive file inventory; the system will append the authoritative list verbatim");
+    parts.push("- do not duplicate the full list in prose");
     parts.push("");
     parts.push(`# Purpose\n${purpose.trim()}`);
     parts.push("");
@@ -346,7 +441,7 @@ function buildHandoverInstructionPrompt(params: {
         parts.push("");
     }
 
-    parts.push("## Style guide (adapt as needed)");
+    parts.push(filesTouchedManifestBlock.trim());
     parts.push("");
     parts.push(styleGuide.trim());
 
@@ -495,6 +590,20 @@ async function generateHandoverDraftViaAgent(params: {
         };
     }
 
+    const branchEntries = ctx.sessionManager.getBranch();
+
+    let filesTouchedManifestBlock: string;
+    try {
+        filesTouchedManifestBlock = renderFilesTouchedManifestBlock(
+            collectFilesTouched(branchEntries, ctx.cwd),
+        );
+    } catch (error) {
+        return {
+            ok: false,
+            error: `Failed to build files-touched list: ${error instanceof Error ? error.message : String(error)}`,
+        };
+    }
+
     const beforeEntries = ctx.sessionManager.getEntries();
     const beforeEntryIds = new Set(beforeEntries.map((entry) => entry.id));
 
@@ -503,6 +612,7 @@ async function generateHandoverDraftViaAgent(params: {
         purpose,
         styleGuide,
         priorCompactionsAddendum,
+        filesTouchedManifestBlock,
         nonce,
     });
 
@@ -519,7 +629,7 @@ async function generateHandoverDraftViaAgent(params: {
         };
     }
 
-    return { ok: true, draft };
+    return { ok: true, draft, filesTouchedManifestBlock };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -661,7 +771,7 @@ export default function (pi: ExtensionAPI) {
             return;
         }
 
-        const draft = draftResult.draft;
+        const finalDraft = finalizeDraft(draftResult.draft, draftResult.filesTouchedManifestBlock);
 
         const firstUserEntryId = getFirstUserEntryId(ctx.sessionManager.getEntries());
         if (!firstUserEntryId) {
@@ -680,7 +790,7 @@ export default function (pi: ExtensionAPI) {
             return;
         }
 
-        ctx.ui.setEditorText(draft);
+        ctx.ui.setEditorText(finalDraft);
 
         const config = await loadConfig();
         if (config.autoSubmitSeconds <= 0) {
