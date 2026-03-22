@@ -1,6 +1,6 @@
 # Plan Modus for Pi (`pi-plan-modus`)
 
-Read-only exploration sandbox for Pi with RepoPrompt-aware write blocking. When enabled, the agent can only use read-only tools — native file tools, bash commands, and RepoPrompt operations (both MCP and CLI) are all restricted to safe, non-mutating access.
+Read-only exploration sandbox for Pi with RepoPrompt-aware write blocking. When enabled, plan mode removes Pi-native write tools from the active Pi tool list and blocks write-capable bash and RepoPrompt operations while leaving other available tools alone.
 
 Designed to be compatible with the [pi-repoprompt-mcp](https://www.npmjs.com/package/pi-repoprompt-mcp) and [pi-repoprompt-cli](https://www.npmjs.com/package/pi-repoprompt-cli) extensions. When any of these are active, plan mode blocks their write-capable operations (`apply_edits`, `file_actions`, file create/delete/move) while keeping read operations available.
 

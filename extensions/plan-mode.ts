@@ -2,12 +2,13 @@
  * Plan Mode Extension
  *
  * Provides a Claude Code-style "plan mode" read-only sandbox for safe code exploration.
- * When enabled, the agent can only use read-only tools and cannot modify files.
+ * When enabled, Pi-native write tools are removed from the active Pi tool list and
+ * write-capable bash/RepoPrompt operations are blocked.
  *
  * Features:
  * - /plan command (and Ctrl+Alt/Option+P shortcut) to toggle plan mode
  * - --plan flag to start in plan mode
- * - Restricts available tools to a read-only allowlist (no edit/write tools)
+ * - Removes Pi-native write tools (`edit`, `write`) from the active Pi tool list while enabled
  * - Blocks destructive bash commands while plan mode is enabled (including redirects)
  * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e, rp_exec, or rp (repoprompt-mcp)
  * - Blocks rp-cli interactive REPL (-i/--interactive) to prevent bypassing the sandbox
@@ -275,14 +276,42 @@ function analyzeBashScript(command: string): { parseError?: string; invocations:
 	}
 }
 
-// Read-only tools for plan mode
-//
-// Note: `rp` is provided by the repoprompt-mcp extension and can proxy many RepoPrompt tools.
-// In plan mode, we still allow the `rp` tool but block write-capable calls (apply_edits/file_actions)
-const PLAN_MODE_TOOLS = ["rp", "rp_bind", "rp_exec", "rp-cli", "read", "bash", "grep", "find", "ls"];
+const PLAN_MODE_DISABLED_TOOLS = ["edit", "write"] as const;
+const PLAN_MODE_DISABLED_TOOL_SET = new Set<string>(PLAN_MODE_DISABLED_TOOLS);
 
-// Full set of tools for normal mode
-const NORMAL_MODE_TOOLS = ["rp", "rp_bind", "rp_exec", "rp-cli", "read", "bash", "grep", "find", "ls", "edit", "write"];
+function removePlanModeWriteTools(toolNames: string[]): string[] {
+	return toolNames.filter((toolName) => !PLAN_MODE_DISABLED_TOOL_SET.has(toolName));
+}
+
+function restorePlanModeWriteTools(toolNames: string[], toolsBeforePlanMode: string[]): string[] {
+	const activeWithoutWrites = removePlanModeWriteTools(toolNames);
+	const remainingActiveTools = new Set(activeWithoutWrites);
+	const restored: string[] = [];
+
+	for (const toolName of toolsBeforePlanMode) {
+		if (PLAN_MODE_DISABLED_TOOL_SET.has(toolName)) {
+			restored.push(toolName);
+			continue;
+		}
+
+		if (remainingActiveTools.has(toolName)) {
+			restored.push(toolName);
+			remainingActiveTools.delete(toolName);
+		}
+	}
+
+	for (const toolName of activeWithoutWrites) {
+		if (remainingActiveTools.has(toolName)) {
+			restored.push(toolName);
+		}
+	}
+
+	return restored;
+}
+
+function toolListsMatch(current: string[], next: string[]): boolean {
+	return current.length === next.length && current.every((toolName, index) => toolName === next[index]);
+}
 
 // Patterns for destructive bash commands that should be blocked in plan mode
 const DESTRUCTIVE_PATTERNS = [
@@ -514,8 +543,14 @@ function isSafeCommand(command: string): boolean {
 	return SAFE_COMMANDS.some((pattern) => pattern.test(command));
 }
 
+type PlanModeState = {
+	enabled: boolean;
+	activeToolsBeforePlan?: string[];
+};
+
 export default function planModeExtension(pi: ExtensionAPI) {
 	let planModeEnabled = false;
+	let activeToolsBeforePlan: string[] | null = null;
 
 	// Register --plan CLI flag
 	pi.registerFlag("plan", {
@@ -525,7 +560,16 @@ export default function planModeExtension(pi: ExtensionAPI) {
 	});
 
 	function applyToolMode(): void {
-		pi.setActiveTools(planModeEnabled ? PLAN_MODE_TOOLS : NORMAL_MODE_TOOLS);
+		const currentTools = pi.getActiveTools();
+		const nextTools = planModeEnabled
+			? removePlanModeWriteTools(currentTools)
+			: activeToolsBeforePlan
+				? restorePlanModeWriteTools(currentTools, activeToolsBeforePlan)
+				: currentTools;
+
+		if (!toolListsMatch(currentTools, nextTools)) {
+			pi.setActiveTools(nextTools);
+		}
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -542,18 +586,27 @@ export default function planModeExtension(pi: ExtensionAPI) {
 	}
 
 	function togglePlanMode(ctx: ExtensionContext): void {
-		planModeEnabled = !planModeEnabled;
-		applyToolMode();
+		if (!planModeEnabled) {
+			activeToolsBeforePlan = pi.getActiveTools();
+			planModeEnabled = true;
+			applyToolMode();
+			persistPlanModeState();
 
-		// Persist immediately so /tree navigation restores the correct branch-specific state even before the next turn
+			if (ctx.hasUI) {
+				ctx.ui.notify("Plan mode enabled. Pi write tools disabled; bash and RepoPrompt writes are blocked.");
+			}
+
+			updateStatus(ctx);
+			return;
+		}
+
+		planModeEnabled = false;
+		applyToolMode();
+		activeToolsBeforePlan = null;
 		persistPlanModeState();
 
 		if (ctx.hasUI) {
-			if (planModeEnabled) {
-				ctx.ui.notify(`Plan mode enabled. Tools: ${PLAN_MODE_TOOLS.join(", ")}`);
-			} else {
-				ctx.ui.notify("Plan mode disabled. Full access restored.");
-			}
+			ctx.ui.notify("Plan mode disabled. Full access restored.");
 		}
 
 		updateStatus(ctx);
@@ -658,17 +711,28 @@ You are in plan mode (read-only). Describe what you would change rather than mak
 	});
 
 	function persistPlanModeState(): void {
-		pi.appendEntry("plan-mode", {
+		const data: PlanModeState = {
 			enabled: planModeEnabled,
-		});
+		};
+
+		if (planModeEnabled && activeToolsBeforePlan) {
+			data.activeToolsBeforePlan = [...activeToolsBeforePlan];
+		}
+
+		pi.appendEntry("plan-mode", data);
 	}
 
 	function restorePlanModeFromBranch(
 		ctx: ExtensionContext,
 		options?: { preferStartFlag?: boolean },
 	): void {
+		const previousPlanModeEnabled = planModeEnabled;
+		const previousActiveToolsBeforePlan = activeToolsBeforePlan ? [...activeToolsBeforePlan] : null;
+		activeToolsBeforePlan = null;
+
 		// Optionally force plan mode on at startup
 		if (options?.preferStartFlag && pi.getFlag("plan") === true) {
+			activeToolsBeforePlan = pi.getActiveTools();
 			planModeEnabled = true;
 			// Persist once so /tree navigation remains branch-consistent even before the first turn starts
 			persistPlanModeState();
@@ -682,15 +746,25 @@ You are in plan mode (read-only). Describe what you would change rather than mak
 				continue;
 			}
 
-			const data = entry.data as { enabled?: unknown } | undefined;
+			const data = entry.data as PlanModeState | undefined;
 			if (typeof data?.enabled === "boolean") {
 				planModeEnabled = data.enabled;
+				activeToolsBeforePlan = Array.isArray(data.activeToolsBeforePlan)
+					? data.activeToolsBeforePlan.filter((toolName): toolName is string => typeof toolName === "string")
+					: null;
 			}
+		}
+
+		if (!planModeEnabled && previousPlanModeEnabled && previousActiveToolsBeforePlan) {
+			activeToolsBeforePlan = previousActiveToolsBeforePlan;
 		}
 	}
 
 	function applyRestoredState(ctx: ExtensionContext): void {
 		applyToolMode();
+		if (!planModeEnabled) {
+			activeToolsBeforePlan = null;
+		}
 		updateStatus(ctx);
 	}
 

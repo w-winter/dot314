@@ -204,7 +204,7 @@
 - ◐ [`plan-mode.ts`](plan-mode.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - `/plan` (and `ctrl+alt+p`) toggles a read-only sandbox
   - No todo extraction or step execution prompting (planning stays on the user)
-  - Restricts tools, blocks destructive shell commands, and blocks RepoPrompt write operations
+  - Removes Pi-native write tools from the active Pi tool list, blocks destructive shell commands, and blocks RepoPrompt write operations while leaving other available tools alone
   - Adds just-bash AST-backed bash command inspection (requires `just-bash` >= 2; regex fallback if parse fails)
     - Covers `rp_exec`, `rp-cli -e ...`, and `rp` (repoprompt-mcp)
 
