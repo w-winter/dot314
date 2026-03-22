@@ -481,8 +481,8 @@ export default function (pi: ExtensionAPI) {
         options.push("Conversation only (keep current files)");
         options.push("Restore to session start (files only, keep conversation)");
       } else {
-        options.push("Restore all (files + conversation)");
         options.push("Conversation only (keep current files)");
+        options.push("Restore all (files + conversation)");
         options.push("Code only (restore files, keep conversation)");
       }
     } else {

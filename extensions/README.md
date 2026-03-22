@@ -247,7 +247,7 @@
 - ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
 
 - ◐ [`rewind/`](rewind/) (upstream: [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
-  - This version moves "Keep current files" to the first position of the "Restore Options" menu (personal preference)
+  - Per my preference, this version moves "Keep current files" to the first position of the "Restore Options" menu of `/tree`, and moves "Conversation only (keep current files)" to the first position of the "Restore Options" menu of `/fork`.
 
 ## Other extensions in this folder
 
