@@ -1,7 +1,7 @@
 {
   "name": "pi-anycopy",
-  "version": "0.1.4",
-  "description": "Copy any single message, or multiple selected messages, from the session tree, with scrollable message preview",
+  "version": "0.2.0",
+  "description": "Pi's /tree with a live syntax-highlighted preview and ability to copy any node(s) to the clipboard",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
   "repository": {
@@ -28,6 +28,7 @@
   "dot314Prepack": {
     "copy": [
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
+      { "from": "../../extensions/anycopy/enter-navigation.ts", "to": "extensions/anycopy/enter-navigation.ts" },
       { "from": "../../extensions/anycopy/config.json", "to": "extensions/anycopy/config.json" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ],

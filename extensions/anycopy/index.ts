@@ -13,7 +13,7 @@
  *   Esc       - close
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@mariozechner/pi-coding-agent";
 import {
 	copyToClipboard,
 	getLanguageFromPath,
@@ -26,8 +26,11 @@ import { Markdown, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import type { Focusable } from "@mariozechner/pi-tui";
 
 import { existsSync, readFileSync } from "fs";
+import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+
+import { runAnycopyEnterNavigation } from "./enter-navigation.ts";
 
 type SessionTreeNode = {
 	entry: SessionEntry;
@@ -48,15 +51,19 @@ type anycopyKeyConfig = {
 type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
 type anycopyConfig = {
-	shortcut?: string | null;
 	keys?: Partial<anycopyKeyConfig>;
 	treeFilterMode?: TreeFilterMode;
 };
 
 type anycopyRuntimeConfig = {
-	shortcut: string | null;
 	keys: anycopyKeyConfig;
 	treeFilterMode: TreeFilterMode;
+};
+
+type BranchSummarySettingsFile = {
+	branchSummary?: {
+		skipPrompt?: boolean;
+	};
 };
 
 const DEFAULT_KEYS: anycopyKeyConfig = {
@@ -70,7 +77,6 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 };
 
 const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
-const DEFAULT_SHORTCUT = "ctrl+`";
 
 const getExtensionDir = (): string => {
 	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -78,11 +84,32 @@ const getExtensionDir = (): string => {
 	return dirname(fileURLToPath(import.meta.url));
 };
 
+const getAgentDir = (): string => process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+
+const readJsonFile = <T>(path: string): T | undefined => {
+	if (!existsSync(path)) return undefined;
+
+	try {
+		return JSON.parse(readFileSync(path, "utf8")) as T;
+	} catch {
+		return undefined;
+	}
+};
+
+const loadBranchSummarySkipPrompt = (cwd: string): boolean => {
+	const globalSettings = readJsonFile<BranchSummarySettingsFile>(join(getAgentDir(), "settings.json"));
+	const projectSettings = readJsonFile<BranchSummarySettingsFile>(join(cwd, ".pi", "settings.json"));
+	const projectSkipPrompt = projectSettings?.branchSummary?.skipPrompt;
+	if (typeof projectSkipPrompt === "boolean") return projectSkipPrompt;
+
+	const globalSkipPrompt = globalSettings?.branchSummary?.skipPrompt;
+	return typeof globalSkipPrompt === "boolean" ? globalSkipPrompt : false;
+};
+
 const loadConfig = (): anycopyRuntimeConfig => {
 	const configPath = join(getExtensionDir(), "config.json");
 	if (!existsSync(configPath)) {
 		return {
-			shortcut: DEFAULT_SHORTCUT,
 			keys: { ...DEFAULT_KEYS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
 		};
@@ -92,8 +119,6 @@ const loadConfig = (): anycopyRuntimeConfig => {
 		const raw = readFileSync(configPath, "utf8");
 		const parsed = JSON.parse(raw) as anycopyConfig;
 		const keys = parsed.keys ?? {};
-		const shortcut =
-			parsed.shortcut === null ? null : typeof parsed.shortcut === "string" ? parsed.shortcut : DEFAULT_SHORTCUT;
 		const treeFilterModeRaw = parsed.treeFilterMode;
 		const validTreeFilterModes: TreeFilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 		const treeFilterMode =
@@ -102,7 +127,6 @@ const loadConfig = (): anycopyRuntimeConfig => {
 				: DEFAULT_TREE_FILTER_MODE;
 
 		return {
-			shortcut,
 			keys: {
 				toggleSelect: typeof keys.toggleSelect === "string" ? keys.toggleSelect : DEFAULT_KEYS.toggleSelect,
 				copy: typeof keys.copy === "string" ? keys.copy : DEFAULT_KEYS.copy,
@@ -116,7 +140,6 @@ const loadConfig = (): anycopyRuntimeConfig => {
 		};
 	} catch {
 		return {
-			shortcut: DEFAULT_SHORTCUT,
 			keys: { ...DEFAULT_KEYS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
 		};
@@ -345,10 +368,14 @@ const buildNodeOrder = (roots: SessionTreeNode[]): Map<string, number> => {
 	return order;
 };
 
-/** Clipboard text: role:\n\ncontent\n\n---\n\nrole:\n\ncontent
+/** Clipboard text omits role prefix for a single node and includes it for multi-node copies
  * The preview pane is truncated for performance, while the clipboard copy is not
  */
 const buildClipboardText = (nodes: SessionTreeNode[]): string => {
+	if (nodes.length === 1) {
+		return getEntryContent(nodes[0]!.entry);
+	}
+
 	return nodes
 		.map((node) => {
 			const label = getEntryRoleLabel(node.entry);
@@ -377,7 +404,6 @@ class anycopyOverlay implements Focusable {
 		private getTree: () => SessionTreeNode[],
 		private nodeById: Map<string, SessionTreeNode>,
 		private keys: anycopyKeyConfig,
-		private closeShortcut: string | null,
 		private onClose: () => void,
 		private getTermHeight: () => number,
 		private requestRender: () => void,
@@ -403,10 +429,6 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
-		if (this.closeShortcut && matchesKey(data, this.closeShortcut)) {
-			this.onClose();
-			return;
-		}
 		if (matchesKey(data, this.keys.toggleSelect)) {
 			this.toggleSelectedFocusedNode();
 			return;
@@ -561,12 +583,12 @@ class anycopyOverlay implements Focusable {
 	}
 
 	private renderTreeHeaderHint(width: number): string {
-		const closeHint = this.closeShortcut ? `${formatKeyHint(this.closeShortcut)}/Esc: close` : "Esc: close";
 		const hint =
-			`   │ ${formatKeyHint(this.keys.toggleSelect)}: select` +
+			`   │ Enter: navigate` +
+			` • ${formatKeyHint(this.keys.toggleSelect)}: select` +
 			` • ${formatKeyHint(this.keys.copy)}: copy` +
 			` • ${formatKeyHint(this.keys.clear)}: clear` +
-			` • ${closeHint}`;
+			` • Esc: close`;
 		return truncateToWidth(this.theme.fg("dim", hint), width);
 	}
 
@@ -646,7 +668,7 @@ class anycopyOverlay implements Focusable {
 		const selectorLines = this.selector.render(width);
 		const headerHint = this.renderTreeHeaderHint(width);
 
-		// Inject shortcut hint near the tree header (above the list)
+		// Inject action hints near the tree header (above the list)
 		const insertAfter = Math.max(0, selectorLines.findIndex((l) => l.includes("Type to search")));
 		if (selectorLines.length > 0) {
 			const idx = insertAfter >= 0 ? insertAfter + 1 : 1;
@@ -680,11 +702,13 @@ class anycopyOverlay implements Focusable {
 
 export default function anycopyExtension(pi: ExtensionAPI) {
 	const config = loadConfig();
-	const shortcut = config.shortcut;
 	const keys = config.keys;
 	const treeFilterMode = config.treeFilterMode;
 
-	const openAnycopy = async (ctx: ExtensionContext) => {
+	const openAnycopy = async (
+		ctx: ExtensionCommandContext,
+		opts?: { initialSelectedId?: string },
+	) => {
 		if (!ctx.hasUI) return;
 
 		const initialTree = ctx.sessionManager.getTree() as SessionTreeNode[];
@@ -695,35 +719,50 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 
 		const getTree = () => ctx.sessionManager.getTree() as SessionTreeNode[];
 		const currentLeafId = ctx.sessionManager.getLeafId();
+		const skipSummaryPrompt = loadBranchSummarySkipPrompt(ctx.cwd);
 
 		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 			const termRows = tui.terminal?.rows ?? 40;
-			// Pass reduced height so tree takes ~35% of terminal (it uses floor(h/2) internally)
 			const treeTermHeight = Math.floor(termRows * 0.65);
 
 			const selector = new TreeSelectorComponent(
 				initialTree,
 				currentLeafId,
 				treeTermHeight,
-				() => {
-					// Intentionally ignore Enter: closing on Enter is counterintuitive here.
-					// Use Esc to close the overlay.
+				(entryId) => {
+					void runAnycopyEnterNavigation({
+						entryId,
+						effectiveLeafIdForNoop,
+						skipSummaryPrompt,
+						close: done,
+						reopen: (reopenOpts) => {
+							void openAnycopy(ctx, reopenOpts);
+						},
+						navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
+						ui: {
+							select: (title, options) => ctx.ui.select(title, options),
+							editor: (title) => ctx.ui.editor(title),
+							setStatus: (source, message) => ctx.ui.setStatus(source, message),
+							setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
+							notify: (message, level) => ctx.ui.notify(message, level),
+						},
+					});
 				},
 				() => done(),
 				(entryId, label) => {
 					pi.setLabel(entryId, label);
 				},
+				opts?.initialSelectedId,
+				treeFilterMode,
 			);
+			const effectiveLeafIdForNoop = selector.getTreeList().getSelectedNode()?.entry.id ?? currentLeafId;
 
-			// Build a node map once for parent traversal (toolResult → parent assistant toolCall args)
 			const nodeById = buildNodeMap(initialTree);
-
 			const overlay = new anycopyOverlay(
 				selector,
 				getTree,
 				nodeById,
 				keys,
-				shortcut,
 				() => done(),
 				() => tui.terminal?.rows ?? 40,
 				() => tui.requestRender(),
@@ -731,15 +770,6 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			);
 
 			const treeList = selector.getTreeList();
-
-			// Set initial tree filter mode (same semantics as `/tree`)
-			const rawTreeList = treeList as any;
-			if (rawTreeList && typeof rawTreeList === "object") {
-				rawTreeList.filterMode = treeFilterMode;
-				if (typeof rawTreeList.applyFilter === "function") rawTreeList.applyFilter();
-			}
-
-			// Monkey-patch render to inject checkbox markers (✓/○) into tree rows
 			const originalRender = treeList.render.bind(treeList);
 			treeList.render = (width: number) => {
 				const innerWidth = Math.max(10, width - 2);
@@ -776,7 +806,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 					if (typeof nodeId !== "string") return "  " + line;
 
 					const selected = overlay.isSelectedNode(nodeId);
-					const marker = selected ? theme.fg("success", "\u2713 ") : theme.fg("dim", "\u25CB ");
+					const marker = selected ? theme.fg("success", "✓ ") : theme.fg("dim", "○ ");
 					return marker + line;
 				});
 			};
@@ -792,13 +822,4 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			await openAnycopy(ctx);
 		},
 	});
-
-	if (shortcut) {
-		pi.registerShortcut(shortcut as any, {
-			description: "Open anycopy session tree overlay",
-			handler: async (ctx) => {
-				await openAnycopy(ctx);
-			},
-		});
-	}
 }

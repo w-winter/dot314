@@ -62,15 +62,13 @@
 </p>
 
 - ● [`anycopy/`](anycopy/) ([README](./anycopy/README.md))
-  - `/anycopy` browses the session tree with a live syntax-highlighted preview of each node's content and copies any node(s) to the clipboard
-  - `Space` select/unselect, `Shift+C` copy (selected or focused), `Shift+X` clear entire (multi-)selection, `Shift+L` label node
+  - `/anycopy` mirrors all behaviors of Pi's native `/tree` while adding a live, syntax-highlighted preview of each node's content and the ability to copy any node(s) to the clipboard
+  - `Enter` navigates to focused node (same semantics as `/tree`, including the summary chooser and `branchSummary.skipPrompt` support)
+  - `Space` select/unselect for copy, `Shift+C` copy (selected or focused), `Shift+X` clear selection, `Shift+L` label node
   - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
+  - Single-node copies use just the node's content; role prefixes are only added when copying 2+ nodes
   - Multi-selected nodes are auto-sorted chronologically (by tree position)
-  - Configurable in `anycopy/config.json`:
-    - `shortcut` (defaults to **ctrl+`**; opens the overlay without clearing the current editor draft)
-    - `keys` (overlay keybindings)
-    - `treeFilterMode` (initial filter when opening `/anycopy`; idea sourced from [lajarre](https://github.com/lajarre)'s [pi-mono/issues/1845](https://github.com/badlogic/pi-mono/issues/1845))
-  - Reoffers node labeling but is not a full `/tree` reproduction otherwise (branch switching, summarization, etc. are not included)
+  - Configurable in `anycopy/config.json`: `treeFilterMode` (initial filter mode), `keys` (overlay keybindings)
 
 <p align="center">
   <img width="450" alt="anycopy demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif" />

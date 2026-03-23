@@ -1,8 +1,6 @@
 # anycopy
 
-Browse session tree nodes with a live preview and copy any of them to the clipboard.
-
-By comparison to Pi's native `/copy` (copies only the last assistant message) and `/md` (bulk-exports the entire branch as a Markdown transcript), `/anycopy` allows you to navigate the full session tree, preview each node's content with syntax highlighting, and copy to the clipboard any node(s) from the tree.
+This extension mirrors all the behaviors of Pi's native `/tree` while adding a live, syntax-highlighting preview of each node's content and the ability to copy any node(s) to the clipboard.
 
 ## Usage
 
@@ -10,42 +8,43 @@ By comparison to Pi's native `/copy` (copies only the last assistant message) an
 /anycopy
 ```
 
-You can also open the overlay via the configurable shortcut in `config.json` without clearing the current editor draft. The default is **ctrl+`**.
-
 ## Keys
 
 Defaults (customizable in `config.json`):
 
 | Key | Action |
 |-----|--------|
-| `Space` | Select/unselect focused node |
-| `Shift+C` | Copy selected nodes (or focused node if nothing is selected) |
+| `Enter` | Navigate to the focused node (same semantics as `/tree`) |
+| `Space` | Select/unselect focused node for copy |
+| `Shift+C` | Copy selected nodes, or the focused node if nothing is selected |
 | `Shift+X` | Clear selection |
 | `Shift+L` | Label node (native tree behavior) |
 | `Shift+Up` / `Shift+Down` | Scroll node preview by line |
 | `Shift+Left` / `Shift+Right` | Page through node preview |
-| `Esc`, or configured global `shortcut` | Close |
+| `Esc` | Close |
 
 Notes:
+- `Enter` always navigates the focused node, not the marked set
+- After `Enter`, `/anycopy` offers the same summary choices as `/tree`: `No summary`, `Summarize`, and `Summarize with custom prompt`
+- If `branchSummary.skipPrompt` is `true` in Pi settings, `/anycopy` matches native `/tree` and skips the summary chooser, defaulting to no summary
+- Escaping the summary chooser reopens `/anycopy` with focus restored to the node you tried to select
+- Cancelling the custom summarization editor returns to the summary chooser
 - If no nodes are selected, `Shift+C` copies the focused node
-- When copying multiple selected nodes, they are auto-sorted chronologically (by position in the session tree), not by selection order
+- Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
+- When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
+- Space/`Shift+C` multi-select copy behavior is unchanged by navigation support
 - Label edits are persisted via `pi.setLabel(...)`
-- Despite reoffering node labeling (`/anycopy` is arguably a better UI than `/tree` to also perform this action in), this extension doesn't offer a full reproduction of `/tree`'s other features (e.g., branch switching and summarization are not included)
 
 ## Configuration
 
 Edit `~/.pi/agent/extensions/anycopy/config.json`:
 
-- `shortcut`: global shortcut that opens the `/anycopy` overlay while preserving whatever is currently in the editor
-  - default: **ctrl+`**
-  - set to `null` to disable it, or change it to another Pi key id such as `ctrl+a`
-- `treeFilterMode`: initial tree filter mode when opening `/anycopy` (idea sourced from [lajarre](https://github.com/lajarre)'s [pi-mono/issues/1845](https://github.com/badlogic/pi-mono/issues/1845))
+- `treeFilterMode`: initial tree filter mode when opening `/anycopy`; defaults to `default` to match `/tree`
   - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
-- `keys`: keybindings used inside the `/anycopy` overlay (see above)
+- `keys`: keybindings used inside the `/anycopy` overlay for copy/preview actions
 
 ```json
 {
-  "shortcut": "ctrl+`",
   "treeFilterMode": "default",
   "keys": {
     "toggleSelect": "space",
