@@ -17,7 +17,7 @@ import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-to
 
 const STATUS_KEY = "handover";
 const DEFAULT_AUTO_SUBMIT_SECONDS = 10;
-const HANDOVER_TITLE = "Handover message ('this session' = previous)";
+const HANDOVER_TITLE = "Handover message";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 
