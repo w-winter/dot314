@@ -1,9 +1,9 @@
 /**
  * Files Touched
  *
- * /files-touched command lists all files the model has read/written/edited in the active session branch by
- * native Pi tools and/or the tools of repopprompt-cli and repoprompt-mcp, coalesced by normalized path and
- * sorted newest first. Selecting a file opens it in VS Code.
+	* /files-touched command lists all files the model has read/written/edited/moved/deleted in the active
+	* session branch by native Pi tools and/or the tools of repopprompt-cli and repoprompt-mcp, coalesced by
+	* normalized path and sorted newest first. Selecting a file opens it in VS Code.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -14,7 +14,7 @@ import { collectFilesTouched, type FilesTouchedEntry } from "./_shared/files-tou
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("files-touched", {
-		description: "Show files read/written/edited in this session",
+		description: "Show files read/written/edited/moved/deleted in this session",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("No UI available", "error");
@@ -23,7 +23,7 @@ export default function (pi: ExtensionAPI) {
 
 			const files = collectFilesTouched(ctx.sessionManager.getBranch(), ctx.cwd);
 			if (files.length === 0) {
-				ctx.ui.notify("No files read/written/edited in this session", "info");
+				ctx.ui.notify("No files read/written/edited/moved/deleted in this session", "info");
 				return;
 			}
 
@@ -46,6 +46,8 @@ export default function (pi: ExtensionAPI) {
 					if (file.operations.has("read")) ops.push(theme.fg("muted", "R"));
 					if (file.operations.has("write")) ops.push(theme.fg("success", "W"));
 					if (file.operations.has("edit")) ops.push(theme.fg("warning", "E"));
+					if (file.operations.has("move")) ops.push(theme.fg("accent", "M"));
+					if (file.operations.has("delete")) ops.push(theme.fg("error", "D"));
 
 					return {
 						value: file,

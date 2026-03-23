@@ -336,13 +336,15 @@ function formatManifestOperations(file: FilesTouchedEntry): string {
     if (file.operations.has("read")) operations.push("R");
     if (file.operations.has("write")) operations.push("W");
     if (file.operations.has("edit")) operations.push("E");
+    if (file.operations.has("move")) operations.push("M");
+    if (file.operations.has("delete")) operations.push("D");
     return operations.join("").padEnd(2, " ");
 }
 
 function renderFilesTouchedManifestBlock(files: FilesTouchedEntry[]): string {
     const lines = [
         "## Files touched",
-        "R=read, W=write, E=edit",
+        "R=read, W=write, E=edit, M=move/rename, D=delete",
         "",
         "```text",
     ];

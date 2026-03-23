@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
 
-export type FileTouchOperation = "read" | "write" | "edit";
+export type FileTouchOperation = "read" | "write" | "edit" | "move" | "delete";
 
 export interface FilesTouchedEntry {
 	path: string;
@@ -444,6 +444,191 @@ function extractReadPathFromCliCommand(cmd: string): string | null {
 	return null;
 }
 
+function tokenizeShellCommand(cmd: string): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let quote: '"' | "'" | null = null;
+	let escaped = false;
+
+	const flush = () => {
+		if (current) {
+			tokens.push(current);
+			current = "";
+		}
+	};
+
+	for (let index = 0; index < cmd.length; index += 1) {
+		const char = cmd[index];
+		const next = cmd[index + 1] ?? "";
+
+		if (escaped) {
+			current += char;
+			escaped = false;
+			continue;
+		}
+
+		if (quote) {
+			if (char === "\\") {
+				escaped = true;
+				continue;
+			}
+
+			if (char === quote) {
+				quote = null;
+				continue;
+			}
+
+			current += char;
+			continue;
+		}
+
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+
+		if (/\s/.test(char)) {
+			flush();
+			continue;
+		}
+
+		if (char === ";") {
+			flush();
+			tokens.push(char);
+			continue;
+		}
+
+		if ((char === "&" || char === "|") && next === char) {
+			flush();
+			tokens.push(char + next);
+			index += 1;
+			continue;
+		}
+
+		if (char === "&" || char === "|") {
+			flush();
+			tokens.push(char);
+			continue;
+		}
+
+		current += char;
+	}
+
+	flush();
+	return tokens;
+}
+
+function splitShellCommands(cmd: string): string[][] {
+	const commands: string[][] = [];
+	let current: string[] = [];
+
+	for (const token of tokenizeShellCommand(cmd)) {
+		if (token === ";" || token === "&&" || token === "||" || token === "|" || token === "&") {
+			if (current.length > 0) {
+				commands.push(current);
+				current = [];
+			}
+			continue;
+		}
+
+		current.push(token);
+	}
+
+	if (current.length > 0) {
+		commands.push(current);
+	}
+
+	return commands;
+}
+
+function stripShellCommandWrappers(tokens: string[]): string[] {
+	let current = [...tokens];
+
+	while (current.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(current[0])) {
+		current = current.slice(1);
+	}
+
+	for (const wrapper of ["command", "env", "noglob", "sudo"]) {
+		if (current[0] !== wrapper) {
+			continue;
+		}
+
+		current = current.slice(1);
+		while (current.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(current[0])) {
+			current = current.slice(1);
+		}
+	}
+
+	return current;
+}
+
+function extractShellOperands(tokens: string[]): string[] {
+	const operands: string[] = [];
+	let allowFlags = true;
+
+	for (const token of tokens) {
+		if (allowFlags && token === "--") {
+			allowFlags = false;
+			continue;
+		}
+
+		if (allowFlags && token.startsWith("-")) {
+			continue;
+		}
+
+		operands.push(token);
+	}
+
+	return operands;
+}
+
+function parseBashActions(cmd: string): FileTrackingAction[] {
+	const actions: FileTrackingAction[] = [];
+
+	for (const tokens of splitShellCommands(cmd)) {
+		const command = stripShellCommandWrappers(tokens);
+		if (command.length === 0) {
+			continue;
+		}
+
+		if (command[0] === "git" && command[1] === "mv") {
+			const operands = extractShellOperands(command.slice(2));
+			if (operands.length === 2) {
+				actions.push({ kind: "move", from: operands[0], to: operands[1] });
+			}
+			continue;
+		}
+
+		if (command[0] === "git" && command[1] === "rm") {
+			for (const operand of extractShellOperands(command.slice(2))) {
+				actions.push({ kind: "touch", path: operand, operation: "delete" });
+			}
+			continue;
+		}
+
+		if (command[0] === "mv") {
+			const operands = extractShellOperands(command.slice(1));
+			if (operands.length === 2) {
+				actions.push({ kind: "move", from: operands[0], to: operands[1] });
+			}
+			continue;
+		}
+
+		if (command[0] === "rm" || command[0] === "trash" || command[0] === "trash-put" || command[0] === "unlink") {
+			for (const operand of extractShellOperands(command.slice(1))) {
+				actions.push({ kind: "touch", path: operand, operation: "delete" });
+			}
+		}
+	}
+
+	return actions;
+}
+
 function parseRpExecActions(cmd: string): FileTrackingAction[] {
 	const normalized = cmd.trim();
 	if (!normalized) {
@@ -470,6 +655,9 @@ function parseRpExecActions(cmd: string): FileTrackingAction[] {
 		if (action === "create" && targetPath) {
 			actions.push({ kind: "touch", path: targetPath, operation: "write" });
 		}
+		if (action === "delete" && targetPath) {
+			actions.push({ kind: "touch", path: targetPath, operation: "delete" });
+		}
 		if (action === "move" && targetPath && newPath) {
 			actions.push({ kind: "move", from: targetPath, to: newPath });
 		}
@@ -489,14 +677,32 @@ function parseRpExecActions(cmd: string): FileTrackingAction[] {
 		if (action === "create" && targetPath) {
 			actions.push({ kind: "touch", path: targetPath, operation: "write" });
 		}
+		if (action === "delete" && targetPath) {
+			actions.push({ kind: "touch", path: targetPath, operation: "delete" });
+		}
 		if (action === "move" && targetPath && newPath) {
 			actions.push({ kind: "move", from: targetPath, to: newPath });
 		}
 	}
 
-	const moveMatch = normalized.match(/\bfile\s+move\s+([^\s]+)\s+([^\s]+)/);
-	if (moveMatch) {
-		actions.push({ kind: "move", from: moveMatch[1], to: moveMatch[2] });
+	for (const command of splitShellCommands(normalized)) {
+		if (command[0] !== "file") {
+			continue;
+		}
+
+		if (command[1] === "delete") {
+			for (const operand of extractShellOperands(command.slice(2))) {
+				actions.push({ kind: "touch", path: operand, operation: "delete" });
+			}
+			continue;
+		}
+
+		if (command[1] === "move") {
+			const operands = extractShellOperands(command.slice(2));
+			if (operands.length === 2) {
+				actions.push({ kind: "move", from: operands[0], to: operands[1] });
+			}
+		}
 	}
 
 	const readPath = extractReadPathFromCliCommand(normalized);
@@ -534,6 +740,9 @@ function getTrackedToolActions(name: string, args: Record<string, unknown>): Fil
 			if (action === "create" && typeof rpArgs.path === "string") {
 				return [{ kind: "touch", path: rpArgs.path, operation: "write" }];
 			}
+			if (action === "delete" && typeof rpArgs.path === "string") {
+				return [{ kind: "touch", path: rpArgs.path, operation: "delete" }];
+			}
 			if (
 				action === "move"
 				&& typeof rpArgs.path === "string"
@@ -547,6 +756,11 @@ function getTrackedToolActions(name: string, args: Record<string, unknown>): Fil
 	if (name === "rp_exec") {
 		const cmd = typeof args.cmd === "string" ? args.cmd : "";
 		return parseRpExecActions(cmd);
+	}
+
+	if (name === "bash") {
+		const command = typeof args.command === "string" ? args.command : "";
+		return parseBashActions(command);
 	}
 
 	return [];
@@ -660,6 +874,11 @@ export function collectFilesTouched(
 		for (const action of actions) {
 			if (action.kind === "move") {
 				moves.push({ from: action.from, to: action.to });
+				touches.push({
+					path: action.to,
+					operation: "move",
+					timestamp: msg.timestamp,
+				});
 				continue;
 			}
 

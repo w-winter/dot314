@@ -105,7 +105,84 @@ test("collectFilesTouched redirects touched paths through file moves", async () 
 		assert.equal(files.length, 1);
 		assert.equal(files[0].path, `${harness.cwd}/extensions/_shared/files-touched-core.ts`);
 		assert.equal(files[0].displayPath, "extensions/_shared/files-touched-core.ts");
-		assert.deepEqual([...files[0].operations].sort(), ["edit", "read"]);
+		assert.deepEqual([...files[0].operations].sort(), ["edit", "move", "read"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks delete operations from rp file_actions", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "rp", {
+				call: "file_actions",
+				args: {
+					action: "delete",
+					path: "extensions/removed-by-rp.ts",
+				},
+			}),
+			toolResult("1", 1, "deleted"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].path, `${harness.cwd}/extensions/removed-by-rp.ts`);
+		assert.equal(files[0].displayPath, "extensions/removed-by-rp.ts");
+		assert.deepEqual([...files[0].operations], ["delete"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks delete and move operations from rp_exec commands", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "rp_exec", { cmd: "file move extensions/old-name.ts extensions/new-name.ts" }),
+			toolResult("1", 1, "moved"),
+			toolCall("2", "rp_exec", { cmd: "file delete extensions/removed.ts" }),
+			toolResult("2", 2, "deleted"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 2);
+		assert.equal(files[0].path, `${harness.cwd}/extensions/removed.ts`);
+		assert.equal(files[0].displayPath, "extensions/removed.ts");
+		assert.deepEqual([...files[0].operations], ["delete"]);
+		assert.equal(files[1].path, `${harness.cwd}/extensions/new-name.ts`);
+		assert.equal(files[1].displayPath, "extensions/new-name.ts");
+		assert.deepEqual([...files[1].operations], ["move"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks delete and move operations from bash commands", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", {
+				command: "mv extensions/from.ts extensions/to.ts && trash extensions/trashed.ts && git rm extensions/git-removed.ts",
+			}),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplayPath = new Map(files.map((file) => [file.displayPath, file]));
+
+		assert.equal(files.length, 3);
+		assert.equal(byDisplayPath.get("extensions/to.ts")?.path, `${harness.cwd}/extensions/to.ts`);
+		assert.deepEqual([...(byDisplayPath.get("extensions/to.ts")?.operations ?? [])], ["move"]);
+		assert.equal(byDisplayPath.get("extensions/trashed.ts")?.path, `${harness.cwd}/extensions/trashed.ts`);
+		assert.deepEqual([...(byDisplayPath.get("extensions/trashed.ts")?.operations ?? [])], ["delete"]);
+		assert.equal(byDisplayPath.get("extensions/git-removed.ts")?.path, `${harness.cwd}/extensions/git-removed.ts`);
+		assert.deepEqual([...(byDisplayPath.get("extensions/git-removed.ts")?.operations ?? [])], ["delete"]);
 	} finally {
 		await harness.cleanup();
 	}

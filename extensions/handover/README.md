@@ -11,7 +11,7 @@ Borrowing heavily from [pasky/pi-amplike](https://github.com/pasky/pi-amplike) a
 - **Race-hardened draft extraction**: waits for a quiescent session (`ctx.isIdle()` + `!ctx.hasPendingMessages()`), embeds a per-run nonce in the generation prompt, and extracts the assistant message following that nonce-marked user entry.
 - **Structured continuation prompt**: uses a more opinionated handover prompt that separates verified status, decisions, surprises, rejected paths, observed facts vs inferences, mandatory reading, and concrete next steps, with guardrails against exhaustive file-list restatements
 - **Compaction-history addendum**: if present in the session history, prior compaction summaries from the current session JSONL are included in an addendum.
-- **Files touched list**: deterministically computes a files-touched block from the same branch-history logic as [`files-touched`](../files-touched.ts), presents that to the handover-generating model for recall aid, and appends it to the child-session draft.
+- **Files touched list**: deterministically computes a files-touched block from the same branch-history logic as [`files-touched`](../files-touched.ts), including explicit read/write/edit/move/delete markers across native Pi tools, `rp`, and `rp_exec`, presents that to the handover-generating model for recall aid, and appends it to the child-session draft.
 - **User-editable overrides**: supports `config.json` (auto-submit countdown) and `prompt.md` (style guide) without editing TypeScript.
 - **Rewind integration (explicit + gated)**: when the `rewind` extension is installed, `handover` emits a `rewind:fork-preference` event requesting a conversation-only fork ("keep current files") for the fork it triggers.
 - **Designed to pair with `session-ask`**: because `/handover` creates a real fork (parentSession chain), the [`session-ask/`](../session-ask/) extension can (optionally, via its own config) inject a minimal "Fork lineage" hint into the system prompt after a fork, including the parent session path—so the agent can quickly call `session_ask`/`session_lineage` to consult parent history as needed.
@@ -82,7 +82,7 @@ You can start from:
 ## How it works
 
 1. Waits for the session to go quiescent, then snapshots the current branch history
-2. Builds a files-touched list from session tool-call/tool-result history using the same collector as `/files-touched`, then cleans up aliases for handover presentation
+2. Builds a files-touched list from session tool-call/tool-result history using the same collector as `/files-touched`, including explicit `R/W/E/M/D` markers and best-effort bash-derived move/delete detection, then cleans up aliases for handover presentation
 3. Builds an instruction prompt ("generate a single rich handover / rehydration message…") + style guide + that files-touched block, explicitly telling the model not to emit its own exhaustive file list or title
 4. If compactions occured: adds a small **prior-compactions addendum** (verbatim compaction summaries from the session JSONL), capped for safety
 5. Sends that prompt as a normal user message (`pi.sendUserMessage(...)`) so the current session model produces the draft
