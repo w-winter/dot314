@@ -108,6 +108,7 @@ This repo contains more resources than the package exports. When installed as a 
 |---|---|---|
 | ◐ | `agentic-compaction/` | Summarizer explores conversation as a filesystem |
 | ● | `anycopy/` | `/tree` with live syntax-highlighted preview + copy: navigate branches, summarize, label, and copy any node(s) to clipboard |
+| ◐ | `branch-term.ts` | Fork the current session into a new terminal/tab with optional model override and queued user message |
 | ● | `brave-search/` | Web search + content extraction. Requires `BRAVE_API_KEY`. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose agent search |
 | ● | `command-center/` | /command palette widget |
 | ◐ | `editor-enhancements/` | File picker, shell completions, raw paste, double-esc and slash command remapping |
