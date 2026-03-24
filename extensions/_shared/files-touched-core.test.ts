@@ -216,3 +216,325 @@ test("collectFilesTouched renders external absolute paths relative to their repo
 		await harness.cleanup();
 	}
 });
+
+test("collectFilesTouched tracks sed -i as edit (GNU form)", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "sed -i 's/old/new/g' src/config.ts" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/config.ts");
+		assert.deepEqual([...files[0].operations], ["edit"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks sed -i as edit (BSD form with empty backup)", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "sed -i '' 's/old/new/g' src/config.ts" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/config.ts");
+		assert.deepEqual([...files[0].operations], ["edit"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks sed -i with -e flag", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "sed -i -e 's/old/new/' -e 's/foo/bar/' src/config.ts src/utils.ts" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 2);
+		assert.ok(byDisplay.has("src/config.ts"));
+		assert.ok(byDisplay.has("src/utils.ts"));
+		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])], ["edit"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks cp destination as write", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "cp src/template.ts src/config.ts" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/config.ts");
+		assert.deepEqual([...files[0].operations], ["write"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks tee as write", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "echo hello | tee src/output.txt src/log.txt" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 2);
+		assert.ok(byDisplay.has("src/output.txt"));
+		assert.ok(byDisplay.has("src/log.txt"));
+		assert.deepEqual([...(byDisplay.get("src/output.txt")?.operations ?? [])], ["write"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks shell output redirections", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: 'echo "content" > src/new.ts && cat header.txt >> src/new.ts' }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 2);
+		assert.deepEqual([...(byDisplay.get("src/new.ts")?.operations ?? [])], ["write"]);
+		assert.deepEqual([...(byDisplay.get("header.txt")?.operations ?? [])], ["read"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks glued redirections like >file and >>file", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "echo hello >src/a.txt && echo world >>src/b.txt" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 2);
+		assert.ok(byDisplay.has("src/a.txt"));
+		assert.ok(byDisplay.has("src/b.txt"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched ignores redirections to /dev/null", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "some-command > /dev/null" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 0);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks touch as write", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "touch src/new-file.ts" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/new-file.ts");
+		assert.deepEqual([...files[0].operations], ["write"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks patch as edit", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "patch -p1 src/config.ts < fix.patch" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/config.ts");
+		assert.deepEqual([...files[0].operations], ["edit"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks curl -o and wget -O as write", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", {
+				command: "curl -o src/schema.json https://example.com/schema.json && wget -O src/data.csv https://example.com/data.csv",
+			}),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 2);
+		assert.ok(byDisplay.has("src/schema.json"));
+		assert.ok(byDisplay.has("src/data.csv"));
+		assert.deepEqual([...(byDisplay.get("src/schema.json")?.operations ?? [])], ["write"]);
+		assert.deepEqual([...(byDisplay.get("src/data.csv")?.operations ?? [])], ["write"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks rsync destination as write", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "rsync -av src/template/ src/output/" }),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/output");
+		assert.deepEqual([...files[0].operations], ["write"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks cat, head, and tail as read", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "cat src/config.ts" }),
+			toolResult("1", 1, "const foo = 'old';"),
+			toolCall("2", "bash", { command: "head -20 src/utils.ts" }),
+			toolResult("2", 2, "const bar = 'original';"),
+			toolCall("3", "bash", { command: "tail -5 src/header.txt" }),
+			toolResult("3", 3, "line one"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 3);
+		assert.ok(byDisplay.has("src/config.ts"));
+		assert.ok(byDisplay.has("src/utils.ts"));
+		assert.ok(byDisplay.has("src/header.txt"));
+		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])], ["read"]);
+		assert.deepEqual([...(byDisplay.get("src/utils.ts")?.operations ?? [])], ["read"]);
+		assert.deepEqual([...(byDisplay.get("src/header.txt")?.operations ?? [])], ["read"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched handles heredocs without false reads from body content", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", {
+				command: [
+					"cat <<'PATCH' > /tmp/demo.patch",
+					"--- src/config.ts",
+					"+++ src/config.ts",
+					"@@ -1 +1 @@",
+					'-const foo = "old";',
+					'+const foo = "new";',
+					"PATCH",
+					"patch src/config.ts /tmp/demo.patch",
+				].join("\n"),
+			}),
+			toolResult("1", 1, "patching file src/config.ts"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.ok(byDisplay.has("src/config.ts"), "should track patch target");
+		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])], ["edit"]);
+		assert.ok(!byDisplay.has("+++"), "should not track heredoc body tokens");
+		assert.ok(!byDisplay.has("@@"), "should not track heredoc body tokens");
+		assert.ok(!byDisplay.has("foo"), "should not track heredoc body tokens");
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched coalesces edit + read on the same file from mixed bash commands", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", { command: "cat src/config.ts" }),
+			toolResult("1", 1, "const foo = 'old';"),
+			toolCall("2", "bash", { command: "sed -i 's/old/new/g' src/config.ts" }),
+			toolResult("2", 2, "ok"),
+			toolCall("3", "bash", { command: "patch -p0 src/utils.ts < fix.patch" }),
+			toolResult("3", 3, "patching file src/utils.ts"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 2);
+		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])].sort(), ["edit", "read"]);
+		assert.deepEqual([...(byDisplay.get("src/utils.ts")?.operations ?? [])], ["edit"]);
+	} finally {
+		await harness.cleanup();
+	}
+});

@@ -587,11 +587,108 @@ function extractShellOperands(tokens: string[]): string[] {
 	return operands;
 }
 
+function isIgnoredRedirectTarget(value: string): boolean {
+	return value === "/dev/null" || value === "/dev/stderr" || value === "/dev/stdout";
+}
+
+function extractRedirectWriteTargets(tokens: string[], actions: FileTrackingAction[]): void {
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+
+		if (token === ">" || token === ">>") {
+			if (i + 1 < tokens.length && !isIgnoredRedirectTarget(tokens[i + 1])) {
+				actions.push({ kind: "touch", path: tokens[i + 1], operation: "write" });
+			}
+			i += 1;
+			continue;
+		}
+
+		if (token.startsWith(">>") && token.length > 2) {
+			const target = token.slice(2);
+			if (!isIgnoredRedirectTarget(target)) {
+				actions.push({ kind: "touch", path: target, operation: "write" });
+			}
+			continue;
+		}
+
+		if (token.startsWith(">") && token.length > 1) {
+			const target = token.slice(1);
+			if (!isIgnoredRedirectTarget(target)) {
+				actions.push({ kind: "touch", path: target, operation: "write" });
+			}
+			continue;
+		}
+	}
+}
+
+function looksLikeSedExpression(value: string): boolean {
+	return /^[sy]?\/.+\//.test(value) || /^\d+[,\d]*[acdipqs]?$/.test(value);
+}
+
+function stripRedirectTokens(tokens: string[]): string[] {
+	const result: string[] = [];
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+
+		if (token === ">" || token === ">>" || token === ">|" || token === "<") {
+			i += 1;
+			continue;
+		}
+
+		if (token === "<<" || token === "<<-" || token === "<<~") {
+			i += 1;
+			continue;
+		}
+
+		if (token.startsWith(">>") || token.startsWith(">") || token.startsWith("<<") || token.startsWith("<")) {
+			continue;
+		}
+
+		result.push(token);
+	}
+
+	return result;
+}
+
+function stripHeredocBodies(cmd: string): string {
+	const lines = cmd.split("\n");
+	const result: string[] = [];
+	let terminator: string | null = null;
+	let justClosedHeredoc = false;
+
+	for (const line of lines) {
+		if (terminator !== null) {
+			if (line.trim() === terminator) {
+				terminator = null;
+				justClosedHeredoc = true;
+			}
+			continue;
+		}
+
+		const match = line.match(/<<-?\s*(?:['"]([\w]+)['"]|([\w]+))/);
+		if (match) {
+			terminator = match[1] ?? match[2];
+		}
+
+		if (justClosedHeredoc) {
+			result.push("; " + line);
+			justClosedHeredoc = false;
+		} else {
+			result.push(line);
+		}
+	}
+
+	return result.join("\n");
+}
+
 function parseBashActions(cmd: string): FileTrackingAction[] {
 	const actions: FileTrackingAction[] = [];
 
-	for (const tokens of splitShellCommands(cmd)) {
-		const command = stripShellCommandWrappers(tokens);
+	for (const tokens of splitShellCommands(stripHeredocBodies(cmd))) {
+		extractRedirectWriteTargets(tokens, actions);
+
+		const command = stripShellCommandWrappers(stripRedirectTokens(tokens));
 		if (command.length === 0) {
 			continue;
 		}
@@ -623,6 +720,78 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 			for (const operand of extractShellOperands(command.slice(1))) {
 				actions.push({ kind: "touch", path: operand, operation: "delete" });
 			}
+			continue;
+		}
+
+		if (command[0] === "sed") {
+			if (command.some((t) => /^-[a-z]*i/.test(t))) {
+				const hasExplicitExpr = command.some((t) => t === "-e" || t === "-f");
+				const operands = extractShellOperands(command.slice(1));
+				const fileOperands = hasExplicitExpr ? operands : operands.slice(1);
+				for (const operand of fileOperands) {
+					if (!looksLikeSedExpression(operand)) {
+						actions.push({ kind: "touch", path: operand, operation: "edit" });
+					}
+				}
+			}
+			continue;
+		}
+
+		if (command[0] === "cp" || command[0] === "rsync") {
+			const operands = extractShellOperands(command.slice(1));
+			if (operands.length >= 2) {
+				actions.push({ kind: "touch", path: operands[operands.length - 1], operation: "write" });
+			}
+			continue;
+		}
+
+		if (command[0] === "tee") {
+			for (const operand of extractShellOperands(command.slice(1))) {
+				actions.push({ kind: "touch", path: operand, operation: "write" });
+			}
+			continue;
+		}
+
+		if (command[0] === "touch") {
+			for (const operand of extractShellOperands(command.slice(1))) {
+				actions.push({ kind: "touch", path: operand, operation: "write" });
+			}
+			continue;
+		}
+
+		if (command[0] === "patch") {
+			const operands = extractShellOperands(command.slice(1));
+			if (operands.length >= 1) {
+				actions.push({ kind: "touch", path: operands[0], operation: "edit" });
+			}
+			continue;
+		}
+
+		if (command[0] === "curl") {
+			for (let i = 1; i < command.length; i++) {
+				if ((command[i] === "-o" || command[i] === "--output") && i + 1 < command.length) {
+					actions.push({ kind: "touch", path: command[i + 1], operation: "write" });
+					break;
+				}
+			}
+			continue;
+		}
+
+		if (command[0] === "wget") {
+			for (let i = 1; i < command.length; i++) {
+				if ((command[i] === "-O" || command[i] === "--output-document") && i + 1 < command.length) {
+					actions.push({ kind: "touch", path: command[i + 1], operation: "write" });
+					break;
+				}
+			}
+			continue;
+		}
+
+		if (command[0] === "cat" || command[0] === "head" || command[0] === "tail") {
+			for (const operand of extractShellOperands(command.slice(1))) {
+				actions.push({ kind: "touch", path: operand, operation: "read" });
+			}
+			continue;
 		}
 	}
 

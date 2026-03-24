@@ -113,7 +113,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `command-center/` | /command palette widget |
 | ◐ | `editor-enhancements/` | File picker, shell completions, raw paste, double-esc and slash command remapping |
 | ● | `ephemeral-mode.ts` | Delete session on exit |
-| ◐ | `files-touched.ts` | Widget listing files read/edited/written, with path normalizations and tracking of reads/edits/writes by the tools of `repoprompt-cli` and `repoprompt-mcp` |
+| ◐ | `files-touched.ts` | Widget listing files read/edited/written, with path normalizations, tracking of reads/edits/writes by Pi native tools, `repoprompt-cli`, `repoprompt-mcp`, and bash-level file operations |
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
 | ◐ | `handover/` | Generate handover draft with deterministic files-touched list -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `iterm-tab-color.ts` | Two-state tab coloring (running vs. not-running) for iTerm2 |
