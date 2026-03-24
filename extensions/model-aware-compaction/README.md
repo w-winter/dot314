@@ -1,6 +1,6 @@
 # model-aware-compaction
 
-Triggers Pi's built-in auto-compaction at configurable, model-specific context-usage thresholds expressed in **percentages** of each model's available context window rather than tokens.  Why?  Because models have different context window sizes, and they also vary in their performance ("dumb zone" encroachment) at the same % of window utilized.
+Triggers Pi's compaction pipeline at configurable, model-specific context-usage thresholds expressed in **percentages** of each model's available context window rather than tokens.  Why?  Because models have different context window sizes, and they also vary in their performance ("dumb zone" encroachment) at the same % of window utilized.
 
 ## Requirements
 
@@ -12,7 +12,7 @@ Triggers Pi's built-in auto-compaction at configurable, model-specific context-u
 
 Set in `~/.pi/agent/settings.json`.
 
-This extension is compatible with extensions that customize compaction summaries (e.g. `agentic-compaction` via `session_before_compact`), since it uses Pi's normal compaction pipeline rather than calling `ctx.compact()`.
+This extension is compatible with extensions that customize compaction summaries via `session_before_compact`.  It only decides **when** Pi enters the normal compaction pipeline; whichever implementation ultimately owns `session_before_compact` then decides **what summary gets written**.
 
 ## Configuration
 
@@ -64,8 +64,9 @@ Pi checks whether to auto-compact after each agent run (`agent_end`), using the 
 When this extension detects that a model-specific threshold has been exceeded, it inflates that usage value above the context window.  Pi's `_checkCompaction()` then fires its normal pipeline:
 
 1. "Auto-compacting…" loader
-2. Compaction + summary message
-3. Automatic flush of messages queued during compaction
+2. Pi prepares compaction as usual
+3. Stock compaction or any installed `session_before_compact` override generates the summary
+4. Automatic flush of messages queued during compaction
 
 The inflated usage is ephemeral — compaction rebuilds agent messages from the session file, so the mutation doesn't persist.
 

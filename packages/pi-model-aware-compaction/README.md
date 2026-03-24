@@ -1,8 +1,8 @@
 # Model-Aware Compaction for Pi (`pi-model-aware-compaction`)
 
-Per-model context-usage thresholds for Pi's built-in auto-compaction, because different models have different context windows and different performance profiles near their context window limits.
+Per-model context-usage thresholds for Pi's compaction pipeline, because different models have different context windows and different performance profiles near their context window limits.
 
-This extension nudges Pi's native compaction pipeline at configurable percent-used thresholds, preserving the full built-in UX (loader, summary message, queued-message flush).
+This extension nudges Pi's native compaction pipeline at configurable percent-used thresholds, preserving the full built-in UX (loader, queued-message flush, and whichever compaction summary implementation ultimately handles `session_before_compact`).
 
 ## Install
 
@@ -36,7 +36,7 @@ Pi auto-compaction must be enabled in `~/.pi/agent/settings.json`:
 { "compaction": { "enabled": true } }
 ```
 
-Compatible with compaction-summary extensions (e.g. `pi-agentic-compaction` via `session_before_compact`), since it triggers Pi's normal compaction pipeline rather than calling `ctx.compact()` directly.
+Compatible with compaction-summary extensions that hook `session_before_compact`, since it triggers Pi's normal compaction pipeline rather than calling `ctx.compact()` directly.  Said differently, this package decides **when** compaction starts; stock Pi or your summary extension decides **what summary gets written**.
 
 ## Configuration
 
@@ -76,5 +76,7 @@ Pi's own auto-compaction triggers when `usedTokens > contextWindow - reserveToke
 ## How it works
 
 After each agent run, the extension checks context usage against the model-specific threshold. When exceeded, it inflates the last assistant message's `usage.totalTokens` past the context window size, causing Pi's `_checkCompaction()` to fire its normal pipeline. The inflated value is ephemeral — compaction rebuilds messages from the session file.
+
+That normal pipeline still prepares compaction the usual way, then either stock Pi or any installed `session_before_compact` override produces the actual summary entry.
 
 This approach preserves the full native compaction UX (loader, summary, queued-message flush) that would be lost by calling `ctx.compact()` directly.
