@@ -6,9 +6,9 @@
     "height": 24
   },
   "keybindings": {
-    "toggle": "ctrl+shift+/",
-    "scrollUp": "ctrl+shift+up",
-    "scrollDown": "ctrl+shift+down",
+    "toggle": "ctrl+/",
+    "scrollUp": "shift+up",
+    "scrollDown": "shift+down",
     "scrollPageUp": null,
     "scrollPageDown": null
   }

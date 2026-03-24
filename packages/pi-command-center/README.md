@@ -1,6 +1,6 @@
 # Command Center for Pi (`pi-command-center`)
 
-A scrollable overview of available /commands (from extensions, prompts, skills) shown as a widget above the editor.  The editor stays fully interactive; you can keep the widget open while typing and submitting commands.
+A scrollable overview of available /commands (from extensions, prompts, skills) shown as a widget above the editor.  The editor stays fully interactive; you can keep the widget open while typing and submitting commands.  By default, `Ctrl+/` toggles it and `Shift+Up` / `Shift+Down` scroll it.
 
 See source repo for more documentation.
 

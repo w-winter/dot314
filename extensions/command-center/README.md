@@ -9,7 +9,8 @@ A scrollable overview of available /commands (from extensions, prompts, skills, 
 ## Usage
 
 - Command: `/command-center` (toggle)
-- Shortcut: configurable in `config.json`
+- Default shortcuts: `Ctrl+/` toggles, `Shift+Up` / `Shift+Down` scroll
+- Shortcut bindings are configurable in `config.json`
 
 ## Configuration
 
@@ -61,9 +62,9 @@ All shortcuts are configured here (strings are pi key ids):
 ```json
 {
   "keybindings": {
-    "toggle": "ctrl+shift+/",
-    "scrollUp": "ctrl+shift+up",
-    "scrollDown": "ctrl+shift+down",
+    "toggle": "ctrl+/",
+    "scrollUp": "shift+up",
+    "scrollDown": "shift+down",
     "scrollPageUp": null,
     "scrollPageDown": null
   }

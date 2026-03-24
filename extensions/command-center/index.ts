@@ -73,9 +73,9 @@ type ExtensionConfig = {
 
 const DEFAULT_CONFIG: Required<ExtensionConfig> = {
     keybindings: {
-        toggle: "ctrl+shift+/",
-        scrollUp: "ctrl+shift+up",
-        scrollDown: "ctrl+shift+down",
+        toggle: "ctrl+/",
+        scrollUp: "shift+up",
+        scrollDown: "shift+down",
         scrollPageUp: null,
         scrollPageDown: null,
     },
@@ -398,6 +398,7 @@ export default function commandCenterExtension(pi: ExtensionAPI): void {
                         theme as unknown as WidgetTheme,
                         pi,
                         config,
+                        () => hide(ctx),
                     );
                 } else {
                     widget.updateTheme(theme as unknown as WidgetTheme);
