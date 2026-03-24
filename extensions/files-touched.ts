@@ -27,9 +27,35 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const WINDOWS_UNSAFE_CMD_CHARS_RE = /[&|<>^%\r\n]/;
+			const quoteCmdArg = (value: string) => `"${value.replace(/"/g, '""')}"`;
+
+			const openWithCode = async (path: string) => {
+				if (process.platform === "win32") {
+					if (WINDOWS_UNSAFE_CMD_CHARS_RE.test(path)) {
+						ctx.ui.notify(
+							`Refusing to open ${path}: path contains Windows cmd metacharacters (& | < > ^ % or newline).`,
+							"error",
+						);
+						return null;
+					}
+					const commandLine = `code -g ${quoteCmdArg(path)}`;
+					return pi.exec("cmd", ["/d", "/s", "/c", commandLine], { cwd: ctx.cwd });
+				}
+				return pi.exec("code", ["-g", path], { cwd: ctx.cwd });
+			};
+
 			const openSelected = async (file: FilesTouchedEntry): Promise<void> => {
 				try {
-					await pi.exec("code", ["-g", file.path], { cwd: ctx.cwd });
+					const openResult = await openWithCode(file.path);
+					if (!openResult) return;
+					if (openResult.code !== 0) {
+						const openStderr = openResult.stderr.trim();
+						ctx.ui.notify(
+							`Failed to open ${file.path} (exit ${openResult.code})${openStderr ? `: ${openStderr}` : ""}`,
+							"error",
+						);
+					}
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					ctx.ui.notify(`Failed to open ${file.path}: ${message}`, "error");
