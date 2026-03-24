@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -28,6 +28,7 @@
       "./extensions/ephemeral-mode.ts",
       "./extensions/files-touched.ts",
       "./extensions/fork-from-first.ts",
+      "./extensions/grounded-compaction/index.ts",
       "./extensions/handover/index.ts",
       "./extensions/iterm-tab-color.ts",
       "./extensions/agentic-compaction/index.ts",

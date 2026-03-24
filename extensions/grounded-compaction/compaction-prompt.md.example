@@ -1,0 +1,30 @@
+# What to include
+
+Use these section headings exactly. Omit a section only if it is truly empty. Prefer bullets under each heading.
+
+## Brief
+Current objective, current state, immediate next action. Note if the objective shifted from the original request.
+
+## Constraints & preferences
+Requirements, preferences, or constraints stated by the user that the next agent must respect.
+
+## Key decisions & rejected paths
+Decisions that materially affect continuation, with brief rationale. Also include approaches that were tried, rejected, or failed when that prevents repeating mistakes.
+
+## Status
+What is done, what is in progress, what remains unverified, and what is blocked. Check the last several user messages for unresolved requests before marking anything done.
+
+## Open issues & uncertainties
+Unresolved problems, risky assumptions, and surprising findings. Distinguish observed facts from inferences.
+
+## Immediate next steps
+Concrete next actions in execution order. Note dependencies between steps.
+
+## Mandatory reading
+Exact file paths the next agent should open first.
+
+# Style
+- Keep the summary concise and continuation-friendly
+- Preserve exact file paths, symbol names, commands, and error text where useful
+- If a files-touched block is present, use it as authoritative context but do not repeat the whole list
+- Output only markdown for the summary

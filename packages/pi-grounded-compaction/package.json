@@ -1,0 +1,36 @@
+{
+  "name": "pi-grounded-compaction",
+  "version": "0.1.0",
+  "description": "Compaction and branch summarizer for Pi with model presets, custom prompts, and deterministic files-touched tracking for native tools, RepoPrompt, and bash",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "compaction", "summarization"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-grounded-compaction"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/grounded-compaction/index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/grounded-compaction/index.ts", "to": "extensions/grounded-compaction/index.ts" },
+      { "from": "../../extensions/grounded-compaction/compaction-prompt.md.example", "to": "extensions/grounded-compaction/compaction-prompt.md.example" },
+      { "from": "../../extensions/grounded-compaction/branch-summary-prompt.md.example", "to": "extensions/grounded-compaction/branch-summary-prompt.md.example" },
+      { "from": "../../extensions/grounded-compaction/config.json.example", "to": "extensions/grounded-compaction/config.json.example" },
+      { "from": "../../extensions/_shared/files-touched-core.ts", "to": "extensions/_shared/files-touched-core.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

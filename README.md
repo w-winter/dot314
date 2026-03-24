@@ -86,6 +86,7 @@ All available npm packages:
 | [pi-command-center](https://www.npmjs.com/package/pi-command-center) | command-center |
 | [pi-ephemeral](https://www.npmjs.com/package/pi-ephemeral) | ephemeral-mode |
 | [pi-fork-from-first](https://www.npmjs.com/package/pi-fork-from-first) | fork-from-first |
+| [pi-grounded-compaction](https://www.npmjs.com/package/pi-grounded-compaction) | grounded-compaction |
 | [pi-md-export](https://www.npmjs.com/package/pi-md-export) | md |
 | [pi-model-aware-compaction](https://www.npmjs.com/package/pi-model-aware-compaction) | model-aware-compaction |
 | [pi-model-sysprompt-appendix](https://www.npmjs.com/package/pi-model-sysprompt-appendix) | model-sysprompt-appendix |
@@ -115,6 +116,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `ephemeral-mode.ts` | Delete session on exit |
 | ◐ | `files-touched.ts` | Widget listing files read/edited/written, with path normalizations, tracking of reads/edits/writes by Pi native tools, `repoprompt-cli`, `repoprompt-mcp`, and bash-level file operations |
 | ● | `fork-from-first.ts` | Quickly fork session from first message |
+| ● | `grounded-compaction/` | Compaction summarizer with model presets, custom prompts, and comprehensive files-touched tracking; also augments branch summarization |
 | ◐ | `handover/` | Generate handover draft with deterministic files-touched list -> fork-from-first -> prefill editor (default to conversation-only fork if coinstalled with `rewind/`) |
 | ● | `iterm-tab-color.ts` | Two-state tab coloring (running vs. not-running) for iTerm2 |
 | ● | `md.ts` | Export full session branch or its last N turns to Markdown file, or as Markdown to clipboard |
@@ -187,6 +189,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ◐ | `extension-stats.ts` |
 | ◐ | `files-touched.ts` |
 | ● | `fork-from-first.ts` |
+| ● | `grounded-compaction/` |
 | ◐ | `handover/` |
 | ○ | `inline-bash.ts` |
 | ○ | `interactive-shell.ts` |

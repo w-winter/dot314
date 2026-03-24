@@ -1,0 +1,29 @@
+# What to include
+
+Use these section headings exactly. Omit a section only if it is truly empty. Prefer bullets under each heading.
+
+## Purpose
+Objective or question being pursued on this branch.
+
+## Outcome
+Concrete results, findings, and insights worth carrying forward.
+
+## Constraints & preferences
+Requirements, preferences, or constraints that shaped the work on this branch.
+
+## Key decisions
+Decisions made with brief rationale, including approaches tried and ruled out.
+
+## Status
+What is done, what is in progress, what is unresolved or blocked. Distinguish observed facts from inferences.
+
+## Next steps
+Concrete actions for continuing this work, in order. Note dependencies between steps.
+
+## Mandatory reading
+Exact file paths relevant to this branch's work.
+
+# Style
+- Keep the summary concise and continuation-friendly
+- Preserve exact file paths, symbol names, commands, and error text where useful
+- Output only markdown for the summary

@@ -1,0 +1,21 @@
+{
+    "includeFilesTouched": {
+        "inCompactionSummary": true,
+        "inBranchSummary": true
+    },
+    "defaultPreset": "fast",
+    "presets": {
+        "fast": {
+            "model": "openai-codex/gpt-5.4-mini",
+            "thinkingLevel": "low"
+        },
+        "cheap": {
+            "model": "openai-codex/gpt-5.4-mini",
+            "thinkingLevel": "medium"
+        },
+        "deep": {
+            "model": "anthropic/claude-opus-4-6",
+            "thinkingLevel": "high"
+        }
+    }
+}
