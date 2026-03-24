@@ -1,0 +1,34 @@
+{
+  "name": "pi-files-touched",
+  "version": "0.1.0",
+  "description": "Deterministic file-activity tracking for Pi sessions, covering native tools, RepoPrompt, and bash commands.  Includes /files-touched picker and a shared core for compaction/handover extensions",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "files", "tracking", "compaction"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-files-touched"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/files-touched.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.51.0",
+    "@mariozechner/pi-tui": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/files-touched.ts", "to": "extensions/files-touched.ts" },
+      { "from": "../../extensions/_shared/files-touched-core.ts", "to": "extensions/_shared/files-touched-core.ts" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}
