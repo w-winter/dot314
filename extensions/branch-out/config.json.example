@@ -1,0 +1,5 @@
+{
+  "launchMode": "split",
+  "splitDirection": "right",
+  "preserveFocus": true
+}

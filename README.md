@@ -82,6 +82,7 @@ All available npm packages:
 | npm package | Extension |
 |---|---|
 | [pi-anycopy](https://www.npmjs.com/package/pi-anycopy) | anycopy |
+| [pi-branch-out](https://www.npmjs.com/package/pi-branch-out) | branch-out |
 | [pi-brave-search](https://www.npmjs.com/package/pi-brave-search) | brave-search |
 | [pi-command-center](https://www.npmjs.com/package/pi-command-center) | command-center |
 | [pi-ephemeral](https://www.npmjs.com/package/pi-ephemeral) | ephemeral-mode |
@@ -109,7 +110,7 @@ This repo contains more resources than the package exports. When installed as a 
 |---|---|---|
 | ◐ | `agentic-compaction/` | Summarizer explores conversation as a filesystem |
 | ● | `anycopy/` | `/tree` with live syntax-highlighted preview + copy: navigate branches, summarize, label, and copy any node(s) to clipboard |
-| ◐ | `branch-term.ts` | Fork the current session into a new terminal/tab with optional model override and queued user message |
+| ◐ | `branch-out/` | Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing |
 | ● | `brave-search/` | Web search + content extraction. Requires `BRAVE_API_KEY`. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose agent search |
 | ● | `command-center/` | /command palette widget |
 | ◐ | `editor-enhancements/` | File picker, shell completions, raw paste, double-esc and slash command remapping |
@@ -179,7 +180,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 |---|---|
 | ◐ | `agentic-compaction/` |
 | ● | `anycopy/` |
-| ◐ | `branch-term.ts` |
+| ◐ | `branch-out/` |
 | ● | `brave-search/` |
 | ○ | `code-actions/` |
 | ● | `command-center/` |

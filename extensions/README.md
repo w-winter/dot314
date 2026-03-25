@@ -180,18 +180,8 @@
   - It also normalizes relative, root-prefixed, and absolute spellings of the same file before rendering, and carries touched paths through tracked file moves
   - Shared core ([`_shared/files-touched-core.ts`](_shared/files-touched-core.ts)) also tracks bash-level file operations: `sed -i` (edit), `cp`/`rsync` (write destination), `tee`/`touch` (write), `patch` (edit), `curl -o`/`wget -O` (write), and shell output redirections (`>`, `>>`)
 
-- ◐ [`branch-term.ts`](branch-term.ts) (upstream: [davidgasquez/dotfiles](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts))
-  - `/branch [--model <query>] [message]` forks the current session into a new terminal, running `pi --session <fork>`
-  - This version extends the upstream original's such that, beyond the existing `--branch-terminal` override and tmux behavior, it can open the branched session in a new tab in macOS iTerm2/iTerm (first) or Terminal.app (fallback), and only then fall back to opening a new Alacritty window
-  - This version also supports optional child-session customization:
-    - optional `--model` accepts either a fully qualified provider/model id or a scoped/current-provider-biased fuzzy query; if it does not resolve safely, the child keeps the parent session's model
-    - optional `message` is prefilled into the child editor with a 10-second auto-submit countdown (cancelled by typing or `Esc`, or of course sent right away by `Enter`)
-  - Terminal selection order:
-    - `--branch-terminal "..."` (override, supports `{session}` placeholder)
-    - `tmux new-window` (when `TMUX` is set)
-    - macOS: iTerm2/iTerm (new tab)
-    - macOS: Terminal.app (new tab)
-    - fallback: Alacritty (new window)
+- ◐ [`branch-out/`](branch-out/) ([README](branch-out/README.md)) (upstream: [davidgasquez/dotfiles](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts))
+  - `/branch [--model <query>] [message]` forks the current session into a new terminal split pane or tab; backend-aware routing across cmux, tmux, iTerm2, Terminal.app, and Ghostty; split direction is config-driven (`left/right/up/down`, or `clockwise`/`counterclockwise` layout policies for cmux/tmux) with comma-separated fallback lists for cross-backend configs; optional `--model` targets a different model in the child; optional `message` prefills the child editor with a 10-second auto-submit countdown
 
 - ◐ [`handover/`](handover/) ([README](./handover/README.md))
   - `/handover [optional purpose]` generates a rich handover / rehydration message, forks from the first user message, and prefills the child editor with the final draft plus an appended files-touched block

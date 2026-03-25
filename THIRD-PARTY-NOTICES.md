@@ -48,7 +48,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2016 David Gasquez
 - **Used in:**
-  - `extensions/branch-term.ts` (◐ modified — added iTerm2/Terminal.app support)
+  - `extensions/branch-out/` (◐ modified — renamed from `branch-term`; added cmux support, config-driven split/tab routing, iTerm2/Terminal/Ghostty routing, rotating layout policies, and split-direction fallback lists)
 
 ### pasky/pi-amplike
 - **URL:** https://github.com/pasky/pi-amplike

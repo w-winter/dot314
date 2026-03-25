@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { spawn } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 import type {
 	ExtensionAPI,
@@ -12,12 +13,20 @@ import type {
 import { SessionManager } from "@mariozechner/pi-coding-agent"
 import { Key, matchesKey } from "@mariozechner/pi-tui"
 
-const TERMINAL_FLAG = "branch-terminal"
-const STATUS_KEY = "branch-terminal"
-const BRANCH_LAUNCH_CUSTOM_TYPE = "branch-terminal-launch"
-const BRANCH_LAUNCH_APPLIED_CUSTOM_TYPE = "branch-terminal-launch-applied"
+const TERMINAL_FLAG = "branch-out-terminal"
+const STATUS_KEY = "branch-out-terminal"
+const BRANCH_LAUNCH_CUSTOM_TYPE = "branch-out-launch"
+const BRANCH_LAUNCH_APPLIED_CUSTOM_TYPE = "branch-out-launch-applied"
 const AUTO_SUBMIT_SECONDS = 10
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"])
+const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url))
+const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json")
+
+type LaunchMode = "tab" | "split"
+type StaticSplitDirection = "left" | "right" | "up" | "down"
+type RotatingSplitDirection = "clockwise" | "counterclockwise"
+type SplitDirection = StaticSplitDirection | RotatingSplitDirection
+type TerminalBackend = "cmux" | "tmux" | "iterm" | "terminal" | "ghostty" | "unknown"
 
 type ModelRef = {
 	provider: string
@@ -38,12 +47,40 @@ type BranchLaunchData = {
 	targetModel?: ModelRef
 }
 
+type ExtensionConfig = {
+	launchMode: LaunchMode
+	splitDirection: SplitDirection
+	splitDirectionPreferences: SplitDirection[]
+	preserveFocus: boolean
+}
+
+type LayoutLeafState = {
+	ref: string
+	direction: StaticSplitDirection
+}
+
+type LayoutWorkspaceState = {
+	backend: "cmux" | "tmux"
+	workspaceKey: string
+	policy: RotatingSplitDirection
+	queue: LayoutLeafState[]
+}
+
 type PendingAutoSubmit = {
 	ctx: ExtensionContext
 	sessionFile: string
 	interval: ReturnType<typeof setInterval>
 	unsubscribeInput: () => void
 }
+
+const DEFAULT_CONFIG: ExtensionConfig = {
+	launchMode: "split",
+	splitDirection: "right",
+	splitDirectionPreferences: ["right"],
+	preserveFocus: true,
+}
+
+const LAYOUT_STATE_PATH = path.join(os.tmpdir(), "pi-branch-out-layout-state.json")
 
 let pending: PendingAutoSubmit | undefined
 
@@ -68,6 +105,151 @@ function spawnDetached(command: string, args: string[], onError?: (error: Error)
 	const child = spawn(command, args, { detached: true, stdio: "ignore" })
 	child.unref()
 	if (onError) child.on("error", onError)
+}
+
+function loadConfig(): ExtensionConfig {
+	try {
+		const raw = fs.readFileSync(CONFIG_PATH, "utf8")
+		const parsed = JSON.parse(raw) as Partial<ExtensionConfig>
+		const launchMode = parsed.launchMode === "tab" || parsed.launchMode === "split"
+			? parsed.launchMode
+			: DEFAULT_CONFIG.launchMode
+		const splitDirectionPreferences = parseSplitDirectionPreferences(parsed.splitDirection)
+		const preserveFocus = typeof parsed.preserveFocus === "boolean"
+			? parsed.preserveFocus
+			: DEFAULT_CONFIG.preserveFocus
+		return {
+			launchMode,
+			splitDirection: splitDirectionPreferences[0],
+			splitDirectionPreferences,
+			preserveFocus,
+		}
+	} catch {
+		return {
+			...DEFAULT_CONFIG,
+			splitDirectionPreferences: [DEFAULT_CONFIG.splitDirection],
+		}
+	}
+}
+
+function isStaticSplitDirection(value: string): value is StaticSplitDirection {
+	return value === "left" || value === "right" || value === "up" || value === "down"
+}
+
+function isSplitDirection(value: string): value is SplitDirection {
+	return isStaticSplitDirection(value) || value === "clockwise" || value === "counterclockwise"
+}
+
+function parseSplitDirectionPreferences(value: unknown): SplitDirection[] {
+	if (typeof value !== "string") return [DEFAULT_CONFIG.splitDirection]
+
+	const directions = value
+		.split(",")
+		.map((part) => part.trim())
+		.filter(isSplitDirection)
+
+	return directions.length > 0 ? directions : [DEFAULT_CONFIG.splitDirection]
+}
+
+function resolveSupportedSplitDirection(
+	backend: TerminalBackend,
+	preferences: SplitDirection[],
+): SplitDirection | undefined {
+	switch (backend) {
+		case "cmux":
+		case "tmux":
+			return preferences[0]
+		case "iterm":
+			return preferences.find((direction) => direction === "right" || direction === "down")
+		default:
+			return undefined
+	}
+}
+
+function detectTerminalBackend(): TerminalBackend {
+	if (process.env.CMUX_SOCKET_PATH) return "cmux"
+	if (process.env.TMUX) return "tmux"
+	if (process.env.TERM_PROGRAM === "iTerm.app") return "iterm"
+	if (process.env.TERM_PROGRAM === "Apple_Terminal") return "terminal"
+	if (process.env.GHOSTTY_RESOURCES_DIR || normalizeModelText(process.env.TERM_PROGRAM ?? "").includes("ghostty")) {
+		return "ghostty"
+	}
+	return "unknown"
+}
+
+function isRotatingSplitDirection(direction: SplitDirection): direction is RotatingSplitDirection {
+	return direction === "clockwise" || direction === "counterclockwise"
+}
+
+function loadLayoutStates(): LayoutWorkspaceState[] {
+	try {
+		const raw = fs.readFileSync(LAYOUT_STATE_PATH, "utf8")
+		const parsed = JSON.parse(raw)
+		return Array.isArray(parsed) ? parsed as LayoutWorkspaceState[] : []
+	} catch {
+		return []
+	}
+}
+
+function saveLayoutStates(states: LayoutWorkspaceState[]): void {
+	try {
+		fs.writeFileSync(LAYOUT_STATE_PATH, JSON.stringify(states, null, 2))
+	} catch {
+		// Ignore layout-state persistence failures
+	}
+}
+
+function upsertLayoutState(state: LayoutWorkspaceState): void {
+	const states = loadLayoutStates().filter((candidate) => !(
+		candidate.backend === state.backend && candidate.workspaceKey === state.workspaceKey
+	))
+	states.push(state)
+	saveLayoutStates(states)
+}
+
+function getLayoutState(
+	backend: "cmux" | "tmux",
+	workspaceKey: string,
+	policy: RotatingSplitDirection,
+): LayoutWorkspaceState | undefined {
+	return loadLayoutStates().find((candidate) => (
+		candidate.backend === backend
+		&& candidate.workspaceKey === workspaceKey
+		&& candidate.policy === policy
+	))
+}
+
+function resolveClockwiseChildDirections(direction: StaticSplitDirection): [StaticSplitDirection, StaticSplitDirection] {
+	switch (direction) {
+		case "right": return ["up", "down"]
+		case "down": return ["right", "left"]
+		case "left": return ["down", "up"]
+		case "up": return ["left", "right"]
+	}
+}
+
+function resolveCounterclockwiseChildDirections(direction: StaticSplitDirection): [StaticSplitDirection, StaticSplitDirection] {
+	switch (direction) {
+		case "right": return ["down", "up"]
+		case "up": return ["right", "left"]
+		case "left": return ["up", "down"]
+		case "down": return ["left", "right"]
+	}
+}
+
+function buildRotatingChildren(
+	policy: RotatingSplitDirection,
+	direction: StaticSplitDirection,
+	existingRef: string,
+	createdRef: string,
+): LayoutLeafState[] {
+	const [existingDirection, createdDirection] = policy === "clockwise"
+		? resolveClockwiseChildDirections(direction)
+		: resolveCounterclockwiseChildDirections(direction)
+	return [
+		{ ref: createdRef, direction: createdDirection },
+		{ ref: existingRef, direction: existingDirection },
+	]
 }
 
 function normalizeModelText(value: string): string {
@@ -451,35 +633,346 @@ async function isMacAppAvailable(pi: ExtensionAPI, appName: string): Promise<boo
 	return result.code === 0
 }
 
-async function openInITerm(pi: ExtensionAPI, forkFile: string): Promise<{ opened: boolean; error?: string }> {
+function buildBranchCommand(forkFile: string): string {
+	return `pi --session ${shellQuote(forkFile)}`
+}
+
+function extractCmuxSurface(output: string): string | undefined {
+	return output.match(/surface:\d+/)?.[0]
+}
+
+function extractCmuxPane(output: string): string | undefined {
+	return output.match(/pane:\d+/)?.[0]
+}
+
+function extractCmuxPanes(output: string): string[] {
+	return Array.from(new Set(output.match(/pane:\d+/g) ?? []))
+}
+
+function extractTmuxPanes(output: string): string[] {
+	return output
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+}
+
+function extractCmuxSurfaces(output: string): string[] {
+	return Array.from(new Set(output.match(/surface:\d+/g) ?? []))
+}
+
+function extractTmuxPane(output: string): string | undefined {
+	return output.trim().split("\n").map((line) => line.trim()).find(Boolean)
+}
+
+function parseCmuxCallerPane(output: string): string | undefined {
+	try {
+		const parsed = JSON.parse(output)
+		return parsed?.caller?.pane_ref
+	} catch {
+		return undefined
+	}
+}
+
+function parseCmuxCallerSurface(output: string): string | undefined {
+	try {
+		const parsed = JSON.parse(output)
+		return parsed?.caller?.surface_ref
+	} catch {
+		return undefined
+	}
+}
+
+async function listCmuxSurfaceRefs(pi: ExtensionAPI): Promise<string[]> {
+	const result = await pi.exec("cmux", ["--json", "tree"])
+	if (result.code !== 0) {
+		throw new Error(result.stderr || result.stdout || "cmux tree failed")
+	}
+	return extractCmuxSurfaces(`${result.stdout || result.stderr}`)
+}
+
+async function listTmuxPaneRefs(pi: ExtensionAPI): Promise<string[]> {
+	const result = await pi.exec("tmux", ["list-panes", "-F", "#{pane_id}"])
+	if (result.code !== 0) {
+		throw new Error(result.stderr || result.stdout || "tmux list-panes failed")
+	}
+	return extractTmuxPanes(`${result.stdout || result.stderr}`)
+}
+
+async function getTmuxWorkspaceKey(pi: ExtensionAPI): Promise<string> {
+	const result = await pi.exec("tmux", ["display-message", "-p", "#{session_id}:#{window_id}"])
+	if (result.code !== 0) {
+		throw new Error(result.stderr || result.stdout || "tmux display-message failed")
+	}
+	return `${result.stdout || result.stderr}`.trim()
+}
+
+async function resolveRotatingTarget(
+	backend: "cmux" | "tmux",
+	workspaceKey: string,
+	policy: RotatingSplitDirection,
+	currentRef: string,
+	existingRefs: string[],
+): Promise<LayoutLeafState> {
+	const existingRefSet = new Set(existingRefs)
+	const state = getLayoutState(backend, workspaceKey, policy)
+	const queue = state?.queue.filter((candidate) => existingRefSet.has(candidate.ref)) ?? []
+	if (queue.length === 0) {
+		return { ref: currentRef, direction: "right" }
+	}
+	return queue[0]
+}
+
+function updateRotatingState(
+	backend: "cmux" | "tmux",
+	workspaceKey: string,
+	policy: RotatingSplitDirection,
+	queue: LayoutLeafState[],
+): void {
+	upsertLayoutState({ backend, workspaceKey, policy, queue })
+}
+
+async function openInCmux(
+	pi: ExtensionAPI,
+	forkFile: string,
+	config: ExtensionConfig,
+): Promise<{ opened: boolean; error?: string }> {
+	if (!process.env.CMUX_SOCKET_PATH) return { opened: false }
+
+	if (config.launchMode === "tab") {
+		const createResult = await pi.exec("cmux", ["new-surface", "--type", "terminal"])
+		if (createResult.code !== 0) {
+			return { opened: false, error: createResult.stderr || createResult.stdout || "cmux new-surface failed" }
+		}
+
+		const surface = extractCmuxSurface(`${createResult.stdout || createResult.stderr}`)
+		if (!surface) {
+			return {
+				opened: false,
+				error: `Unexpected cmux output: ${(createResult.stdout || createResult.stderr || "").trim()}`,
+			}
+		}
+
+		const sendResult = await pi.exec("cmux", ["send", "--surface", surface, `${buildBranchCommand(forkFile)}\n`])
+		if (sendResult.code !== 0) {
+			return { opened: false, error: sendResult.stderr || sendResult.stdout || "cmux send failed" }
+		}
+
+		return { opened: true }
+	}
+
+	const identifyResult = await pi.exec("cmux", ["identify", "--json"])
+	if (identifyResult.code !== 0) {
+		return { opened: false, error: identifyResult.stderr || identifyResult.stdout || "cmux identify failed" }
+	}
+
+	const identifyOutput = `${identifyResult.stdout || identifyResult.stderr}`
+	const currentPane = parseCmuxCallerPane(identifyOutput)
+	const currentSurface = parseCmuxCallerSurface(identifyOutput) ?? process.env.CMUX_SURFACE_ID
+	if (!currentSurface) {
+		return { opened: false, error: "Could not determine current cmux surface" }
+	}
+
+	const resolvedSplitDirection = resolveSupportedSplitDirection("cmux", config.splitDirectionPreferences)
+	if (!resolvedSplitDirection) {
+		return { opened: false, error: `Split direction '${config.splitDirection}' is not supported in cmux` }
+	}
+
+	const panesBeforeResult = await pi.exec("cmux", ["list-panes", "--json"])
+	const policy = isRotatingSplitDirection(resolvedSplitDirection) ? resolvedSplitDirection : undefined
+	const workspaceKey = process.env.CMUX_WORKSPACE_ID ?? "cmux"
+	const existingRefs = policy ? await listCmuxSurfaceRefs(pi) : []
+	const leaf = policy
+		? await resolveRotatingTarget("cmux", workspaceKey, policy, currentSurface, existingRefs)
+		: undefined
+	const queue = policy
+		? (getLayoutState("cmux", workspaceKey, policy)?.queue.filter((candidate) => existingRefs.includes(candidate.ref)) ?? [])
+		: []
+	const activeLeaf = leaf ?? { ref: currentSurface, direction: resolvedSplitDirection as StaticSplitDirection }
+	const createResult = await pi.exec("cmux", ["new-split", activeLeaf.direction, "--surface", activeLeaf.ref])
+	if (createResult.code !== 0) {
+		return { opened: false, error: createResult.stderr || createResult.stdout || "cmux new-split failed" }
+	}
+
+	const createOutput = `${createResult.stdout || createResult.stderr}`
+	const surface = extractCmuxSurface(createOutput)
+	const pane = extractCmuxPane(createOutput)
+	if (!surface) {
+		return {
+			opened: false,
+			error: `Unexpected cmux output: ${(createResult.stdout || createResult.stderr || "").trim()}`,
+		}
+	}
+
+	const sendResult = await pi.exec("cmux", ["send", "--surface", surface, `${buildBranchCommand(forkFile)}\n`])
+	if (sendResult.code !== 0) {
+		return { opened: false, error: sendResult.stderr || sendResult.stdout || "cmux send failed" }
+	}
+
+	if (policy) {
+		updateRotatingState(
+			"cmux",
+			workspaceKey,
+			policy,
+			[...(queue.length === 0 ? [] : queue.slice(1)), ...buildRotatingChildren(policy, activeLeaf.direction, activeLeaf.ref, surface)],
+		)
+	}
+
+	if (config.preserveFocus && currentPane) {
+		const focusResult = await pi.exec("cmux", ["focus-pane", "--pane", currentPane])
+		if (focusResult.code !== 0) {
+			return { opened: false, error: focusResult.stderr || focusResult.stdout || "cmux focus-pane failed" }
+		}
+	} else if (!config.preserveFocus) {
+		const panesBefore = panesBeforeResult.code === 0
+			? extractCmuxPanes(`${panesBeforeResult.stdout || panesBeforeResult.stderr}`)
+			: []
+		const panesAfterResult = await pi.exec("cmux", ["list-panes", "--json"])
+		const panesAfter = panesAfterResult.code === 0
+			? extractCmuxPanes(`${panesAfterResult.stdout || panesAfterResult.stderr}`)
+			: []
+		const newPane = panesAfter.find((candidate) => !panesBefore.includes(candidate)) ?? pane
+		if (newPane) {
+			const focusResult = await pi.exec("cmux", ["focus-pane", "--pane", newPane])
+			if (focusResult.code !== 0) {
+				return { opened: false, error: focusResult.stderr || focusResult.stdout || "cmux focus-pane failed" }
+			}
+		}
+	}
+
+	return { opened: true }
+}
+
+async function openInTmux(
+	pi: ExtensionAPI,
+	forkFile: string,
+	config: ExtensionConfig,
+): Promise<{ opened: boolean; error?: string }> {
+	if (!process.env.TMUX) return { opened: false }
+
+	if (config.launchMode === "tab") {
+		const result = await pi.exec("tmux", ["new-window", "-n", "branch", "pi", "--session", forkFile])
+		if (result.code !== 0) {
+			return { opened: false, error: result.stderr || result.stdout || "tmux new-window failed" }
+		}
+		return { opened: true }
+	}
+
+	const currentPane = process.env.TMUX_PANE
+	if (!currentPane) {
+		return { opened: false, error: "Could not determine current tmux pane" }
+	}
+
+	const resolvedSplitDirection = resolveSupportedSplitDirection("tmux", config.splitDirectionPreferences)
+	if (!resolvedSplitDirection) {
+		return { opened: false, error: `Split direction '${config.splitDirection}' is not supported in tmux` }
+	}
+
+	const policy = isRotatingSplitDirection(resolvedSplitDirection) ? resolvedSplitDirection : undefined
+	const workspaceKey = await getTmuxWorkspaceKey(pi)
+	const existingRefs = policy ? await listTmuxPaneRefs(pi) : []
+	const leaf = policy
+		? await resolveRotatingTarget("tmux", workspaceKey, policy, currentPane, existingRefs)
+		: undefined
+	const queue = policy
+		? (getLayoutState("tmux", workspaceKey, policy)?.queue.filter((candidate) => existingRefs.includes(candidate.ref)) ?? [])
+		: []
+	const activeLeaf = leaf ?? { ref: currentPane, direction: resolvedSplitDirection as StaticSplitDirection }
+
+	const splitArgs = [
+		"split-window",
+		"-t",
+		activeLeaf.ref,
+		activeLeaf.direction === "left" || activeLeaf.direction === "right" ? "-h" : "-v",
+		"-P",
+		"-F",
+		"#{pane_id}",
+	]
+	if (activeLeaf.direction === "left" || activeLeaf.direction === "up") splitArgs.push("-b")
+	if (config.preserveFocus) splitArgs.push("-d")
+	splitArgs.push(buildBranchCommand(forkFile))
+
+	const result = await pi.exec("tmux", splitArgs)
+	if (result.code !== 0) {
+		return { opened: false, error: result.stderr || result.stdout || "tmux split-window failed" }
+	}
+
+	const newPane = extractTmuxPane(`${result.stdout || result.stderr}`)
+	if (policy && newPane) {
+		updateRotatingState(
+			"tmux",
+			workspaceKey,
+			policy,
+			[...(queue.length === 0 ? [] : queue.slice(1)), ...buildRotatingChildren(policy, activeLeaf.direction, activeLeaf.ref, newPane)],
+		)
+	}
+
+	return { opened: true }
+}
+
+async function resolveITermApp(pi: ExtensionAPI): Promise<string | undefined> {
+	for (const candidate of ["iTerm2", "iTerm"]) {
+		if (await isMacAppAvailable(pi, candidate)) return candidate
+	}
+	return undefined
+}
+
+async function openInITerm(
+	pi: ExtensionAPI,
+	forkFile: string,
+	config: ExtensionConfig,
+): Promise<{ opened: boolean; error?: string }> {
 	if (process.platform !== "darwin") return { opened: false }
 
-	const appCandidates = ["iTerm2", "iTerm"]
-	const availableApp = (
-		await (async () => {
-			for (const candidate of appCandidates) {
-				if (await isMacAppAvailable(pi, candidate)) return candidate
-			}
-			return undefined
-		})()
-	)
-
+	const availableApp = await resolveITermApp(pi)
 	if (!availableApp) return { opened: false }
 
-	const command = `pi --session ${shellQuote(forkFile)}`
-	const scriptLines = [
-		`tell application "${availableApp}"`,
-		"activate",
-		"if (count of windows) is 0 then",
-		"create window with default profile",
-		"else",
-		"tell current window to create tab with default profile",
-		"end if",
-		"tell current session of current window",
-		`write text ${JSON.stringify(command)}`,
-		"end tell",
-		"end tell",
-	]
+	const resolvedSplitDirection = config.launchMode === "split"
+		? resolveSupportedSplitDirection("iterm", config.splitDirectionPreferences)
+		: undefined
+	if (config.launchMode === "split" && !resolvedSplitDirection) {
+		return { opened: false, error: `Split direction '${config.splitDirection}' is not supported in iTerm2` }
+	}
+
+	const command = buildBranchCommand(forkFile)
+	const splitCommand = resolvedSplitDirection === "down"
+		? "set newSession to (split horizontally with default profile)"
+		: "set newSession to (split vertically with default profile)"
+	const scriptLines = config.launchMode === "split"
+		? [
+			`tell application "${availableApp}"`,
+			"activate",
+			"if (count of windows) is 0 then",
+			"create window with default profile",
+			"tell current session of current window",
+			`write text ${JSON.stringify(command)}`,
+			"end tell",
+			"else",
+			"tell current tab of current window",
+			"set originalSession to current session",
+			"tell originalSession",
+			splitCommand,
+			"end tell",
+			"tell newSession",
+			`write text ${JSON.stringify(command)}`,
+			"end tell",
+			...(config.preserveFocus ? ["select originalSession"] : ["select newSession"]),
+			"end tell",
+			"end if",
+			"end tell",
+		]
+		: [
+			`tell application "${availableApp}"`,
+			"activate",
+			"if (count of windows) is 0 then",
+			"create window with default profile",
+			"else",
+			"tell current window to create tab with default profile",
+			"end if",
+			"tell current session of current window",
+			`write text ${JSON.stringify(command)}`,
+			"end tell",
+			"end tell",
+		]
 
 	const osascriptArgs = scriptLines.flatMap((line) => ["-e", line])
 	const result = await pi.exec("osascript", osascriptArgs)
@@ -493,11 +986,15 @@ async function openInITerm(pi: ExtensionAPI, forkFile: string): Promise<{ opened
 async function openInMacOSTerminal(
 	pi: ExtensionAPI,
 	forkFile: string,
+	config: ExtensionConfig,
 ): Promise<{ opened: boolean; error?: string }> {
 	if (process.platform !== "darwin") return { opened: false }
 	if (!(await isMacAppAvailable(pi, "Terminal"))) return { opened: false }
+	if (config.launchMode === "split") {
+		return { opened: false, error: "Split launch is not supported in Terminal.app" }
+	}
 
-	const command = `pi --session ${shellQuote(forkFile)}`
+	const command = buildBranchCommand(forkFile)
 	const scriptLines = [
 		'tell application "Terminal"',
 		"activate",
@@ -518,6 +1015,15 @@ async function openInMacOSTerminal(
 	return { opened: true }
 }
 
+function openInGhostty(ctx: ExtensionCommandContext, forkFile: string): void {
+	spawnDetached("ghostty", ["-e", "pi", "--session", forkFile], (error) => {
+		if (ctx.hasUI) {
+			ctx.ui.notify(`Ghostty failed to open: ${error.message}`, "warning")
+			ctx.ui.notify(`Run: pi --session ${forkFile}`, "info")
+		}
+	})
+}
+
 async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext, forkFile: string): Promise<void> {
 	const terminalFlag = normalizeTerminalFlag(pi.getFlag(`--${TERMINAL_FLAG}`))
 	if (terminalFlag) {
@@ -528,20 +1034,51 @@ async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext
 		return
 	}
 
-	if (process.env.TMUX) {
-		const result = await pi.exec("tmux", ["new-window", "-n", "branch", "pi", "--session", forkFile])
-		if (result.code !== 0) {
-			throw new Error(result.stderr || result.stdout || "tmux new-window failed")
-		}
+	const config = loadConfig()
+	const activeBackend = detectTerminalBackend()
+
+	if (activeBackend === "cmux") {
+		const cmuxAttempt = await openInCmux(pi, forkFile, config)
+		if (!cmuxAttempt.opened) throw new Error(cmuxAttempt.error || "cmux launch failed")
 		return
 	}
 
+	if (activeBackend === "tmux") {
+		const tmuxAttempt = await openInTmux(pi, forkFile, config)
+		if (!tmuxAttempt.opened) throw new Error(tmuxAttempt.error || "tmux launch failed")
+		return
+	}
+
+	if (activeBackend === "iterm") {
+		const iTermAttempt = await openInITerm(pi, forkFile, config)
+		if (!iTermAttempt.opened) throw new Error(iTermAttempt.error || "iTerm failed to open")
+		return
+	}
+
+	if (activeBackend === "terminal") {
+		const terminalAttempt = await openInMacOSTerminal(pi, forkFile, config)
+		if (!terminalAttempt.opened) throw new Error(terminalAttempt.error || "Terminal.app failed to open")
+		return
+	}
+
+	if (activeBackend === "ghostty") {
+		if (config.launchMode === "split") {
+			throw new Error("Split launch is not supported in Ghostty")
+		}
+		openInGhostty(ctx, forkFile)
+		return
+	}
+
+	if (config.launchMode === "split") {
+		throw new Error("Split launch requires an active cmux, tmux, or iTerm2 session")
+	}
+
 	if (process.platform === "darwin") {
-		const iTermAttempt = await openInITerm(pi, forkFile)
+		const iTermAttempt = await openInITerm(pi, forkFile, config)
 		if (iTermAttempt.opened) return
 		if (iTermAttempt.error && ctx.hasUI) ctx.ui.notify(`iTerm failed to open: ${iTermAttempt.error}`, "warning")
 
-		const terminalAttempt = await openInMacOSTerminal(pi, forkFile)
+		const terminalAttempt = await openInMacOSTerminal(pi, forkFile, config)
 		if (terminalAttempt.opened) return
 		if (terminalAttempt.error && ctx.hasUI) {
 			ctx.ui.notify(`macOS Terminal failed to open: ${terminalAttempt.error}`, "warning")
@@ -654,7 +1191,7 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	pi.registerCommand("branch", {
-		description: "Fork current session into a new terminal, optionally queueing --model <query> and a draft message",
+		description: "Fork current session into a new terminal tab or split pane, optionally queueing --model <query> and a draft message",
 		handler: async (args, ctx) => {
 			await ctx.waitForIdle()
 
@@ -698,7 +1235,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (ctx.hasUI) {
 				if (!launchData) {
-					ctx.ui.notify("Opened fork in new terminal", "info")
+					ctx.ui.notify("Opened fork", "info")
 					return
 				}
 
@@ -708,7 +1245,7 @@ export default function (pi: ExtensionAPI) {
 						: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 					launchData.message ? "draft queued" : undefined,
 				].filter(Boolean).join(" · ")
-				ctx.ui.notify(details ? `Opened fork in new terminal (${details})` : "Opened fork in new terminal", "info")
+				ctx.ui.notify(details ? `Opened fork (${details})` : "Opened fork", "info")
 			}
 		},
 	})
