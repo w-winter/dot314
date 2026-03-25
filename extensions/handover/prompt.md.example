@@ -1,30 +1,34 @@
 # What to include
 
+Use these section headings exactly. Omit a section only if it is truly empty. Prefer bullets under each heading.
+
 ## Brief
-≤300 tokens. Current objective, current state, most important active constraint, immediate next action.
+Current objective, how it evolved from the original request, current state, immediate next action.
 
-## Goal & Scope Evolution
-What the user originally asked for. How the goal shifted during the session, if it did.
+## Constraints & preferences
+Requirements, preferences, or constraints stated by the user that must be respected.
 
-## Key Decisions, Rejected Paths
-What was decided during the session (do not repeat decisions from pre-session plans) and why. Equally important: what approaches were considered and abandoned, what failed, and why those paths were closed.
+## Key decisions & rejected paths
+Decisions made with brief rationale, including approaches tried and ruled out. Equally important: what was abandoned, what failed, and why those paths were closed.
 
-## Surprises, Uncertainties, Fragile Areas
-What contradicted expectations about the codebase, task, or dependencies—including gotchas and edge cases discovered. What you believe but with low confidence. What areas of the code are fragile or subtly coupled in non-obvious ways. Distinguish observed facts from inferences.
+## Unexpected findings
+What contradicted expectations about the codebase, task, or dependencies. Gotchas and edge cases discovered. What is believed but with low confidence. Distinguish observed facts from inferences.
 
 ## Status
-What is verified-done (user confirmed or tests passing), what is implemented but unverified, what is in progress, what is blocked. Check the last several user messages for unresolved requests before marking anything done.
+What is verified-done, what is implemented but unverified, what is in progress, what is blocked. Check the last several user messages for unresolved requests before marking anything done.
 
-## Continuation Logistics
-Mandatory reading: exact file paths the next agent should open first. Environment context: ports, env vars, services, deployments in use. Skills actively used. Pending human decisions or approvals.
+## Continuation logistics
+- Mandatory reading: exact file paths the next agent should open first.
+- Environment context, where applicable: ports, env vars, services, active deployments.
+- Pending human decisions or approvals.
 
-## Rehydration Targets *(optional)*
-**If applicable**: files, decisions, or topics where this summary compresses too aggressively and rehydration via session_ask or git history is advisable before acting.
+Rehydration targets (optional)
+If applicable: topics where the needed level of detail depends on unresolved questions. Note what would trigger the need to rehydrate from the parent session via session_ask.
 
-## Next Steps
-Concrete, ordered actions for continuing. Note dependencies between steps.
+## Next steps
+Concrete next actions in execution order. Note dependencies between steps.
 
 # Style
-* Be concise but high-density.
-* Prefer bullets and short sections.
-* Include exact commands only when they materially help.
+- The new session starts with near-zero context; make the summary self-contained and high-density
+- Preserve exact file paths, symbol names, commands, and error text where useful
+- Output only markdown for the summary
