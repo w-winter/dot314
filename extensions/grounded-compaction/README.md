@@ -4,6 +4,8 @@ This extension can play two roles:
 * Replace Pi's compaction summarizer with configurable model presets, custom summarization prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, and bash-derived file operations
 * Augment branch summarization during `/tree` with the same files-touched grounding and optional replacement of the summarization prompt contract with a custom one
 
+> ⚠ **May conflict with other compaction extensions**: this extension hooks `session_before_compact` and returns a custom compaction result.  Any other extension that does the same (e.g. `agentic-compaction`) is incompatible.  Having both active creates a race condition where the last handler to respond wins.  Enable only one.
+
 ## Why
 
 Pi's native compaction [deterministically tracks](https://github.com/badlogic/pi-mono/blob/629341c18f3482d891b665a844975096b47b4779/packages/coding-agent/src/core/compaction/utils.ts#L74-L79) file activity from its built-in `read`, `write`, and `edit` tool calls.  Operations through bash or custom tools like RepoPrompt are invisible to it.  This extension uses a [shared collector](../../../packages/pi-files-touched/README.md) (`extensions/_shared/files-touched-core.ts`) that also covers RepoPrompt tools (`read_file`, `apply_edits`, `file_actions`, `git mv/rm`), bash patterns (`sed -i`, `mv`, `rm`, shell redirections, etc.), and normalizes all path spellings so the same file appears once regardless of how different tools referred to it.

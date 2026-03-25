@@ -4,6 +4,8 @@ A [pi](https://github.com/badlogic/pi-mono) extension that provides conversation
 
 Original source: [laulauland/dotfiles](https://github.com/laulauland/dotfiles/tree/main/shared/.pi/agent/extensions/file-based-compaction)
 
+> ⚠ **May conflict with other compaction extensions**: this extension hooks `session_before_compact` and returns a custom compaction result.  Any other extension that does the same (e.g. `grounded-compaction`) is incompatible.  Having both active creates a race condition where the last handler to respond wins.  Enable only one.
+
 This version adds:
 
 * a more robust, deterministic summarizer prompt by:

@@ -4,6 +4,8 @@ This extension can play two roles:
 * Replace Pi's compaction summarizer with configurable model presets, custom summarization prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, and bash-derived file operations
 * Augment branch summarization during `/tree` with the same files-touched grounding and optional replacement of the summarization prompt contract with a custom one
 
+> ⚠ **May conflict with other compaction extensions**: this extension hooks `session_before_compact` and returns a custom compaction result.  Any other extension that does the same (e.g. `agentic-compaction`) is incompatible.  Having both active creates a race condition where the last handler to respond wins.  Enable only one.
+
 ## Install
 
 From npm:
