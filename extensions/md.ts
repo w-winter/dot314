@@ -127,7 +127,8 @@ async function* iterJsonl(
  */
 async function extractConversation(
   jsonlFile: string,
-  includeThinking: boolean = false
+  includeThinking: boolean = false,
+  includeToolCalls: boolean = false
 ): Promise<{ meta: SessionMeta; conversation: string[] }> {
   const conversation: string[] = [];
   const meta: SessionMeta = {
@@ -222,13 +223,15 @@ async function extractConversation(
             if (toolId) {
               pendingToolCalls.set(toolId, { name: toolName, cmd });
             }
-            toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
+            if (includeToolCalls) {
+              toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
+            }
           }
         }
       }
 
       let fullText = textParts.filter((p) => p).join("\n").trim();
-      if (toolParts.length > 0) {
+      if (includeToolCalls && toolParts.length > 0) {
         fullText = (fullText ? fullText + "\n" : "") + toolParts.join("\n");
       }
 
@@ -246,9 +249,8 @@ async function extractConversation(
       const toolCallId = String(
         msgObj.toolCallId || msgObj.tool_call_id || ""
       );
-      const isError = Boolean(msgObj.isError || msgObj.is_error);
-      const out = extractTextFromContent(msgObj.content);
 
+      // Always consume pending tool call entries to keep the map clean
       let label = toolName;
       if (toolCallId && pendingToolCalls.has(toolCallId)) {
         const pending = pendingToolCalls.get(toolCallId)!;
@@ -259,10 +261,14 @@ async function extractConversation(
         }
       }
 
-      if (out && out !== "(no content)") {
-        conversation.push(
-          `SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`
-        );
+      if (includeToolCalls) {
+        const isError = Boolean(msgObj.isError || msgObj.is_error);
+        const out = extractTextFromContent(msgObj.content);
+        if (out && out !== "(no content)") {
+          conversation.push(
+            `SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`
+          );
+        }
       }
       continue;
     }
@@ -281,7 +287,8 @@ async function extractConversation(
  */
 function extractConversationFromBranch(
   sessionManager: any,
-  includeThinking: boolean = false
+  includeThinking: boolean = false,
+  includeToolCalls: boolean = false
 ): { meta: SessionMeta; conversation: string[]; leafId: string | null } {
   const conversation: string[] = [];
   const meta: SessionMeta = {
@@ -395,13 +402,15 @@ function extractConversationFromBranch(
             if (toolId) {
               pendingToolCalls.set(toolId, { name: toolName, cmd });
             }
-            toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
+            if (includeToolCalls) {
+              toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
+            }
           }
         }
       }
 
       let fullText = textParts.filter((p) => p).join("\n").trim();
-      if (toolParts.length > 0) {
+      if (includeToolCalls && toolParts.length > 0) {
         fullText = (fullText ? fullText + "\n" : "") + toolParts.join("\n");
       }
 
@@ -415,9 +424,8 @@ function extractConversationFromBranch(
     if (role === "toolResult") {
       const toolName = String(msgObj.toolName || msgObj.tool_name || "tool");
       const toolCallId = String(msgObj.toolCallId || msgObj.tool_call_id || "");
-      const isError = Boolean(msgObj.isError || msgObj.is_error);
-      const out = extractTextFromContent(msgObj.content);
 
+      // Always consume pending tool call entries to keep the map clean
       let label = toolName;
       if (toolCallId && pendingToolCalls.has(toolCallId)) {
         const pending = pendingToolCalls.get(toolCallId)!;
@@ -428,8 +436,12 @@ function extractConversationFromBranch(
         }
       }
 
-      if (out && out !== "(no content)") {
-        conversation.push(`SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`);
+      if (includeToolCalls) {
+        const isError = Boolean(msgObj.isError || msgObj.is_error);
+        const out = extractTextFromContent(msgObj.content);
+        if (out && out !== "(no content)") {
+          conversation.push(`SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`);
+        }
       }
       continue;
     }
@@ -445,9 +457,10 @@ function generateMarkdownFromBranch(
   sessionManager: any,
   sessionFile: string,
   includeThinking: boolean = false,
+  includeToolCalls: boolean = false,
   lastTurns: number | null = null
 ): { content: string; filename: string } | null {
-  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking);
+  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking, includeToolCalls);
   const finalConversation =
     lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
 
@@ -497,9 +510,10 @@ function generateMarkdownFromBranch(
 async function generateMarkdownFromSession(
   jsonlFile: string,
   includeThinking: boolean = false,
+  includeToolCalls: boolean = false,
   lastTurns: number | null = null
 ): Promise<{ content: string; filename: string } | null> {
-  const { meta, conversation } = await extractConversation(jsonlFile, includeThinking);
+  const { meta, conversation } = await extractConversation(jsonlFile, includeThinking, includeToolCalls);
   const finalConversation =
     lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
 
@@ -555,9 +569,10 @@ async function processSessionFromBranch(
   sessionManager: any,
   sessionFile: string,
   outputDir: string,
-  includeThinking: boolean = false
+  includeThinking: boolean = false,
+  includeToolCalls: boolean = false
 ): Promise<string | null> {
-  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking);
+  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking, includeToolCalls);
 
   if (conversation.length === 0) {
     return null;
@@ -606,11 +621,13 @@ async function processSessionFromBranch(
 async function processSession(
   jsonlFile: string,
   outputDir: string,
-  includeThinking: boolean = false
+  includeThinking: boolean = false,
+  includeToolCalls: boolean = false
 ): Promise<string | null> {
   const { meta, conversation } = await extractConversation(
     jsonlFile,
-    includeThinking
+    includeThinking,
+    includeToolCalls
   );
 
   if (conversation.length === 0) {
@@ -697,7 +714,7 @@ const OUTPUT_DIR = path.join(os.homedir(), ".pi", "agent", "pi-sessions-extracte
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("md", {
-    description: "Export current session as markdown (current /tree branch) on clipboard or to file. Use '/md thinking' (or '/md t') to include thinking blocks. Use '/md all' for full file. Pass a number (e.g. '/md 2' or '/md t 2') to export only the last N turns.",
+    description: "Export current session as markdown (current /tree branch) on clipboard or to file. Tool calls and thinking blocks are excluded by default. Use '/md tc' to include tool calls, '/md t' to include thinking blocks. Use '/md all' for full file. Pass a number (e.g. '/md 2' or '/md tc t 2') to export only the last N turns.",
     handler: async (args, ctx) => {
       const sessionFile = ctx.sessionManager.getSessionFile();
 
@@ -707,22 +724,19 @@ export default function (pi: ExtensionAPI) {
       }
 
       const argsTrimmed = args.trim();
-      const argsLower = argsTrimmed.toLowerCase();
       const tokens = argsTrimmed ? argsTrimmed.split(/\s+/).filter(Boolean) : [];
       const tokensLower = tokens.map((t) => t.toLowerCase());
 
       const includeThinking =
-        argsLower.startsWith("t") ||
         tokensLower.includes("t") ||
         tokensLower.includes("think") ||
-        tokensLower.includes("thinking") ||
-        /\bthinking\b/.test(argsLower);
+        tokensLower.includes("thinking");
+
+      const includeToolCalls = tokensLower.includes("tc");
 
       const exportAll =
         tokensLower.includes("all") ||
-        tokensLower.includes("file") ||
-        /\ball\b/.test(argsLower) ||
-        /\bfile\b/.test(argsLower);
+        tokensLower.includes("file");
 
       const turnsToken = tokens.find((t) => /^\d+$/.test(t)) || null;
       const lastTurns = turnsToken ? parseInt(turnsToken, 10) : null;
@@ -733,9 +747,11 @@ export default function (pi: ExtensionAPI) {
 
       // Show export method selection menu
       const turnSuffix = lastTurns ? ` (last ${lastTurns} turns)` : "";
-      const title = includeThinking
-        ? `Export session${turnSuffix} (with thinking blocks) as Markdown`
-        : `Export session${turnSuffix} as Markdown`;
+      const extras: string[] = [];
+      if (includeThinking) extras.push("thinking");
+      if (includeToolCalls) extras.push("tool calls");
+      const extrasSuffix = extras.length > 0 ? ` (with ${extras.join(" + ")})` : "";
+      const title = `Export session${turnSuffix}${extrasSuffix} as Markdown`;
       const choice = await ctx.ui.select(`${title}\n\nSelect export method:`, [
         "Copy to clipboard",
         `Save to .md file in ${OUTPUT_DIR}/`,
@@ -747,8 +763,8 @@ export default function (pi: ExtensionAPI) {
 
       try {
         const result = exportAll
-          ? await generateMarkdownFromSession(sessionFile, includeThinking, lastTurns)
-          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, includeThinking, lastTurns);
+          ? await generateMarkdownFromSession(sessionFile, includeThinking, includeToolCalls, lastTurns)
+          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, includeThinking, includeToolCalls, lastTurns);
 
         if (!result) {
           const mode = exportAll ? "session file" : "current branch";
@@ -756,7 +772,7 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const suffix = includeThinking ? " (with thinking)" : "";
+        const suffix = extrasSuffix;
         const mode = exportAll ? " (full file)" : " (branch)";
 
         if (choice === "Copy to clipboard") {

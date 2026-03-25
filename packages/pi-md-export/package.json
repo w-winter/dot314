@@ -1,7 +1,7 @@
 {
   "name": "pi-md-export",
-  "version": "0.2.0",
-  "description": "Export Pi sessions (last N turns, full branch, or full session) to readable Markdown on clipboard or local file",
+  "version": "0.3.0",
+  "description": "Export Pi sessions (last N turns, full branch, or full session) to readable Markdown on clipboard or local file, with opt-in tool call and thinking block inclusion",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
   "repository": {
