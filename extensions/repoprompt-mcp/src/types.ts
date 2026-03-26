@@ -124,8 +124,12 @@ export interface RpConfig {
   // (tracks read slices/full files so chat_send/"Oracle" has context without manual selection)
   autoSelectReadSlices?: boolean;  // When true, read_file calls add slices/full selection (default: true)
 
-  // /rp oracle behavior
-  oracleDefaultMode?: "chat" | "plan" | "edit" | "review"; // Default mode when /rp oracle omits --mode (default: "chat")
+    // App launch
+    autoLaunchApp?: boolean;         // Auto-launch RepoPrompt.app on connection failure (default: false)
+    appPath?: string;                // Explicit path to RepoPrompt.app (inferred from command if omitted)
+
+    // /rp oracle behavior
+    oracleDefaultMode?: "chat" | "plan" | "edit" | "review"; // Default mode when /rp oracle omits --mode (default: "chat")
 }
 
 

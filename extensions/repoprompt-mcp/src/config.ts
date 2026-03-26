@@ -251,6 +251,21 @@ function maybeWrapServerCommand(
 }
 
 /**
+ * Infer the .app bundle path from an MCP server command that lives inside a .app bundle.
+ * e.g. "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp" → "/Applications/Repo Prompt.app"
+ */
+export function inferAppPath(config: RpConfig): string | null {
+  if (config.appPath) {
+    return config.appPath;
+  }
+  if (!config.command) {
+    return null;
+  }
+  const appMatch = config.command.match(/^(.+\.app)\//i);
+  return appMatch ? appMatch[1] : null;
+}
+
+/**
  * Get the server command and args, or return null if not found
  *
  * We avoid throwing on startup because a missing server is a common first-run condition

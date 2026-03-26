@@ -196,6 +196,8 @@ Options:
 | `diffViewMode` | `"auto"` | Diff layout for RepoPrompt `git` / `apply_edits` fenced diff output (`auto`, `split`, `unified`) |
 | `diffSplitMinWidth` | `120` | Minimum render width before `diffViewMode: "auto"` uses split diff layout |
 | `suppressHostDisconnectedLog` | `true` | Filter noisy stderr from macOS `repoprompt-mcp` (disconnect/retry bootstrap logs) |
+| `autoLaunchApp` | `false` | Auto-launch the RepoPrompt app when the MCP server is unreachable at startup |
+| `appPath` | inferred | Explicit path to `Repo Prompt.app`; if omitted, inferred from the `.app` ancestor of `command` |
 
 Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 
@@ -220,6 +222,8 @@ but this is best-effort
 If the RepoPrompt MCP server stops responding (for example, if the RepoPrompt app is closed while Pi stays open), tool calls may time out. When that happens, the extension will drop the connection and you can recover with `/rp reconnect`.
 
 If RepoPrompt is not running when Pi starts, the extension auto-pauses itself after a quick connection timeout.  While paused, the `rp` tool returns a short error directing the agent to use native tools.  Run `/rp reconnect` once RepoPrompt is open to resume, and the agent will be notified that `rp` is available again.
+
+If `autoLaunchApp` is enabled, the extension will try to open the RepoPrompt app automatically before pausing.  The app path is inferred from the `command` config (e.g. `/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp` → `/Applications/Repo Prompt.app`), or you can set `appPath` explicitly.  After launching, the extension waits a few seconds and retries the connection once; if that also fails, it auto-pauses as usual.
 
 ### "No matching window found"
 - Your `cwd` may not match any RepoPrompt workspace root

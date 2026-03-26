@@ -9,6 +9,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
 
 import type {
   ExtensionAPI,
@@ -32,7 +33,7 @@ import type {
   AutoSelectionEntryRangeData,
 } from "./types.js";
 import { AUTO_SELECTION_ENTRY_TYPE } from "./types.js";
-import { loadConfig, getServerCommand } from "./config.js";
+import { loadConfig, getServerCommand, inferAppPath } from "./config.js";
 import { getRpClient, resetRpClient } from "./client.js";
 import {
   getBinding,
@@ -1260,13 +1261,31 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         return;
       }
       await syncAutoSelectionToCurrentBranch(ctx);
-    }).catch((err) => {
+    }).catch(async (err) => {
       if (initPromise === pendingInit) {
         initPromise = null;
       }
       if (shutdownRequested) {
         return;
       }
+      // If autoLaunchApp is enabled, try opening the app and retrying once
+      if (config.autoLaunchApp) {
+        const appPath = inferAppPath(config);
+        if (appPath) {
+          const launched = await tryLaunchApp(appPath);
+          if (launched && !shutdownRequested) {
+            try {
+              await resetRpClient();
+              await initializeExtension(pi, ctx, config);
+              await syncAutoSelectionToCurrentBranch(ctx);
+              return;
+            } catch {
+              // Fall through to pause
+            }
+          }
+        }
+      }
+
       extensionPaused = true;
       if (ctx.hasUI) {
         ctx.ui.notify("RepoPrompt unavailable — extension paused. Use /rp reconnect when ready.", "warning");
@@ -2954,6 +2973,26 @@ async function promptForWindowSelection(
     },
     { overlay: true }
   );
+}
+
+/**
+ * Try to launch the RepoPrompt app via `open`. Returns true if the app was launched
+ * and appears to have started (the MCP server binary exists inside the bundle).
+ */
+async function tryLaunchApp(appPath: string): Promise<boolean> {
+  if (process.platform !== "darwin") {
+    return false;
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile("open", ["-a", appPath], (err) => (err ? reject(err) : resolve()));
+    });
+    // Give the app time to start its MCP server
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function initializeExtension(

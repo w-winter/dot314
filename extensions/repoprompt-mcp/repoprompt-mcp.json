@@ -10,5 +10,6 @@
   "diffSplitMinWidth": 120,
   "readcacheReadFile": false,
   "autoSelectReadSlices": true,
-  "oracleDefaultMode": "chat"
+  "oracleDefaultMode": "chat",
+  "autoLaunchApp": true
 }
