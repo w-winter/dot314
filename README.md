@@ -195,7 +195,6 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ○ | `inline-bash.ts` |
 | ○ | `interactive-shell.ts` |
 | ● | `iterm-tab-color.ts` |
-| ○ | `mac-system-theme.ts` |
 | ● | `md.ts` |
 | ● | `model-aware-compaction/` |
 | ● | `model-sysprompt-appendix/` |
@@ -206,11 +205,9 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ● | `poly-notify/` |
 | ○ | `preset.ts` |
 | ● | `protect-paths.ts` |
-| ○ | `questionnaire.ts` |
 | ● | `reverse-thinking.ts` |
 | ● | `repoprompt-cli/` |
 | ● | `repoprompt-mcp/` |
-| ○ | `review.ts` |
 | ◐ | `rewind/` |
 | ● | `roam/` |
 | ● | `rp-native-tools-lock/` |
@@ -219,13 +216,10 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ● | `session-ask/` |
 | ◐ | `session-switch.ts` |
 | ◐ | `skill-palette/` |
-| ○ | `speedreading.ts` |
-| ○ | `status-line.ts` |
 | ○ | `subagent/` |
 | ○ | `titlebar-spinner.ts` |
 | ○ | `todos.ts` |
 | ◐ | `tools/` |
-| ◐ | `ultrathink.ts` |
 | ◐ | `usage-bar.ts` |
 
 ### Skills

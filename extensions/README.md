@@ -261,10 +261,7 @@ Single-file extensions (see file headers):
 Upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions)
 - ○ `inline-bash.ts` - expands `!{command}` patterns in prompts via `input` event transformation
 - ○ `interactive-shell.ts`
-- ○ `mac-system-theme.ts`
 - ○ `preset.ts`
-- ○ `questionnaire.ts` - multi-question input with tab bar navigation between questions
-- ○ `review.ts`
 - ○ `send-user-message.ts`
 - ○ `status-line.ts`
 - ○ `titlebar-spinner.ts`
@@ -277,6 +274,5 @@ Other:
 - ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
   - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
-- ○ `speedreading.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
 - ○ `todos.ts` (upstream: [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff))
 - ◐ `ultrathink.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))

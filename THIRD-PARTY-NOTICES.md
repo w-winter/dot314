@@ -21,10 +21,7 @@ text. This file provides a consolidated overview.
   - `extensions/inline-bash.ts` (○ unmodified)
   - `extensions/interactive-shell.ts` (○ unmodified)
   - `extensions/preset.ts` (○ unmodified)
-  - `extensions/questionnaire.ts` (○ unmodified)
-  - `extensions/review.ts` (○ unmodified)
   - `extensions/send-user-message.ts` (○ unmodified)
-  - `extensions/status-line.ts` (○ unmodified)
   - `extensions/titlebar-spinner.ts` (○ unmodified)
 
 ### Gurpartap/pi-readcache
@@ -64,8 +61,6 @@ text. This file provides a consolidated overview.
 - **Used in:**
   - `extensions/oracle.ts` (◐ modified — thinking picker, CJK-safe wrapping)
   - `extensions/usage-bar.ts` (◐ modified — multi-Codex, color scale, alignment)
-  - `extensions/speedreading.ts` (○ unmodified)
-  - `extensions/ultrathink.ts` (◐ modified)
 
 ### damianpdr/pi-thread-switcher
 - **URL:** https://github.com/damianpdr/pi-thread-switcher
