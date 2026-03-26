@@ -21,7 +21,6 @@ text. This file provides a consolidated overview.
   - `extensions/inline-bash.ts` (○ unmodified)
   - `extensions/interactive-shell.ts` (○ unmodified)
   - `extensions/preset.ts` (○ unmodified)
-  - `extensions/send-user-message.ts` (○ unmodified)
   - `extensions/titlebar-spinner.ts` (○ unmodified)
 
 ### Gurpartap/pi-readcache

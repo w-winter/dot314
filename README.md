@@ -212,7 +212,6 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ● | `roam/` |
 | ● | `rp-native-tools-lock/` |
 | ◐ | `sandbox/` |
-| ○ | `send-user-message.ts` |
 | ● | `session-ask/` |
 | ◐ | `session-switch.ts` |
 | ◐ | `skill-palette/` |

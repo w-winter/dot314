@@ -262,7 +262,6 @@ Upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packa
 - ○ `inline-bash.ts` - expands `!{command}` patterns in prompts via `input` event transformation
 - ○ `interactive-shell.ts`
 - ○ `preset.ts`
-- ○ `send-user-message.ts`
 - ○ `status-line.ts`
 - ○ `titlebar-spinner.ts`
 

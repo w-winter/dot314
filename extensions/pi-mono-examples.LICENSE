@@ -3,11 +3,7 @@ pi-mono examples (https://github.com/badlogic/pi-mono/tree/main/packages/coding-
 
   - inline-bash.ts
   - interactive-shell.ts
-  - mac-system-theme.ts
   - preset.ts
-  - questionnaire.ts
-  - review.ts
-  - send-user-message.ts
   - status-line.ts
   - titlebar-spinner.ts
 
