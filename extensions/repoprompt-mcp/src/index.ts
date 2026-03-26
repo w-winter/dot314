@@ -557,6 +557,8 @@ const RpToolSchema = Type.Object({
 export default function repopromptMcp(pi: ExtensionAPI) {
   let config: RpConfig = loadConfig();
   let initPromise: Promise<void> | null = null;
+  let shutdownRequested = false;
+  let extensionPaused = false;
 
   pi.on("before_agent_start", async () => {
     // Reload config so display knobs (collapsedMaxLines etc.) apply without requiring /reload
@@ -1225,6 +1227,9 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   // ───────────────────────────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, ctx) => {
+    shutdownRequested = false;
+    extensionPaused = false;
+
     if (ctx.hasUI) {
       // This extension used to set a status bar item; clear it to avoid persisting stale UI state
       ctx.ui.setStatus("rp", undefined);
@@ -1244,16 +1249,27 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     }
 
     // Non-blocking initialization
-    initPromise = initializeExtension(pi, ctx, config);
+    const pendingInit = initializeExtension(pi, ctx, config);
+    initPromise = pendingInit;
 
-    initPromise.then(async () => {
-      initPromise = null;
+    pendingInit.then(async () => {
+      if (initPromise === pendingInit) {
+        initPromise = null;
+      }
+      if (shutdownRequested) {
+        return;
+      }
       await syncAutoSelectionToCurrentBranch(ctx);
     }).catch((err) => {
-      console.error("RepoPrompt MCP initialization failed:", err);
-      initPromise = null;
+      if (initPromise === pendingInit) {
+        initPromise = null;
+      }
+      if (shutdownRequested) {
+        return;
+      }
+      extensionPaused = true;
       if (ctx.hasUI) {
-        ctx.ui.notify(`RepoPrompt: ${err.message}`, "error");
+        ctx.ui.notify("RepoPrompt unavailable — extension paused. Use /rp reconnect when ready.", "warning");
       }
     });
   });
@@ -1263,14 +1279,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    if (initPromise) {
-      try {
-        await initPromise;
-      } catch {
-        // Ignore
-      }
-    }
+    shutdownRequested = true;
+    initPromise = null;
 
+    // Never block Pi shutdown on an MCP startup handshake that may be stuck waiting on the app
     clearReadcacheCaches();
     activeAutoSelectionState = null;
     await resetRpClient();
@@ -1340,15 +1352,15 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       const parts = args?.trim().split(/\s+/) ?? [];
       const subcommand = parts[0]?.toLowerCase() ?? "status";
 
-      // Allow status/readcache-status/readcache-refresh/reconnect while disconnected
-      if (
-        subcommand !== "reconnect" &&
-        subcommand !== "status" &&
-        subcommand !== "readcache-status" &&
-        subcommand !== "readcache_status" &&
-        subcommand !== "readcache-refresh" &&
-        subcommand !== "readcache_refresh"
-      ) {
+      // Allow status/reconnect while disconnected or paused
+      const alwaysAllowed = new Set(["reconnect", "status", "readcache-status", "readcache_status", "readcache-refresh", "readcache_refresh"]);
+
+      if (extensionPaused && !alwaysAllowed.has(subcommand)) {
+        ctx.ui.notify("RepoPrompt extension is paused. Use /rp reconnect to resume.", "warning");
+        return;
+      }
+
+      if (!alwaysAllowed.has(subcommand)) {
         await ensureConnected(ctx);
       }
 
@@ -1587,16 +1599,31 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           break;
         }
 
-        case "reconnect":
+        case "reconnect": {
+          const wasPaused = extensionPaused;
           try {
             await resetRpClient();
+            extensionPaused = false;
             await initializeExtension(pi, ctx, config);
             await syncAutoSelectionToCurrentBranch(ctx);
             ctx.ui.notify("RepoPrompt reconnected", "info");
+
+            if (wasPaused) {
+              pi.sendMessage(
+                {
+                  customType: "rp-availability",
+                  content: "RepoPrompt (`rp` tool) is now available.",
+                  display: false,
+                },
+                { triggerTurn: false },
+              );
+            }
           } catch (err) {
+            extensionPaused = true;
             ctx.ui.notify(`Reconnection failed: ${err instanceof Error ? err.message : err}`, "error");
           }
           break;
+        }
 
         default:
           ctx.ui.notify(
@@ -1640,6 +1667,13 @@ Mode priority: call > describe > search > windows > bind > status`,
     parameters: RpToolSchema,
 
     async execute(_toolCallId, params: RpToolParams, _signal, onUpdate, _ctx) {
+      if (extensionPaused) {
+        throw new Error(
+          "The rp tool is not currently available due to a connection issue. " +
+          "The user can run /rp reconnect when the RepoPrompt app is running."
+        );
+      }
+
       // Provide a no-op if onUpdate is undefined
       const safeOnUpdate = onUpdate ?? (() => {});
 
@@ -2176,6 +2210,9 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     let msg = `RepoPrompt Status\n`;
     msg += `─────────────────\n`;
+    if (extensionPaused) {
+      msg += `Extension: ⏸ paused (use /rp reconnect to resume)\n`;
+    }
     msg += `Connection: ${client.isConnected ? "✓ connected" : "✗ disconnected"}\n`;
     msg += `Tools: ${client.tools.length}\n`;
 

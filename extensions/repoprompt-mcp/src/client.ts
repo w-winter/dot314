@@ -15,11 +15,31 @@ const CLIENT_INFO = {
   version: "1.0.0",
 };
 
+const DEFAULT_CONNECT_TIMEOUT_MS = 6_000;
 const DEFAULT_LIST_TOOLS_TIMEOUT_MS = 10_000;
 
 // Keep parity with the rp-cli integration default (15 minutes). Some RepoPrompt tools
 // (notably context_builder and chat_send) can legitimately take longer than 10s
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 15 * 60 * 1000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
 
 
 /**
@@ -31,23 +51,23 @@ export class RpClient {
   private _status: ConnectionStatus = "disconnected";
   private _tools: RpToolMeta[] = [];
   private _error: string | undefined;
-  
+
   get status(): ConnectionStatus {
     return this._status;
   }
-  
+
   get tools(): RpToolMeta[] {
     return this._tools;
   }
-  
+
   get error(): string | undefined {
     return this._error;
   }
-  
+
   get isConnected(): boolean {
     return this._status === "connected" && this.client !== null;
   }
-  
+
   /**
    * Connect to the RepoPrompt MCP server
    */
@@ -59,13 +79,13 @@ export class RpClient {
     if (this._status === "connecting") {
       throw new Error("Connection already in progress");
     }
-    
+
     // Close existing connection if any
     await this.close();
-    
+
     this._status = "connecting";
     this._error = undefined;
-    
+
     try {
       // Create transport
       const mergedEnv: Record<string, string> = {};
@@ -77,36 +97,40 @@ export class RpClient {
       if (env) {
         Object.assign(mergedEnv, env);
       }
-      
+
       this.transport = new StdioClientTransport({
         command,
         args,
         env: Object.keys(mergedEnv).length > 0 ? mergedEnv : undefined,
       });
-      
+
       // Create client
       this.client = new Client(CLIENT_INFO, {
         capabilities: {},
       });
-      
+
       // Connect
-      await this.client.connect(this.transport);
-      
+      await withTimeout(
+        this.client.connect(this.transport),
+        DEFAULT_CONNECT_TIMEOUT_MS,
+        `Timed out connecting to RepoPrompt MCP server after ${DEFAULT_CONNECT_TIMEOUT_MS}ms`
+      );
+
       // Fetch available tools
       await this.refreshTools();
-      
+
       this._status = "connected";
     } catch (error) {
       this._status = "error";
       this._error = error instanceof Error ? error.message : String(error);
-      
+
       // Clean up on error
       await this.close();
-      
+
       throw error;
     }
   }
-  
+
   /**
    * Refresh the list of available tools
    */
@@ -125,7 +149,7 @@ export class RpClient {
 
     return this._tools;
   }
-  
+
   /**
    * Call a tool on the RepoPrompt MCP server
    */
@@ -187,33 +211,38 @@ export class RpClient {
       isError: Boolean(result.isError),
     };
   }
-  
+
   /**
    * Close the connection
    */
   async close(): Promise<void> {
-    if (this.client) {
-      try {
-        await this.client.close();
-      } catch {
-        // Ignore close errors
-      }
-      this.client = null;
-    }
+    const client = this.client;
+    const transport = this.transport;
+    const wasConnecting = this._status === "connecting";
 
-    if (this.transport) {
-      try {
-        await this.transport.close();
-      } catch {
-        // Ignore close errors
-      }
-      this.transport = null;
-    }
-
+    this.client = null;
+    this.transport = null;
     this._status = "disconnected";
     this._tools = [];
+
+    // If connect() never completed, skip the graceful MCP close and tear down the transport directly
+    if (client && !wasConnecting) {
+      try {
+        await client.close();
+      } catch {
+        // Ignore close errors
+      }
+    }
+
+    if (transport) {
+      try {
+        await transport.close();
+      } catch {
+        // Ignore close errors
+      }
+    }
   }
-  
+
   /**
    * Get connection info for debugging
    */
@@ -221,7 +250,7 @@ export class RpClient {
     if (!this.client || !this.transport) {
       return null;
     }
-    
+
     return {
       client: this.client,
       transport: this.transport,

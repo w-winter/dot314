@@ -248,6 +248,8 @@ but this is best-effort
 ### Pi becomes unresponsive after closing/restarting RepoPrompt
 If the RepoPrompt MCP server stops responding (for example, if the RepoPrompt app is closed while Pi stays open), tool calls may time out. When that happens, the extension will drop the connection and you can recover with `/rp reconnect`.
 
+If RepoPrompt is not running when Pi starts, the extension auto-pauses itself after a quick connection timeout.  While paused, the `rp` tool returns a short error directing the agent to use native tools.  Run `/rp reconnect` once RepoPrompt is open to resume, and the agent will be notified that `rp` is available again.
+
 ### "No matching window found"
 - Your `cwd` may not match any RepoPrompt workspace root
 - Use `/rp windows` to list windows
