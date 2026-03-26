@@ -99,7 +99,6 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 
 | | Extension | npm | Description |
 |---|---|---|---|
-| ◐ | `agentic-compaction/` | | Compaction summarizer explores conversation as a filesystem |
 | ● | `anycopy/` | [`pi-anycopy`](https://www.npmjs.com/package/pi-anycopy) | `/tree` with live syntax-highlighted preview + copy |
 | ◐ | `branch-out/` | [`pi-branch-out`](https://www.npmjs.com/package/pi-branch-out) | Fork session into split pane or new tab with layout policies and optional model/message queuing |
 | ● | `brave-search/` | [`pi-brave-search`](https://www.npmjs.com/package/pi-brave-search) | Web search + content extraction. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose search |
@@ -137,6 +136,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 
 | | Extension |
 |---|---|
+| ◐ | `agentic-compaction/` |
 | ○ | `code-actions/` |
 | ◐ | `extension-stats.ts` |
 | ○ | `inline-bash.ts` |
