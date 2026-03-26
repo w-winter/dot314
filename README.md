@@ -2,7 +2,7 @@
 
 Extensions, skills, prompts, and themes for [Pi coding agent](https://github.com/badlogic/pi-mono).  There is an emphasis here on making Pi and [RepoPrompt](https://repoprompt.com) co-operate well.
 
-> This is a personal collection.  Most of the extensions are original or modified, some from other authors I've republished unmodified.  This repo is tailored to my workflow and preferences and may introduce breaking changes without notice.  Unmodified extensions may lag well behind their upstream versions.  Extensions published as [Pi packages](#install-individual-extensions-from-npm) receive my active maintenance.
+> This collection is tailored to my workflow and preferences.  I may introduce breaking changes without notice.  While most of the extensions are original or modified, some that were authored by others are republished here unmodified, and those may lag well behind their upstream versions.  Extensions published as [Pi packages](#install-individual-extensions-from-npm) receive my active maintenance.
 
 ## Provenance key
 

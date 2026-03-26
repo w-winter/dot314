@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { normalizeTargetCwd } from "../../../extensions/move-session-lib/normalize-target-cwd";
+import { normalizeTargetCwd } from "../../../extensions/_shared/normalize-target-cwd";
 
 describe("normalizeTargetCwd", () => {
     test("resolves relative target paths to absolute paths", () => {
