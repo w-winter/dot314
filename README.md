@@ -2,7 +2,7 @@
 
 Extensions, skills, prompts, and themes for [Pi coding agent](https://github.com/badlogic/pi-mono).  There is an emphasis here on making Pi and [RepoPrompt](https://repoprompt.com) co-operate well.
 
-> This is a personal collection.  Some items are original, some adapted from the Pi community, some used unadapted.  It's tailored to my workflow and may introduce breaking changes without notice.  Unadapted items may lag well behind their upstream versions.  Extensions published as [Pi packages](#install-individual-extensions-from-npm) receive more careful maintenance.
+> This is a personal collection.  Most of the extensions are original or modified, some from other authors I've republished unmodified.  This repo is tailored to my workflow and preferences and may introduce breaking changes without notice.  Unmodified extensions may lag well behind their upstream versions.  Extensions published as [Pi packages](#install-individual-extensions-from-npm) receive my active maintenance.
 
 ## Provenance key
 
@@ -146,6 +146,26 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `themes/violet-dawn.json` |
 | ● | `themes/violet-dusk.json` |
 
+### Recommended companion extensions
+
+These extensions are not included in this repo but have also become established in my regular Pi sessions.  You can install them via `pi install`, or copy single files into `~/.pi/agent/extensions/`.
+
+| Extension | Description | Install |
+|---|---|---|
+| [pi-guardrails](https://github.com/aliou/pi-guardrails) | `.env` file protection + AST-based dangerous command gates | `pi install npm:@aliou/pi-guardrails` |
+| [pi-interview](https://github.com/nicobailon/pi-interview-tool) | Interactive form-based input gathering with native window support | `pi install npm:pi-interview` |
+| [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer) | Read-tool-kit context optimization for token efficiency | `pi install npm:pi-rtk-optimizer` |
+| [pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker) | Quick screenshot selection and attachment for prompts | `pi install npm:pi-screenshots-picker` |
+| [pi-token-burden](https://github.com/Whamp/pi-token-burden) | Token usage breakdown and context burden analysis | `pi install npm:pi-token-burden` |
+| [pi-tool-display](https://github.com/MasuRii/pi-tool-display) | Compact tool call rendering with diff visualization.  ⚠ Collides with `sandbox/` — enable only one | `pi install npm:pi-tool-display` |
+| [pi-verbosity-control](https://github.com/ferologics/pi-verbosity-control) | Per-model OpenAI verbosity presets with configurable shortcut | `pi install npm:pi-verbosity-control` |
+| [pi-web-access](https://github.com/nicobailon/pi-web-access) | Gemini-powered web search with AI-synthesized overviews and citations | `pi install npm:pi-web-access` |
+| [bookmark](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/bookmark.ts) | Bookmark and recall conversation positions | Copy to `~/.pi/agent/extensions/` |
+| [diff](https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/diff.ts) | `/diff` shows git-changed files and opens selected file in VS Code's diff view | Copy to `~/.pi/agent/extensions/` |
+| [pi-nvim](https://github.com/aliou/pi-harness/tree/main/integrations/neovim) | Bidirectional Neovim integration: `nvim_context` tool, LSP diagnostics at turn end, file reload after edits, visible-splits injection | Neovim plugin; see [setup instructions](https://github.com/aliou/pi-harness/tree/main/integrations/neovim#installation) |
+| [greprip](https://github.com/kaofelix/greprip) | Enhanced grep/ripgrep integration for Pi | `pi install git:github.com/kaofelix/greprip` |
+| [whimsical](https://github.com/mitsuhiko/agent-stuff/blob/main/pi-extensions/whimsical.ts) | Whimsical messages while the agent is working | Copy to `~/.pi/agent/extensions/` |
+
 ### Manual / symlink setup
 
 If you prefer a local working-copy workflow, clone this repo anywhere:
@@ -182,6 +202,7 @@ See [extensions/README.md](extensions/README.md) for full descriptions.
 | ● | `anycopy/` |
 | ◐ | `branch-out/` |
 | ● | `brave-search/` |
+| ◐ | `cmux.ts` |
 | ○ | `code-actions/` |
 | ● | `command-center/` |
 | ● | `dedup-agents-files.ts` |

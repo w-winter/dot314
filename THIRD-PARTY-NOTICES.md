@@ -14,6 +14,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2025 Mario Zechner
 - **Used in:**
+  - `extensions/diff.ts` (○ unmodified)
   - `extensions/files-touched.ts` (◐ modified)
   - `extensions/plan-mode.ts` (◐ modified)
   - `extensions/tools/` (◐ modified)
@@ -22,6 +23,13 @@ text. This file provides a consolidated overview.
   - `extensions/interactive-shell.ts` (○ unmodified)
   - `extensions/preset.ts` (○ unmodified)
   - `extensions/titlebar-spinner.ts` (○ unmodified)
+
+### HazAT/pi-config
+- **URL:** https://github.com/HazAT/pi-config
+- **License:** MIT
+- **Copyright:** © 2026 Daniel Griesser
+- **Used in:**
+  - `extensions/cmux.ts` (◐ modified — added workspace auto-renaming synced to Pi session name)
 
 ### Gurpartap/pi-readcache
 - **URL:** https://github.com/Gurpartap/pi-readcache
