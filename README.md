@@ -112,6 +112,7 @@ This repo contains more resources than the package exports. When installed as a 
 | ● | `anycopy/` | `/tree` with live syntax-highlighted preview + copy: navigate branches, summarize, label, and copy any node(s) to clipboard |
 | ◐ | `branch-out/` | Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing |
 | ● | `brave-search/` | Web search + content extraction. Requires `BRAVE_API_KEY`. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose agent search |
+| ◐ | `cmux.ts` | cmux sidebar integration + workspace auto-renaming synced to Pi session name; no-op outside cmux |
 | ● | `command-center/` | /command palette widget |
 | ◐ | `editor-enhancements/` | File picker, shell completions, raw paste, double-esc and slash command remapping |
 | ● | `ephemeral-mode.ts` | Delete session on exit |
