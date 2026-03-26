@@ -1,6 +1,10 @@
 # Extensions
 
-## New or locally modified
+| Symbol | Meaning |
+|--------|-------------------------|
+| ● | original |
+| ◐ | forked & modified |
+| ○ | republished unmodified |
 
 - ● [`grounded-compaction/`](grounded-compaction/) ([README](./grounded-compaction/README.md))
   - Replaces Pi's compaction summarizer with configurable model presets, user-editable prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, and bash-derived file operations; also augments branch summarization during `/tree` with the same files-touched grounding and optional prompt customization
@@ -142,6 +146,13 @@
   - Search results are shown to the user but filtered out of LLM context via the `context` hook
   - **Recommendation:** For general-purpose web search with agents, I now prefer [nicobailon/pi-web-access](https://github.com/nicobailon/pi-web-access) — it uses Gemini search which provides better indexing and returns an AI-synthesized overview alongside citations, which works better for agent workflows. `brave-search` remains useful when you specifically need individual search results with per-result previews
 
+- ● [`protect-paths.ts`](protect-paths.ts) - standalone directory/command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails)
+  - 🔄 **Replaces the directory protection and brew prevention hooks from the old `guardrails/` directory.** For `.env` file protection and AST-based dangerous command gates (the other components of the old `guardrails/`), install upstream: `pi install npm:@aliou/pi-guardrails`
+  - Hard blocks: `.git/` and `node_modules/` directory access (file tools + bash command parsing), Homebrew install/upgrade commands
+  - Uses just-bash AST analysis (requires `just-bash` >= 2) to inspect nested command structures (including substitutions/functions/conditionals)
+  - Confirm gates: broad delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
+  - Allowlist for Pi's Homebrew install path in `node_modules/` (read-only)
+
 - ● `reverse-thinking.ts` - Adds backward (e.g. 'med' -> 'low') cycling movement through thinking levels via `shift+alt+tab`
 
 - ● [`iterm-tab-color.ts`](iterm-tab-color.ts)
@@ -200,7 +211,7 @@
 - ◐ [`extension-stats.ts`](extension-stats.ts)
   - `/extension-stats` shows rolling 7/30/60/90-day usage metrics from session logs, grouped by extension and tool
   - Use ↑/↓ to page, press `m` to toggle whether the metric is based on count of tool calls or on tokens attributed to tool calls
-  - Adapted from `session-breakdown.ts` of [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff) (breadowns by)
+  - Adapted from `session-breakdown.ts` of [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff)
 
 <p align="center">
   <img width="720" alt="extension stats widget" src="https://github.com/user-attachments/assets/b1a2b8eb-0880-44f5-8ae2-2b8aa8221318" />
@@ -238,43 +249,27 @@
     - Provider status emoji hidden on fetch errors to avoid misleading indicators
     - Adds `alt+u` shortcut
 
-- ○ [`skill-palette/`](skill-palette/) (upstream: [nicobailon/pi-skill-palette](https://github.com/nicobailon/pi-skill-palette))
-
-- ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
-
-- ● [`protect-paths.ts`](protect-paths.ts) - standalone directory/command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails)
-  - 🔄 **Replaces the directory protection and brew prevention hooks from the old `guardrails/` directory.** For `.env` file protection and AST-based dangerous command gates (the other components of the old `guardrails/`), install upstream: `pi install npm:@aliou/pi-guardrails`
-  - Hard blocks: `.git/` and `node_modules/` directory access (file tools + bash command parsing), Homebrew install/upgrade commands
-  - Uses just-bash AST analysis (requires `just-bash` >= 2) to inspect nested command structures (including substitutions/functions/conditionals)
-  - Confirm gates: broad delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
-  - Allowlist for Pi's Homebrew install path in `node_modules/` (read-only)
-
-- ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
-
 - ◐ [`rewind/`](rewind/) (upstream: [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
   - Per my preference, this version moves "Keep current files" to the first position of the "Restore Options" menu of `/tree`, and moves "Conversation only (keep current files)" to the first position of the "Restore Options" menu of `/fork`.
 
-## Other extensions in this folder
+- ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+  - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
+  - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
 
-Single-file extensions (see file headers):
+- ◐ [`cmux.ts`](cmux.ts) (upstream: [HazAT/pi-config](https://github.com/HazAT/pi-config/blob/main/extensions/cmux/index.ts))
+  - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
+  - This version adds workspace auto-renaming: on `session_start`, `session_switch`, `session_fork`, and `agent_end`, syncs the cmux workspace name to the Pi session name (only when the workspace has exactly 1 pane and 1 surface)
 
-Upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions)
-- ○ `inline-bash.ts` - expands `!{command}` patterns in prompts via `input` event transformation
-- ○ `interactive-shell.ts`
-- ○ `preset.ts`
-- ○ `status-line.ts`
-- ○ `titlebar-spinner.ts`
-
-Other:
+- ○ [`inline-bash.ts`](inline-bash.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ○ [`interactive-shell.ts`](interactive-shell.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ○ [`preset.ts`](preset.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ○ [`status-line.ts`](status-line.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ○ [`titlebar-spinner.ts`](titlebar-spinner.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
+- ○ [`skill-palette/`](skill-palette/) (upstream: [nicobailon/pi-skill-palette](https://github.com/nicobailon/pi-skill-palette))
+- ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
+- ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
 - ○ [`code-actions/`](code-actions/) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/code` to pick code blocks or inline code from recent assistant messages, then copy or insert
   - `run` now executes snippets in a just-bash OverlayFs sandbox by default on non-Windows (copy-on-write over cwd), with optional fallback to real shell when sandbox commands are unsupported
   - Type to search; enter to copy, right arrow to insert in the command line
-- ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
-  - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
-  - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
 - ○ `todos.ts` (upstream: [mitsuhiko/agent-stuff](https://github.com/mitsuhiko/agent-stuff))
-- ◐ `ultrathink.ts` (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
-- ◐ [`cmux.ts`](cmux.ts) (upstream: [HazAT/pi-config](https://github.com/HazAT/pi-config/blob/main/extensions/cmux/index.ts))
-  - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
-  - This version adds workspace auto-renaming: on `session_start`, `session_switch`, `session_fork`, and `agent_end`, syncs the cmux workspace name to the Pi session name (only when the workspace has exactly 1 pane and 1 surface)
