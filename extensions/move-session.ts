@@ -29,7 +29,7 @@ import {
     unlinkSync,
 } from "node:fs";
 
-import { normalizeTargetCwd } from "./move-session-lib/normalize-target-cwd";
+import { normalizeTargetCwd } from "./_shared/normalize-target-cwd";
 
 const TRASH_TIMEOUT_MS = 5000;
 const HEADER_READ_MAX = 8192;
