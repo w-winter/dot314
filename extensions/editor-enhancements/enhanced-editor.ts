@@ -1,5 +1,11 @@
 import { CustomEditor, type ExtensionUIContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
-import { type AutocompleteItem, type AutocompleteProvider, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
+import {
+    type AutocompleteItem,
+    type AutocompleteProvider,
+    type AutocompleteSuggestions,
+    type EditorTheme,
+    type TUI,
+} from "@mariozechner/pi-tui";
 import * as Clipboard from "@mariozechner/clipboard";
 
 import { openFilePicker } from "./file-picker.js";
@@ -38,11 +44,12 @@ function extractCompletionTextUpToCursor(lines: string[], cursorLine: number, cu
 
 function wrapProviderWithShellAndAtFiltering(provider: AutocompleteProvider, shell: ShellInfo): AutocompleteProvider {
     return {
-        getSuggestions(
+        async getSuggestions(
             lines: string[],
             cursorLine: number,
             cursorCol: number,
-        ): { items: AutocompleteItem[]; prefix: string } | null {
+            options: { signal: AbortSignal; force?: boolean },
+        ): Promise<AutocompleteSuggestions | null> {
             // If user is typing an @ reference, suppress the native autocomplete
             // (we handle "@" ourselves by opening the picker)
             if (isAtCompletionContext(lines, cursorLine, cursorCol)) {
@@ -57,7 +64,7 @@ function wrapProviderWithShellAndAtFiltering(provider: AutocompleteProvider, she
                 }
             }
 
-            return provider.getSuggestions(lines, cursorLine, cursorCol);
+            return provider.getSuggestions(lines, cursorLine, cursorCol, options);
         },
 
         applyCompletion(

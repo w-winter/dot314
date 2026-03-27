@@ -17,7 +17,7 @@
     "extensions": ["extensions/grounded-compaction/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.51.0"
+    "@mariozechner/pi-coding-agent": ">=0.63.1"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

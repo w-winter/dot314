@@ -48,7 +48,8 @@ interface AvailableModel {
 	modelId: string;
 	name: string;
 	model: Model;
-	apiKey: string;
+	apiKey?: string;
+	headers?: Record<string, string>;
 }
 
 // Thinking levels supported by pi-ai
@@ -494,7 +495,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Find available models (with API keys, excluding current)
+			// Find available models (with request auth, excluding current)
 			const availableModels: AvailableModel[] = [];
 
 			for (const m of ORACLE_MODELS) {
@@ -504,20 +505,21 @@ export default function (pi: ExtensionAPI) {
 				// Skip current model - we want a DIFFERENT opinion
 				if (ctx.model && model.id === ctx.model.id) continue;
 
-				const apiKey = await ctx.modelRegistry.getApiKey(model);
-				if (!apiKey) continue;
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+				if (!auth.ok) continue;
 
 				availableModels.push({
 					provider: m.provider,
 					modelId: m.model,
 					name: m.name,
 					model,
-					apiKey,
+					apiKey: auth.apiKey,
+					headers: auth.headers,
 				});
 			}
 
 			if (availableModels.length === 0) {
-				ctx.ui.notify("No alternative models available. Check API keys.", "error");
+				ctx.ui.notify("No alternative models available. Check model auth.", "error");
 				return;
 			}
 
@@ -728,7 +730,7 @@ Your job is to:
 Focus on being helpful and providing a fresh perspective.`,
 					messages: [userMessage],
 				},
-				{ apiKey: model.apiKey, signal: loader.signal, reasoning: thinkingLevel }
+				{ apiKey: model.apiKey, headers: model.headers, signal: loader.signal, reasoning: thinkingLevel }
 			);
 
 			if (response.stopReason === "aborted") {

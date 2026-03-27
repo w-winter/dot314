@@ -1040,6 +1040,7 @@ async function runSessionAsk(params: RunSessionAskParams): Promise<string> {
     // Model selection
     let model: Model<any> | null = null;
     let apiKey: string | undefined;
+    let headers: Record<string, string> | undefined;
     let selectedThinkingLevel: ThinkingLevel = agent.thinkingLevel ?? config.thinkingLevel;
 
     const candidates: SessionAskModelConfig[] = [
@@ -1057,22 +1058,30 @@ async function runSessionAsk(params: RunSessionAskParams): Promise<string> {
         if (!registryModel) continue;
 
         // eslint-disable-next-line no-await-in-loop
-        const key = await ctx.modelRegistry.getApiKey(registryModel);
-        if (!key) continue;
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(registryModel);
+        if (!auth.ok) continue;
 
         model = registryModel;
-        apiKey = key;
+        apiKey = auth.apiKey;
+        headers = auth.headers;
         selectedThinkingLevel = cfg.thinkingLevel ?? selectedThinkingLevel;
         break;
     }
 
     if (!model) {
         model = ctx.model;
-        apiKey = await ctx.modelRegistry.getApiKey(model);
+        if (model) {
+            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+            if (!auth.ok) {
+                throw new Error(auth.error);
+            }
+            apiKey = auth.apiKey;
+            headers = auth.headers;
+        }
     }
 
-    if (!model || !apiKey) {
-        throw new Error("No model available (or no API key) for session-ask");
+    if (!model) {
+        throw new Error("No model available (or no request auth) for session-ask");
     }
 
     await ensureJustBashLoaded();
@@ -1191,7 +1200,7 @@ ${explorationStrategyLines.join("\n")}
     while (turns < config.maxTurns) {
         turns += 1;
 
-        const completeOptions: any = { apiKey, signal };
+        const completeOptions: any = { apiKey, headers, signal };
         if (selectedThinkingLevel !== "off") {
             completeOptions.reasoning = selectedThinkingLevel;
         }

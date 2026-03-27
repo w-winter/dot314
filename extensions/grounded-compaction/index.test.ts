@@ -37,7 +37,10 @@ type TestContext = {
     cwd?: string | null;
     modelRegistry: {
         getAll(): Model<Api>[];
-        getApiKey(model: Model<Api>): Promise<string | undefined>;
+        getApiKeyAndHeaders(model: Model<Api>): Promise<
+            | { ok: true; apiKey?: string; headers?: Record<string, string> }
+            | { ok: false; error: string }
+        >;
     };
 };
 
@@ -193,8 +196,8 @@ function createContext(models: Model<Api>[], currentModel = models[0]): { ctx: T
                 getAll() {
                     return models;
                 },
-                async getApiKey() {
-                    return "test-key";
+                async getApiKeyAndHeaders() {
+                    return { ok: true as const, apiKey: "test-key" };
                 },
             },
         },

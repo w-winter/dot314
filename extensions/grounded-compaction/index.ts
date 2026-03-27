@@ -48,7 +48,8 @@ export interface ParsedCompactInstructions {
 
 export interface ResolvedSummarizer {
     model: Model<any>;
-    apiKey: string;
+    apiKey?: string;
+    headers?: Record<string, string>;
     reasoningLevel?: ThinkingLevel;
 }
 
@@ -80,7 +81,10 @@ type HookContext = {
     cwd?: string | null;
     modelRegistry: {
         getAll(): Model<Api>[];
-        getApiKey(model: Model<Api>): Promise<string | undefined>;
+        getApiKeyAndHeaders(model: Model<Api>): Promise<
+            | { ok: true; apiKey?: string; headers?: Record<string, string> }
+            | { ok: false; error: string }
+        >;
     };
 };
 
@@ -626,15 +630,16 @@ export async function resolveDefaultSummarizer(
         throw new Error("No active session model is available for compaction");
     }
 
-    const apiKey = await ctx.modelRegistry.getApiKey(ctx.model);
-    if (!apiKey) {
-        throw new Error(`No API key for ${ctx.model.provider}/${ctx.model.id}`);
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    if (!auth.ok) {
+        throw new Error(auth.error);
     }
 
     const thinkingLevel = getEffectiveThinkingLevel(branchEntries);
     return {
         model: ctx.model,
-        apiKey,
+        apiKey: auth.apiKey,
+        headers: auth.headers,
         reasoningLevel: ctx.model.reasoning ? thinkingLevel : undefined,
     };
 }
@@ -666,14 +671,15 @@ export async function resolvePresetSummarizer(
         throw new Error(`Preset '${presetMatch.name}' requires reasoning but ${provider}/${modelId} does not support it`);
     }
 
-    const apiKey = await ctx.modelRegistry.getApiKey(model);
-    if (!apiKey) {
-        throw new Error(`No API key for preset model ${provider}/${modelId}`);
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) {
+        throw new Error(auth.error);
     }
 
     return {
         model,
-        apiKey,
+        apiKey: auth.apiKey,
+        headers: auth.headers,
         reasoningLevel: presetMatch.preset.thinkingLevel,
     };
 }
@@ -871,12 +877,14 @@ async function executeSummaryCall(input: SummaryCallInput, deps: RunDeps): Promi
     const options = reasoningLevel
         ? {
             apiKey: input.summarizer.apiKey,
+            headers: input.summarizer.headers,
             maxTokens: input.reserveTokens,
             signal: input.signal,
             reasoning: reasoningLevel,
         }
         : {
             apiKey: input.summarizer.apiKey,
+            headers: input.summarizer.headers,
             maxTokens: input.reserveTokens,
             signal: input.signal,
         };
