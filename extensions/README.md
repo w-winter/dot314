@@ -180,6 +180,12 @@
       - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi's large-paste markers (e.g. `[paste #3 +122 lines]`)
   - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
+- ◐ [`rewind/`](rewind/) (originally [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
+  - Records exact file-state rewind points and offers restore options during `/fork` and `/tree` navigation, including undo
+  - Rewind history survives across forks, resumes, tree navigation, and compaction; rewind points resolve across session lineage via `parentSession` links
+  - Optional configurable retention (`maxSnapshots`, `maxAgeDays`, `pinLabeledEntries`); without it, exact history is kept indefinitely
+  - See [`rewind/README.md`](rewind/README.md) for full details
+
 - ◐ [`agentic-compaction/`](agentic-compaction/) ([README](./agentic-compaction/README.md); upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles/tree/main/shared/.pi/agent/extensions/file-based-compaction))
   - Agentic compaction via a virtual filesystem: mounts `/conversation.json` and lets a summarizer model explore it with portable bash/zsh commands
   - Emphasizes deterministic, tool-result-verified modified-file tracking (native + `rp`), filters likely temp artifacts, supports `/compact <note>`, and can parallelize tool calls via `toolCallConcurrency`
@@ -248,9 +254,6 @@
     - Displays used percentage with 5-band color scale (0-49% green → 95%+ red) and proper label alignment
     - Provider status emoji hidden on fetch errors to avoid misleading indicators
     - Adds `alt+u` shortcut
-
-- ◐ [`rewind/`](rewind/) (upstream: [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
-  - Per my preference, this version moves "Keep current files" to the first position of the "Restore Options" menu of `/tree`, and moves "Conversation only (keep current files)" to the first position of the "Restore Options" menu of `/fork`.
 
 - ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
   - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`

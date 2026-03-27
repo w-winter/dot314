@@ -1,371 +1,1155 @@
 /**
- * Rewind Extension - Git-based file restoration for pi branching
+ * Rewind Extension - session-ledger based exact file restoration for pi branching
  *
- * Creates worktree snapshots at the start of each agent loop (when user sends a message)
- * so /fork and /tree navigation can restore code state.
- * Supports: restore files + conversation, files only, conversation only, undo last restore.
- *
- * Updated for pi-coding-agent v0.35.0+ (unified extensions system)
+ * Rewind v2 stores exact rewind metadata in hidden session custom entries and keeps
+ * snapshot commits reachable through a single repo-local store ref.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { exec as execCb } from "child_process";
-import { readFileSync } from "fs";
-import { mkdtemp, rm } from "fs/promises";
-import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { existsSync, readFileSync, realpathSync } from "fs";
+import { mkdtemp, readdir, readFile, rm, stat } from "fs/promises";
+import { tmpdir } from "os";
+import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { promisify } from "util";
 
 const execAsync = promisify(execCb);
 
-const REF_PREFIX = "refs/pi-checkpoints/";
-const BEFORE_RESTORE_PREFIX = "before-restore-";
-const MAX_CHECKPOINTS = 100;
+const LEGACY_REF_PREFIX = "refs/pi-checkpoints/";
+const STORE_REF = "refs/pi-rewind/store";
 const STATUS_KEY = "rewind";
-const SETTINGS_FILE = join(homedir(), ".pi", "agent", "settings.json");
 const FORK_PREFERENCE_SOURCE_ALLOWLIST = new Set(["fork-from-first"]);
+const LEGACY_ZERO_SHA = "0000000000000000000000000000000000000000";
+const RETENTION_SWEEP_THRESHOLD = 50;
+const RETENTION_VERSION = 2;
+const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 type ExecFn = (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 
-let cachedSilentCheckpoints: boolean | null = null;
+type GitExecResult = Awaited<ReturnType<ExecFn>>;
+
+type BindingTuple = [entryId: string, snapshotIndex: number];
+
+interface RewindSettings {
+  rewind?: {
+    silentCheckpoints?: boolean;
+    retention?: {
+      maxSnapshots?: number;
+      maxAgeDays?: number;
+      pinLabeledEntries?: boolean;
+    };
+  };
+}
+
+interface RewindTurnData {
+  v: 2;
+  snapshots: string[];
+  bindings: BindingTuple[];
+}
+
+interface RewindOpData {
+  v: 2;
+  snapshots: string[];
+  bindings?: BindingTuple[];
+  current?: number;
+  undo?: number;
+}
+
+interface ActivePromptCollector {
+  snapshots: string[];
+  bindings: BindingTuple[];
+  promptText?: string;
+  pendingUserCommitSha?: string;
+}
+
+interface ExactState {
+  commitSha: string;
+  treeSha: string;
+}
+
+interface ActiveBranchState {
+  currentCommitSha?: string;
+  currentTreeSha?: string;
+  undoCommitSha?: string;
+}
+
+interface PendingResultingState {
+  currentCommitSha: string;
+  undoCommitSha?: string;
+}
+
+interface ParsedLedgerReference {
+  commitSha: string;
+  entryId?: string;
+  timestamp: number;
+  kind: "binding" | "current" | "undo";
+}
+
+interface ParsedSessionLedger {
+  sessionFile: string;
+  sessionId?: string;
+  cwd?: string;
+  parentSession?: string;
+  entryToCommit: Map<string, string>;
+  labeledEntryIds: Set<string>;
+  references: ParsedLedgerReference[];
+  latestCurrentCommitSha?: string;
+  latestUndoCommitSha?: string;
+}
+
+interface LegacyRef {
+  refName: string;
+  commitSha: string;
+  sessionId?: string;
+  entryId: string;
+  scoped: boolean;
+}
+
+interface SessionLikeMessageEntry {
+  type: "message";
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  message: {
+    role: string;
+    timestamp?: number;
+    content?: unknown;
+  };
+}
+
+interface SessionLikeCustomEntry {
+  type: "custom";
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  customType: string;
+  data?: unknown;
+}
+
+interface SessionLikeLabelEntry {
+  type: "label";
+  targetId: string;
+  label?: string;
+}
+
+interface SessionLikeBranchSummaryEntry {
+  type: "branch_summary";
+  id: string;
+}
+
+interface SessionLikeGenericEntry {
+  type: string;
+  id?: string;
+  parentId?: string | null;
+  timestamp?: string;
+  message?: {
+    role?: string;
+    timestamp?: number;
+    content?: unknown;
+  };
+  customType?: string;
+  data?: unknown;
+  targetId?: string;
+  label?: string;
+}
+
+type SessionLikeEntry =
+  | SessionLikeMessageEntry
+  | SessionLikeCustomEntry
+  | SessionLikeLabelEntry
+  | SessionLikeBranchSummaryEntry
+  | SessionLikeGenericEntry;
+
+let cachedSettings: RewindSettings | null = null;
+
+function getSettingsFilePath(): string {
+  return join(getAgentDir(), "settings.json");
+}
+
+function getDefaultSessionsDir(): string {
+  return join(getAgentDir(), "sessions");
+}
+
+function getSettings(): RewindSettings {
+  if (cachedSettings) {
+    return cachedSettings;
+  }
+
+  try {
+    cachedSettings = JSON.parse(readFileSync(getSettingsFilePath(), "utf-8")) as RewindSettings;
+  } catch {
+    cachedSettings = {};
+  }
+
+  return cachedSettings;
+}
 
 function getSilentCheckpointsSetting(): boolean {
-  if (cachedSilentCheckpoints !== null) {
-    return cachedSilentCheckpoints;
-  }
+  return getSettings().rewind?.silentCheckpoints === true;
+}
+
+function getRetentionSettings(): NonNullable<NonNullable<RewindSettings["rewind"]>["retention"]> | undefined {
+  return getSettings().rewind?.retention;
+}
+
+function isRewindTurnData(value: unknown): value is RewindTurnData {
+  if (!value || typeof value !== "object") return false;
+  const data = value as Partial<RewindTurnData>;
+  return data.v === 2 && Array.isArray(data.snapshots) && Array.isArray(data.bindings);
+}
+
+function isRewindOpData(value: unknown): value is RewindOpData {
+  if (!value || typeof value !== "object") return false;
+  const data = value as Partial<RewindOpData>;
+  return data.v === 2 && Array.isArray(data.snapshots);
+}
+
+function canonicalizePath(value: string): string {
+  const resolvedValue = resolve(value);
   try {
-    const settingsContent = readFileSync(SETTINGS_FILE, "utf-8");
-    const settings = JSON.parse(settingsContent);
-    cachedSilentCheckpoints = settings.rewind?.silentCheckpoints === true;
-    return cachedSilentCheckpoints;
+    return realpathSync.native(resolvedValue);
   } catch {
-    cachedSilentCheckpoints = false;
-    return false;
+    return resolvedValue;
   }
 }
 
-/**
- * Sanitize entry ID for use in git ref names.
- * Git refs can't contain: space, ~, ^, :, ?, *, [, \, or control chars.
- * Entry IDs are typically alphanumeric but we sanitize just in case.
- */
-function sanitizeForRef(id: string): string {
-  return id.replace(/[^a-zA-Z0-9-]/g, "_");
+function isInsidePath(targetPath: string, parentPath: string): boolean {
+  const resolvedTarget = canonicalizePath(targetPath);
+  const resolvedParent = canonicalizePath(parentPath);
+  const rel = relative(resolvedParent, resolvedTarget);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-export default function (pi: ExtensionAPI) {
-  const checkpoints = new Map<string, string>();
-  let resumeCheckpoint: string | null = null;
-  let repoRoot: string | null = null;
-  let isGitRepo = false;
-  let sessionId: string | null = null;
+function toTimestamp(value: string | undefined): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
-  // Pending checkpoint: worktree state captured at turn_start, waiting for turn_end
-  // to associate with the correct user message entry ID
-  let pendingCheckpoint: { commitSha: string; timestamp: number } | null = null;
+function getTextContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block): block is { type: string; text?: string } => !!block && typeof block === "object")
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "")
+    .join("\n");
+}
+
+function updateLabelSet(labelIds: Set<string>, entry: SessionLikeLabelEntry) {
+  if (!entry.targetId) return;
+  if (entry.label && entry.label.trim()) {
+    labelIds.add(entry.targetId);
+    return;
+  }
+  labelIds.delete(entry.targetId);
+}
+
+function applyBindings(target: Map<string, string>, snapshots: string[], bindings?: BindingTuple[]) {
+  if (!bindings) return;
+  for (const [entryId, snapshotIndex] of bindings) {
+    const commitSha = snapshots[snapshotIndex];
+    if (entryId && commitSha) {
+      target.set(entryId, commitSha);
+    }
+  }
+}
+
+function addReferences(target: ParsedLedgerReference[], snapshots: string[], timestamp: number, data: RewindTurnData | RewindOpData) {
+  if ("bindings" in data && data.bindings) {
+    for (const [entryId, snapshotIndex] of data.bindings) {
+      const commitSha = snapshots[snapshotIndex];
+      if (!commitSha) continue;
+      target.push({ commitSha, entryId, timestamp, kind: "binding" });
+    }
+  }
+
+  if ("current" in data && typeof data.current === "number") {
+    const commitSha = snapshots[data.current];
+    if (commitSha) {
+      target.push({ commitSha, timestamp, kind: "current" });
+    }
+  }
+
+  if ("undo" in data && typeof data.undo === "number") {
+    const commitSha = snapshots[data.undo];
+    if (commitSha) {
+      target.push({ commitSha, timestamp, kind: "undo" });
+    }
+  }
+}
+
+function resolveBindingSnapshotIndex(snapshots: string[], commitSha: string): number {
+  const existingIndex = snapshots.indexOf(commitSha);
+  if (existingIndex >= 0) return existingIndex;
+  snapshots.push(commitSha);
+  return snapshots.length - 1;
+}
+
+function addBindingToCollector(collector: ActivePromptCollector, entryId: string, commitSha: string) {
+  const snapshotIndex = resolveBindingSnapshotIndex(collector.snapshots, commitSha);
+  collector.bindings.push([entryId, snapshotIndex]);
+}
+
+function getCommitFromData(data: RewindOpData, indexKey: "current" | "undo"): string | undefined {
+  const snapshotIndex = data[indexKey];
+  return typeof snapshotIndex === "number" ? data.snapshots[snapshotIndex] : undefined;
+}
+
+function isRestorableTreeEntry(entry: SessionLikeEntry | undefined): boolean {
+  if (!entry) return false;
+  if (entry.type === "message") {
+    return entry.message.role === "user" || entry.message.role === "assistant";
+  }
+  return entry.type === "branch_summary" || entry.type === "compaction";
+}
+
+function isAssistantMessageEntry(entry: SessionLikeEntry): entry is SessionLikeMessageEntry {
+  return entry.type === "message" && entry.message.role === "assistant";
+}
+
+function findLatestUserMessageEntry(entries: SessionLikeEntry[]): SessionLikeMessageEntry | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type === "message" && entry.message.role === "user") {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function findLatestMatchingUserMessageEntry(
+  entries: SessionLikeEntry[],
+  promptText: string | null | undefined,
+): SessionLikeMessageEntry | null {
+  if (!promptText) return null;
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    if (getTextContent(entry.message.content) === promptText) {
+      return entry;
+    }
+  }
+
+  return null;
+}
+
+function findAssistantEntryForTurn(entries: SessionLikeEntry[], message: { timestamp?: number; content?: unknown }): SessionLikeMessageEntry | null {
+  const targetTimestamp = message.timestamp;
+  const targetText = getTextContent(message.content);
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!isAssistantMessageEntry(entry)) continue;
+
+    if (targetTimestamp !== undefined && entry.message.timestamp === targetTimestamp) {
+      return entry;
+    }
+
+    if (targetText && getTextContent(entry.message.content) === targetText) {
+      return entry;
+    }
+  }
+
+  return null;
+}
+
+export default function rewindExtension(pi: ExtensionAPI) {
+  const entryToCommit = new Map<string, string>();
+  const parsedSessionCache = new Map<string, { mtimeMs: number; ledger: ParsedSessionLedger }>();
+
+  let repoRoot: string | null = null;
+  let sessionId: string | null = null;
+  let currentSessionFile: string | undefined;
+  let currentParentSession: string | undefined;
+  let currentSessionCwd: string | undefined;
+  let isGitRepo = false;
+  let lastExact: ExactState | null = null;
+  let activeBranchState: ActiveBranchState = {};
+  let promptCollector: ActivePromptCollector | null = null;
+  let pendingForkState: PendingResultingState | null = null;
+  let pendingTreeState: PendingResultingState | null = null;
+  let activePromptText: string | null = null;
+    let newSnapshotsSinceSweep = 0;
+    let sweepRunning = false;
+    let sweepCompletedThisSession = false;
   let forceConversationOnlyOnNextFork = false;
   let forceConversationOnlySource: string | null = null;
 
-  /**
-   * Update the footer status with checkpoint count
-   */
+  function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") {
+    if (!ctx.hasUI) return;
+    if (level === "info" && getSilentCheckpointsSetting()) return;
+    ctx.ui.notify(message, level);
+  }
+
   function updateStatus(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
-    if (getSilentCheckpointsSetting()) {
+    if (!isGitRepo || getSilentCheckpointsSetting()) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
+
+    const uniqueSnapshots = new Set(entryToCommit.values()).size;
     const theme = ctx.ui.theme;
-    const count = checkpoints.size;
-    ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", "◆ ") + theme.fg("muted", `${count} checkpoint${count === 1 ? "" : "s"}`));
+    ctx.ui.setStatus(
+      STATUS_KEY,
+      theme.fg("dim", "◆ ") + theme.fg("muted", `${entryToCommit.size} points / ${uniqueSnapshots} snapshots`),
+    );
   }
 
-  /**
-   * Reset all state for a fresh session
-   */
   function resetState() {
-    checkpoints.clear();
-    resumeCheckpoint = null;
+    entryToCommit.clear();
+    parsedSessionCache.clear();
     repoRoot = null;
-    isGitRepo = false;
     sessionId = null;
-    pendingCheckpoint = null;
+    currentSessionFile = undefined;
+    currentParentSession = undefined;
+    currentSessionCwd = undefined;
+    isGitRepo = false;
+    lastExact = null;
+    activeBranchState = {};
+    promptCollector = null;
+    pendingForkState = null;
+    pendingTreeState = null;
+      activePromptText = null;
+      newSnapshotsSinceSweep = 0;
+      sweepCompletedThisSession = false;
     forceConversationOnlyOnNextFork = false;
     forceConversationOnlySource = null;
-    cachedSilentCheckpoints = null;
+    cachedSettings = null;
   }
 
-  /**
-   * Rebuild the checkpoints map from existing git refs.
-   * Supports two formats for backward compatibility:
-   * - New format: `checkpoint-{sessionId}-{timestamp}-{entryId}` (session-scoped)
-   * - Old format: `checkpoint-{timestamp}-{entryId}` (pre-v1.7.0, loaded for current session)
-   * This allows checkpoint restoration to work across session resumes.
-   */
-  async function rebuildCheckpointsMap(exec: ExecFn, currentSessionId: string): Promise<void> {
-    try {
-      const result = await exec("git", [
-        "for-each-ref",
-        "--sort=-creatordate",  // Newest first - we keep first match per entry
-        "--format=%(refname)",
-        REF_PREFIX,
-      ]);
-
-      const refs = result.stdout.trim().split("\n").filter(Boolean);
-
-      for (const ref of refs) {
-        // Get checkpoint ID by removing prefix
-        const checkpointId = ref.replace(REF_PREFIX, "");
-
-        // Skip non-checkpoint refs (before-restore, resume)
-        if (!checkpointId.startsWith("checkpoint-")) continue;
-        if (checkpointId.startsWith("checkpoint-resume-")) continue;
-
-        // Try new format first: checkpoint-{sessionId}-{timestamp}-{entryId}
-        // Session ID is a UUID (36 chars with hyphens)
-        // Timestamp is always numeric (13 digits for ms since epoch)
-        // Entry ID comes after the timestamp, may contain hyphens
-        const newFormatMatch = checkpointId.match(/^checkpoint-([a-f0-9-]{36})-(\d+)-(.+)$/);
-        if (newFormatMatch) {
-          const refSessionId = newFormatMatch[1];
-          const entryId = newFormatMatch[3];
-          // Only load checkpoints from the current session, keep newest (first seen)
-          if (refSessionId === currentSessionId && !checkpoints.has(entryId)) {
-            checkpoints.set(entryId, checkpointId);
-          }
-          continue;
-        }
-
-        // Try old format: checkpoint-{timestamp}-{entryId} (pre-v1.7.0)
-        // Load these for backward compatibility - they belong to whoever resumes the session
-        const oldFormatMatch = checkpointId.match(/^checkpoint-(\d+)-(.+)$/);
-        if (oldFormatMatch) {
-          const entryId = oldFormatMatch[2];
-          // Keep newest (first seen), prefer new-format if exists
-          if (!checkpoints.has(entryId)) {
-            checkpoints.set(entryId, checkpointId);
-          }
-        }
-      }
-
-    } catch {
-      // Silent failure - checkpoints will be recreated as needed
-    }
+  function syncSessionIdentity(ctx: ExtensionContext) {
+    sessionId = ctx.sessionManager.getSessionId();
+    currentSessionFile = ctx.sessionManager.getSessionFile();
+    currentParentSession = ctx.sessionManager.getHeader()?.parentSession;
+    currentSessionCwd = ctx.sessionManager.getCwd();
   }
 
-  async function findBeforeRestoreRef(exec: ExecFn, currentSessionId: string): Promise<{ refName: string; commitSha: string } | null> {
-    try {
-      // Look for before-restore refs scoped to this session
-      const result = await exec("git", [
-        "for-each-ref",
-        "--sort=-creatordate",
-        "--count=1",
-        "--format=%(refname) %(objectname)",
-        `${REF_PREFIX}${BEFORE_RESTORE_PREFIX}${currentSessionId}-*`,
-      ]);
-
-      const line = result.stdout.trim();
-      if (!line) return null;
-
-      const parts = line.split(" ");
-      if (parts.length < 2 || !parts[0] || !parts[1]) return null;
-      return { refName: parts[0], commitSha: parts[1] };
-    } catch {
-      return null;
+  async function execGitChecked(args: string[]): Promise<GitExecResult> {
+    const result = await pi.exec("git", args);
+    if (result.code !== 0) {
+      const stderr = result.stderr.trim();
+      throw new Error(stderr || `git ${args.join(" ")} failed with code ${result.code}`);
     }
+    return result;
   }
 
   async function getRepoRoot(exec: ExecFn): Promise<string> {
     if (repoRoot) return repoRoot;
     const result = await exec("git", ["rev-parse", "--show-toplevel"]);
+    if (result.code !== 0) {
+      const stderr = result.stderr.trim();
+      throw new Error(stderr || `git rev-parse --show-toplevel failed with code ${result.code}`);
+    }
     repoRoot = result.stdout.trim();
     return repoRoot;
   }
 
-  /**
-   * Capture current worktree state as a git commit (without affecting HEAD).
-   * Uses execAsync directly (instead of pi.exec) because we need to set
-   * GIT_INDEX_FILE environment variable for an isolated index.
-   */
-  async function captureWorktree(): Promise<string> {
+  async function captureWorktreeTree(): Promise<{ treeSha: string }> {
     const root = await getRepoRoot(pi.exec);
-    const tmpDir = await mkdtemp(join(tmpdir(), "pi-rewind-"));
-    const tmpIndex = join(tmpDir, "index");
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-rewind-"));
+    const tempIndex = join(tempDir, "index");
 
     try {
-      const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+      const env = { ...process.env, GIT_INDEX_FILE: tempIndex };
       await execAsync("git add -A", { cwd: root, env });
-      const { stdout: treeSha } = await execAsync("git write-tree", { cwd: root, env });
-
-      const result = await pi.exec("git", ["commit-tree", treeSha.trim(), "-m", "rewind backup"]);
-      return result.stdout.trim();
+      const { stdout } = await execAsync("git write-tree", { cwd: root, env });
+      return { treeSha: stdout.trim() };
     } finally {
-      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
-  async function restoreWithBackup(
-    exec: ExecFn,
-    targetRef: string,
-    currentSessionId: string,
-    notify: (msg: string, level: "info" | "warning" | "error") => void
-  ): Promise<boolean> {
-    try {
-      const existingBackup = await findBeforeRestoreRef(exec, currentSessionId);
-
-      const backupCommit = await captureWorktree();
-      // Include session ID in before-restore ref to scope it per-session
-      const newBackupId = `${BEFORE_RESTORE_PREFIX}${currentSessionId}-${Date.now()}`;
-      await exec("git", [
-        "update-ref",
-        `${REF_PREFIX}${newBackupId}`,
-        backupCommit,
-      ]);
-
-      if (existingBackup) {
-        await exec("git", ["update-ref", "-d", existingBackup.refName]);
-      }
-
-      await exec("git", ["checkout", targetRef, "--", "."]);
-      return true;
-    } catch (err) {
-      notify(`Failed to restore: ${err}`, "error");
-      return false;
-    }
+  async function getCommitTreeSha(commitSha: string): Promise<string> {
+    const result = await execGitChecked(["show", "-s", "--format=%T", commitSha]);
+    return result.stdout.trim();
   }
 
-  async function createCheckpointFromWorktree(exec: ExecFn, checkpointId: string): Promise<boolean> {
-    try {
-      const commitSha = await captureWorktree();
-      await exec("git", [
-        "update-ref",
-        `${REF_PREFIX}${checkpointId}`,
-        commitSha,
-      ]);
-      return true;
-    } catch {
-      return false;
-    }
+  async function commitExists(commitSha: string): Promise<boolean> {
+    const result = await pi.exec("git", ["cat-file", "-e", `${commitSha}^{commit}`]);
+    return result.code === 0;
   }
 
-  /**
-   * Find the most recent user message in the current branch.
-   * Used at turn_end to find the user message that triggered the agent loop.
-   */
-  function findUserMessageEntry(sessionManager: { getLeafId(): string | null; getBranch(id?: string): any[] }): { id: string } | null {
-    const leafId = sessionManager.getLeafId();
-    if (!leafId) return null;
-
-    const branch = sessionManager.getBranch(leafId);
-    // Walk backwards to find the most recent user message
-    for (let i = branch.length - 1; i >= 0; i--) {
-      const entry = branch[i];
-      if (entry.type === "message" && entry.message?.role === "user") {
-        return entry;
-      }
+  async function getStoreHead(): Promise<string | undefined> {
+    const result = await pi.exec("git", ["rev-parse", "--verify", STORE_REF]);
+    if (result.code !== 0) {
+      return undefined;
     }
-    return null;
+    const value = result.stdout.trim();
+    return value || undefined;
   }
 
-  async function pruneCheckpoints(exec: ExecFn, currentSessionId: string) {
-    try {
-      const result = await exec("git", [
-        "for-each-ref",
-        "--sort=creatordate",
-        "--format=%(refname)",
-        REF_PREFIX,
-      ]);
+  async function createStoreKeepaliveCommit(snapshotCommitSha: string, previousStoreHead?: string): Promise<string> {
+    const args = ["commit-tree", EMPTY_TREE_SHA];
 
-      const refs = result.stdout.trim().split("\n").filter(Boolean);
-      // Filter to only regular checkpoints from THIS session (not backups, resume, or other sessions)
-      const checkpointRefs = refs.filter(r => {
-        if (r.includes(BEFORE_RESTORE_PREFIX)) return false;
-        if (r.includes("checkpoint-resume-")) return false;
-        // Only include refs from current session
-        const checkpointId = r.replace(REF_PREFIX, "");
-        return checkpointId.startsWith(`checkpoint-${currentSessionId}-`);
-      });
+    if (previousStoreHead) {
+      args.push("-p", previousStoreHead);
+    }
 
-      if (checkpointRefs.length > MAX_CHECKPOINTS) {
-        const toDelete = checkpointRefs.slice(0, checkpointRefs.length - MAX_CHECKPOINTS);
-        for (const ref of toDelete) {
-          await exec("git", ["update-ref", "-d", ref]);
+    args.push("-p", snapshotCommitSha, "-m", "pi rewind store");
+    const result = await execGitChecked(args);
+    return result.stdout.trim();
+  }
 
-          // Remove from in-memory map ONLY if this is the currently mapped checkpoint.
-          // There might be a newer checkpoint for the same entry that we're keeping.
-          const checkpointId = ref.replace(REF_PREFIX, "");
-          const match = checkpointId.match(/^checkpoint-([a-f0-9-]{36})-(\d+)-(.+)$/);
-          if (match) {
-            const entryId = match[3];
-            if (checkpoints.get(entryId) === checkpointId) {
-              checkpoints.delete(entryId);
-            }
-          }
+  async function appendSnapshotToStore(commitSha: string): Promise<void> {
+    let attempts = 0;
+
+    while (attempts < 5) {
+      attempts += 1;
+      const oldHead = await getStoreHead();
+      const keepaliveCommit = await createStoreKeepaliveCommit(commitSha, oldHead);
+
+      try {
+        if (oldHead) {
+          await execGitChecked(["update-ref", STORE_REF, keepaliveCommit, oldHead]);
+        } else {
+          await execGitChecked(["update-ref", STORE_REF, keepaliveCommit, LEGACY_ZERO_SHA]);
         }
+        return;
+      } catch {
+        // Retry if another process updated the store ref concurrently
       }
-    } catch {
-      // Silent failure - pruning is not critical
+    }
+
+    throw new Error("failed to update rewind store ref");
+  }
+
+  async function rewriteStoreToLiveSet(liveCommitShas: string[]): Promise<"rewritten" | "preserved-empty"> {
+    const uniqueLiveCommits = [...new Set(liveCommitShas.filter(Boolean))];
+    if (uniqueLiveCommits.length === 0) {
+      return "preserved-empty";
+    }
+
+    let head: string | undefined;
+    for (const commitSha of uniqueLiveCommits) {
+      head = await createStoreKeepaliveCommit(commitSha, head);
+    }
+
+    const oldHead = await getStoreHead();
+    if (oldHead) {
+      await execGitChecked(["update-ref", STORE_REF, head!, oldHead]);
+      return "rewritten";
+    }
+
+    await execGitChecked(["update-ref", STORE_REF, head!, LEGACY_ZERO_SHA]);
+    return "rewritten";
+  }
+
+  async function ensureSnapshotForTree(treeSha: string): Promise<string> {
+    if (lastExact && lastExact.treeSha === treeSha) {
+      return lastExact.commitSha;
+    }
+
+    const result = await execGitChecked(["commit-tree", treeSha, "-m", "pi rewind snapshot"]);
+    const commitSha = result.stdout.trim();
+    await appendSnapshotToStore(commitSha);
+    lastExact = { commitSha, treeSha };
+    newSnapshotsSinceSweep += 1;
+    return commitSha;
+  }
+
+  async function ensureSnapshotForCurrentWorktree(): Promise<string> {
+    const { treeSha } = await captureWorktreeTree();
+    return ensureSnapshotForTree(treeSha);
+  }
+
+  async function deletePathsFromWorkingTree(paths: string[]) {
+    if (paths.length === 0) return;
+    const root = await getRepoRoot(pi.exec);
+
+    for (const repoRelativePath of paths) {
+      const absolutePath = resolve(root, repoRelativePath);
+      if (!isInsidePath(absolutePath, root)) {
+        throw new Error(`refusing to delete path outside repo root: ${repoRelativePath}`);
+      }
+      await rm(absolutePath, { recursive: true, force: true });
     }
   }
 
-  /**
-   * Initialize the extension for the current session/repo
-   */
-  async function initializeForSession(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return;
+  async function getDeletedPaths(currentTreeSha: string, targetTreeSha: string): Promise<string[]> {
+    const result = await execGitChecked([
+      "diff",
+      "--name-only",
+      "--diff-filter=D",
+      "-z",
+      currentTreeSha,
+      targetTreeSha,
+      "--",
+    ]);
 
-    // Reset all state for fresh initialization
-    resetState();
+    return result.stdout.split("\0").filter(Boolean);
+  }
 
-    // Capture session ID for scoping checkpoints
-    sessionId = ctx.sessionManager.getSessionId();
+  async function restoreCommitExactly(targetCommitSha: string): Promise<{ changed: boolean; undoCommitSha?: string; targetTreeSha: string }> {
+    const { treeSha: currentTreeSha } = await captureWorktreeTree();
+    const targetTreeSha = await getCommitTreeSha(targetCommitSha);
 
-    try {
-      const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
-      isGitRepo = result.stdout.trim() === "true";
-    } catch {
-      isGitRepo = false;
+    if (currentTreeSha === targetTreeSha) {
+      lastExact = { commitSha: targetCommitSha, treeSha: targetTreeSha };
+      return { changed: false, targetTreeSha };
     }
 
-    if (!isGitRepo) {
-      ctx.ui.setStatus(STATUS_KEY, undefined);
+    const undoCommitSha = await ensureSnapshotForTree(currentTreeSha);
+    const pathsToDelete = await getDeletedPaths(currentTreeSha, targetTreeSha);
+    await deletePathsFromWorkingTree(pathsToDelete);
+    await execGitChecked(["restore", `--source=${targetCommitSha}`, "--worktree", "--", "."]);
+    lastExact = { commitSha: targetCommitSha, treeSha: targetTreeSha };
+    return { changed: true, undoCommitSha, targetTreeSha };
+  }
+
+  function bindPendingPromptUser(entries: SessionLikeEntry[], collector: ActivePromptCollector) {
+    if (!collector.pendingUserCommitSha) return;
+
+    const userEntry = findLatestMatchingUserMessageEntry(entries, collector.promptText) ?? findLatestUserMessageEntry(entries);
+    if (!userEntry) return;
+    if (collector.bindings.some(([entryId]) => entryId === userEntry.id)) {
+      collector.pendingUserCommitSha = undefined;
       return;
     }
 
-    // Rebuild checkpoints map from existing git refs (for resumed sessions)
-    // Only loads checkpoints belonging to this session
-    await rebuildCheckpointsMap(pi.exec, sessionId);
+    addBindingToCollector(collector, userEntry.id, collector.pendingUserCommitSha);
+    collector.pendingUserCommitSha = undefined;
+  }
 
-    // Create a resume checkpoint for the current state
-    const checkpointId = `checkpoint-resume-${Date.now()}`;
+  function appendRewindTurn(ctx: ExtensionContext, collector: ActivePromptCollector) {
+    if (collector.bindings.length === 0) return;
 
-    try {
-      const success = await createCheckpointFromWorktree(pi.exec, checkpointId);
-      if (success) {
-        resumeCheckpoint = checkpointId;
-      }
-    } catch {
-      // Silent failure - resume checkpoint is optional
+    const data: RewindTurnData = {
+      v: RETENTION_VERSION,
+      snapshots: collector.snapshots,
+      bindings: collector.bindings,
+    };
+
+    pi.appendEntry("rewind-turn", data);
+    applyBindings(entryToCommit, data.snapshots, data.bindings);
+
+    const latestBinding = data.bindings[data.bindings.length - 1];
+    if (latestBinding) {
+      activeBranchState.currentCommitSha = data.snapshots[latestBinding[1]];
+      activeBranchState.currentTreeSha = lastExact?.commitSha === activeBranchState.currentCommitSha ? lastExact.treeSha : undefined;
     }
 
     updateStatus(ctx);
   }
 
+  function appendRewindOp(ctx: ExtensionContext, data: RewindOpData) {
+    const hasBindings = Boolean(data.bindings?.length);
+    const hasCurrent = typeof data.current === "number";
+    const hasUndo = typeof data.undo === "number";
+    if (!hasBindings && !hasCurrent && !hasUndo) return;
+
+    pi.appendEntry("rewind-op", data);
+    applyBindings(entryToCommit, data.snapshots, data.bindings);
+
+    const currentCommitSha = getCommitFromData(data, "current");
+    if (currentCommitSha) {
+      activeBranchState.currentCommitSha = currentCommitSha;
+      activeBranchState.currentTreeSha = lastExact?.commitSha === currentCommitSha ? lastExact.treeSha : undefined;
+    }
+
+    const undoCommitSha = getCommitFromData(data, "undo");
+    if (undoCommitSha) {
+      activeBranchState.undoCommitSha = undoCommitSha;
+    }
+
+    updateStatus(ctx);
+  }
+
+  function buildCurrentSessionLedger(ctx: ExtensionContext): ParsedSessionLedger {
+    const ledger: ParsedSessionLedger = {
+      sessionFile: currentSessionFile ?? "",
+      sessionId: ctx.sessionManager.getSessionId(),
+      cwd: ctx.sessionManager.getCwd(),
+      parentSession: ctx.sessionManager.getHeader()?.parentSession,
+      entryToCommit: new Map<string, string>(),
+      labeledEntryIds: new Set<string>(),
+      references: [],
+    };
+
+    for (const rawEntry of ctx.sessionManager.getEntries() as SessionLikeEntry[]) {
+      if (rawEntry.type === "custom" && rawEntry.customType === "rewind-turn" && isRewindTurnData(rawEntry.data)) {
+        applyBindings(ledger.entryToCommit, rawEntry.data.snapshots, rawEntry.data.bindings);
+        addReferences(ledger.references, rawEntry.data.snapshots, toTimestamp(rawEntry.timestamp), rawEntry.data);
+        continue;
+      }
+
+      if (rawEntry.type === "custom" && rawEntry.customType === "rewind-op" && isRewindOpData(rawEntry.data)) {
+        applyBindings(ledger.entryToCommit, rawEntry.data.snapshots, rawEntry.data.bindings);
+        addReferences(ledger.references, rawEntry.data.snapshots, toTimestamp(rawEntry.timestamp), rawEntry.data);
+        const currentCommitSha = getCommitFromData(rawEntry.data, "current");
+        if (currentCommitSha) ledger.latestCurrentCommitSha = currentCommitSha;
+        const undoCommitSha = getCommitFromData(rawEntry.data, "undo");
+        if (undoCommitSha) ledger.latestUndoCommitSha = undoCommitSha;
+        continue;
+      }
+
+      if (rawEntry.type === "label") {
+        updateLabelSet(ledger.labeledEntryIds, rawEntry);
+      }
+    }
+
+    return ledger;
+  }
+
+  async function parseSessionLedgerFile(sessionFile: string): Promise<ParsedSessionLedger | null> {
+    try {
+      const fileStat = await stat(sessionFile);
+      const cached = parsedSessionCache.get(sessionFile);
+      if (cached && cached.mtimeMs === fileStat.mtimeMs) {
+        return cached.ledger;
+      }
+
+      const content = await readFile(sessionFile, "utf-8");
+      const ledger: ParsedSessionLedger = {
+        sessionFile,
+        entryToCommit: new Map<string, string>(),
+        labeledEntryIds: new Set<string>(),
+        references: [],
+      };
+
+      const hasRewindEntries = content.includes('"rewind-');
+
+      if (!hasRewindEntries) {
+        // Fast path: extract session header only, skip line-by-line JSON parsing
+        let pos = 0;
+        for (let i = 0; i < 5 && pos < content.length; i++) {
+          const nextNewline = content.indexOf("\n", pos);
+          const line = nextNewline >= 0 ? content.substring(pos, nextNewline) : content.substring(pos);
+          pos = nextNewline >= 0 ? nextNewline + 1 : content.length;
+          if (!line) continue;
+          try {
+            const entry = JSON.parse(line);
+            if (entry?.type === "session") {
+              ledger.sessionId = entry.id;
+              ledger.cwd = entry.cwd;
+              ledger.parentSession = entry.parentSession;
+              break;
+            }
+          } catch { continue; }
+        }
+        parsedSessionCache.set(sessionFile, { mtimeMs: fileStat.mtimeMs, ledger });
+        return ledger;
+      }
+
+      const lines = content.split("\n").filter(Boolean);
+
+      for (const line of lines) {
+        let entry: any;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        if (entry?.type === "session") {
+          ledger.sessionId = entry.id;
+          ledger.cwd = entry.cwd;
+          ledger.parentSession = entry.parentSession;
+          continue;
+        }
+
+        if (entry?.type === "custom" && entry?.customType === "rewind-turn" && isRewindTurnData(entry.data)) {
+          applyBindings(ledger.entryToCommit, entry.data.snapshots, entry.data.bindings);
+          addReferences(ledger.references, entry.data.snapshots, toTimestamp(entry.timestamp), entry.data);
+          continue;
+        }
+
+        if (entry?.type === "custom" && entry?.customType === "rewind-op" && isRewindOpData(entry.data)) {
+          applyBindings(ledger.entryToCommit, entry.data.snapshots, entry.data.bindings);
+          addReferences(ledger.references, entry.data.snapshots, toTimestamp(entry.timestamp), entry.data);
+          const currentCommitSha = getCommitFromData(entry.data, "current");
+          if (currentCommitSha) ledger.latestCurrentCommitSha = currentCommitSha;
+          const undoCommitSha = getCommitFromData(entry.data, "undo");
+          if (undoCommitSha) ledger.latestUndoCommitSha = undoCommitSha;
+          continue;
+        }
+
+        if (entry?.type === "label") {
+          updateLabelSet(ledger.labeledEntryIds, entry);
+        }
+      }
+
+      parsedSessionCache.set(sessionFile, { mtimeMs: fileStat.mtimeMs, ledger });
+      return ledger;
+    } catch {
+      return null;
+    }
+  }
+
+  async function listLegacyRefs(): Promise<LegacyRef[]> {
+    try {
+      const result = await execGitChecked([
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        LEGACY_REF_PREFIX,
+      ]);
+
+      return result.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [refName, commitSha] = line.split(/\s+/, 2);
+          const shortRef = refName.replace(LEGACY_REF_PREFIX, "");
+          if (shortRef.startsWith("checkpoint-resume-") || shortRef.startsWith("before-restore-")) {
+            return null;
+          }
+
+          const scoped = shortRef.match(/^checkpoint-([a-f0-9-]{36})-(\d+)-(.+)$/);
+          if (scoped) {
+            return {
+              refName,
+              commitSha,
+              sessionId: scoped[1],
+              entryId: scoped[3],
+              scoped: true,
+            } satisfies LegacyRef;
+          }
+
+          const unscoped = shortRef.match(/^checkpoint-(\d+)-(.+)$/);
+          if (unscoped) {
+            return {
+              refName,
+              commitSha,
+              entryId: unscoped[2],
+              scoped: false,
+            } satisfies LegacyRef;
+          }
+
+          return null;
+        })
+        .filter((value): value is LegacyRef => value !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  async function importLegacyRefsIfNeeded(ctx: ExtensionContext) {
+    if (!sessionId) return;
+
+    const legacyRefs = await listLegacyRefs();
+    if (legacyRefs.length === 0) return;
+
+    const snapshots: string[] = [];
+    const bindings: BindingTuple[] = [];
+    const refsToDelete: string[] = [];
+    const entries = ctx.sessionManager.getEntries() as SessionLikeEntry[];
+
+    for (const entry of entries) {
+      if (entry.type !== "message" || entry.message.role !== "user") continue;
+      if (entryToCommit.has(entry.id)) continue;
+
+      const legacyRef = legacyRefs.find((candidate) => {
+        if (candidate.entryId !== entry.id) return false;
+        if (candidate.scoped) return candidate.sessionId === sessionId;
+        return true;
+      });
+
+      if (!legacyRef) continue;
+      if (!(await commitExists(legacyRef.commitSha))) continue;
+
+      await appendSnapshotToStore(legacyRef.commitSha);
+      const snapshotIndex = resolveBindingSnapshotIndex(snapshots, legacyRef.commitSha);
+      bindings.push([entry.id, snapshotIndex]);
+      if (legacyRef.scoped) {
+        refsToDelete.push(legacyRef.refName);
+      }
+    }
+
+    if (bindings.length === 0) return;
+
+    appendRewindOp(ctx, {
+      v: RETENTION_VERSION,
+      snapshots,
+      bindings,
+    });
+
+    for (const refName of refsToDelete) {
+      try {
+        const result = await pi.exec("git", ["update-ref", "-d", refName]);
+        if (result.code !== 0) {
+          throw new Error(result.stderr.trim() || `git update-ref -d ${refName} failed with code ${result.code}`);
+        }
+      } catch {
+        // Ignore legacy cleanup failures
+      }
+    }
+  }
+
+  async function resolveLegacyAncestorCommit(entryId: string, targetSessionId: string | undefined): Promise<string | undefined> {
+    if (!targetSessionId) return undefined;
+    const legacyRefs = await listLegacyRefs();
+    const match = legacyRefs.find((ref) => ref.scoped && ref.sessionId === targetSessionId && ref.entryId === entryId);
+    if (!match) return undefined;
+    return (await commitExists(match.commitSha)) ? match.commitSha : undefined;
+  }
+
+  async function resolveEntrySnapshotWithLineage(entryId: string, sessionFile = currentSessionFile): Promise<string | undefined> {
+    let cursor = sessionFile;
+
+    while (cursor) {
+      const ledger = cursor === currentSessionFile ? buildCurrentSessionLedgerFromMemory() : await parseSessionLedgerFile(cursor);
+      if (!ledger) break;
+
+      const commitSha = ledger.entryToCommit.get(entryId);
+      if (commitSha && (await commitExists(commitSha))) {
+        return commitSha;
+      }
+
+      const legacyCommitSha = await resolveLegacyAncestorCommit(entryId, ledger.sessionId);
+      if (legacyCommitSha) {
+        return legacyCommitSha;
+      }
+
+      cursor = ledger.parentSession;
+    }
+
+    return undefined;
+  }
+
+  function buildCurrentSessionLedgerFromMemory(): ParsedSessionLedger {
+    return {
+      sessionFile: currentSessionFile ?? "",
+      sessionId: sessionId ?? undefined,
+      cwd: currentSessionCwd,
+      parentSession: currentParentSession,
+      entryToCommit: new Map(entryToCommit),
+      labeledEntryIds: new Set(),
+      references: [],
+      latestCurrentCommitSha: activeBranchState.currentCommitSha,
+      latestUndoCommitSha: activeBranchState.undoCommitSha,
+    };
+  }
+
+  async function reconstructState(ctx: ExtensionContext) {
+    entryToCommit.clear();
+    activeBranchState = {};
+    lastExact = null;
+
+    const currentLedger = buildCurrentSessionLedger(ctx);
+    for (const [entryId, commitSha] of currentLedger.entryToCommit.entries()) {
+      entryToCommit.set(entryId, commitSha);
+    }
+
+    let latestVisibleBindingCommitSha: string | undefined;
+    for (const entry of ctx.sessionManager.getBranch() as SessionLikeEntry[]) {
+      const boundCommitSha = entry.id ? entryToCommit.get(entry.id) : undefined;
+      if (boundCommitSha && isRestorableTreeEntry(entry)) {
+        latestVisibleBindingCommitSha = boundCommitSha;
+      }
+
+      if (entry.type === "custom" && entry.customType === "rewind-op" && isRewindOpData(entry.data)) {
+        const currentCommitSha = getCommitFromData(entry.data, "current");
+        if (currentCommitSha) {
+          activeBranchState.currentCommitSha = currentCommitSha;
+        }
+        const undoCommitSha = getCommitFromData(entry.data, "undo");
+        if (undoCommitSha) {
+          activeBranchState.undoCommitSha = undoCommitSha;
+        }
+      }
+    }
+
+    if (!activeBranchState.currentCommitSha) {
+      activeBranchState.currentCommitSha = latestVisibleBindingCommitSha;
+    }
+
+    if (activeBranchState.currentCommitSha && (await commitExists(activeBranchState.currentCommitSha))) {
+      activeBranchState.currentTreeSha = await getCommitTreeSha(activeBranchState.currentCommitSha);
+      const { treeSha: worktreeTreeSha } = await captureWorktreeTree();
+
+      if (activeBranchState.currentTreeSha === worktreeTreeSha) {
+        lastExact = {
+          commitSha: activeBranchState.currentCommitSha,
+          treeSha: activeBranchState.currentTreeSha,
+        };
+      }
+    }
+  }
+
+  async function discoverSessionFiles(): Promise<string[]> {
+    const roots = new Set<string>();
+    const defaultSessionsDir = getDefaultSessionsDir();
+    if (existsSync(defaultSessionsDir)) {
+      roots.add(defaultSessionsDir);
+    }
+    if (currentSessionFile) {
+      roots.add(dirname(currentSessionFile));
+    }
+
+    const discovered = new Set<string>();
+    const stack = [...roots];
+    while (stack.length > 0) {
+      const dir = stack.pop();
+      if (!dir) continue;
+
+      let entries: Awaited<ReturnType<typeof readdir>>;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+          discovered.add(fullPath);
+        }
+      }
+    }
+
+    let ancestorCursor = currentSessionFile;
+    while (ancestorCursor) {
+      discovered.add(ancestorCursor);
+      const ledger = ancestorCursor === currentSessionFile ? buildCurrentSessionLedgerFromMemory() : await parseSessionLedgerFile(ancestorCursor);
+      ancestorCursor = ledger?.parentSession;
+    }
+
+    return [...discovered];
+  }
+
+  async function maybeSweepRetention(ctx: ExtensionContext, reason: "startup" | "new-snapshots" | "shutdown") {
+    const retention = getRetentionSettings();
+    if (!retention) return;
+    if (reason === "new-snapshots" && newSnapshotsSinceSweep < RETENTION_SWEEP_THRESHOLD) return;
+    if (reason === "shutdown" && sweepCompletedThisSession && newSnapshotsSinceSweep < RETENTION_SWEEP_THRESHOLD) return;
+    if (!repoRoot) return;
+    if (sweepRunning) return;
+    sweepRunning = true;
+    try {
+      await runRetentionSweep(ctx, reason);
+    } finally {
+      sweepRunning = false;
+    }
+  }
+
+  async function runRetentionSweep(ctx: ExtensionContext, reason: "startup" | "new-snapshots" | "shutdown") {
+    const retention = getRetentionSettings();
+    if (!retention) return;
+
+    const sessionFiles = await discoverSessionFiles();
+    const ledgers: ParsedSessionLedger[] = [];
+
+    for (const sessionFile of sessionFiles) {
+      const ledger = sessionFile === currentSessionFile ? buildCurrentSessionLedger(ctx) : await parseSessionLedgerFile(sessionFile);
+      if (!ledger?.cwd) continue;
+      if (!isInsidePath(ledger.cwd, repoRoot)) continue;
+      ledgers.push(ledger);
+    }
+
+    const latestReferenceByCommit = new Map<string, number>();
+    const pinnedCommits = new Set<string>();
+    const currentCommits = new Set<string>();
+    const undoCommits = new Set<string>();
+
+    for (const ledger of ledgers) {
+      for (const reference of ledger.references) {
+        const prev = latestReferenceByCommit.get(reference.commitSha) ?? 0;
+        if (reference.timestamp > prev) {
+          latestReferenceByCommit.set(reference.commitSha, reference.timestamp);
+        }
+        if (reference.kind === "binding" && retention.pinLabeledEntries && reference.entryId && ledger.labeledEntryIds.has(reference.entryId)) {
+          pinnedCommits.add(reference.commitSha);
+        }
+      }
+
+      if (ledger.latestCurrentCommitSha) {
+        currentCommits.add(ledger.latestCurrentCommitSha);
+      }
+      if (ledger.latestUndoCommitSha) {
+        undoCommits.add(ledger.latestUndoCommitSha);
+      }
+    }
+
+    for (const commitSha of [...currentCommits, ...undoCommits]) {
+      if (await commitExists(commitSha)) {
+        pinnedCommits.add(commitSha);
+      }
+    }
+
+    let candidates = [...latestReferenceByCommit.entries()]
+      .filter(([commitSha]) => !pinnedCommits.has(commitSha))
+      .sort((left, right) => right[1] - left[1]);
+
+    if (typeof retention.maxAgeDays === "number" && retention.maxAgeDays >= 0) {
+      const cutoff = Date.now() - retention.maxAgeDays * 24 * 60 * 60 * 1000;
+      candidates = candidates.filter(([, timestamp]) => timestamp >= cutoff);
+    }
+
+    if (typeof retention.maxSnapshots === "number" && retention.maxSnapshots >= 0 && candidates.length > retention.maxSnapshots) {
+      candidates = candidates.slice(0, retention.maxSnapshots);
+    }
+
+    const liveSet = [...new Set([...pinnedCommits, ...candidates.map(([commitSha]) => commitSha)])];
+    const existingLiveSet: string[] = [];
+    for (const commitSha of liveSet) {
+      if (await commitExists(commitSha)) {
+        existingLiveSet.push(commitSha);
+      }
+    }
+
+    const rewriteResult = await rewriteStoreToLiveSet(existingLiveSet);
+    if (rewriteResult === "preserved-empty") {
+      return;
+    }
+
+    // Skip gc on background startup sweeps to avoid racing with concurrent snapshot creation
+    if (reason !== "startup") {
+      try {
+        const result = await pi.exec("git", ["gc", "--auto"]);
+        if (result.code !== 0) {
+          throw new Error(result.stderr.trim() || `git gc --auto failed with code ${result.code}`);
+        }
+      } catch {
+        // Best effort only
+      }
+    }
+
+    newSnapshotsSinceSweep = 0;
+    sweepCompletedThisSession = true;
+    updateStatus(ctx);
+  }
+
+  async function initializeForSession(ctx: ExtensionContext) {
+    resetState();
+    syncSessionIdentity(ctx);
+
+    try {
+      const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
+      isGitRepo = result.code === 0 && result.stdout.trim() === "true";
+    } catch {
+      isGitRepo = false;
+    }
+
+    if (!isGitRepo) {
+      updateStatus(ctx);
+      return;
+    }
+
+    await getRepoRoot(pi.exec);
+    await reconstructState(ctx);
+    await importLegacyRefsIfNeeded(ctx);
+    await reconstructState(ctx);
+    updateStatus(ctx);
+    maybeSweepRetention(ctx, "startup").catch(() => {});
+  }
+
   pi.events.on("rewind:fork-preference", (data: any) => {
-    if (data?.mode !== "conversation-only") {
-      return;
-    }
-
-    if (typeof data?.source !== "string") {
-      return;
-    }
-
-    if (!FORK_PREFERENCE_SOURCE_ALLOWLIST.has(data.source)) {
-      return;
-    }
-
+    if (data?.mode !== "conversation-only") return;
+    if (typeof data?.source !== "string") return;
+    if (!FORK_PREFERENCE_SOURCE_ALLOWLIST.has(data.source)) return;
     forceConversationOnlyOnNextFork = true;
     forceConversationOnlySource = data.source;
+  });
+
+  pi.on("before_agent_start", async (event) => {
+    activePromptText = event.prompt;
   });
 
   pi.on("session_start", async (_event, ctx) => {
@@ -376,274 +1160,238 @@ export default function (pi: ExtensionAPI) {
     await initializeForSession(ctx);
   });
 
-  pi.on("turn_start", async (event, ctx) => {
-    if (!ctx.hasUI) return;
+  pi.on("session_fork", async (_event, ctx) => {
+    syncSessionIdentity(ctx);
+    if (!isGitRepo || !pendingForkState) {
+      await reconstructState(ctx);
+      updateStatus(ctx);
+      return;
+    }
+
+    const snapshots = [pendingForkState.currentCommitSha];
+    const data: RewindOpData = { v: RETENTION_VERSION, snapshots, current: 0 };
+    if (pendingForkState.undoCommitSha) {
+      data.snapshots.push(pendingForkState.undoCommitSha);
+      data.undo = 1;
+    }
+
+    appendRewindOp(ctx, data);
+    pendingForkState = null;
+    await reconstructState(ctx);
+    updateStatus(ctx);
+  });
+
+  pi.on("session_tree", async (event, ctx) => {
+    syncSessionIdentity(ctx);
+    if (!isGitRepo || !pendingTreeState) {
+      await reconstructState(ctx);
+      updateStatus(ctx);
+      return;
+    }
+
+    const snapshots = [pendingTreeState.currentCommitSha];
+    const data: RewindOpData = { v: RETENTION_VERSION, snapshots, current: 0 };
+    if (pendingTreeState.undoCommitSha) {
+      data.snapshots.push(pendingTreeState.undoCommitSha);
+      data.undo = 1;
+    }
+    if (event.summaryEntry?.id) {
+      data.bindings = [[event.summaryEntry.id, 0]];
+    }
+
+    appendRewindOp(ctx, data);
+    pendingTreeState = null;
+    await reconstructState(ctx);
+    updateStatus(ctx);
+  });
+
+  pi.on("session_compact", async (event, ctx) => {
+    syncSessionIdentity(ctx);
     if (!isGitRepo) return;
 
-    // Only capture at the start of a new agent loop (first turn).
-    // This is when a user message triggers the agent - we want to snapshot
-    // the file state BEFORE any tools execute.
+    let currentCommitSha = activeBranchState.currentCommitSha;
+    if (!currentCommitSha) {
+      currentCommitSha = await ensureSnapshotForCurrentWorktree();
+    }
+
+    appendRewindOp(ctx, {
+      v: RETENTION_VERSION,
+      snapshots: [currentCommitSha],
+      bindings: [[event.compactionEntry.id, 0]],
+    });
+    await reconstructState(ctx);
+    updateStatus(ctx);
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    syncSessionIdentity(ctx);
+    if (!isGitRepo) return;
+    await maybeSweepRetention(ctx, "shutdown");
+  });
+
+  pi.on("turn_start", async (event, ctx) => {
+    if (!isGitRepo) return;
     if (event.turnIndex !== 0) return;
 
-    try {
-      // Capture worktree state now, but don't create the ref yet.
-      // At this point, the user message hasn't been appended to the session,
-      // so we don't know its entry ID. We'll create the ref at turn_end.
-      const commitSha = await captureWorktree();
-      pendingCheckpoint = { commitSha, timestamp: event.timestamp };
-    } catch {
-      pendingCheckpoint = null;
-    }
+    const { treeSha } = await captureWorktreeTree();
+    const commitSha = await ensureSnapshotForTree(treeSha);
+    promptCollector = {
+      snapshots: [],
+      bindings: [],
+      promptText: activePromptText ?? undefined,
+      pendingUserCommitSha: commitSha,
+    };
+
+    bindPendingPromptUser(ctx.sessionManager.getBranch() as SessionLikeEntry[], promptCollector);
   });
 
   pi.on("turn_end", async (event, ctx) => {
-    if (!ctx.hasUI) return;
-    if (!isGitRepo) return;
-    if (!pendingCheckpoint) return;
-    if (!sessionId) return;
+    if (!isGitRepo || !promptCollector) return;
 
-    // Only process at end of first turn - by now the user message has been
-    // appended to the session and we can find its entry ID.
-    if (event.turnIndex !== 0) return;
+    const branchEntries = ctx.sessionManager.getBranch() as SessionLikeEntry[];
+    bindPendingPromptUser(branchEntries, promptCollector);
 
-    try {
-      const userEntry = findUserMessageEntry(ctx.sessionManager);
-      if (!userEntry) return;
+    if (event.message.role !== "assistant") return;
 
-      const entryId = userEntry.id;
-      const sanitizedEntryId = sanitizeForRef(entryId);
-      // Include session ID in checkpoint name to scope it per-session
-      const checkpointId = `checkpoint-${sessionId}-${pendingCheckpoint.timestamp}-${sanitizedEntryId}`;
+    const assistantEntry = findAssistantEntryForTurn(branchEntries, event.message);
+    if (!assistantEntry) return;
 
-      // Create the git ref for this checkpoint
-      await pi.exec("git", [
-        "update-ref",
-        `${REF_PREFIX}${checkpointId}`,
-        pendingCheckpoint.commitSha,
-      ]);
+    const { treeSha } = await captureWorktreeTree();
+    const commitSha = await ensureSnapshotForTree(treeSha);
+    addBindingToCollector(promptCollector, assistantEntry.id, commitSha);
+  });
 
-      checkpoints.set(sanitizedEntryId, checkpointId);
-      await pruneCheckpoints(pi.exec, sessionId);
-      updateStatus(ctx);
-      if (!getSilentCheckpointsSetting()) {
-        ctx.ui.notify(`Checkpoint ${checkpoints.size} saved`, "info");
-      }
-    } catch {
-      // Silent failure - checkpoint creation is not critical
-    } finally {
-      pendingCheckpoint = null;
-    }
+  pi.on("agent_end", async (_event, ctx) => {
+    if (!isGitRepo || !promptCollector) return;
+    bindPendingPromptUser(ctx.sessionManager.getBranch() as SessionLikeEntry[], promptCollector);
+    appendRewindTurn(ctx, promptCollector);
+    promptCollector = null;
+    activePromptText = null;
+    await reconstructState(ctx);
+    updateStatus(ctx);
+    await maybeSweepRetention(ctx, "new-snapshots");
   });
 
   pi.on("session_before_fork", async (event, ctx) => {
     const shouldForceConversationOnly = forceConversationOnlyOnNextFork;
     const forcedBySource = forceConversationOnlySource;
-
-    // One-shot preference: consume immediately so it never leaks into later /fork usage
     forceConversationOnlyOnNextFork = false;
     forceConversationOnlySource = null;
 
-    if (!ctx.hasUI) return;
-    if (!sessionId) return;
-
-    try {
-      const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
-      if (result.stdout.trim() !== "true") return;
-    } catch {
+    if (!isGitRepo) return;
+    if (!ctx.hasUI) {
+      pendingForkState = { currentCommitSha: await ensureSnapshotForCurrentWorktree() };
       return;
     }
+
+    const targetCommitSha = await resolveEntrySnapshotWithLineage(event.entryId);
+    const hasUndo = Boolean(activeBranchState.undoCommitSha && (await commitExists(activeBranchState.undoCommitSha)));
 
     if (shouldForceConversationOnly) {
-      if (!getSilentCheckpointsSetting()) {
-        const sourceLabel = forcedBySource ? ` (${forcedBySource})` : "";
-        ctx.ui.notify(`Rewind: using conversation-only fork (keep current files)${sourceLabel}`, "info");
-      }
+      pendingForkState = { currentCommitSha: await ensureSnapshotForCurrentWorktree() };
+      notify(ctx, `Rewind: using conversation-only fork (keep current files)${forcedBySource ? ` (${forcedBySource})` : ""}`);
       return;
     }
 
-    const sanitizedEntryId = sanitizeForRef(event.entryId);
-    let checkpointId = checkpoints.get(sanitizedEntryId);
-    let usingResumeCheckpoint = false;
-
-    if (!checkpointId && resumeCheckpoint) {
-      checkpointId = resumeCheckpoint;
-      usingResumeCheckpoint = true;
+    const options = ["Conversation only (keep current files)"];
+    if (targetCommitSha) {
+      options.push("Restore all (files + conversation)", "Code only (restore files, keep conversation)");
     }
-
-    const beforeRestoreRef = await findBeforeRestoreRef(pi.exec, sessionId);
-    const hasUndo = !!beforeRestoreRef;
-
-    const options: string[] = [];
-
-    if (checkpointId) {
-      if (usingResumeCheckpoint) {
-        options.push("Restore to session start (files + conversation)");
-        options.push("Conversation only (keep current files)");
-        options.push("Restore to session start (files only, keep conversation)");
-      } else {
-        options.push("Conversation only (keep current files)");
-        options.push("Restore all (files + conversation)");
-        options.push("Code only (restore files, keep conversation)");
-      }
-    } else {
-      // No checkpoint available - still allow conversation-only branch
-      options.push("Conversation only (keep current files)");
-    }
-
     if (hasUndo) {
       options.push("Undo last file rewind");
     }
 
     const choice = await ctx.ui.select("Restore Options", options);
-
     if (!choice) {
-      ctx.ui.notify("Rewind cancelled", "info");
+      notify(ctx, "Rewind cancelled");
       return { cancel: true };
     }
 
-    if (choice.startsWith("Conversation only")) {
+    if (choice === "Undo last file rewind") {
+      const restore = await restoreCommitExactly(activeBranchState.undoCommitSha!);
+      pendingForkState = {
+        currentCommitSha: activeBranchState.undoCommitSha!,
+        undoCommitSha: restore.undoCommitSha,
+      };
+      notify(ctx, "Files restored to before last rewind");
       return;
     }
 
-    const isCodeOnly = choice === "Code only (restore files, keep conversation)" ||
-      choice === "Restore to session start (files only, keep conversation)";
+    if (choice === "Conversation only (keep current files)") {
+      pendingForkState = { currentCommitSha: await ensureSnapshotForCurrentWorktree() };
+      return;
+    }
 
-    if (choice === "Undo last file rewind") {
-      const success = await restoreWithBackup(
-        pi.exec,
-        beforeRestoreRef!.commitSha,
-        sessionId,
-        ctx.ui.notify.bind(ctx.ui)
-      );
-      if (success) {
-        ctx.ui.notify("Files restored to before last rewind", "info");
-      }
+    if (!targetCommitSha) {
+      notify(ctx, "No exact rewind point available for that entry", "error");
       return { cancel: true };
     }
 
-    if (!checkpointId) {
-      ctx.ui.notify("No checkpoint available", "error");
-      return { cancel: true };
-    }
+    const restore = await restoreCommitExactly(targetCommitSha);
+    pendingForkState = {
+      currentCommitSha: targetCommitSha,
+      undoCommitSha: restore.undoCommitSha,
+    };
+    notify(ctx, "Files restored from rewind point");
 
-    const ref = `${REF_PREFIX}${checkpointId}`;
-    const success = await restoreWithBackup(
-      pi.exec,
-      ref,
-      sessionId,
-      ctx.ui.notify.bind(ctx.ui)
-    );
-
-    if (!success) {
-      // File restore failed - cancel the branch operation entirely
-      // (restoreWithBackup already notified the user of the error)
-      return { cancel: true };
-    }
-
-    ctx.ui.notify(
-      usingResumeCheckpoint
-        ? "Files restored to session start"
-        : "Files restored from checkpoint",
-      "info"
-    );
-
-    if (isCodeOnly) {
+    if (choice === "Code only (restore files, keep conversation)") {
       return { skipConversationRestore: true };
     }
   });
 
   pi.on("session_before_tree", async (event, ctx) => {
-    if (!ctx.hasUI) return;
-    if (!sessionId) return;
+    if (!isGitRepo || !ctx.hasUI) return;
 
-    try {
-      const result = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
-      if (result.stdout.trim() !== "true") return;
-    } catch {
-      return;
+    const targetEntry = ctx.sessionManager.getEntry(event.preparation.targetId) as SessionLikeEntry | undefined;
+    const targetCommitSha = isRestorableTreeEntry(targetEntry)
+      ? await resolveEntrySnapshotWithLineage(event.preparation.targetId, currentSessionFile)
+      : undefined;
+    const hasUndo = Boolean(activeBranchState.undoCommitSha && (await commitExists(activeBranchState.undoCommitSha)));
+
+    const options = ["Keep current files"];
+    if (targetCommitSha) {
+      options.push("Restore files to that point");
     }
-
-    const targetId = event.preparation.targetId;
-    const sanitizedTargetId = sanitizeForRef(targetId);
-    let checkpointId = checkpoints.get(sanitizedTargetId);
-    let usingResumeCheckpoint = false;
-
-    if (!checkpointId && resumeCheckpoint) {
-      checkpointId = resumeCheckpoint;
-      usingResumeCheckpoint = true;
-    }
-
-    const beforeRestoreRef = await findBeforeRestoreRef(pi.exec, sessionId);
-    const hasUndo = !!beforeRestoreRef;
-
-    const options: string[] = [];
-
-    // Offer "Keep current files" first
-    options.push("Keep current files");
-
-    if (checkpointId) {
-      if (usingResumeCheckpoint) {
-        options.push("Restore files to session start");
-      } else {
-        options.push("Restore files to that point");
-      }
-    }
-
     if (hasUndo) {
       options.push("Undo last file rewind");
     }
-
     options.push("Cancel navigation");
 
     const choice = await ctx.ui.select("Restore Options", options);
-
     if (!choice || choice === "Cancel navigation") {
-      ctx.ui.notify("Navigation cancelled", "info");
+      notify(ctx, "Navigation cancelled");
+      return { cancel: true };
+    }
+
+    if (choice === "Undo last file rewind") {
+      const restore = await restoreCommitExactly(activeBranchState.undoCommitSha!);
+      const snapshots = [activeBranchState.undoCommitSha!];
+      const data: RewindOpData = { v: RETENTION_VERSION, snapshots, current: 0 };
+      if (restore.undoCommitSha) {
+        data.snapshots.push(restore.undoCommitSha);
+        data.undo = 1;
+      }
+      appendRewindOp(ctx, data);
+      notify(ctx, "Files restored to before last rewind");
+      await reconstructState(ctx);
       return { cancel: true };
     }
 
     if (choice === "Keep current files") {
+      pendingTreeState = { currentCommitSha: await ensureSnapshotForCurrentWorktree() };
       return;
     }
 
-    if (choice === "Undo last file rewind") {
-      const success = await restoreWithBackup(
-        pi.exec,
-        beforeRestoreRef!.commitSha,
-        sessionId,
-        ctx.ui.notify.bind(ctx.ui)
-      );
-      if (success) {
-        ctx.ui.notify("Files restored to before last rewind", "info");
-      }
+    if (!targetCommitSha) {
+      notify(ctx, "Exact file rewind is only available for user, assistant, compaction, and summary nodes", "error");
       return { cancel: true };
     }
 
-    if (!checkpointId) {
-      ctx.ui.notify("No checkpoint available", "error");
-      return { cancel: true };
-    }
-
-    const ref = `${REF_PREFIX}${checkpointId}`;
-    const success = await restoreWithBackup(
-      pi.exec,
-      ref,
-      sessionId,
-      ctx.ui.notify.bind(ctx.ui)
-    );
-
-    if (!success) {
-      // File restore failed - cancel navigation
-      // (restoreWithBackup already notified the user of the error)
-      return { cancel: true };
-    }
-
-    ctx.ui.notify(
-      usingResumeCheckpoint
-        ? "Files restored to session start"
-        : "Files restored to checkpoint",
-      "info"
-    );
+    const restore = await restoreCommitExactly(targetCommitSha);
+    pendingTreeState = {
+      currentCommitSha: targetCommitSha,
+      undoCommitSha: restore.undoCommitSha,
+    };
+    notify(ctx, "Files restored to rewind point");
   });
-
 }
