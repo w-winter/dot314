@@ -508,14 +508,30 @@ function findEntryIndexById(branchEntries: SessionEntry[], id: string): number {
     return branchEntries.findIndex((entry) => entry.id === id);
 }
 
+function findCompactionBoundaryStart(branchEntries: SessionEntry[]): number {
+    // Match Pi stock repeated-compaction semantics: resume from the previous kept boundary,
+    // not from the compaction entry itself
+    const prevCompactionIndex = findLatestCompactionIndex(branchEntries);
+    if (prevCompactionIndex < 0) {
+        return 0;
+    }
+
+    const prevCompaction = branchEntries[prevCompactionIndex];
+    if (prevCompaction.type !== "compaction") {
+        return prevCompactionIndex + 1;
+    }
+
+    const firstKeptEntryIndex = findEntryIndexById(branchEntries, prevCompaction.firstKeptEntryId);
+    return firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
+}
+
 export function deriveSummaryEntrySpans(params: {
     branchEntries: SessionEntry[];
     firstKeptEntryId: string;
     isSplitTurn: boolean;
 }): SummaryEntrySpans {
     const { branchEntries, firstKeptEntryId, isSplitTurn } = params;
-    const prevCompactionIndex = findLatestCompactionIndex(branchEntries);
-    const boundaryStart = prevCompactionIndex + 1;
+    const boundaryStart = findCompactionBoundaryStart(branchEntries);
     const firstKeptEntryIndex = findEntryIndexById(branchEntries, firstKeptEntryId);
 
     if (firstKeptEntryIndex < 0) {

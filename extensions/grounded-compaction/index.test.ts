@@ -168,11 +168,12 @@ function customMessageEntry(id: string, text: string): SessionEntry {
     } as SessionEntry;
 }
 
-function compactionEntry(id: string, summary: string): SessionEntry {
+function compactionEntry(id: string, summary: string, firstKeptEntryId = "first-kept"): SessionEntry {
     return {
         id,
         type: "compaction",
         summary,
+        firstKeptEntryId,
         tokensBefore: 100,
         timestamp: new Date().toISOString(),
     } as SessionEntry;
@@ -464,7 +465,7 @@ describe("grounded-compaction preset resolution", () => {
 describe("grounded-compaction summary spans", () => {
     it("derives stock history span for non-split compaction", () => {
         const entries = [
-            compactionEntry("old-compaction", "older"),
+            compactionEntry("old-compaction", "older", "custom-1"),
             customMessageEntry("custom-1", "carry context"),
             messageEntry("assistant-1", "assistant", "done"),
             messageEntry("keep-1", "assistant", "keep this"),
@@ -479,6 +480,29 @@ describe("grounded-compaction summary spans", () => {
         assert.equal(spans.boundaryStart, 1);
         assert.deepEqual(spans.historyEntries.map((entry) => entry.id), ["custom-1", "assistant-1"]);
         assert.deepEqual(spans.turnPrefixEntries, []);
+    });
+
+    it("resumes repeated compactions from the previous kept boundary", () => {
+        const entries = [
+            messageEntry("dropped-user", "user", "Already compacted away"),
+            messageEntry("kept-user", "user", "Still in context after the last compaction"),
+            messageEntry("kept-assistant", "assistant", "Still in context too"),
+            compactionEntry("old-compaction", "older", "kept-user"),
+            customMessageEntry("fresh-note", "Fresh work after the prior compaction"),
+            messageEntry("keep-1", "assistant", "Keep this newest reply"),
+        ];
+
+        const spans = deriveSummaryEntrySpans({
+            branchEntries: entries,
+            firstKeptEntryId: "keep-1",
+            isSplitTurn: false,
+        });
+
+        assert.equal(spans.boundaryStart, 1);
+        assert.deepEqual(
+            spans.historyEntries.map((entry) => entry.id),
+            ["kept-user", "kept-assistant", "old-compaction", "fresh-note"],
+        );
     });
 
     it("derives history and turn-prefix spans for split turns", () => {

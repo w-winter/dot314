@@ -94,7 +94,7 @@ For branch summaries, Pi's `session_before_tree` hook only exposes prompt instru
 
 ## How compaction summaries are structured
 
-The extension mirrors Pi's stock compaction boundaries: `messagesToSummarize` for history, `turnPrefixMessages` for split-turn prefixes, and `previousSummary` for cumulative updates.  When files-touched is enabled, manifests are passed to the summarizer per-span and a cumulative whole-branch manifest is appended to the final persisted summary:
+The extension mirrors Pi's stock compaction boundaries: `messagesToSummarize` for history, `turnPrefixMessages` for split-turn prefixes, and `previousSummary` for cumulative updates.  On repeated compactions, that means resuming from the previous compaction's `firstKeptEntryId`, not from the compaction entry itself, and the files-touched manifests follow that same boundary.  When files-touched is enabled, manifests are passed to the summarizer per-span and a cumulative whole-branch manifest is appended to the final persisted summary:
 
 ````md
 ---
