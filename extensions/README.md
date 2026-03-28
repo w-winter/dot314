@@ -161,18 +161,20 @@
 
 - ◐ [`editor-enhancements/`](editor-enhancements/) ([README](./editor-enhancements/README.md))
   - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
-  - Configurable in `editor-enhancements/config.json`:
-    - Slash command remapping (e.g. make `/tree` execute `/anycopy` instead)
-    - `doubleEscapeCommand`: optional extension command name invoked by the editor's double-escape gesture when the editor is empty and Pi is idle (for example `"anycopy"`)
-    - Only extension commands registered via `pi.registerCommand()` are supported here; native built-ins like `/tree` are still handled by Pi itself
+  - Configurable via two sibling files in the extension folder:
+    - `editor-enhancements/config.json` for editor-level behavior such as slash command remapping and `doubleEscapeCommand`
+    - `editor-enhancements/file-picker.json` for file picker behavior such as `tabCompletionMode` (default: `"bestMatch"`)
   - Includes a merged, single-editor implementation of:
     - ◐ `file-picker` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
        - type `@` to open an overlay file browser and insert `@path` refs
        - This version adds zsh support and enables compatibility with the other two
-       - It also has these different keybindings:
-         - `shift+tab` (not `tab`) toggles the options panel
-         - `tab` performs one-word-part-at-a-time search-input completion using closest alphanumeric prefix matches
-         - In options mode, both `←/→` and `↑/↓` move between options
+       - Search input now uses Pi's shared `Input` editing behavior
+       - `space` queues files or enters directories; `enter` inserts the highlighted item plus queued selections; `esc` at the root inserts queued selections only
+       - `shift+tab` (not `tab`) toggles the options panel
+       - `tab` is configurable via `editor-enhancements/file-picker.json`:
+         - `"segment"`: prefix-only candidate matching, then complete one word-part at a time
+         - `"bestMatch"`: strongest scoped fuzzy match, applied in one step
+       - In options mode, both `←/→` and `↑/↓` move between options
     - ◐ `shell-completions` (upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles))
       - native shell completions in `!`/`!!` bash mode
       - This version adds zsh support and enables compatibility with the other two

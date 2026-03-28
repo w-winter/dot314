@@ -6,10 +6,10 @@
  *
  * Features:
  * - @ shortcut opens file browser (replaces built-in)
- * - Directory navigation with Enter
- * - Space to toggle selection
+ * - Resume-picker-style search input editing
+ * - Right arrow toggles files / enters directories when the search box is empty
  * - Shift+Tab to toggle options panel (gitignore, hidden files)
-	* - Tab completion in search input (one word-part at a time, closest alphanumeric prefix match)
+ * - Configurable Tab completion modes: segment or best-match
  * - Fuzzy search and glob patterns
  * - Git-aware file listing (respects .gitignore)
  * - Selected files injected as context on prompt submit
@@ -18,11 +18,12 @@
  */
 
 import type { ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import { matchesKey, visibleWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
+import { Input, matchesKey, visibleWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -34,6 +35,8 @@ interface FileEntry {
 	relativePath: string;
 }
 
+type TabCompletionMode = "segment" | "bestMatch";
+
 interface PickerState {
 	respectGitignore: boolean;
 	skipHidden: boolean;
@@ -43,6 +46,7 @@ interface PickerConfig {
 	respectGitignore?: boolean;
 	skipHidden?: boolean;
 	skipPatterns?: string[];
+	tabCompletionMode?: TabCompletionMode;
 }
 
 interface BrowserOption {
@@ -57,6 +61,11 @@ interface SelectedPath {
 	isDirectory: boolean;
 }
 
+interface CompletionEntry {
+	path: string;
+	isDirectory: boolean;
+}
+
 type FileBrowserAction = 
 	| { action: "confirm"; paths: SelectedPath[] }
 	| { action: "cancel" }
@@ -66,26 +75,32 @@ type FileBrowserAction =
 // Config
 // ═══════════════════════════════════════════════════════════════════════════
 
+const DEFAULT_TAB_COMPLETION_MODE: TabCompletionMode = "bestMatch";
+
+function normalizeTabCompletionMode(value: unknown): TabCompletionMode {
+	return value === "segment" || value === "bestMatch" ? value : DEFAULT_TAB_COMPLETION_MODE;
+}
+
 const DEFAULT_CONFIG: PickerConfig = {
 	respectGitignore: true,
 	skipHidden: true,
 	skipPatterns: ["node_modules"],
+	tabCompletionMode: DEFAULT_TAB_COMPLETION_MODE,
 };
 
+const extensionDir = path.dirname(fileURLToPath(import.meta.url));
+
 function loadConfig(): PickerConfig {
-	const configPath = path.join(
-		os.homedir(),
-		".pi",
-		"agent",
-		"extensions",
-		"file-picker",
-		"config.json"
-	);
+	const configPath = path.join(extensionDir, "file-picker.json");
 	try {
 		if (fs.existsSync(configPath)) {
 			const content = fs.readFileSync(configPath, "utf-8");
-			const custom = JSON.parse(content) as Partial<PickerConfig>;
-			return { ...DEFAULT_CONFIG, ...custom };
+			const custom = JSON.parse(content) as Partial<PickerConfig> & { tabCompletionMode?: unknown };
+			return {
+				...DEFAULT_CONFIG,
+				...custom,
+				tabCompletionMode: normalizeTabCompletionMode(custom.tabCompletionMode),
+			};
 		}
 	} catch {
 		// Ignore errors, use default
@@ -95,6 +110,7 @@ function loadConfig(): PickerConfig {
 
 const config = loadConfig();
 const skipPatterns = config.skipPatterns ?? ["node_modules"];
+const tabCompletionMode = config.tabCompletionMode ?? DEFAULT_TAB_COMPLETION_MODE;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // State (per-session, reset on session switch)
@@ -442,36 +458,103 @@ function fuzzyScore(query: string, text: string): number {
 	return queryIndex === lowerQuery.length ? score : 0;
 }
 
-function filterEntries(entries: FileEntry[], query: string): FileEntry[] {
+function toDisplayPath(value: string): string {
+	return value.replaceAll(path.sep, "/");
+}
+
+function stripLeadingSlash(value: string): string {
+	return value.replace(/^\/+/, "");
+}
+
+function withQuerySlash(relativePath: string, query: string): string {
+	const displayPath = toDisplayPath(relativePath);
+	return query.startsWith("/") ? `/${displayPath}` : displayPath;
+}
+
+function resolveScopedFuzzyQuery(query: string): { basePath: string; query: string } | null {
+	const normalizedQuery = stripLeadingSlash(toDisplayPath(query));
+	const slashIndex = normalizedQuery.lastIndexOf("/");
+	if (slashIndex === -1) {
+		return null;
+	}
+
+	return {
+		basePath: normalizedQuery.slice(0, slashIndex + 1),
+		query: normalizedQuery.slice(slashIndex + 1),
+	};
+}
+
+function scoreScopedEntry(filePath: string, query: string, isDirectory: boolean): number {
+	const normalizedPath = stripLeadingSlash(toDisplayPath(filePath)).replace(/\/$/, "");
+	const fileName = path.basename(normalizedPath);
+	const lowerFileName = fileName.toLowerCase();
+	const lowerPath = normalizedPath.toLowerCase();
+	const lowerQuery = query.toLowerCase();
+
+	let score = 0;
+	if (lowerFileName === lowerQuery) score = 100;
+	else if (lowerFileName.startsWith(lowerQuery)) score = 80;
+	else if (lowerFileName.includes(lowerQuery)) score = 50;
+	else if (lowerPath.includes(lowerQuery)) score = 30;
+
+	if (isDirectory && score > 0) score += 10;
+	return score;
+}
+
+function normalizeCompletionPath(value: string): string {
+	return stripLeadingSlash(toDisplayPath(value)).replace(/\/$/, "");
+}
+
+function isPreferredEntry(entry: FileEntry, preferredPath: string): boolean {
+	return normalizeCompletionPath(withQuerySlash(entry.relativePath, preferredPath)) === normalizeCompletionPath(preferredPath);
+}
+
+function comparePreferredEntry(a: FileEntry, b: FileEntry, preferredPath?: string): number {
+	if (!preferredPath) return 0;
+	const aPreferred = isPreferredEntry(a, preferredPath);
+	const bPreferred = isPreferredEntry(b, preferredPath);
+	if (aPreferred === bPreferred) return 0;
+	return aPreferred ? -1 : 1;
+}
+
+function filterEntries(entries: FileEntry[], query: string, preferredPath?: string): FileEntry[] {
 	if (!query.trim()) return entries;
 
 	if (isGlobPattern(query)) {
 		const regex = globToRegex(query);
-		const filtered = entries.filter(
-			(entry) => regex.test(entry.name) || regex.test(entry.relativePath)
-		);
-		// Sort: files first, then directories
+		const filtered = entries.filter((entry) => {
+			const displayPath = withQuerySlash(entry.relativePath, query);
+			return regex.test(entry.name) || regex.test(entry.relativePath) || regex.test(displayPath);
+		});
 		return filtered.sort((a, b) => {
+			const preferredComparison = comparePreferredEntry(a, b, preferredPath);
+			if (preferredComparison !== 0) return preferredComparison;
 			if (a.isDirectory && !b.isDirectory) return 1;
 			if (!a.isDirectory && b.isDirectory) return -1;
 			return a.relativePath.localeCompare(b.relativePath);
 		});
 	}
 
+	const scopedQuery = resolveScopedFuzzyQuery(query);
 	const scored = entries
-		.map((entry) => ({
-			entry,
-			score: Math.max(
-				fuzzyScore(query, entry.name),
-				fuzzyScore(query, entry.relativePath) * 0.9
-			),
-		}))
+		.map((entry) => {
+			const displayPath = withQuerySlash(entry.relativePath, query);
+			const baseScore = Math.max(fuzzyScore(query, entry.name), fuzzyScore(query, displayPath) * 0.9);
+			const scopedScore =
+				scopedQuery && stripLeadingSlash(displayPath).startsWith(scopedQuery.basePath)
+					? scoreScopedEntry(displayPath, scopedQuery.query, entry.isDirectory)
+					: 0;
+			return {
+				entry,
+				score: Math.max(baseScore, scopedScore),
+			};
+		})
 		.filter((item) => item.score > 0)
 		.sort((a, b) => {
-			// Primary: files before directories
+			const preferredComparison = comparePreferredEntry(a.entry, b.entry, preferredPath);
+			if (preferredComparison !== 0) return preferredComparison;
 			if (a.entry.isDirectory && !b.entry.isDirectory) return 1;
 			if (!a.entry.isDirectory && b.entry.isDirectory) return -1;
-			// Secondary: by score
 			return b.score - a.score;
 		});
 
@@ -491,6 +574,7 @@ class FileBrowserComponent {
 	private allFilesRecursive: FileEntry[];
 	private filtered: FileEntry[];
 	private selected = 0;
+	private readonly searchInput: Input;
 	private query = "";
 	private isSearchMode = false;
 	private selectedPaths: Map<string, boolean>; // path -> isDirectory
@@ -507,6 +591,8 @@ class FileBrowserComponent {
 		this.cwdRoot = getCwdRoot();
 		this.currentDir = this.cwdRoot;
 		this.selectedPaths = new Map();
+		this.searchInput = new Input();
+		this.searchInput.focused = true;
 		this.inGitRepo = isGitRepo(this.cwdRoot);
 
 		this.options = [
@@ -533,6 +619,23 @@ class FileBrowserComponent {
 
 	private getVisibleOptions(): BrowserOption[] {
 		return this.options.filter((o) => o.visible());
+	}
+
+	private setSearchQuery(query: string, cursor: "preserve" | "end" = "preserve"): void {
+		this.searchInput.setValue(query);
+		if (cursor === "end") {
+			(this.searchInput as unknown as { cursor: number }).cursor = query.length;
+		}
+		this.query = query;
+	}
+
+	private handleSearchInput(data: string): void {
+		const previousQuery = this.query;
+		this.searchInput.handleInput(data);
+		this.query = this.searchInput.getValue();
+		if (this.query !== previousQuery) {
+			this.updateFilter();
+		}
 	}
 
 	private rebuildFileLists(): void {
@@ -588,7 +691,7 @@ class FileBrowserComponent {
 		this.rootParentView = false;
 		this.currentDir = dir;
 		this.allEntries = this.listCurrentDirectory();
-		this.query = "";
+		this.setSearchQuery("");
 		this.isSearchMode = false;
 		this.filtered = this.allEntries;
 		this.selected = 0;
@@ -600,7 +703,7 @@ class FileBrowserComponent {
 		if (this.currentDir === this.cwdRoot) {
 			this.rootParentView = true;
 			this.allEntries = this.listCurrentDirectory();
-			this.query = "";
+			this.setSearchQuery("");
 			this.isSearchMode = false;
 			this.filtered = this.allEntries;
 			this.selected = 0;
@@ -620,6 +723,7 @@ class FileBrowserComponent {
 			const visibleOptions = this.getVisibleOptions();
 			if (visibleOptions.length > 0) {
 				this.focusOnOptions = !this.focusOnOptions;
+				this.searchInput.focused = !this.focusOnOptions;
 				if (this.focusOnOptions) this.selectedOption = 0;
 			}
 			return;
@@ -638,6 +742,7 @@ class FileBrowserComponent {
 
 		if (matchesKey(data, "escape")) {
 			this.focusOnOptions = false;
+			this.searchInput.focused = true;
 			return;
 		}
 
@@ -685,39 +790,18 @@ class FileBrowserComponent {
 			return;
 		}
 
-		// Enter = select and insert (files or directories)
 		if (matchesKey(data, "return")) {
 			const entry = this.filtered[this.selected];
 			if (entry) {
 				if (entry.name === "..") {
 					this.goUp();
 				} else {
-					// Select and close (works for both files and directories)
 					const paths = this.getSelectedPathsArray();
 					const selected = { path: entry.relativePath, isDirectory: entry.isDirectory };
 					if (!this.selectedPaths.has(entry.relativePath)) {
 						paths.push(selected);
 					}
 					this.done({ action: "select", selected, paths });
-				}
-			}
-			return;
-		}
-
-		// Space or Right arrow = navigate directories, toggle files
-		if (data === " " || matchesKey(data, "right")) {
-			const entry = this.filtered[this.selected];
-			if (entry && !this.isUpEntry(entry)) {
-				if (entry.isDirectory) {
-					// Navigate into directory
-					this.navigateTo(path.join(this.cwdRoot, entry.relativePath));
-				} else {
-					// Toggle selection for multi-select (files only)
-					if (this.selectedPaths.has(entry.relativePath)) {
-						this.selectedPaths.delete(entry.relativePath);
-					} else {
-						this.selectedPaths.set(entry.relativePath, entry.isDirectory);
-					}
 				}
 			}
 			return;
@@ -737,71 +821,138 @@ class FileBrowserComponent {
 			return;
 		}
 
-		// Left arrow = go up directory
-		if (matchesKey(data, "left")) {
-			this.goUp();
-			return;
-		}
-
 		if (matchesKey(data, "tab")) {
 			this.completeQueryToClosestMatch();
 			return;
 		}
 
-		if (matchesKey(data, "backspace")) {
-			if (this.query.length > 0) {
-				this.query = this.query.slice(0, -1);
-				this.updateFilter();
-			} else {
-				this.goUp();
+		if (data === " ") {
+			const entry = this.filtered[this.selected];
+			if (entry && !this.isUpEntry(entry)) {
+				if (entry.isDirectory) {
+					this.navigateTo(path.join(this.cwdRoot, entry.relativePath));
+				} else if (this.selectedPaths.has(entry.relativePath)) {
+					this.selectedPaths.delete(entry.relativePath);
+				} else {
+					this.selectedPaths.set(entry.relativePath, entry.isDirectory);
+				}
 			}
 			return;
 		}
 
-		if (data.length === 1 && data.charCodeAt(0) >= 32) {
-			this.query += data;
-			this.updateFilter();
+		if (matchesKey(data, "left") && this.query.length === 0) {
+			this.goUp();
+			return;
 		}
+
+		if (matchesKey(data, "right") && this.query.length === 0) {
+			const entry = this.filtered[this.selected];
+			if (entry && !this.isUpEntry(entry)) {
+				if (entry.isDirectory) {
+					this.navigateTo(path.join(this.cwdRoot, entry.relativePath));
+				} else if (this.selectedPaths.has(entry.relativePath)) {
+					this.selectedPaths.delete(entry.relativePath);
+				} else {
+					this.selectedPaths.set(entry.relativePath, entry.isDirectory);
+				}
+			}
+			return;
+		}
+
+		if (matchesKey(data, "backspace") && this.query.length === 0) {
+			this.goUp();
+			return;
+		}
+
+		this.handleSearchInput(data);
 	}
 
 	private completeQueryToClosestMatch(): void {
 		if (!this.query.trim()) return;
 
-		const closestMatch = this.findClosestCompletionMatch(this.query);
-		if (!closestMatch) return;
+		const match =
+			tabCompletionMode === "bestMatch"
+				? this.findBestMatchCompletion(this.query)
+				: this.findSegmentCompletionMatch(this.query);
+		if (!match) return;
 
-		const completedQuery = this.completeOneWordPart(this.query, closestMatch.path);
+		if (tabCompletionMode === "bestMatch") {
+			if (match.path === this.query) return;
+			this.setSearchQuery(match.path, "end");
+			this.updateFilter(match.path);
+			return;
+		}
+
+		const completedQuery = this.completeOneWordPart(this.query, match.path);
 		if (!completedQuery || completedQuery === this.query) return;
 
-		this.query = completedQuery;
+		this.setSearchQuery(completedQuery, "end");
 		this.updateFilter();
 	}
 
-	private findClosestCompletionMatch(query: string): { path: string; isDirectory: boolean } | null {
-		const queryLower = query.toLowerCase();
-		const withSlash = this.allFilesRecursive.map((entry) => ({
-			path: entry.isDirectory ? `${entry.relativePath}/` : entry.relativePath,
-			isDirectory: entry.isDirectory,
-		}));
+	private getCompletionEntries(query: string): CompletionEntry[] {
+		return this.allFilesRecursive.map((entry) => {
+			const displayPath = withQuerySlash(entry.relativePath, query);
+			return {
+				path: entry.isDirectory ? `${displayPath}/` : displayPath,
+				isDirectory: entry.isDirectory,
+			};
+		});
+	}
 
-		const directPrefixMatches = withSlash
+	private findSegmentCompletionMatch(query: string): CompletionEntry | null {
+		const entries = this.getCompletionEntries(query);
+		return this.findPrefixCompletionMatch(query, entries);
+	}
+
+	private findBestMatchCompletion(query: string): CompletionEntry | null {
+		const entries = this.getCompletionEntries(query);
+		return (
+			this.findDirectPrefixCompletionMatch(query, entries) ??
+			this.findScopedFuzzyCompletionMatch(query, entries) ??
+			this.findNormalizedPrefixCompletionMatch(query, entries)
+		);
+	}
+
+	private findPrefixCompletionMatch(query: string, entries: CompletionEntry[]): CompletionEntry | null {
+		return this.findDirectPrefixCompletionMatch(query, entries) ?? this.findNormalizedPrefixCompletionMatch(query, entries);
+	}
+
+	private findDirectPrefixCompletionMatch(query: string, entries: CompletionEntry[]): CompletionEntry | null {
+		const queryLower = query.toLowerCase();
+		const matches = entries
 			.filter((entry) => entry.path.toLowerCase().startsWith(queryLower))
 			.sort((a, b) => this.compareCompletionEntries(a, b));
-		if (directPrefixMatches.length > 0) return directPrefixMatches[0];
+		return matches[0] ?? null;
+	}
 
+	private findNormalizedPrefixCompletionMatch(query: string, entries: CompletionEntry[]): CompletionEntry | null {
 		const normalizedQuery = this.normalizeAlnum(query);
 		if (!normalizedQuery) return null;
 
-		const normalizedPrefixMatches = withSlash
+		const matches = entries
 			.filter((entry) => this.normalizeAlnum(entry.path).startsWith(normalizedQuery))
 			.sort((a, b) => this.compareCompletionEntries(a, b));
-		return normalizedPrefixMatches[0] ?? null;
+		return matches[0] ?? null;
 	}
 
-	private compareCompletionEntries(
-		a: { path: string; isDirectory: boolean },
-		b: { path: string; isDirectory: boolean }
-	): number {
+	private findScopedFuzzyCompletionMatch(query: string, entries: CompletionEntry[]): CompletionEntry | null {
+		const scopedQuery = resolveScopedFuzzyQuery(query);
+		if (!scopedQuery) return null;
+
+		const matches = entries
+			.map((entry) => ({
+				entry,
+				score: stripLeadingSlash(entry.path).startsWith(scopedQuery.basePath)
+					? scoreScopedEntry(entry.path, scopedQuery.query, entry.isDirectory)
+					: 0,
+			}))
+			.filter((item) => item.score > 0)
+			.sort((a, b) => b.score - a.score || this.compareCompletionEntries(a.entry, b.entry));
+		return matches[0]?.entry ?? null;
+	}
+
+	private compareCompletionEntries(a: CompletionEntry, b: CompletionEntry): number {
 		if (a.path.length !== b.path.length) return a.path.length - b.path.length;
 		if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
 		return a.path.localeCompare(b.path);
@@ -870,10 +1021,10 @@ class FileBrowserComponent {
 		return index;
 	}
 
-	private updateFilter(): void {
+	private updateFilter(preferredPath?: string): void {
 		if (this.query.trim()) {
 			this.isSearchMode = true;
-			this.filtered = filterEntries(this.allFilesRecursive, this.query);
+			this.filtered = filterEntries(this.allFilesRecursive, this.query, preferredPath);
 		} else {
 			this.isSearchMode = false;
 			this.filtered = this.allEntries;
@@ -934,9 +1085,13 @@ class FileBrowserComponent {
 
 		// Search input
 		const searchPrompt = selected("❯ ");
-		const queryDisplay = this.query || hint("Search files...");
 		const modeIndicator = this.query && isGlobPattern(this.query) ? hint(" [glob]") : "";
-		lines.push(row(` ${searchPrompt}${queryDisplay}${modeIndicator}`));
+		const searchWidth = Math.max(3, innerW - 1 - visibleWidth(modeIndicator));
+		const renderedSearchInput = this.searchInput.render(searchWidth)[0] ?? "> ";
+		const normalizedSearchInput = renderedSearchInput.startsWith("> ")
+			? renderedSearchInput.slice(2)
+			: renderedSearchInput;
+		lines.push(row(` ${searchPrompt}${normalizedSearchInput}${modeIndicator}`));
 
 		// Options row
 		const visibleOptions = this.getVisibleOptions();
@@ -1038,7 +1193,7 @@ class FileBrowserComponent {
 
 		// Footer
 		lines.push(border(`├${"─".repeat(innerW)}┤`));
-		lines.push(row(hint(" ↑↓ navigate  ←→ dirs  tab complete  shift+tab options  space toggle  enter select  esc done")));
+		lines.push(row(hint(" ↑↓ navigate  space queue/dir  tab complete  shift+tab options  enter select  esc done  ←/→ dirs when empty")));
 
 		// Bottom border
 		lines.push(border(`╰${"─".repeat(innerW)}╯`));
