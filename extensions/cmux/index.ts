@@ -11,6 +11,9 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const CMUX_SOCKET = process.env.CMUX_SOCKET_PATH;
+// Track the workspace that spawned this Pi process; `cmux current-workspace`
+// follows the focused workspace and can point at a different one.
+const CMUX_WORKSPACE_ID = process.env.CMUX_WORKSPACE_ID;
 
 // Colors
 const GREEN = "#22C55E";
@@ -72,16 +75,16 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function syncWorkspaceName() {
-    if (!hasUI) return;
+    if (!hasUI || !CMUX_WORKSPACE_ID) return;
 
     const sessionName = pi.getSessionName()?.trim();
     if (!sessionName) return;
 
-    const workspaceResult = await pi.exec("cmux", ["current-workspace"], { timeout: 2000 }).catch(() => undefined);
-    const workspaceRef = workspaceResult?.stdout.trim();
-    if (!workspaceRef || workspaceResult?.code !== 0) return;
-
-    const treeResult = await pi.exec("cmux", ["tree", "--workspace", workspaceRef], { timeout: 2000 }).catch(() => undefined);
+    const treeResult = await pi.exec(
+      "cmux",
+      ["tree", "--workspace", CMUX_WORKSPACE_ID],
+      { timeout: 2000 }
+    ).catch(() => undefined);
     const tree = treeResult?.stdout;
     if (!tree || treeResult?.code !== 0) return;
 
@@ -89,11 +92,15 @@ export default function (pi: ExtensionAPI) {
     const surfaceCount = countMatches(tree, /\bsurface surface:/g);
     if (paneCount !== 1 || surfaceCount !== 1) return;
 
-    const workspaceMatch = tree.match(/workspace\s+(workspace:\S+)\s+"([^"]*)"/);
-    const currentTitle = workspaceMatch?.[2]?.trim();
+    const workspaceMatch = tree.match(/workspace\s+workspace:\S+\s+"([^"]*)"/);
+    const currentTitle = workspaceMatch?.[1]?.trim();
     if (currentTitle === sessionName) return;
 
-    await pi.exec("cmux", ["rename-workspace", "--workspace", workspaceRef, sessionName], { timeout: 2000 }).catch(() => {});
+    await pi.exec(
+      "cmux",
+      ["rename-workspace", "--workspace", CMUX_WORKSPACE_ID, sessionName],
+      { timeout: 2000 }
+    ).catch(() => {});
   }
 
   // --- Session lifecycle ---

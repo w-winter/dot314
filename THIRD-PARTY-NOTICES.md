@@ -29,7 +29,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2026 Daniel Griesser
 - **Used in:**
-  - `extensions/cmux.ts` (◐ modified — added workspace auto-renaming synced to Pi session name)
+  - `extensions/cmux/index.ts` (◐ modified — added workspace auto-renaming synced to Pi session name)
 
 ### Gurpartap/pi-readcache
 - **URL:** https://github.com/Gurpartap/pi-readcache

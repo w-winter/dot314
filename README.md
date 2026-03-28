@@ -102,7 +102,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `anycopy/` | [`pi-anycopy`](https://www.npmjs.com/package/pi-anycopy) | `/tree` with live syntax-highlighted preview + copy |
 | ◐ | `branch-out/` | [`pi-branch-out`](https://www.npmjs.com/package/pi-branch-out) | Fork session into split pane or new tab with layout policies and optional model/message queuing |
 | ● | `brave-search/` | [`pi-brave-search`](https://www.npmjs.com/package/pi-brave-search) | Web search + content extraction. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose search |
-| ◐ | `cmux.ts` | | cmux sidebar integration + workspace auto-renaming; no-op outside cmux |
+| ◐ | `cmux/` | | cmux sidebar integration + workspace auto-renaming; no-op outside cmux |
 | ● | `command-center/` | [`pi-command-center`](https://www.npmjs.com/package/pi-command-center) | `/command` palette widget |
 | ◐ | `editor-enhancements/` | | File picker, shell completions, raw paste, double-esc and slash command remapping |
 | ● | `ephemeral-mode.ts` | [`pi-ephemeral`](https://www.npmjs.com/package/pi-ephemeral) | Delete session on exit |

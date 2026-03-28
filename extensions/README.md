@@ -262,9 +262,9 @@
   - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
   - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
 
-- ◐ [`cmux.ts`](cmux.ts) (upstream: [HazAT/pi-config](https://github.com/HazAT/pi-config/blob/main/extensions/cmux/index.ts))
+- ◐ [`cmux/`](cmux/) (upstream: [HazAT/pi-config](https://github.com/HazAT/pi-config/blob/main/extensions/cmux/index.ts))
   - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
-  - This version adds workspace auto-renaming: on `session_start`, `session_switch`, `session_fork`, and `agent_end`, syncs the cmux workspace name to the Pi session name (only when the workspace has exactly 1 pane and 1 surface)
+  - This version adds workspace auto-renaming: on `session_start`, `session_switch`, `session_fork`, and `agent_end`, syncs the cmux workspace name to the Pi session name using `CMUX_WORKSPACE_ID` so concurrent cmux workspaces do not cross-rename (only when the workspace has exactly 1 pane and 1 surface)
 
 - ○ [`inline-bash.ts`](inline-bash.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`interactive-shell.ts`](interactive-shell.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
