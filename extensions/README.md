@@ -85,7 +85,8 @@
 
 - ● [`md.ts`](md.ts)
   - `/md` exports the current Pi session to a legible Markdown transcript in `~/.pi/agent/pi-sessions-extracted/`; tool calls and thinking blocks are excluded by default
-  - `/md tc` includes tool calls (invocations + results); `/md t` includes thinking blocks (also `think`, `thinking`)
+  - `/md tc` includes tool calls (invocations + results); `/md tc -<toolname>` (e.g., `/md tc -bash -read`) excludes exact tool name(s); `/md tc +<toolname>` excludes all tool names except for the "whitelisted" exact tool name(s); filters are case-insensitive and require `tc`
+  - `/md t` includes thinking blocks (also `think`, `thinking`)
   - `/md <N>` exports only the last **N turns** (a turn is `[user message → assistant message]`), e.g. `/md 2`, `/md tc t 2`
   - `/md all` (or `/md file`) exports the full session file instead of the current `/tree` branch; flags combine freely
 

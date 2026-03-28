@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
-import * as readline from "readline";
 import { execSync } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as readline from "readline";
 
 /**
  * Processes Pi agent JSONL session logs into readable text format
@@ -19,6 +19,24 @@ interface SessionMeta {
 interface ToolCallInfo {
   name: string;
   cmd: string;
+  include: boolean;
+}
+
+interface ToolFilter {
+  mode: "all" | "includeOnly";
+  includeNames: Set<string>;
+  excludeNames: Set<string>;
+}
+
+interface ExportOptions {
+  includeThinking: boolean;
+  toolFilter: ToolFilter | null;
+}
+
+interface ConversationState {
+  meta: SessionMeta;
+  conversation: string[];
+  pendingToolCalls: Map<string, ToolCallInfo>;
 }
 
 /**
@@ -38,12 +56,12 @@ function extractTextFromContent(content: unknown): string {
         continue;
       }
       const itemObj = item as Record<string, unknown>;
-      const itemType = itemObj.type;
-      if (itemType === "text") {
-        const text = itemObj.text;
-        if (typeof text === "string" && text.trim()) {
-          parts.push(text.trim());
-        }
+      if (itemObj.type !== "text") {
+        continue;
+      }
+      const text = itemObj.text;
+      if (typeof text === "string" && text.trim()) {
+        parts.push(text.trim());
       }
     }
     return parts.join("\n").trim();
@@ -82,11 +100,9 @@ function slug(s: string): string {
     if (isAllowed) {
       out.push(ch);
       prevUnderscore = false;
-    } else {
-      if (!prevUnderscore) {
-        out.push("_");
-        prevUnderscore = true;
-      }
+    } else if (!prevUnderscore) {
+      out.push("_");
+      prevUnderscore = true;
     }
   }
   const result = out.join("").replace(/^_+|_+$/g, "");
@@ -122,160 +138,218 @@ async function* iterJsonl(
   }
 }
 
+function normalizeToolName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function createConversationState(): ConversationState {
+  return {
+    meta: {
+      sessionId: "",
+      startedAt: null,
+      cwd: "",
+    },
+    conversation: [],
+    pendingToolCalls: new Map(),
+  };
+}
+
+function formatThinkingBlock(thinking: string): string {
+  return `[thinking]\n${thinking.trim()}\n[/thinking]`;
+}
+
+function extractToolCommand(args: unknown): string {
+  if (typeof args === "object" && args !== null && !Array.isArray(args)) {
+    const argsObj = args as Record<string, unknown>;
+    const cmdVal = argsObj.command || argsObj.cmd;
+    if (typeof cmdVal === "string") {
+      return cmdVal;
+    }
+    try {
+      return JSON.stringify(args, Object.keys(args).sort());
+    } catch {
+      return String(args);
+    }
+  }
+  return String(args);
+}
+
+function shouldIncludeTool(toolName: string, toolFilter: ToolFilter | null): boolean {
+  if (!toolFilter) {
+    return false;
+  }
+
+  const normalized = normalizeToolName(toolName);
+  if (toolFilter.excludeNames.has(normalized)) {
+    return false;
+  }
+  if (toolFilter.mode === "includeOnly") {
+    return toolFilter.includeNames.has(normalized);
+  }
+  return true;
+}
+
+function applyMessageRecord(
+  rec: Record<string, unknown>,
+  state: ConversationState,
+  options: ExportOptions
+): void {
+  const rtype = rec.type;
+
+  if (rtype === "session" && !state.meta.sessionId) {
+    state.meta.sessionId = String(rec.id || "");
+    state.meta.startedAt = parseIsoTimestamp(rec.timestamp);
+    state.meta.cwd = String(rec.cwd || "");
+    return;
+  }
+
+  if (rtype !== "message") {
+    return;
+  }
+
+  const msg = rec.message;
+  if (typeof msg !== "object" || msg === null || Array.isArray(msg)) {
+    return;
+  }
+
+  const msgObj = msg as Record<string, unknown>;
+  const role = msgObj.role;
+
+  if (role === "user") {
+    const text = extractTextFromContent(msgObj.content);
+    if (text) {
+      state.conversation.push(`USER: ${text}`);
+    }
+    return;
+  }
+
+  if (role === "assistant") {
+    appendAssistantMessage(msgObj, state, options);
+    return;
+  }
+
+  if (role === "toolResult") {
+    appendToolResultMessage(msgObj, state, options.toolFilter);
+  }
+}
+
+function appendAssistantMessage(
+  msgObj: Record<string, unknown>,
+  state: ConversationState,
+  options: ExportOptions
+): void {
+  const content = msgObj.content;
+  const textParts: string[] = [];
+  const toolParts: string[] = [];
+
+  if (typeof content === "string") {
+    if (content.trim()) {
+      textParts.push(content.trim());
+    }
+  } else if (Array.isArray(content)) {
+    for (const item of content) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+      const itemObj = item as Record<string, unknown>;
+      const itemType = itemObj.type;
+
+      if (itemType === "text") {
+        const text = itemObj.text;
+        if (typeof text === "string" && text.trim()) {
+          textParts.push(text.trim());
+        }
+        continue;
+      }
+
+      if (itemType === "thinking") {
+        const thinking = itemObj.thinking;
+        if (
+          options.includeThinking &&
+          typeof thinking === "string" &&
+          thinking.trim()
+        ) {
+          textParts.push(formatThinkingBlock(thinking));
+        }
+        continue;
+      }
+
+      if (itemType !== "toolCall") {
+        continue;
+      }
+
+      const toolName = String(itemObj.name || "tool");
+      const toolId = String(itemObj.id || "");
+      const cmd = extractToolCommand(itemObj.arguments);
+      const include = shouldIncludeTool(toolName, options.toolFilter);
+
+      if (toolId) {
+        state.pendingToolCalls.set(toolId, { name: toolName, cmd, include });
+      }
+      if (include) {
+        toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
+      }
+    }
+  }
+
+  let fullText = textParts.filter(Boolean).join("\n").trim();
+  if (toolParts.length > 0) {
+    fullText = (fullText ? `${fullText}\n` : "") + toolParts.join("\n");
+  }
+
+  if (fullText) {
+    state.conversation.push(`ASSISTANT: ${fullText}`);
+  }
+}
+
+function appendToolResultMessage(
+  msgObj: Record<string, unknown>,
+  state: ConversationState,
+  toolFilter: ToolFilter | null
+): void {
+  const toolName = String(msgObj.toolName || msgObj.tool_name || "tool");
+  const toolCallId = String(msgObj.toolCallId || msgObj.tool_call_id || "");
+
+  let label = toolName;
+  let include = shouldIncludeTool(toolName, toolFilter);
+
+  if (toolCallId && state.pendingToolCalls.has(toolCallId)) {
+    const pending = state.pendingToolCalls.get(toolCallId)!;
+    state.pendingToolCalls.delete(toolCallId);
+    label = pending.name || toolName;
+    include = pending.include;
+    if (pending.cmd) {
+      label = `${label}: ${pending.cmd}`;
+    }
+  }
+
+  if (!include) {
+    return;
+  }
+
+  const isError = Boolean(msgObj.isError || msgObj.is_error);
+  const out = extractTextFromContent(msgObj.content);
+  if (out && out !== "(no content)") {
+    state.conversation.push(
+      `SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`
+    );
+  }
+}
+
 /**
  * Extract conversation messages from a Pi session JSONL file
  */
 async function extractConversation(
   jsonlFile: string,
-  includeThinking: boolean = false,
-  includeToolCalls: boolean = false
+  options: ExportOptions
 ): Promise<{ meta: SessionMeta; conversation: string[] }> {
-  const conversation: string[] = [];
-  const meta: SessionMeta = {
-    sessionId: "",
-    startedAt: null,
-    cwd: "",
-  };
-
-  const pendingToolCalls: Map<string, ToolCallInfo> = new Map();
+  const state = createConversationState();
 
   for await (const rec of iterJsonl(jsonlFile)) {
-    const rtype = rec.type;
-
-    // Handle session metadata
-    if (rtype === "session" && !meta.sessionId) {
-      meta.sessionId = String(rec.id || "");
-      meta.startedAt = parseIsoTimestamp(rec.timestamp);
-      meta.cwd = String(rec.cwd || "");
-      continue;
-    }
-
-    if (rtype !== "message") {
-      continue;
-    }
-
-    const msg = rec.message;
-    if (typeof msg !== "object" || msg === null || Array.isArray(msg)) {
-      continue;
-    }
-    const msgObj = msg as Record<string, unknown>;
-    const role = msgObj.role;
-
-    // Handle user messages
-    if (role === "user") {
-      const text = extractTextFromContent(msgObj.content);
-      if (text) {
-        conversation.push(`USER: ${text}`);
-      }
-      continue;
-    }
-
-    // Handle assistant messages
-    if (role === "assistant") {
-      const content = msgObj.content;
-      const textParts: string[] = [];
-      const toolParts: string[] = [];
-
-      if (Array.isArray(content)) {
-        for (const item of content) {
-          if (typeof item !== "object" || item === null) {
-            continue;
-          }
-          const itemObj = item as Record<string, unknown>;
-          const itype = itemObj.type;
-
-          if (itype === "text") {
-            const t = itemObj.text;
-            if (typeof t === "string" && t.trim()) {
-              textParts.push(t.trim());
-            }
-          } else if (itype === "thinking") {
-            if (includeThinking) {
-              const t = itemObj.thinking;
-              if (typeof t === "string" && t.trim()) {
-                textParts.push(`[thinking]\n${t.trim()}\n[/thinking]`);
-              }
-            }
-          } else if (itype === "toolCall") {
-            const toolName = String(itemObj.name || "tool");
-            const toolId = String(itemObj.id || "");
-            const args = itemObj.arguments;
-            let cmd = "";
-
-            if (typeof args === "object" && args !== null && !Array.isArray(args)) {
-              const argsObj = args as Record<string, unknown>;
-              const cmdVal = argsObj.command || argsObj.cmd;
-              if (typeof cmdVal === "string") {
-                cmd = cmdVal;
-              }
-              if (!cmd) {
-                // Fall back to JSON for unknown tool argument shapes
-                try {
-                  cmd = JSON.stringify(args, Object.keys(args).sort());
-                } catch {
-                  cmd = String(args);
-                }
-              }
-            } else {
-              cmd = String(args);
-            }
-
-            if (toolId) {
-              pendingToolCalls.set(toolId, { name: toolName, cmd });
-            }
-            if (includeToolCalls) {
-              toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
-            }
-          }
-        }
-      }
-
-      let fullText = textParts.filter((p) => p).join("\n").trim();
-      if (includeToolCalls && toolParts.length > 0) {
-        fullText = (fullText ? fullText + "\n" : "") + toolParts.join("\n");
-      }
-
-      if (fullText) {
-        conversation.push(`ASSISTANT: ${fullText}`);
-      }
-      continue;
-    }
-
-    // Handle tool results
-    if (role === "toolResult") {
-      const toolName = String(
-        msgObj.toolName || msgObj.tool_name || "tool"
-      );
-      const toolCallId = String(
-        msgObj.toolCallId || msgObj.tool_call_id || ""
-      );
-
-      // Always consume pending tool call entries to keep the map clean
-      let label = toolName;
-      if (toolCallId && pendingToolCalls.has(toolCallId)) {
-        const pending = pendingToolCalls.get(toolCallId)!;
-        pendingToolCalls.delete(toolCallId);
-        label = pending.name || toolName;
-        if (pending.cmd) {
-          label = `${label}: ${pending.cmd}`;
-        }
-      }
-
-      if (includeToolCalls) {
-        const isError = Boolean(msgObj.isError || msgObj.is_error);
-        const out = extractTextFromContent(msgObj.content);
-        if (out && out !== "(no content)") {
-          conversation.push(
-            `SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`
-          );
-        }
-      }
-      continue;
-    }
-    // Ignore any other message roles
+    applyMessageRecord(rec, state, options);
   }
 
-  return { meta, conversation };
+  return { meta: state.meta, conversation: state.conversation };
 }
 
 /**
@@ -287,167 +361,96 @@ async function extractConversation(
  */
 function extractConversationFromBranch(
   sessionManager: any,
-  includeThinking: boolean = false,
-  includeToolCalls: boolean = false
+  options: ExportOptions
 ): { meta: SessionMeta; conversation: string[]; leafId: string | null } {
-  const conversation: string[] = [];
-  const meta: SessionMeta = {
-    sessionId: "",
-    startedAt: null,
-    cwd: "",
-  };
+  const state = createConversationState();
+  const header =
+    typeof sessionManager.getHeader === "function"
+      ? sessionManager.getHeader()
+      : null;
 
-  const header = typeof sessionManager.getHeader === "function" ? sessionManager.getHeader() : null;
   if (header && typeof header === "object") {
     const headerObj = header as Record<string, unknown>;
-    meta.sessionId = typeof headerObj.id === "string" ? headerObj.id : "";
-    meta.startedAt = parseIsoTimestamp(headerObj.timestamp);
+    state.meta.sessionId = typeof headerObj.id === "string" ? headerObj.id : "";
+    state.meta.startedAt = parseIsoTimestamp(headerObj.timestamp);
     if (typeof headerObj.cwd === "string") {
-      meta.cwd = headerObj.cwd;
+      state.meta.cwd = headerObj.cwd;
     }
   }
 
-  if (!meta.cwd && typeof sessionManager.getCwd === "function") {
-    meta.cwd = String(sessionManager.getCwd() || "");
+  if (!state.meta.cwd && typeof sessionManager.getCwd === "function") {
+    state.meta.cwd = String(sessionManager.getCwd() || "");
   }
 
-  const leafId = typeof sessionManager.getLeafId === "function" ? (sessionManager.getLeafId() as string | null) : null;
+  const leafId =
+    typeof sessionManager.getLeafId === "function"
+      ? (sessionManager.getLeafId() as string | null)
+      : null;
 
   const branchEntries: unknown[] =
-    leafId && typeof sessionManager.getBranch === "function" ? (sessionManager.getBranch(leafId) as unknown[]) : [];
-
-  const pendingToolCalls: Map<string, ToolCallInfo> = new Map();
+    leafId && typeof sessionManager.getBranch === "function"
+      ? (sessionManager.getBranch(leafId) as unknown[])
+      : [];
 
   for (const entry of branchEntries) {
     if (typeof entry !== "object" || entry === null) {
       continue;
     }
-
-    const entryObj = entry as Record<string, unknown>;
-    if (entryObj.type !== "message") {
-      continue;
-    }
-
-    const msg = entryObj.message;
-    if (typeof msg !== "object" || msg === null || Array.isArray(msg)) {
-      continue;
-    }
-
-    const msgObj = msg as Record<string, unknown>;
-    const role = msgObj.role;
-
-    // Handle user messages
-    if (role === "user") {
-      const text = extractTextFromContent(msgObj.content);
-      if (text) {
-        conversation.push(`USER: ${text}`);
-      }
-      continue;
-    }
-
-    // Handle assistant messages
-    if (role === "assistant") {
-      const content = msgObj.content;
-      const textParts: string[] = [];
-      const toolParts: string[] = [];
-
-      if (typeof content === "string") {
-        if (content.trim()) {
-          textParts.push(content.trim());
-        }
-      } else if (Array.isArray(content)) {
-        for (const item of content) {
-          if (typeof item !== "object" || item === null) {
-            continue;
-          }
-          const itemObj = item as Record<string, unknown>;
-          const itype = itemObj.type;
-
-          if (itype === "text") {
-            const t = itemObj.text;
-            if (typeof t === "string" && t.trim()) {
-              textParts.push(t.trim());
-            }
-          } else if (itype === "thinking") {
-            if (includeThinking) {
-              const t = itemObj.thinking;
-              if (typeof t === "string" && t.trim()) {
-                textParts.push(`\n\n**[thinking]**\n\n${t.trim()}\n\n**[/thinking]**\n\n`);
-              }
-            }
-          } else if (itype === "toolCall") {
-            const toolName = String(itemObj.name || "tool");
-            const toolId = String(itemObj.id || "");
-            const args = itemObj.arguments;
-            let cmd = "";
-
-            if (typeof args === "object" && args !== null && !Array.isArray(args)) {
-              const argsObj = args as Record<string, unknown>;
-              const cmdVal = argsObj.command || argsObj.cmd;
-              if (typeof cmdVal === "string") {
-                cmd = cmdVal;
-              }
-              if (!cmd) {
-                // Fall back to JSON for unknown tool argument shapes
-                try {
-                  cmd = JSON.stringify(args, Object.keys(args).sort());
-                } catch {
-                  cmd = String(args);
-                }
-              }
-            } else {
-              cmd = String(args);
-            }
-
-            if (toolId) {
-              pendingToolCalls.set(toolId, { name: toolName, cmd });
-            }
-            if (includeToolCalls) {
-              toolParts.push(`[tool:${toolName}] ${cmd}`.trim());
-            }
-          }
-        }
-      }
-
-      let fullText = textParts.filter((p) => p).join("\n").trim();
-      if (includeToolCalls && toolParts.length > 0) {
-        fullText = (fullText ? fullText + "\n" : "") + toolParts.join("\n");
-      }
-
-      if (fullText) {
-        conversation.push(`ASSISTANT: ${fullText}`);
-      }
-      continue;
-    }
-
-    // Handle tool results
-    if (role === "toolResult") {
-      const toolName = String(msgObj.toolName || msgObj.tool_name || "tool");
-      const toolCallId = String(msgObj.toolCallId || msgObj.tool_call_id || "");
-
-      // Always consume pending tool call entries to keep the map clean
-      let label = toolName;
-      if (toolCallId && pendingToolCalls.has(toolCallId)) {
-        const pending = pendingToolCalls.get(toolCallId)!;
-        pendingToolCalls.delete(toolCallId);
-        label = pending.name || toolName;
-        if (pending.cmd) {
-          label = `${label}: ${pending.cmd}`;
-        }
-      }
-
-      if (includeToolCalls) {
-        const isError = Boolean(msgObj.isError || msgObj.is_error);
-        const out = extractTextFromContent(msgObj.content);
-        if (out && out !== "(no content)") {
-          conversation.push(`SYSTEM [${label} output${isError ? " ERROR" : ""}]:\n${out}`);
-        }
-      }
-      continue;
-    }
+    applyMessageRecord(entry as Record<string, unknown>, state, options);
   }
 
-  return { meta, conversation, leafId };
+  return { meta: state.meta, conversation: state.conversation, leafId };
+}
+
+function buildMarkdownContent(
+  meta: SessionMeta,
+  sessionFile: string,
+  conversation: string[],
+  lastTurns: number | null,
+  branchInfo?: { leafId: string | null }
+): { content: string; filename: string } | null {
+  const finalConversation =
+    lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
+
+  if (finalConversation.length === 0) {
+    return null;
+  }
+
+  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
+  const projectSlug = slug(project);
+
+  const started = meta.startedAt || new Date();
+  const stamp = formatTimestamp(started);
+  const sid = (meta.sessionId || "unknown").slice(0, 8);
+  const filename = `${projectSlug}_pi_${stamp}_${sid}.md`;
+
+  const lines: string[] = [];
+  lines.push("PI SESSION (processed)");
+  if (branchInfo) {
+    lines.push("mode: branch");
+    lines.push(`leaf: ${branchInfo.leafId === null ? "null" : branchInfo.leafId}`);
+  }
+  if (meta.sessionId) {
+    lines.push(`id: ${meta.sessionId}`);
+  }
+  if (meta.startedAt) {
+    lines.push(`started: ${meta.startedAt.toISOString()}`);
+  }
+  if (meta.cwd) {
+    lines.push(`cwd: ${meta.cwd}`);
+  }
+  lines.push(`source: ${sessionFile}`);
+  if (lastTurns && lastTurns > 0) {
+    lines.push(`turns: last ${lastTurns}`);
+  }
+  lines.push("");
+
+  for (const msg of finalConversation) {
+    lines.push(msg.trimEnd());
+    lines.push("");
+  }
+
+  return { content: lines.join("\n"), filename };
 }
 
 /**
@@ -456,52 +459,16 @@ function extractConversationFromBranch(
 function generateMarkdownFromBranch(
   sessionManager: any,
   sessionFile: string,
-  includeThinking: boolean = false,
-  includeToolCalls: boolean = false,
+  options: ExportOptions,
   lastTurns: number | null = null
 ): { content: string; filename: string } | null {
-  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking, includeToolCalls);
-  const finalConversation =
-    lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
-
-  if (finalConversation.length === 0) {
-    return null;
-  }
-
-  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
-  const projectSlug = slug(project);
-
-  const started = meta.startedAt || new Date();
-  const stamp = formatTimestamp(started);
-  const sid = (meta.sessionId || "unknown").slice(0, 8);
-  const filename = `${projectSlug}_pi_${stamp}_${sid}.md`;
-
-  // Build output content
-  const lines: string[] = [];
-  lines.push("PI SESSION (processed)");
-  lines.push("mode: branch");
-  lines.push(`leaf: ${leafId === null ? "null" : leafId}`);
-  if (meta.sessionId) {
-    lines.push(`id: ${meta.sessionId}`);
-  }
-  if (meta.startedAt) {
-    lines.push(`started: ${meta.startedAt.toISOString()}`);
-  }
-  if (meta.cwd) {
-    lines.push(`cwd: ${meta.cwd}`);
-  }
-  lines.push(`source: ${sessionFile}`);
-  if (lastTurns && lastTurns > 0) {
-    lines.push(`turns: last ${lastTurns}`);
-  }
-  lines.push("");
-
-  for (const msg of finalConversation) {
-    lines.push(msg.trimEnd());
-    lines.push("");
-  }
-
-  return { content: lines.join("\n"), filename };
+  const { meta, conversation, leafId } = extractConversationFromBranch(
+    sessionManager,
+    options
+  );
+  return buildMarkdownContent(meta, sessionFile, conversation, lastTurns, {
+    leafId,
+  });
 }
 
 /**
@@ -509,50 +476,11 @@ function generateMarkdownFromBranch(
  */
 async function generateMarkdownFromSession(
   jsonlFile: string,
-  includeThinking: boolean = false,
-  includeToolCalls: boolean = false,
+  options: ExportOptions,
   lastTurns: number | null = null
 ): Promise<{ content: string; filename: string } | null> {
-  const { meta, conversation } = await extractConversation(jsonlFile, includeThinking, includeToolCalls);
-  const finalConversation =
-    lastTurns && lastTurns > 0 ? sliceLastNTurns(conversation, lastTurns) : conversation;
-
-  if (finalConversation.length === 0) {
-    return null;
-  }
-
-  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
-  const projectSlug = slug(project);
-
-  const started = meta.startedAt || new Date();
-  const stamp = formatTimestamp(started);
-  const sid = (meta.sessionId || "unknown").slice(0, 8);
-  const filename = `${projectSlug}_pi_${stamp}_${sid}.md`;
-
-  // Build output content
-  const lines: string[] = [];
-  lines.push("PI SESSION (processed)");
-  if (meta.sessionId) {
-    lines.push(`id: ${meta.sessionId}`);
-  }
-  if (meta.startedAt) {
-    lines.push(`started: ${meta.startedAt.toISOString()}`);
-  }
-  if (meta.cwd) {
-    lines.push(`cwd: ${meta.cwd}`);
-  }
-  lines.push(`source: ${jsonlFile}`);
-  if (lastTurns && lastTurns > 0) {
-    lines.push(`turns: last ${lastTurns}`);
-  }
-  lines.push("");
-
-  for (const msg of finalConversation) {
-    lines.push(msg.trimEnd());
-    lines.push("");
-  }
-
-  return { content: lines.join("\n"), filename };
+  const { meta, conversation } = await extractConversation(jsonlFile, options);
+  return buildMarkdownContent(meta, jsonlFile, conversation, lastTurns);
 }
 
 /**
@@ -560,113 +488,6 @@ async function generateMarkdownFromSession(
  */
 function copyToClipboard(text: string): void {
   execSync("pbcopy", { input: text });
-}
-
-/**
- * Process the currently selected branch and write readable output
- */
-async function processSessionFromBranch(
-  sessionManager: any,
-  sessionFile: string,
-  outputDir: string,
-  includeThinking: boolean = false,
-  includeToolCalls: boolean = false
-): Promise<string | null> {
-  const { meta, conversation, leafId } = extractConversationFromBranch(sessionManager, includeThinking, includeToolCalls);
-
-  if (conversation.length === 0) {
-    return null;
-  }
-
-  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
-  const projectSlug = slug(project);
-
-  const started = meta.startedAt || new Date();
-  const stamp = formatTimestamp(started);
-  const sid = (meta.sessionId || "unknown").slice(0, 8);
-  const outputFile = path.join(outputDir, `${projectSlug}_pi_${stamp}_${sid}.md`);
-
-  // Ensure output directory exists
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  // Build output content
-  const lines: string[] = [];
-  lines.push("PI SESSION (processed)");
-  lines.push("mode: branch");
-  lines.push(`leaf: ${leafId === null ? "null" : leafId}`);
-  if (meta.sessionId) {
-    lines.push(`id: ${meta.sessionId}`);
-  }
-  if (meta.startedAt) {
-    lines.push(`started: ${meta.startedAt.toISOString()}`);
-  }
-  if (meta.cwd) {
-    lines.push(`cwd: ${meta.cwd}`);
-  }
-  lines.push(`source: ${sessionFile}`);
-  lines.push("");
-
-  for (const msg of conversation) {
-    lines.push(msg.trimEnd());
-    lines.push("");
-  }
-
-  fs.writeFileSync(outputFile, lines.join("\n"), "utf-8");
-  return outputFile;
-}
-
-/**
- * Process a session JSONL file and write readable output
- */
-async function processSession(
-  jsonlFile: string,
-  outputDir: string,
-  includeThinking: boolean = false,
-  includeToolCalls: boolean = false
-): Promise<string | null> {
-  const { meta, conversation } = await extractConversation(
-    jsonlFile,
-    includeThinking,
-    includeToolCalls
-  );
-
-  if (conversation.length === 0) {
-    return null;
-  }
-
-  const project = meta.cwd ? path.basename(meta.cwd) : "unknown";
-  const projectSlug = slug(project);
-
-  const started = meta.startedAt || new Date();
-  const stamp = formatTimestamp(started);
-  const sid = (meta.sessionId || "unknown").slice(0, 8);
-  const outputFile = path.join(outputDir, `${projectSlug}_pi_${stamp}_${sid}.md`);
-
-  // Ensure output directory exists
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  // Build output content
-  const lines: string[] = [];
-  lines.push("PI SESSION (processed)");
-  if (meta.sessionId) {
-    lines.push(`id: ${meta.sessionId}`);
-  }
-  if (meta.startedAt) {
-    lines.push(`started: ${meta.startedAt.toISOString()}`);
-  }
-  if (meta.cwd) {
-    lines.push(`cwd: ${meta.cwd}`);
-  }
-  lines.push(`source: ${jsonlFile}`);
-  lines.push("");
-
-  for (const msg of conversation) {
-    lines.push(msg.trimEnd());
-    lines.push("");
-  }
-
-  fs.writeFileSync(outputFile, lines.join("\n"), "utf-8");
-  return outputFile;
 }
 
 /**
@@ -710,11 +531,61 @@ function sliceLastNTurns(conversation: string[], turns: number): string[] {
   return conversation.slice(startIndex);
 }
 
+function parseToolFilter(tokensLower: string[]): ToolFilter {
+  const includeNames = new Set<string>();
+  const excludeNames = new Set<string>();
+
+  for (const token of tokensLower) {
+    if (!["+", "-"].includes(token[0]) || token.length < 2) {
+      continue;
+    }
+
+    const name = normalizeToolName(token.slice(1));
+    if (!name) {
+      continue;
+    }
+
+    if (token.startsWith("+")) {
+      includeNames.add(name);
+    } else {
+      excludeNames.add(name);
+    }
+  }
+
+  return {
+    mode: includeNames.size > 0 ? "includeOnly" : "all",
+    includeNames,
+    excludeNames,
+  };
+}
+
+function hasToolFilterTokens(tokensLower: string[]): boolean {
+  return tokensLower.some((token) => /^[+-].+/.test(token));
+}
+
+function describeToolFilter(toolFilter: ToolFilter | null): string | null {
+  if (!toolFilter) {
+    return null;
+  }
+
+  const includes = [...toolFilter.includeNames].sort().map((name) => `+${name}`);
+  const excludes = [...toolFilter.excludeNames].sort().map((name) => `-${name}`);
+
+  if (toolFilter.mode === "includeOnly") {
+    return ["tool calls", ...includes, ...excludes].join(" ");
+  }
+  if (excludes.length > 0) {
+    return ["tool calls", ...excludes].join(" ");
+  }
+  return "tool calls";
+}
+
 const OUTPUT_DIR = path.join(os.homedir(), ".pi", "agent", "pi-sessions-extracted");
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("md", {
-    description: "Export current session as markdown (current /tree branch) on clipboard or to file. Tool calls and thinking blocks are excluded by default. Use '/md tc' to include tool calls, '/md t' to include thinking blocks. Use '/md all' for full file. Pass a number (e.g. '/md 2' or '/md tc t 2') to export only the last N turns.",
+    description:
+      "Export current session as markdown (current /tree branch) on clipboard or to file. Tool calls and thinking blocks are excluded by default. Use '/md tc' to include tool calls, optionally filtered with exact tool names like '/md tc -bash -read' or '/md tc +ask'. Use '/md t' to include thinking blocks. Use '/md all' for full file. Pass a number (e.g. '/md 2' or '/md tc t 2') to export only the last N turns.",
     handler: async (args, ctx) => {
       const sessionFile = ctx.sessionManager.getSessionFile();
 
@@ -733,10 +604,24 @@ export default function (pi: ExtensionAPI) {
         tokensLower.includes("thinking");
 
       const includeToolCalls = tokensLower.includes("tc");
+      const exportAll = tokensLower.includes("all") || tokensLower.includes("file");
+      const toolFilterTokensPresent = hasToolFilterTokens(tokensLower);
 
-      const exportAll =
-        tokensLower.includes("all") ||
-        tokensLower.includes("file");
+      if (toolFilterTokensPresent && !includeToolCalls) {
+        ctx.ui.notify("Tool filters require 'tc' (e.g. /md tc -bash or /md tc +ask)", "error");
+        return;
+      }
+
+      if (tokensLower.includes("+all") || tokensLower.includes("-all")) {
+        ctx.ui.notify("'+all' and '-all' are not supported; use '/md tc' or '/md tc +tool'", "error");
+        return;
+      }
+
+      const toolFilter = includeToolCalls ? parseToolFilter(tokensLower) : null;
+      const options: ExportOptions = {
+        includeThinking,
+        toolFilter,
+      };
 
       const turnsToken = tokens.find((t) => /^\d+$/.test(t)) || null;
       const lastTurns = turnsToken ? parseInt(turnsToken, 10) : null;
@@ -745,11 +630,15 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Show export method selection menu
       const turnSuffix = lastTurns ? ` (last ${lastTurns} turns)` : "";
       const extras: string[] = [];
-      if (includeThinking) extras.push("thinking");
-      if (includeToolCalls) extras.push("tool calls");
+      if (includeThinking) {
+        extras.push("thinking");
+      }
+      const toolFilterDescription = describeToolFilter(toolFilter);
+      if (toolFilterDescription) {
+        extras.push(toolFilterDescription);
+      }
       const extrasSuffix = extras.length > 0 ? ` (with ${extras.join(" + ")})` : "";
       const title = `Export session${turnSuffix}${extrasSuffix} as Markdown`;
       const choice = await ctx.ui.select(`${title}\n\nSelect export method:`, [
@@ -758,13 +647,13 @@ export default function (pi: ExtensionAPI) {
       ]);
 
       if (!choice) {
-        return; // User cancelled
+        return;
       }
 
       try {
         const result = exportAll
-          ? await generateMarkdownFromSession(sessionFile, includeThinking, includeToolCalls, lastTurns)
-          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, includeThinking, includeToolCalls, lastTurns);
+          ? await generateMarkdownFromSession(sessionFile, options, lastTurns)
+          : generateMarkdownFromBranch(ctx.sessionManager, sessionFile, options, lastTurns);
 
         if (!result) {
           const mode = exportAll ? "session file" : "current branch";
@@ -778,13 +667,13 @@ export default function (pi: ExtensionAPI) {
         if (choice === "Copy to clipboard") {
           copyToClipboard(result.content);
           ctx.ui.notify(`Copied to clipboard${suffix}${mode}`, "success");
-        } else {
-          // Save to file
-          const outputFile = path.join(OUTPUT_DIR, result.filename);
-          fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-          fs.writeFileSync(outputFile, result.content, "utf-8");
-          ctx.ui.notify(`Saved${suffix}${mode}: ${outputFile}`, "success");
+          return;
         }
+
+        const outputFile = path.join(OUTPUT_DIR, result.filename);
+        fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+        fs.writeFileSync(outputFile, result.content, "utf-8");
+        ctx.ui.notify(`Saved${suffix}${mode}: ${outputFile}`, "success");
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         ctx.ui.notify(`Export failed: ${errMsg}`, "error");

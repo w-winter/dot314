@@ -1,6 +1,6 @@
 # Pi Markdown Export (`pi-md-export`)
 
-Export the last N turns, or entirety of, your current Pi session to a readable Markdown transcript (either the current `/tree` branch or the full session file).
+Export your current Pi session to a readable Markdown transcript. The command can export either the current `/tree` branch or the full session file, and it can limit the output to the last N turns.
 
 Outputs can be copied to clipboard or saved under `~/.pi/agent/pi-sessions-extracted/`.
 
@@ -34,13 +34,22 @@ Add to `~/.pi/agent/settings.json` (or replace an existing unfiltered `git:githu
 
 - Command: `/md`
 
-Tool calls and thinking blocks are excluded by default for a clean conversation-only export.
+Tool calls and thinking blocks are excluded by default for a clean conversation-focused export.
 
 Options:
-- `/md tc` — include tool calls (invocations + results)
+- `/md` — export the current `/tree` branch
+- `/md all` or `/md file` — export the full session file instead of the current branch
+- `/md <N>` — export only the last **N turns** (a turn is `[user message → assistant message]`), e.g. `/md 2`
 - `/md t` — include thinking blocks (also accepts `think`, `thinking`)
-- `/md <N>` exports only the last **N turns** (a turn is `[user message → assistant message]`), e.g. `/md 2`, `/md tc t 2`
-- `/md all` (or `/md file`) — export the full session file instead of the current branch
+- `/md tc` — include tool calls (invocations + results)
+- `/md tc -<toolname>` — exclude exact tool name(s), e.g. `/md tc -bash -read`
+- `/md tc +<toolname>` — exclude all tool names except the whitelisted exact tool name(s), e.g. `/md tc +ask`
+
+Tool filtering:
+- tool-name matching is exact and case-insensitive
+- tool filters require `tc`; `/md +ask` is invalid, but `/md tc +ask` is valid
+- `+all` and `-all` are not supported; use `/md tc` for all tools or `/md tc +tool` for whitelisting
+- a tool filter applies to both the assistant-side tool call line and the matching tool-result block
 
 Flags combine freely: `/md tc t all 3` exports the last 3 turns of the full session file with tool calls and thinking.
 
