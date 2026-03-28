@@ -39,6 +39,10 @@
  *    - If you copied the folder manually, run `npm install` in ~/.pi/agent/extensions/sandbox/
  *
  * Linux also requires: bubblewrap, socat, ripgrep
+ *
+ * LLM-driven bash tool calls are sandboxed via the `tool_call` hook rather than
+ * by re-registering the `bash` tool, so this can coexist with renderer-only bash
+ * overrides such as pi-tool-display.
  */
 
 import { spawn } from "node:child_process";
@@ -47,7 +51,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { type BashOperations, createBashTool } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType, type BashOperations } from "@mariozechner/pi-coding-agent";
 import type { Component } from "@mariozechner/pi-tui";
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 
@@ -276,11 +280,10 @@ export default function (pi: ExtensionAPI) {
 		default: false,
 	});
 
-	const localCwd = process.cwd();
-	const localBash = createBashTool(localCwd);
-
 	let sandboxEnabled = false;
 	let sandboxInitialized = false;
+
+	const isSandboxActive = (): boolean => sandboxEnabled && sandboxInitialized;
 
 	const getSandboxConfigLines = (ctx: ExtensionContext): string[] => {
 		const config = loadConfig(ctx.cwd);
@@ -380,23 +383,13 @@ export default function (pi: ExtensionAPI) {
 		await enableSandbox(ctx);
 	};
 
-	pi.registerTool({
-		...localBash,
-		label: "bash (sandboxed)",
-		async execute(id, params, signal, onUpdate, _ctx) {
-			if (!sandboxEnabled || !sandboxInitialized) {
-				return localBash.execute(id, params, signal, onUpdate);
-			}
-
-			const sandboxedBash = createBashTool(localCwd, {
-				operations: createSandboxedBashOps(),
-			});
-			return sandboxedBash.execute(id, params, signal, onUpdate);
-		},
+	pi.on("tool_call", async (event) => {
+		if (!isSandboxActive() || !isToolCallEventType("bash", event)) return;
+		event.input.command = await SandboxManager.wrapWithSandbox(event.input.command);
 	});
 
 	pi.on("user_bash", () => {
-		if (!sandboxEnabled || !sandboxInitialized) return;
+		if (!isSandboxActive()) return;
 		return { operations: createSandboxedBashOps() };
 	});
 

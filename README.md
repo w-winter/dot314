@@ -165,7 +165,7 @@ These other extensions have also improved my QoL in Pi, so I recommend checking 
 | [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer) (MasuRii) | Read-tool-kit context optimization for token efficiency | `pi install npm:pi-rtk-optimizer` |
 | [pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker) (Graffioh) | Quick screenshot selection and attachment for prompts | `pi install npm:pi-screenshots-picker` |
 | [pi-token-burden](https://github.com/Whamp/pi-token-burden) (Whamp) | Token usage breakdown and context burden analysis | `pi install npm:pi-token-burden` |
-| [pi-tool-display](https://github.com/MasuRii/pi-tool-display) (MasuRii) | Compact tool call rendering with diff visualization.  ⚠ Collides with `sandbox/`, so enable only one | `pi install npm:pi-tool-display` |
+| [pi-tool-display](https://github.com/MasuRii/pi-tool-display) (MasuRii) | Compact tool call rendering with diff visualization | `pi install npm:pi-tool-display` |
 | [pi-verbosity-control](https://github.com/ferologics/pi-verbosity-control) (ferologics) | Per-model OpenAI verbosity presets with configurable shortcut | `pi install npm:pi-verbosity-control` |
 | [pi-web-access](https://github.com/nicobailon/pi-web-access) (nicobailon) | Gemini-powered web search with AI-synthesized overviews and citations | `pi install npm:pi-web-access` |
 | [whimsical](https://github.com/mitsuhiko/agent-stuff/blob/main/pi-extensions/whimsical.ts) (mitsuhiko) | Whimsical messages while the agent is working | Copy to `~/.pi/agent/extensions/` |

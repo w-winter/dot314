@@ -259,8 +259,11 @@
     - Adds `alt+u` shortcut
 
 - ◐ [`sandbox/`](sandbox/) - OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
-  - This version has a more minimalist statusline indicator and allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
   - Configured in [`sandbox/sandbox.json`](sandbox/sandbox.json)
+  - This version:
+    - Sandboxes LLM `bash` calls via `tool_call` input mutation instead of re-registering `bash`, so it can coexist with renderer-only `bash` overrides such as [`MasuRii/pi-tool-display`](https://github.com/MasuRii/pi-tool-display)
+    - Has a more minimalist statusline indicator
+    - Allows toggling on/off via `/sandbox on` / `/sandbox off`, or `/sandbox` -> menu selection, or the keybinding `alt+S`
 
 - ◐ [`cmux/`](cmux/) (upstream: [HazAT/pi-config](https://github.com/HazAT/pi-config/blob/main/extensions/cmux/index.ts))
   - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
