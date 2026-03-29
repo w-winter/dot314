@@ -1,0 +1,35 @@
+{
+  "name": "pi-session-switch",
+  "version": "0.1.0",
+  "description": "Preview each session before switching in a mirror of Pi's native `/resume`-picker UI",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "session"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-session-switch"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/session-switch.ts"],
+    "image": "https://raw.githubusercontent.com/w-winter/dot314/main/assets/switch-session-demo.gif"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": ">=0.63.1",
+    "@mariozechner/pi-tui": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/session-switch.ts", "to": "extensions/session-switch.ts" },
+      { "from": "../../extensions/session-switch.LICENSE", "to": "extensions/session-switch.LICENSE" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}
