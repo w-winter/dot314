@@ -1,6 +1,6 @@
 # anycopy for Pi (`pi-anycopy`)
 
-This extension mirrors all the behaviors of Pi's native `/tree` while adding a live, syntax-highlighting preview of each node's content and the ability to copy any node(s) to the clipboard.
+This extension mirrors all the behaviors of Pi's native `/tree` while adding a live, syntax-highlighting preview of each node's content, the ability to copy any node(s) to the clipboard, and optional display of the timestamps of labeled nodes' last labelings.
 
 <p align="center">
   <img width="450" alt="anycopy demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif" />
@@ -51,6 +51,7 @@ Defaults (customizable in `config.json`):
 | `Shift+C` | Copy selected nodes, or the focused node if nothing is selected |
 | `Shift+X` | Clear selection |
 | `Shift+L` | Label node (native tree behavior) |
+| `Shift+T` | Toggle label timestamps for labeled nodes |
 | `Shift+Up` / `Shift+Down` | Scroll node preview by line |
 | `Shift+Left` / `Shift+Right` | Page through node preview |
 | `Esc` | Close |
@@ -65,6 +66,9 @@ Notes:
 - Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
 - When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
 - Space/`Shift+C` multi-select copy behavior is unchanged by navigation support
+- `Shift+T` is configurable via `keys.toggleLabelTimestamps` in `config.json`
+- `Shift+T` shows timestamps for labeled nodes only, using the latest label-change time for each label
+- Same-day labels show `HH:MM`; older labels show `M/D HH:MM`; cross-year labels show `YY/M/D HH:MM`
 - Label edits are persisted via `pi.setLabel(...)`
 
 ## Configuration
@@ -73,7 +77,7 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
 
 - `treeFilterMode`: initial tree filter mode when opening `/anycopy`; defaults to `default` to match `/tree`
   - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
-- `keys`: keybindings used inside the `/anycopy` overlay for copy/preview actions
+- `keys`: keybindings used inside the `/anycopy` overlay for copy/preview actions, including the label timestamp toggle
 
 ```json
 {
@@ -82,6 +86,7 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
     "toggleSelect": "space",
     "copy": "shift+c",
     "clear": "shift+x",
+    "toggleLabelTimestamps": "shift+t",
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
     "pageUp": "shift+left",

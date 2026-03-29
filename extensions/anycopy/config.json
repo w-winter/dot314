@@ -4,6 +4,7 @@
     "toggleSelect": "space",
     "copy": "shift+c",
     "clear": "shift+x",
+    "toggleLabelTimestamps": "shift+t",
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
     "pageUp": "shift+left",

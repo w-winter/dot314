@@ -7,7 +7,8 @@
  *   Space     - select/unselect focused node for copy
  *   Shift+C   - copy selected nodes (or focused node if none selected)
  *   Shift+X   - clear selection
- *   Shift+L   - label node (native tree behavior)
+ *   Shift+L   - label node
+ *   Shift+T   - toggle label timestamps for labeled nodes
  *   Shift+↑/↓ - scroll preview
  *   Shift+←/→ - page preview
  *   Esc       - close
@@ -36,12 +37,14 @@ type SessionTreeNode = {
 	entry: SessionEntry;
 	children: SessionTreeNode[];
 	label?: string;
+	labelTimestamp?: string;
 };
 
 type anycopyKeyConfig = {
 	toggleSelect: string;
 	copy: string;
 	clear: string;
+	toggleLabelTimestamps: string;
 	scrollDown: string;
 	scrollUp: string;
 	pageDown: string;
@@ -70,6 +73,7 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 	toggleSelect: "space",
 	copy: "shift+c",
 	clear: "shift+x",
+	toggleLabelTimestamps: "shift+t",
 	scrollDown: "shift+down",
 	scrollUp: "shift+up",
 	pageDown: "shift+right",
@@ -131,6 +135,10 @@ const loadConfig = (): anycopyRuntimeConfig => {
 				toggleSelect: typeof keys.toggleSelect === "string" ? keys.toggleSelect : DEFAULT_KEYS.toggleSelect,
 				copy: typeof keys.copy === "string" ? keys.copy : DEFAULT_KEYS.copy,
 				clear: typeof keys.clear === "string" ? keys.clear : DEFAULT_KEYS.clear,
+				toggleLabelTimestamps:
+					typeof keys.toggleLabelTimestamps === "string"
+						? keys.toggleLabelTimestamps
+						: DEFAULT_KEYS.toggleLabelTimestamps,
 				scrollDown: typeof keys.scrollDown === "string" ? keys.scrollDown : DEFAULT_KEYS.scrollDown,
 				scrollUp: typeof keys.scrollUp === "string" ? keys.scrollUp : DEFAULT_KEYS.scrollUp,
 				pageDown: typeof keys.pageDown === "string" ? keys.pageDown : DEFAULT_KEYS.pageDown,
@@ -368,6 +376,66 @@ const buildNodeOrder = (roots: SessionTreeNode[]): Map<string, number> => {
 	return order;
 };
 
+const buildLatestLabelTimestamps = (entries: SessionEntry[]): Map<string, string> => {
+	const timestampsById = new Map<string, string>();
+	for (const entry of entries) {
+		if (entry.type !== "label") continue;
+		if (entry.label) {
+			timestampsById.set(entry.targetId, entry.timestamp);
+		} else {
+			timestampsById.delete(entry.targetId);
+		}
+	}
+	return timestampsById;
+};
+
+const applyLabelTimestampsToTree = (roots: SessionTreeNode[], timestampsById: Map<string, string>): void => {
+	const stack = [...roots];
+	while (stack.length > 0) {
+		const node = stack.pop()!;
+		node.labelTimestamp = timestampsById.get(node.entry.id);
+		for (const child of node.children) stack.push(child);
+	}
+};
+
+const formatLabelTimestamp = (timestamp: string): string => {
+	const date = new Date(timestamp);
+	if (Number.isNaN(date.getTime())) return timestamp;
+
+	const now = new Date();
+	const hours = date.getHours().toString().padStart(2, "0");
+	const minutes = date.getMinutes().toString().padStart(2, "0");
+	const time = `${hours}:${minutes}`;
+
+	if (
+		date.getFullYear() === now.getFullYear() &&
+		date.getMonth() === now.getMonth() &&
+		date.getDate() === now.getDate()
+	) {
+		return time;
+	}
+
+	const month = date.getMonth() + 1;
+	const day = date.getDate();
+	if (date.getFullYear() === now.getFullYear()) {
+		return `${month}/${day} ${time}`;
+	}
+
+	const year = date.getFullYear().toString().slice(-2);
+	return `${year}/${month}/${day} ${time}`;
+};
+
+const insertLabelTimestampIntoLine = (line: string, node: SessionTreeNode, theme: any): string => {
+	if (!node.label || !node.labelTimestamp) return line;
+
+	const labelToken = `[${node.label}] `;
+	const labelIndex = line.indexOf(labelToken);
+	if (labelIndex === -1) return line;
+
+	const insertAt = labelIndex + labelToken.length;
+	return `${line.slice(0, insertAt)}${theme.fg("muted", `${formatLabelTimestamp(node.labelTimestamp)} `)}${line.slice(insertAt)}`;
+};
+
 /** Clipboard text omits role prefix for a single node and includes it for multi-node copies
  * The preview pane is truncated for performance, while the clipboard copy is not
  */
@@ -392,6 +460,7 @@ class anycopyOverlay implements Focusable {
 	private _focused = false;
 	private previewScrollOffset = 0;
 	private lastPreviewHeight = 0;
+	private showLabelTimestamps = false;
 	private previewCache: {
 		entryId: string;
 		width: number;
@@ -439,6 +508,11 @@ class anycopyOverlay implements Focusable {
 		}
 		if (matchesKey(data, this.keys.clear)) {
 			this.clearSelection();
+			return;
+		}
+		if (matchesKey(data, this.keys.toggleLabelTimestamps)) {
+			this.showLabelTimestamps = !this.showLabelTimestamps;
+			this.requestRender();
 			return;
 		}
 
@@ -522,6 +596,10 @@ class anycopyOverlay implements Focusable {
 		return this.selectedNodeIds.has(id);
 	}
 
+	isShowingLabelTimestamps(): boolean {
+		return this.showLabelTimestamps;
+	}
+
 	copySelectedOrFocusedNode(): void {
 		const focused = this.getFocusedNode();
 		const ids =
@@ -588,6 +666,7 @@ class anycopyOverlay implements Focusable {
 			` • ${formatKeyHint(this.keys.toggleSelect)}: select` +
 			` • ${formatKeyHint(this.keys.copy)}: copy` +
 			` • ${formatKeyHint(this.keys.clear)}: clear` +
+			` • ${formatKeyHint(this.keys.toggleLabelTimestamps)}: label time` +
 			` • Esc: close`;
 		return truncateToWidth(this.theme.fg("dim", hint), width);
 	}
@@ -711,13 +790,22 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 	) => {
 		if (!ctx.hasUI) return;
 
-		const initialTree = ctx.sessionManager.getTree() as SessionTreeNode[];
+		const buildAnnotatedTree = (): SessionTreeNode[] => {
+			const tree = ctx.sessionManager.getTree() as SessionTreeNode[];
+			applyLabelTimestampsToTree(tree, buildLatestLabelTimestamps(ctx.sessionManager.getEntries() as SessionEntry[]));
+			return tree;
+		};
+
+		const initialTree = buildAnnotatedTree();
 		if (initialTree.length === 0) {
 			ctx.ui.notify("No entries in session", "warning");
 			return;
 		}
 
-		const getTree = () => ctx.sessionManager.getTree() as SessionTreeNode[];
+		const getTree = () => buildAnnotatedTree();
+		const refreshInitialTreeLabelTimestamps = () => {
+			applyLabelTimestampsToTree(initialTree, buildLatestLabelTimestamps(ctx.sessionManager.getEntries() as SessionEntry[]));
+		};
 		const currentLeafId = ctx.sessionManager.getLeafId();
 		const skipSummaryPrompt = loadBranchSummarySkipPrompt(ctx.cwd);
 
@@ -751,6 +839,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				() => done(),
 				(entryId, label) => {
 					pi.setLabel(entryId, label);
+					refreshInitialTreeLabelTimestamps();
 				},
 				opts?.initialSelectedId,
 				treeFilterMode,
@@ -777,8 +866,15 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 
 				const tl = treeList as any;
 				const filteredRaw = tl.filteredNodes;
+				const decorateStatusLine = (line: string): string => {
+					const status = overlay.isShowingLabelTimestamps() ? `${line}${theme.fg("muted", " [+label time]")}` : line;
+					return truncateToWidth(`  ${status}`, width);
+				};
+
 				if (!Array.isArray(filteredRaw) || filteredRaw.length === 0) {
-					return lines.map((line: string) => "  " + line);
+					return lines.map((line: string, i: number) =>
+						i === lines.length - 1 ? decorateStatusLine(line) : truncateToWidth(`  ${line}`, width),
+					);
 				}
 				const filtered = filteredRaw as { node: SessionTreeNode }[];
 
@@ -798,16 +894,18 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				const treeRowCount = Math.max(0, lines.length - 1);
 
 				return lines.map((line: string, i: number) => {
-					if (i >= treeRowCount) return "  " + line;
+					if (i >= treeRowCount) return decorateStatusLine(line);
 
 					const nodeIdx = startIdx + i;
 					const node = filtered[nodeIdx]?.node as SessionTreeNode | undefined;
 					const nodeId = node?.entry?.id;
-					if (typeof nodeId !== "string") return "  " + line;
+					if (typeof nodeId !== "string") return truncateToWidth(`  ${line}`, width);
 
 					const selected = overlay.isSelectedNode(nodeId);
 					const marker = selected ? theme.fg("success", "✓ ") : theme.fg("dim", "○ ");
-					return marker + line;
+					const lineWithTimestamp =
+						overlay.isShowingLabelTimestamps() && node ? insertLabelTimestampIntoLine(line, node, theme) : line;
+					return truncateToWidth(marker + lineWithTimestamp, width);
 				});
 			};
 

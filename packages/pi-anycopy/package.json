@@ -1,6 +1,6 @@
 {
   "name": "pi-anycopy",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi's /tree with a live syntax-highlighted preview and ability to copy any node(s) to the clipboard",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
