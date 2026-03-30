@@ -1,7 +1,7 @@
 {
   "treeFilterMode": "no-tools",
   "keys": {
-    "toggleSelect": "space",
+    "toggleSelect": "shift+a",
     "copy": "shift+c",
     "clear": "shift+x",
     "toggleLabelTimestamps": "shift+t",

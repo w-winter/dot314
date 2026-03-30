@@ -4,7 +4,7 @@
  * Layout: native TreeSelectorComponent at top, status bar, preview below
  *
  * Default keys (customizable via ./config.json):
- *   Space     - select/unselect focused node for copy
+ *   Shift+A   - select/unselect focused node for copy
  *   Shift+C   - copy selected nodes (or focused node if none selected)
  *   Shift+X   - clear selection
  *   Shift+L   - label node
@@ -70,7 +70,7 @@ type BranchSummarySettingsFile = {
 };
 
 const DEFAULT_KEYS: anycopyKeyConfig = {
-	toggleSelect: "space",
+	toggleSelect: "shift+a",
 	copy: "shift+c",
 	clear: "shift+x",
 	toggleLabelTimestamps: "shift+t",

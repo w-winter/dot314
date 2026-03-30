@@ -47,7 +47,7 @@ Defaults (customizable in `config.json`):
 | Key | Action |
 |-----|--------|
 | `Enter` | Navigate to the focused node (same semantics as `/tree`) |
-| `Space` | Select/unselect focused node for copy |
+| `Shift+A` | Select/unselect focused node for copy |
 | `Shift+C` | Copy selected nodes, or the focused node if nothing is selected |
 | `Shift+X` | Clear selection |
 | `Shift+L` | Label node (native tree behavior) |
@@ -65,7 +65,7 @@ Notes:
 - If no nodes are selected, `Shift+C` copies the focused node
 - Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
 - When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
-- Space/`Shift+C` multi-select copy behavior is unchanged by navigation support
+- `Shift+A`/`Shift+C` multi-select copy behavior is unchanged by navigation support, while plain space remains available for search queries
 - `Shift+T` is configurable via `keys.toggleLabelTimestamps` in `config.json`
 - `Shift+T` shows timestamps for labeled nodes only, using the latest label-change time for each label
 - Same-day labels show `HH:MM`; older labels show `M/D HH:MM`; cross-year labels show `YY/M/D HH:MM`
@@ -83,7 +83,7 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
 {
   "treeFilterMode": "default",
   "keys": {
-    "toggleSelect": "space",
+    "toggleSelect": "shift+a",
     "copy": "shift+c",
     "clear": "shift+x",
     "toggleLabelTimestamps": "shift+t",
