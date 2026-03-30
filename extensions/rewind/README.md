@@ -1,6 +1,6 @@
 # Rewind Extension
 
-A Pi agent extension that records exact file-state rewind points and restores files during `/fork` and `/tree` navigation.
+A Pi agent extension that records exact file-state rewind points, allowing restoration of file states during `/tree` navigation and across resumed and forked sessions
 
 Rewind metadata lives in the session itself as hidden entries, so rewind history survives across forks, resumes, tree navigation, and compaction. Snapshot commits are kept reachable through a single git ref rather than one ref per checkpoint, and rewind points can be resolved across session lineage via `parentSession` links. Retention is optional and configurable; without it, exact history is kept indefinitely.
 

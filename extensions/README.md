@@ -184,6 +184,7 @@
   - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
 - ◐ [`rewind/`](rewind/) ([README](./rewind/README.md); upstream: [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
+  - Records exact file-state rewind points, allowing restoration of file states during `/tree` navigation and across resumed and forked sessions
   - Differences from the original:
     - Records exact file-state rewind points and offers restore options during `/fork` and `/tree` navigation, including undo
     - Rewind history survives across forks, resumes, tree navigation, and compaction; rewind points resolve across session lineage via `parentSession` links
