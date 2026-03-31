@@ -1,6 +1,6 @@
 {
   "name": "pi-model-aware-compaction",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Per-model context-usage thresholds for Pi's built-in auto-compaction, so models with different context windows and performance profiles compact at the right time",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "compaction", "context-window"],
   "license": "MIT",
@@ -17,7 +17,7 @@
     "extensions": ["extensions/model-aware-compaction/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.51.0"
+    "@mariozechner/pi-coding-agent": "0.64.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.4.18",
+  "version": "0.4.19",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -71,7 +71,7 @@
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-agent-core": "*",
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-coding-agent": "0.64.0",
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   }

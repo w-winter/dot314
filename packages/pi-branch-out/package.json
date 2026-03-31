@@ -1,6 +1,6 @@
 {
   "name": "pi-branch-out",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
@@ -17,7 +17,7 @@
     "extensions": ["extensions/branch-out/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.51.0"
+    "@mariozechner/pi-coding-agent": "0.64.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

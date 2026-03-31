@@ -1,6 +1,6 @@
 {
   "name": "pi-repoprompt-tools-lock",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Forces the agent to use RepoPrompt tools during repo-scoped work by disabling Pi's native tools when RepoPrompt tools are available (through either the `pi-repoprompt-cli` or `pi-repoprompt-mcp` Pi packages/extensions)",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt"],
   "license": "MIT",
@@ -17,7 +17,7 @@
     "extensions": ["extensions/rp-native-tools-lock/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-coding-agent": "0.64.0",
     "@mariozechner/pi-tui": "*"
   },
   "scripts": {
