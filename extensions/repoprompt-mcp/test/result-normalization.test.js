@@ -28,7 +28,6 @@ test("normalizeToolResultText extracts verbose apply_edits diffs into details", 
   const normalized = normalizeToolResultText({
     toolName: "apply_edits",
     text: verboseApplyEditsOutput,
-    raw: false,
   });
 
   assert.ok(normalized);
@@ -42,21 +41,11 @@ test("normalizeToolResultText extracts verbose apply_edits diffs into details", 
   });
 });
 
-test("normalizeToolResultText leaves non-verbose and raw apply_edits output untouched", () => {
+test("normalizeToolResultText leaves non-verbose apply_edits output untouched", () => {
   assert.equal(
     normalizeToolResultText({
       toolName: "apply_edits",
       text: "✅ Applied 1 edit",
-      raw: false,
-    }),
-    null
-  );
-
-  assert.equal(
-    normalizeToolResultText({
-      toolName: "apply_edits",
-      text: verboseApplyEditsOutput,
-      raw: true,
     }),
     null
   );

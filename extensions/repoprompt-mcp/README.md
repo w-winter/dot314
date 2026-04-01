@@ -27,7 +27,7 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
   <img width="270" height="936" alt="Image" src="https://github.com/user-attachments/assets/142ca6c2-c1cf-4f0b-b41b-3d52d623c78c" />
 </p>
 
-- RepoPrompt `apply_edits` calls are forwarded with `verbose: true` by default (unless `raw: true`), while the returned diff is normalized into `details.diff` and presented to the agent as a terse summary.  The same is done for `file_actions create/delete` outputs, so you see all edited/created/deleted LOC with rich rendering but the extension prevents the context window from getting bloated by round-tripping tool I/O tokens
+- RepoPrompt `apply_edits` calls are forwarded with `verbose: true` by default, while the returned diff is normalized into `details.diff` and presented to the agent as a terse summary.  The same is done for `file_actions create/delete` outputs, so you see all edited/created/deleted LOC with rich rendering but the extension prevents the context window from getting bloated by round-tripping tool I/O tokens
 - Adaptive diff rendering for RepoPrompt `git` and `apply_edits` outputs by default (`diffViewMode: "auto"` picks split, unified, compact, or summary at render time based on pane width).  This uses the active Pi theme’s `toolDiffAdded`, `toolDiffRemoved`, and `toolDiffContext` colors (typically mapped to chosen hues for green and red), and its visual design and rendering logic are indebted to [MasuRii/pi-tool-display](https://github.com/MasuRii/pi-tool-display).  Two different examples at different pane widths:
 
 <p align="center">
@@ -236,7 +236,6 @@ but this is best-effort
 
 ## Readcache gotchas
 
-- `raw: true` disables readcache (and rendering). Don't use unless debugging
 - Need full content? use `bypass_cache: true` in `read_file` args
 - Multi-root: use absolute or specific relative paths (MCP `read_file` has no `RootName:` disambiguation)
 

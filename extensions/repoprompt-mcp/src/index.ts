@@ -546,9 +546,6 @@ const RpToolSchema = Type.Object({
   confirmEdits: Type.Optional(
     Type.Boolean({ description: "Confirm edit-like operations (required when confirmEdits is enabled)" })
   ),
-
-  // Formatting
-  raw: Type.Optional(Type.Boolean({ description: "Return raw output without formatting" })),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1783,10 +1780,6 @@ Mode priority: call > describe > search > windows > bind > status`,
         return new Text(theme.fg("error", "↳ " + textContent), 0, 0);
       }
 
-      if (details.raw) {
-        return new Text(textContent, 0, 0);
-      }
-
       const successPrefix = theme.fg("success", "↳ ");
       const collapsedMaxLines = config.collapsedMaxLines ?? 15;
       const normalizedToolName = typeof details.tool === "string" ? normalizeToolName(details.tool) : undefined;
@@ -2577,14 +2570,12 @@ Mode priority: call > describe > search > windows > bind > status`,
     const forwardedUserArgs = buildForwardedUserArgs({
       toolName: normalizedTool,
       userArgs,
-      raw: params.raw,
     });
 
     const mergedArgs = { ...forwardedUserArgs, ...bindingArgs };
 
     const fileActionDeleteSnapshot = normalizedTool === "file_actions"
       && userArgs.action === "delete"
-      && params.raw !== true
       && typeof userArgs.path === "string"
       ? (() => {
         try {
@@ -2611,7 +2602,6 @@ Mode priority: call > describe > search > windows > bind > status`,
 
       const shouldReadcache =
         config.readcacheReadFile === true &&
-        params.raw !== true &&
         normalizedTool === "read_file" &&
         typeof userArgs.path === "string" &&
         ctx !== undefined;
@@ -2668,9 +2658,8 @@ Mode priority: call > describe > search > windows > bind > status`,
         : normalizeToolResultText({
           toolName: normalizedTool,
           text: textContent,
-          raw: params.raw,
         });
-      const normalizedFileActionResult = result.isError || params.raw === true
+      const normalizedFileActionResult = result.isError
         ? null
         : normalizeFileActionResult({
           action: userArgs.action,
@@ -2733,7 +2722,6 @@ Mode priority: call > describe > search > windows > bind > status`,
           warning: guardResult.warning,
           editNoop,
           rpReadcache: rpReadcache ?? undefined,
-          raw: params.raw,
           ...(normalizedTextResult ? normalizedTextResult.details : {}),
           ...(normalizedFileActionResult ?? {}),
         },

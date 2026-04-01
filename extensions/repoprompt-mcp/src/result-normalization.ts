@@ -39,9 +39,8 @@ function normalizeDiffBlockCode(code: string): string {
 export function normalizeToolResultText(args: {
   toolName: string | undefined;
   text: string;
-  raw: boolean | undefined;
 }): ToolResultNormalization | null {
-  if (args.toolName !== "apply_edits" || args.raw === true || !args.text.includes("```diff")) {
+  if (args.toolName !== "apply_edits" || !args.text.includes("```diff")) {
     return null;
   }
 

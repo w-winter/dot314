@@ -152,9 +152,6 @@ export interface RpToolParams {
   // Safety overrides
   allowDelete?: boolean;           // Allow delete operations
   confirmEdits?: boolean;          // Confirm edit-like operations when confirmEdits is enabled
-  
-  // Formatting
-  raw?: boolean;                   // Return raw output without formatting
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
