@@ -754,7 +754,7 @@ function parseTabFromJson(raw: unknown): RpTab | null {
   }
 
   const obj = raw as Record<string, unknown>;
-  const idRaw = obj.id ?? obj.tabId ?? obj.tab_id ?? obj.uuid;
+  const idRaw = obj.id ?? obj.tabId ?? obj.tab_id ?? obj.uuid ?? obj.context_id ?? obj.contextId;
   if (typeof idRaw !== "string" || !idRaw.trim()) {
     return null;
   }
@@ -839,8 +839,31 @@ function parseTabLine(line: string): RpTab | null {
     return null;
   }
 
+  if (/^[-•]\s*window\s+`\d+`/i.test(trimmed)) {
+    return null;
+  }
+
   if (!trimmed.includes("•") && !trimmed.toLowerCase().includes("tab")) {
     return null;
+  }
+
+  const contextIdLineMatch = trimmed.match(/^[-•]\s*(.+?)\s+[—-]\s*context_id:\s*`([^`]+)`\s*$/i);
+  if (contextIdLineMatch?.[1] && contextIdLineMatch[2]) {
+    const id = contextIdLineMatch[2].trim();
+    const name = stripTrailingTabStateAnnotations(contextIdLineMatch[1].trim()) || id;
+    const isActive = /\[(?:[^\]]*\bactive\b[^\]]*|[^\]]*\bin-focus\b[^\]]*)\]/i.test(trimmed)
+      ? true
+      : /\[[^\]]*\bout-of-focus\b[^\]]*\]/i.test(trimmed)
+        ? false
+        : undefined;
+    const isBound = /\[[^\]]*\bbound\b[^\]]*\]/i.test(trimmed) ? true : undefined;
+
+    return {
+      id,
+      name,
+      isActive,
+      isBound,
+    };
   }
 
   const idMatch = trimmed.match(/`([^`]+)`/);
@@ -1066,6 +1089,26 @@ export async function fetchWindowTabs(
     throw new Error("Not connected to RepoPrompt");
   }
 
+  const bindContextToolName = resolveToolName(client.tools, "bind_context");
+  if (bindContextToolName) {
+    const bindContextResult = await client.callTool(bindContextToolName, {
+      op: "list",
+      ...bindingWindowArgs(windowId),
+    });
+
+    if (!bindContextResult.isError) {
+      const tabsFromBindContextJson = parseTabsFromJson(extractJsonContent(bindContextResult.content));
+      if (tabsFromBindContextJson && tabsFromBindContextJson.length > 0) {
+        return tabsFromBindContextJson;
+      }
+
+      const tabsFromBindContextText = parseTabList(extractTextContent(bindContextResult.content));
+      if (tabsFromBindContextText.length > 0) {
+        return tabsFromBindContextText;
+      }
+    }
+  }
+
   const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
   if (!manageWorkspacesToolName) {
     return [];
@@ -1094,9 +1137,30 @@ async function selectTab(
   tabId: string,
   client: ReturnType<typeof getRpClient> = getRpClient()
 ): Promise<void> {
+  const bindContextToolName = resolveToolName(client.tools, "bind_context");
+  let bindContextError: string | null = null;
+
+  if (bindContextToolName) {
+    const bindResult = await client.callTool(bindContextToolName, {
+      op: "bind",
+      context_id: tabId,
+      ...bindingWindowArgs(windowId),
+    });
+
+    if (!bindResult.isError) {
+      return;
+    }
+
+    bindContextError = extractTextContent(bindResult.content) || `Failed to bind RepoPrompt tab ${tabId}`;
+  }
+
   const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
   if (!manageWorkspacesToolName) {
-    return;
+    if (bindContextError) {
+      throw new Error(bindContextError);
+    }
+
+    throw new Error("RepoPrompt tab binding is unavailable: neither bind_context nor manage_workspaces tool is available");
   }
 
   const result = await client.callTool(manageWorkspacesToolName, {
@@ -1108,7 +1172,7 @@ async function selectTab(
 
   if (result.isError) {
     const text = extractTextContent(result.content);
-    throw new Error(text || `Failed to bind RepoPrompt tab ${tabId}`);
+    throw new Error(text || bindContextError || `Failed to bind RepoPrompt tab ${tabId}`);
   }
 }
 

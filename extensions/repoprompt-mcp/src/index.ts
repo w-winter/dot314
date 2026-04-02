@@ -2541,7 +2541,18 @@ Mode priority: call > describe > search > windows > bind > status`,
     const userArgs = (params.args ?? {}) as Record<string, unknown>;
     const normalizedTool = normalizeToolName(tool.name);
 
-    if (getBinding() && !getBinding()?.tab && normalizedTool !== "manage_workspaces" && normalizedTool !== "list_windows") {
+    if (
+      getBinding() &&
+      !getBinding()?.tab &&
+      normalizedTool !== "manage_workspaces" &&
+      normalizedTool !== "list_windows" &&
+      // bind_context can create/query tab bindings before a tab is set on the current binding
+      normalizedTool !== "bind_context" &&
+      // agent_run starts agent flows that may establish or recover tab state
+      normalizedTool !== "agent_run" &&
+      // agent_manage manages agent lifecycle/state and must remain available during tab recovery
+      normalizedTool !== "agent_manage"
+    ) {
       if (!ctx) {
         return {
           content: [{ type: "text" as const, text: "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools." }],
