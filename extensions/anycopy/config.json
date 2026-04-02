@@ -1,5 +1,6 @@
 {
   "treeFilterMode": "no-tools",
+  "persistFoldState": true,
   "keys": {
     "toggleSelect": "shift+a",
     "copy": "shift+c",

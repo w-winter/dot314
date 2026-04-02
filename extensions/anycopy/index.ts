@@ -23,7 +23,7 @@ import {
 	TreeSelectorComponent,
 } from "@mariozechner/pi-coding-agent";
 
-import { Markdown, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import { getKeybindings, Markdown, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
 import type { Focusable } from "@mariozechner/pi-tui";
 
 import { existsSync, readFileSync } from "fs";
@@ -32,6 +32,16 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 import { runAnycopyEnterNavigation } from "./enter-navigation.ts";
+import {
+	ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
+	createFoldStateEntryData,
+	foldStateNodeIdListsEqual,
+	getSelectorFoldedNodeIds,
+	loadLatestFoldStateFromEntries,
+	mergeExplicitFoldMutation,
+	normalizeFoldedNodeIds,
+	setSelectorFoldedNodeIds,
+} from "./fold-state.ts";
 
 type SessionTreeNode = {
 	entry: SessionEntry;
@@ -56,11 +66,13 @@ type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "a
 type anycopyConfig = {
 	keys?: Partial<anycopyKeyConfig>;
 	treeFilterMode?: TreeFilterMode;
+	persistFoldState?: boolean;
 };
 
 type anycopyRuntimeConfig = {
 	keys: anycopyKeyConfig;
 	treeFilterMode: TreeFilterMode;
+	persistFoldState: boolean;
 };
 
 type BranchSummarySettingsFile = {
@@ -81,6 +93,7 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 };
 
 const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
+const DEFAULT_PERSIST_FOLD_STATE = true;
 
 const getExtensionDir = (): string => {
 	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -116,6 +129,7 @@ const loadConfig = (): anycopyRuntimeConfig => {
 		return {
 			keys: { ...DEFAULT_KEYS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
+			persistFoldState: DEFAULT_PERSIST_FOLD_STATE,
 		};
 	}
 
@@ -129,6 +143,8 @@ const loadConfig = (): anycopyRuntimeConfig => {
 			typeof treeFilterModeRaw === "string" && validTreeFilterModes.includes(treeFilterModeRaw as TreeFilterMode)
 				? (treeFilterModeRaw as TreeFilterMode)
 				: DEFAULT_TREE_FILTER_MODE;
+		const persistFoldState =
+			typeof parsed.persistFoldState === "boolean" ? parsed.persistFoldState : DEFAULT_PERSIST_FOLD_STATE;
 
 		return {
 			keys: {
@@ -145,11 +161,13 @@ const loadConfig = (): anycopyRuntimeConfig => {
 				pageUp: typeof keys.pageUp === "string" ? keys.pageUp : DEFAULT_KEYS.pageUp,
 			},
 			treeFilterMode,
+			persistFoldState,
 		};
 	} catch {
 		return {
 			keys: { ...DEFAULT_KEYS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
+			persistFoldState: DEFAULT_PERSIST_FOLD_STATE,
 		};
 	}
 };
@@ -473,6 +491,10 @@ class anycopyOverlay implements Focusable {
 		private getTree: () => SessionTreeNode[],
 		private nodeById: Map<string, SessionTreeNode>,
 		private keys: anycopyKeyConfig,
+		private onExplicitFoldMutation: ((
+			beforeTransientFoldedNodeIds: string[],
+			afterTransientFoldedNodeIds: string[],
+		) => void) | null,
 		private onClose: () => void,
 		private getTermHeight: () => number,
 		private requestRender: () => void,
@@ -539,7 +561,18 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
+		const keybindings = getKeybindings();
+		const shouldTrackExplicitFoldMutation =
+			this.onExplicitFoldMutation !== null &&
+			(keybindings.matches(data, "app.tree.foldOrUp") || keybindings.matches(data, "app.tree.unfoldOrDown"));
+		const beforeTransientFoldedNodeIds = shouldTrackExplicitFoldMutation ? getSelectorFoldedNodeIds(this.selector) : null;
+
 		this.selector.handleInput(data);
+
+		if (beforeTransientFoldedNodeIds) {
+			this.onExplicitFoldMutation?.(beforeTransientFoldedNodeIds, getSelectorFoldedNodeIds(this.selector));
+		}
+
 		this.requestRender();
 	}
 
@@ -783,6 +816,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 	const config = loadConfig();
 	const keys = config.keys;
 	const treeFilterMode = config.treeFilterMode;
+	const persistFoldState = config.persistFoldState;
 
 	const openAnycopy = async (
 		ctx: ExtensionCommandContext,
@@ -812,6 +846,13 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 			const termRows = tui.terminal?.rows ?? 40;
 			const treeTermHeight = Math.floor(termRows * 0.65);
+			const nodeById = buildNodeMap(initialTree);
+			const validNodeIds = new Set(nodeById.keys());
+			const restoredFoldState = persistFoldState
+				? loadLatestFoldStateFromEntries(ctx.sessionManager.getEntries() as SessionEntry[], validNodeIds)
+				: null;
+			let durableFoldedNodeIds = restoredFoldState?.foldedNodeIds ?? [];
+			let lastPersistedFoldedNodeIds = durableFoldedNodeIds;
 
 			const selector = new TreeSelectorComponent(
 				initialTree,
@@ -844,14 +885,60 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				opts?.initialSelectedId,
 				treeFilterMode,
 			);
-			const effectiveLeafIdForNoop = selector.getTreeList().getSelectedNode()?.entry.id ?? currentLeafId;
 
-			const nodeById = buildNodeMap(initialTree);
+			if (persistFoldState) {
+				const restoredFoldedNodeIds = normalizeFoldedNodeIds(
+					setSelectorFoldedNodeIds(selector, durableFoldedNodeIds),
+					validNodeIds,
+				);
+				durableFoldedNodeIds = restoredFoldedNodeIds;
+				lastPersistedFoldedNodeIds = restoredFoldedNodeIds;
+			}
+
+			const persistDurableFoldState = (nextDurableFoldedNodeIds: string[]): void => {
+				if (!persistFoldState || foldStateNodeIdListsEqual(nextDurableFoldedNodeIds, lastPersistedFoldedNodeIds)) {
+					return;
+				}
+
+				try {
+					pi.appendEntry(
+						ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
+						createFoldStateEntryData(nextDurableFoldedNodeIds, validNodeIds),
+					);
+					lastPersistedFoldedNodeIds = nextDurableFoldedNodeIds;
+				} catch (error) {
+					ctx.ui.notify(
+						error instanceof Error ? error.message : "Failed to persist /anycopy fold state",
+						"error",
+					);
+				}
+			};
+
+			const handleExplicitFoldMutation = (
+				beforeTransientFoldedNodeIds: string[],
+				afterTransientFoldedNodeIds: string[],
+			): void => {
+				const nextDurableFoldedNodeIds = mergeExplicitFoldMutation({
+					durableFoldedNodeIds,
+					beforeTransientFoldedNodeIds,
+					afterTransientFoldedNodeIds,
+					validNodeIds,
+				});
+				if (foldStateNodeIdListsEqual(nextDurableFoldedNodeIds, durableFoldedNodeIds)) {
+					return;
+				}
+
+				durableFoldedNodeIds = nextDurableFoldedNodeIds;
+				persistDurableFoldState(nextDurableFoldedNodeIds);
+			};
+
+			const effectiveLeafIdForNoop = selector.getTreeList().getSelectedNode()?.entry.id ?? currentLeafId;
 			const overlay = new anycopyOverlay(
 				selector,
 				getTree,
 				nodeById,
 				keys,
+				persistFoldState ? handleExplicitFoldMutation : null,
 				() => done(),
 				() => tui.terminal?.rows ?? 40,
 				() => tui.requestRender(),
