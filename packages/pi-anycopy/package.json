@@ -29,6 +29,7 @@
     "copy": [
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
       { "from": "../../extensions/anycopy/enter-navigation.ts", "to": "extensions/anycopy/enter-navigation.ts" },
+      { "from": "../../extensions/anycopy/fold-state.ts", "to": "extensions/anycopy/fold-state.ts" },
       { "from": "../../extensions/anycopy/config.json", "to": "extensions/anycopy/config.json" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ],
