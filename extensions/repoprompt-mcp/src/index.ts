@@ -2541,7 +2541,15 @@ Mode priority: call > describe > search > windows > bind > status`,
     const userArgs = (params.args ?? {}) as Record<string, unknown>;
     const normalizedTool = normalizeToolName(tool.name);
 
-    if (getBinding() && !getBinding()?.tab && normalizedTool !== "manage_workspaces" && normalizedTool !== "list_windows") {
+    if (
+      getBinding() &&
+      !getBinding()?.tab &&
+      normalizedTool !== "manage_workspaces" &&
+      normalizedTool !== "list_windows" &&
+      normalizedTool !== "bind_context" &&
+      normalizedTool !== "agent_run" &&
+      normalizedTool !== "agent_manage"
+    ) {
       if (!ctx) {
         return {
           content: [{ type: "text" as const, text: "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools." }],
