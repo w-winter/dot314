@@ -190,18 +190,8 @@ export default function toolsExtension(pi: ExtensionAPI) {
 		restoreFromBranch(ctx);
 	});
 
-	// Restore state when switching sessions (new or resume)
-	pi.on("session_switch", async (_event, ctx) => {
-		restoreFromBranch(ctx);
-	});
-
 	// Restore state when navigating the session tree
 	pi.on("session_tree", async (_event, ctx) => {
-		restoreFromBranch(ctx);
-	});
-
-	// Restore state after forking
-	pi.on("session_fork", async (_event, ctx) => {
 		restoreFromBranch(ctx);
 	});
 }

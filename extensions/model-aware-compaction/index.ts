@@ -14,8 +14,8 @@
  * flush — preserving the full native UX. The inflated value is ephemeral;
  * compaction rebuilds messages from the session file.
  *
- * Session event handlers (session_start, session_switch, session_tree,
- * session_before_compact, session_compact) reset internal state — cooldown
+ * Session event handlers (session_start, session_tree, session_before_compact,
+ * session_compact) reset internal state — cooldown
  * timers, cached message references — to stay consistent across navigations.
  *
  * Requires compaction.enabled: true in settings.json. See README.md for
@@ -209,21 +209,10 @@ export default function (pi: ExtensionAPI) {
     let lastAssistantMessageRef: any | undefined;
 
     // -- Session lifecycle -------------------------------------------------------
-    // Reset cooldowns and cached message refs on navigation/branching, and track
-    // compaction timestamps for debounce.
+    // Reset cooldowns and cached message refs on session start/navigation, and
+    // track compaction timestamps for debounce.
 
     pi.on("session_start", async (_event, ctx) => {
-        lastAssistantMessageRef = undefined;
-        lastCompactionMs = 0;
-        lastNudgeMs = 0;
-
-        const branchCompactionMs = getLastBranchCompactionMs(ctx);
-        if (branchCompactionMs !== undefined) {
-            lastCompactionMs = Math.max(lastCompactionMs, branchCompactionMs);
-        }
-    });
-
-    pi.on("session_switch", async (_event, ctx) => {
         lastAssistantMessageRef = undefined;
         lastCompactionMs = 0;
         lastNudgeMs = 0;

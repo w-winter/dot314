@@ -12,7 +12,6 @@ import type {
 	ExtensionContext,
 	SessionShutdownEvent,
 	SessionStartEvent,
-	SessionSwitchEvent,
 } from "@mariozechner/pi-coding-agent";
 
 const OSC = "\x1b]";
@@ -70,10 +69,6 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-		setNotRunning(ctx);
-	});
-
-	pi.on("session_switch", async (_event: SessionSwitchEvent, ctx: ExtensionContext) => {
 		setNotRunning(ctx);
 	});
 

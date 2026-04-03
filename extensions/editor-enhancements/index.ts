@@ -65,10 +65,6 @@ export default function (pi: ExtensionAPI) {
         attachEditor(ctx);
     });
 
-    pi.on("session_switch", (_event, ctx) => {
-        attachEditor(ctx);
-    });
-
     // Provide alt+v raw clipboard paste (the only raw-paste feature you wanted)
     pi.registerShortcut("alt+v", {
         description: "Paste clipboard text raw into editor (bypasses [paste #..] markers)",

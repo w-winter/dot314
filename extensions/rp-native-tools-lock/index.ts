@@ -315,9 +315,7 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 
 	// Apply early and often (covers /tools toggles, session navigation, etc.)
 	pi.on("session_start", async (_event, ctx) => apply(ctx));
-	pi.on("session_switch", async (_event, ctx) => apply(ctx));
 	pi.on("session_tree", async (_event, ctx) => apply(ctx));
-	pi.on("session_fork", async (_event, ctx) => apply(ctx));
 
 	// Enforce right when the user submits a prompt (before the agent starts)
 	pi.on("input", async (_event, ctx) => apply(ctx));

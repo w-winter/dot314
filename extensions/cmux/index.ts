@@ -152,16 +152,6 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_switch", async (_event, ctx) => {
-    if (!ctx.hasUI) return;
-    await syncWorkspaceName();
-  });
-
-  pi.on("session_fork", async (_event, ctx) => {
-    if (!ctx.hasUI) return;
-    await syncWorkspaceName();
-  });
-
   // --- Agent working state ---
 
   pi.on("agent_start", async (_event, ctx) => {
