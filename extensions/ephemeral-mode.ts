@@ -9,25 +9,27 @@
  *   Alt+E      - Toggle ephemeral mode (shortcut)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { unlinkSync, existsSync } from "node:fs";
+import { SessionManager, type ExtensionAPI, type SessionEntry } from "@mariozechner/pi-coding-agent";
+import { existsSync, unlinkSync } from "node:fs";
 
 export default function (pi: ExtensionAPI) {
     let ephemeralMode = false;
 
-    // When switching sessions, pi doesn't exit, so session_shutdown won't fire for the previous session.
-    // Track the previous session file here so we can delete it after a successful switch when ephemeral mode was enabled
-    let pendingDeleteSessionFile: string | null = null;
+    const isEphemeralEnabled = (entries: SessionEntry[]) => {
+        let enabled = false;
+
+        for (const entry of entries) {
+            if (entry.type === "custom" && entry.customType === "ephemeral-mode") {
+                enabled = entry.data?.enabled ?? false;
+            }
+        }
+
+        return enabled;
+    };
 
     // Reconstruct state from the *current branch* so /tree navigation properly restores branch-specific state
     const reconstructStateFromBranch = (ctx: any) => {
-        ephemeralMode = false;
-
-        for (const entry of ctx.sessionManager.getBranch()) {
-            if (entry.type === "custom" && entry.customType === "ephemeral-mode") {
-                ephemeralMode = entry.data?.enabled ?? false;
-            }
-        }
+        ephemeralMode = isEphemeralEnabled(ctx.sessionManager.getBranch());
 
         if (!ctx.hasUI) {
             return;
@@ -86,42 +88,46 @@ export default function (pi: ExtensionAPI) {
         }
     };
 
-    pi.on("session_start", async (_event, ctx) => {
+    const deletePreviousEphemeralSessionIfNeeded = async (previousSessionFile?: string, currentSessionFile?: string) => {
+        if (!previousSessionFile || previousSessionFile === currentSessionFile) {
+            return;
+        }
+
+        try {
+            const previousSession = SessionManager.open(previousSessionFile);
+            if (!isEphemeralEnabled(previousSession.getBranch())) {
+                return;
+            }
+        } catch {
+            return;
+        }
+
+        await deleteSessionFileBestEffort(previousSessionFile);
+    };
+
+    pi.on("session_start", async (event, ctx) => {
+        if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+            await deletePreviousEphemeralSessionIfNeeded(
+                event.previousSessionFile,
+                ctx.sessionManager.getSessionFile() ?? undefined,
+            );
+        }
+
         reconstructStateFromBranch(ctx);
     });
 
     pi.on("session_before_switch", async (_event, ctx) => {
-        // If we are leaving an ephemeral session, schedule its file for deletion after a successful switch
-        if (ephemeralMode) {
-            const sessionFile = ctx.sessionManager.getSessionFile();
-            if (sessionFile) {
-                pendingDeleteSessionFile = sessionFile;
-            }
-        }
-
         // Clear the indicator immediately so it never visually leaks into the switcher UI or next session
         clearIndicator(ctx);
-    });
-
-    pi.on("session_switch", async (_event, ctx) => {
-        // Some pi versions update session state very close to this event; yield once to ensure ctx.sessionManager is current
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        reconstructStateFromBranch(ctx);
-
-        // Now that we've successfully switched away, delete the previous session if it was ephemeral
-        if (pendingDeleteSessionFile) {
-            const toDelete = pendingDeleteSessionFile;
-            pendingDeleteSessionFile = null;
-            await deleteSessionFileBestEffort(toDelete);
-        }
     });
 
     pi.on("session_tree", async (_event, ctx) => {
         reconstructStateFromBranch(ctx);
     });
 
-    pi.on("session_fork", async (_event, ctx) => {
-        reconstructStateFromBranch(ctx);
+    pi.on("session_before_fork", async (_event, ctx) => {
+        // Clear the indicator immediately so it never visually leaks into the picker UI or next session
+        clearIndicator(ctx);
     });
 
     pi.registerCommand("ephemeral", {
@@ -144,25 +150,6 @@ export default function (pi: ExtensionAPI) {
         const sessionFile = ctx.sessionManager.getSessionFile();
         if (!sessionFile) return; // Already in-memory mode
 
-        try {
-            // Try using trash first (safer)
-            const { code } = await pi.exec("trash", [sessionFile], { timeout: 5000 });
-
-            if (code !== 0) {
-                // Fallback to direct deletion
-                if (existsSync(sessionFile)) {
-                    unlinkSync(sessionFile);
-                }
-            }
-        } catch {
-            // Last resort: direct deletion
-            try {
-                if (existsSync(sessionFile)) {
-                    unlinkSync(sessionFile);
-                }
-            } catch {
-                // Can't do much at shutdown, silently fail
-            }
-        }
+        await deleteSessionFileBestEffort(sessionFile);
     });
 }
