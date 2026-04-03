@@ -1,14 +1,20 @@
-Version 1.6.14
+##### 2.1.0 - April 2, 2026
 
-New Features (CLI)
+New Features
 
-Machine-readable tool schemas - New --tools-schema flag and tools --schema command for structured JSON output of tool definitions, enabling integration with external systems
-JSON file/stdin support - Pass JSON arguments via @file or @- (stdin) for easier handling of complex payloads
+-   MCP-controlled agents and sub-agents — start and steer Agent Mode sessions from external MCP clients or the CLI, with cross-family sub-agent support (Claude can steer Codex, Codex can steer Claude)
+-   Agent role defaults — configure default models per agent role (explore, engineer, pair, design) with per-role override controls
+
 Improvements
 
-Improved git tool diff detail levels - New "patches" detail level for truncated diffs; "full" now provides complete untruncated output
-Better discovery agent guidance - Context builder now explores more broadly and effectively when analyzing codebases
-Smarter CLI JSON parsing - Auto-detects JSON files and auto-repairs common formatting issues from LLM outputs
+-   Faster window restore — consolidated session data loading for less main-thread blocking
+-   Cleaner MCP API — dedicated manage_selection and prompt tools replace context_state; chat tools renamed to oracle for consistency
+-   New context_bind tool — easier workspace binding via working directories
+-   Cmd+W now stashes compose tabs instead of closing them
+
 Fixes
 
-Fixed silent failures in apply_edits replace-all - Now shows a clear error when no matches are found instead of silently succeeding
+-   Improved app stability — fixed crashes on deeply nested directory trees
+-   Fixed memory retention issues for large repositories
+-   Fixed file_search hanging on regex patterns with .* or .+ quantifiers
+-   Fixed detached transcript jump-to-top restore

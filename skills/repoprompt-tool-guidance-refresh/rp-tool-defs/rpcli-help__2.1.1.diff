@@ -1,0 +1,133 @@
+23,24c23,24
+<     The tab's file SELECTION is the context for chat_send. The AI only
+<     sees files you've selected. Build selection manually or use context_builder.
+---
+>     The tab's file selection is part of the current context. Use `manage_selection`
+>     to mutate it and `workspace_context` to inspect or export it.
+26c26
+<     Manual:   manage_selection op=set paths=["src/"] && chat_send message="..."
+---
+>     Manual:   manage_selection op=set paths=["src/"] && ask_oracle message="..."
+45c45
+<     manage_selection (select) - Curate file selection (context for chat)
+---
+>     manage_selection (select) - Curate file selection
+57c57
+<     chat_send (chat, plan, review) - Send message with selection as context
+---
+>     ask_oracle (chat, plan, review) - Send/continue an oracle conversation
+65c65
+<       chat_send message="Fix bug" mode=edit new_chat=true
+---
+>       ask_oracle message="Fix bug" mode=edit new_chat=true
+85,87c85,87
+<       structure src/auth/                          Codemaps for directory
+<       structure --scope selected                   Codemaps for selection
+<       get_code_structure paths=["src/"] max_results=50
+---
+>       structure src/auth/                          Codemaps for directory (default considers up to 10 files)
+>       structure --scope selected                   Codemaps for selection (~6k token cap still applies)
+>       get_code_structure paths=["src/"] max_results=50   Opt in to consider more files (response still capped)
+94,95c94,95
+<     prompt - Manage shared prompt/instructions
+<       prompt get                                   Show current prompt
+---
+>     prompt - CLI shorthand for canonical context tools
+>       prompt get                                   Show current prompt text
+120,123c120,124
+<     chats - List chat sessions or view history
+<       chats                                        List recent sessions
+<       chats log <chat_id>                          View conversation
+<       chats action=log chat_id=abc123 limit=10
+---
+>     oracle_utils (oracle, models, chats) - Oracle helpers
+>       models                                       Show available oracle models
+>       chats                                        Compatibility alias for session listing
+>       oracle sessions --limit 10                   List recent sessions
+>       oracle_utils op=sessions limit=10
+125,126c126,131
+<     list_models (models) - List available AI model presets
+<       models                                       Show all presets
+---
+>     bind_context (windows, use) - Discover/bind routing context
+>       windows                                      List windows, tabs, and context_id values
+>       bind_context op=status                       Show current binding
+>       bind_context op=bind context_id=<uuid>       Bind a specific compose context
+>       bind_context op=bind window_id=<id>          Bind a window without pinning a tab
+>       bind_context op=unbind                       Clear explicit binding/window affinity
+128c133
+<     manage_workspaces (workspace, ws, tabs) - Manage workspaces/tabs
+---
+>     manage_workspaces (workspace, ws) - Manage workspaces/tab lifecycle
+134,135c139,140
+<       workspace tabs                               List compose tabs
+<       workspace tab "Feature Work"                 Select tab
+---
+>       tabs list                                    List tabs via bind_context
+>       tabs create "Feature Work"                   Create a new compose tab
+140,141c145,156
+<     list_windows (windows) - List open RepoPrompt windows
+<       windows                                      Show window IDs
+---
+>     agent_run - Session-based agent run control (advanced, policy-gated)
+>       agent_run op=start message="Find auth bugs" Start run → session_id
+>       agent_run op=wait session_id="<uuid>"        Block until input/terminal
+>       agent_run op=wait session_id="<uuid>" timeout=5  Bounded wait (seconds)
+>       agent_run op=poll session_id="<uuid>"        Poll current snapshot
+>       agent_run op=steer session_id="<uuid>" message="Also check logout"
+>       agent_run op=respond session_id="<uuid>" interaction_id="<id>" response="accept"
+>       agent_run op=cancel session_id="<uuid>"      Cancel run
+>       Operations: start, poll, wait, cancel, steer, respond
+>       wait accepts optional timeout (seconds, fractional OK). Defaults
+>       to 300s (5 min). timeout=0 returns current snapshot immediately.
+>       session_id is the control-plane identifier. Use agent_manage for durable session data.
+142a158,168
+>     agent_manage - Session and workflow management (advanced, policy-gated)
+>       agent_manage op=list_agents                   List available agent providers
+>       agent_manage op=list_sessions limit=10        List sessions
+>       agent_manage op=get_log session_id="<id>"     Get transcript
+>       agent_manage op=create_session session_name="Auth work"
+>       agent_manage op=resume_session session_id="<id>"
+>       agent_manage op=stop_session session_id="<id>"   Stop a live session
+>       agent_manage op=list_workflows                List workflows
+>       Operations: list_agents, list_sessions, get_log, create_session,
+>                   resume_session, stop_session, list_workflows
+> 
+149c175,177
+<     -t, --tab <name>       Target tab (name or UUID)
+---
+>     -t, --tab <name>       Resolve/bind a tab by name or UUID at startup
+>     --context-id <uuid>    Bind directly to a canonical context
+>     --working-dir <path>   Explicit bind_context working_dirs selector (repeatable)
+162,163c190
+<     With one window: -w is optional. With multiple: -w is required (error if omitted).
+<     No persistent binding - window/tab selection resets on each CLI invocation.
+---
+>     With one window: -w is optional. With multiple: bind or disambiguate explicitly.
+165,167c192,195
+<     rp-cli -e 'windows'                   List available windows
+<     rp-cli -w <id> -e 'workspace tabs'    List tabs in window
+<     rp-cli -w <id> -t <tab> -e 'context'  Target window + tab
+---
+>     rp-cli -e 'windows'                          List windows, tabs, and context_id values
+>     rp-cli -w <id> -e 'context'                  Bind a window for this invocation
+>     rp-cli --context-id <uuid> -e 'context'      Bind a compose context directly
+>     rp-cli -w <id> -t <tab-or-uuid> -e 'context' Resolve/bind a tab in one step
+169,172c197,198
+<     AI agents MUST:
+<       1. Run 'windows' to discover available windows
+<       2. Pass -w <id> on EVERY invocation
+<       3. Pass -t <tab> to target a specific compose tab
+---
+>     Prefer --context-id for compose-context targeting.
+>     Use -w only when you want window scope without a tab pin.
+180c206
+<     rp-cli -d manage_selection    Show all params, types, required/optional
+---
+>     rp-cli -d manage_selection    Show selection params
+182c208,210
+<     rp-cli -d chat_send           See mode options and chat workflow
+---
+>     rp-cli -d ask_oracle          See mode options and chat workflow
+>     rp-cli -d agent_run           Agent run control operations
+>     rp-cli -d agent_manage        Session/workflow management operations

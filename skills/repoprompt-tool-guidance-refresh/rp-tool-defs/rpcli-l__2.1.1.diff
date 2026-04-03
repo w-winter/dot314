@@ -1,0 +1,540 @@
+3a4,130
+> agent_manage
+> ----------------------------------------------------------------------
+> Discover agents, manage sessions, and browse workflows.
+> 
+> **Operations**: list_agents | list_sessions | get_log | create_session | resume_session | stop_session | cleanup_sessions | list_workflows
+> 
+> - `list_agents`: Returns all agents with their models, capabilities, and stable `model_id` identifiers. Use `model_id` from the response to start runs via `agent_run`.
+> - `list_sessions`: Browse sessions. Returns `session_id` for each session. Filter by `state` (e.g. `failed`, `completed`, `running`). When called from agent mode, automatically scopes to sessions spawned by the current agent session.
+> - `get_log`: Read transcript for a session. Returns transcript XML.
+> - `create_session` / `resume_session`: Create or resume a session with a specific `model_id`.
+> - `stop_session`: Stop a live session.
+> - `cleanup_sessions`: Delete specific MCP-originated sessions by ID. Only sessions started via MCP are eligible; user-created sessions are never deleted. Skips active sessions. Use `list_sessions` first to find session IDs, then pass them here.
+> - `list_workflows`: Discover workflows usable with `agent_run` operations.
+> 
+> Parameters:
+> 
+>   op (string, required): list_agents | list_sessions | get_log | create_session | resume_session | stop_session | cleanup_sessions | list_workflows
+>     Operation.
+> 
+>   limit (integer)
+>     [list_sessions, get_log] Max results.
+> 
+>   model_id (string)
+>     [create_session, resume_session] Task label (explore, engineer,
+>     pair, design) or specific model_id from list_agents.
+> 
+>   name (string)
+>     [list_sessions] Session name filter.
+> 
+>   offset (integer)
+>     [get_log] Turn offset.
+> 
+>   session_id (string)
+>     [get_log, resume_session, stop_session] Session UUID.
+> 
+>   session_ids (array<string>)
+>     [cleanup_sessions] Array of session UUIDs to delete.
+> 
+>   session_name (string)
+>     [create_session] Display name for a new session.
+> 
+>   state (string)
+>     [list_sessions] Session state filter.
+> 
+> 
+> agent_run
+> ----------------------------------------------------------------------
+> Spawn and control Agent Mode sessions. `start` always creates a new session/tab; use `steer` to continue an existing session.
+> 
+> **Role labels** — pass as `model_id` to auto-select the best agent+model:
+> - `explore` — Fast exploration and codebase mapping
+> - `engineer` — Balanced engineering work
+> - `pair` — Interactive pair programming with highest-tier models
+> - `design` — Architecture, design discussions, and creative problem solving
+> 
+> **Operations**: start | poll | wait | cancel | steer | respond
+> 
+> - `start`: Launch an agent run in a **new** session/tab. Do NOT pass `session_id` — use `steer` to continue an existing session. Pass `model_id` with a role label or a specific ID from `agent_manage.list_agents`. Returns a `session_id` — save it for all follow-up calls. Waits up to `timeout` seconds (default 300). Pass `detach: true` to return immediately.
+> - `poll`: Return current snapshot immediately. Requires `session_id` from a prior start. Returns `interaction_id` when input is pending.
+> - `wait`: Block until the run finishes or needs input. Default 300s. `timeout: 0` = poll. Requires `session_id`. Returns `interaction_id` when input is pending.
+> - `cancel`: Stop an active agent run. Only valid when the run is `running` or `waiting_for_input`. Requires `session_id`.
+> - `steer`: Continue an existing agent session by sending a follow-up instruction to the `session_id` returned by `start`. If the run is still active, the instruction is steered into that run; if the last run already finished, RepoPrompt starts the next run in the same session. Pass `wait: true` (or `timeout_seconds`) to block until the steered run finishes or needs input. Do NOT use `steer` when status is `waiting_for_input` — use `respond` instead.
+> - `respond`: Resolve a pending interaction (question, approval, etc). Requires `session_id` and `interaction_id` from the snapshot. The `interaction_id` is returned as a top-level field in poll/wait responses when input is pending.
+> 
+> **session_id lifecycle**: `start` creates a new session and returns `session_id` in the response. All subsequent operations on that run require passing the same `session_id` back. Do NOT invent session IDs — always use the value returned by `start`.
+> 
+> **Parallel agents**: When launching multiple agents in parallel, always use `detach: true` so each `start` returns immediately without blocking. You can then `wait` or `poll` each `session_id` independently.
+> 
+> Parameters:
+> 
+>   op (string, required): start | poll | wait | cancel | steer | respond
+>     Operation.
+> 
+>   amendment (string)
+>     [respond] Amendment text for accept_with_amendment decisions.
+> 
+>   answers (object)
+>     [respond] Structured answers keyed by question ID.
+> 
+>   detach (boolean)
+>     [start] Return immediately instead of waiting. Default false.
+> 
+>   interaction_id (string)
+>     [respond] Pending interaction UUID from the snapshot. Returned as
+>     a top-level field in poll/wait responses when the run is
+>     waiting_for_input.
+> 
+>   message (string)
+>     [start, steer] Instruction text.
+> 
+>   model_id (string)
+>     [start] Role label (explore, engineer, pair, design) to auto-pick
+>     the best agent+model, or a specific model_id from
+>     agent_manage.list_agents.
+> 
+>   response (string)
+>     [respond] Text answer or decision token (accept, decline, cancel,
+>     skip, etc).
+> 
+>   session_id (string)
+>     [poll, wait, cancel, steer, respond] Session UUID returned by a
+>     prior start/steer response. Do not fabricate it. Not accepted by
+>     start — use steer to continue an existing session.
+> 
+>   session_name (string)
+>     [start] Display name for a new session.
+> 
+>   timeout (number)
+>     [start, wait] Max wait seconds. 0 = poll. Default 300.
+> 
+>   timeout_seconds (number)
+>     [steer] Max wait seconds when wait=true. 0 = immediate post-steer
+>     snapshot. Default 300.
+> 
+>   wait (boolean)
+>     [steer] Wait for an interesting/terminal state after steering.
+>     Implied when timeout_seconds is provided.
+> 
+>   workflow_id (string)
+>     [start, steer, respond] Workflow ID. Mutually exclusive with
+>     workflow_name.
+> 
+>   workflow_name (string)
+>     [start, steer, respond] Workflow name. Mutually exclusive with
+>     workflow_id.
+> 
+> 
+59c186
+< chat_send
+---
+> bind_context
+61c188
+< Send a message to start or continue a chat conversation.
+---
+> List, inspect, bind, or unbind sticky RepoPrompt window/tab context for this MCP connection.
+63,67c190,194
+< **Modes**: `chat` | `plan` | `edit` | `review`
+< - `plan`: Request architecture/implementation steps
+< - `edit`: Generate code changes
+< - `review`: Analyze code with git diff context
+< - `chat`: General conversation (default)
+---
+> Operations:
+> • list    – return **all** open windows, their compose tabs, and this connection's current binding
+> • status  – return this connection's current binding only
+> • bind    – bind by working_dirs (preferred), context_id, or window_id
+> • unbind  – clear explicit sticky tab binding and window affinity for this connection
+69,73c196,199
+< **Session management**:
+< - `new_chat`: true to start new session, false to continue
+< - `chat_id`: Continue specific chat (optional, defaults to most recent)
+< - `chat_name`: Set/update session name (recommended for organization)
+< - `model`: Preset ID or name (use `list_models` first)
+---
+> **Recommended binding flow:**
+> Bind by `working_dirs` using your project's absolute path. This sets **window affinity** — routing tool calls to the correct window without pinning a specific tab:
+> 	`{"op":"bind","working_dirs":["/path/to/project"]}`
+> Add `create_if_missing=true` to create and pin a new tab if no match exists.
+75,79c201,207
+< **Context options**:
+< - `selected_paths`: Override selection for this message
+< - `git_scope`: "none" | "selected" | "all" - git diff inclusion
+< - `git_base`: Base ref for diff (default: HEAD)
+< - `use_tab_prompt`: Use compose tab's prompt instead of message
+---
+> Parameters:
+> - op: "list" | "status" | "bind" | "unbind" (required)
+> - working_dirs: string | string[]         (for bind: preferred — absolute working directory paths; auto-resolves to the matching tab)
+> - context_id: string                      (for bind: canonical compose-tab context UUID from a previous list)
+> - window_id: integer                      (for list: optional filter to show only one window; for bind: optional disambiguator)
+> - create_if_missing: boolean              (for bind with working_dirs; create a blank tab when no context matches)
+> - tab_name: string                        (optional name when bind creates a blank tab via working_dirs)
+81,86c209,213
+< **Recommended workflow**:
+< 1. Verify context: `manage_selection op=get view=files`
+< 2. Plan: `chat_send` with `mode=plan`
+< 3. Apply: `apply_edits` or `chat_send mode=edit`
+< 4. Review: `chat_send mode=review`
+< 5. Continue in same chat for iterative refinement
+---
+> **Window/tab model:**
+> - Binding by `working_dirs` or `context_id` auto-resolves across windows — no manual window selection needed
+> - `bind_context.list` is the **per-window routing view** — shows windows with tabs and context_ids
+> - `manage_workspaces.list` is the **workspace inventory view** — shows workspaces with folder paths
+> - When the same workspace is open in multiple windows, compose tabs are shared logical state
+88,91d214
+< **Limitations**: Chat sees selected files, prompt, and conversation history only. No command execution.
+< 
+< Related: chats (list/log), manage_selection, workspace_context
+< 
+94,95c217,218
+<   new_chat (boolean, required)
+<     Start a new chat session
+---
+>   op (string, required): list | status | bind | unbind
+>     Operation: 'list', 'status', 'bind', or 'unbind'
+97,98c220,221
+<   chat_id (string)
+<     Chat ID to continue a specific chat (optional)
+---
+>   context_id (string)
+>     For bind: canonical compose-tab context UUID
+100,101c223,225
+<   chat_name (string)
+<     Set or update the chat session name
+---
+>   create_if_missing (boolean)
+>     For bind with working_dirs: create a blank tab if no existing
+>     context matches
+103,104c227,228
+<   git_base (string)
+<     Base ref for git diff comparison (default HEAD).
+---
+>   tab_name (string)
+>     Optional name to use when bind creates a blank tab
+106,107c230,232
+<   git_scope (string): none | selected | all
+<     Override git diff inclusion for this message (none|selected|all).
+---
+>   window_id (integer)
+>     Optional window ID filter for list, or selector/disambiguator for
+>     bind
+109,170c234,238
+<   include_diffs (boolean)
+<     Include edit diffs in the reply (default: true). Pass false to
+<     omit.
+< 
+<   message (string)
+<     Your message to send (ignored if use_tab_prompt is true)
+< 
+<   mode (string): chat | plan | edit | review [default: "chat"]
+<     Operation mode
+< 
+<   model (string)
+<     Model preset ID or name. Call `list_models` first to see available
+<     presets.
+< 
+<   selected_paths (array<string>)
+<     File paths for context (overrides current selection)
+< 
+<   use_tab_prompt (boolean)
+<     When true, use the active compose tab's prompt instead of message
+<     parameter
+< 
+< 
+< chats
+< ----------------------------------------------------------------------
+< List chat sessions or view conversation history.
+< 
+< **Actions**:
+< - `list` (default): Recent sessions with metadata
+< - `log`: Full conversation history for a chat
+< 
+< **Parameters**:
+< - `scope`: `workspace` | `tab` (default: `workspace`)
+< - `tab_id`: Optional compose tab UUID filter; when omitted with `scope=tab`, the current bound tab is used if available, otherwise the active UI tab
+< - `chat_id`: Optional for `log`; when omitted, returns the most recent existing chat in scope
+< - `limit`: Max items (list: sessions, log: messages; default: list=10, log=3)
+< - `include_diffs`: Include edit diffs in log output
+< 
+< **Response fields** (list):
+< - Chat ID, name, selected files, last activity, bound tab, and whether the chat is active for its tab
+< 
+< **Examples**:
+< - List recent: `{"action":"list"}`
+< - List chats for the current tab: `{"action":"list","scope":"tab"}`
+< - View most recent tab-scoped history: `{"action":"log","scope":"tab","limit":10}`
+< - View a specific chat: `{"action":"log","chat_id":"abc123","limit":10}`
+< 
+< Related: chat_send
+< 
+< Parameters:
+< 
+<   action (string): list | log
+<     Action to perform (default: 'list')
+< 
+<   chat_id (string)
+<     Chat ID for log action
+< 
+<   include_diffs (boolean)
+<     Include diff summaries in log output
+< 
+<   limit (integer)
+<     Max items to return - for 'list': max sessions (default 10), for
+<     'log': max messages (default 3)
+---
+>   working_dirs (oneOf(string, array<string>))
+>     Accepts one of:
+>       - string
+>         For bind: comma-separated absolute working directories
+>       - array<string>
+172,173d239
+<   scope (string): workspace | tab
+<     Scope for list/log operations
+175,178d240
+<   tab_id (string)
+<     Optional compose tab UUID filter
+< 
+< 
+205c267
+< **Workflow**: Continue with `chat_send(chat_id: "<returned_id>")`. Refine with `manage_selection`.
+---
+> **Workflow**: Continue with `ask_oracle(chat_id: "<returned_id>", new_chat: false)`. Refine with `manage_selection`.
+350c412
+< - `max_results`: Limit returned codemaps (default: 25)
+---
+> - `max_results`: Limit considered codemaps (default: 10). Larger values opt in to broader scans.
+352a415
+> Rendered codemap output is capped near 6k tokens even when `max_results` is larger; narrow `paths` to change which files fit.
+362c425,426
+<     Maximum number of codemaps to return (default: 25)
+---
+>     Maximum number of codemaps to consider before the ~6k-token
+>     response cap is applied (default: 10)
+442c506
+< Writes snapshot files to disk for persistent reference. **Required for chat_send review mode** to include git diff context.
+---
+> Writes snapshot files to disk for persistent reference. **Required for ask_oracle review mode** to include git diff context.
+443a508
+> - Primary review artifacts are auto-selected into context when possible
+474c539,540
+<     Write snapshot artifacts (diff only)
+---
+>     Write snapshot artifacts (diff only); primary review artifacts are
+>     auto-selected into context when possible
+532,538d597
+< 
+< 
+< list_models
+< ----------------------------------------------------------------------
+< List available model presets (id, name, description, supported modes).
+< Use before `chat_send` to pick an appropriate preset.
+< If no presets exist, shows the current chat model. Without `model`, `chat_send` picks the first compatible preset.
+540d598
+< (no parameters)
+542,547d599
+< list_windows
+< ----------------------------------------------------------------------
+< List all RepoPrompt windows with workspace & roots
+< 
+< (no parameters)
+< 
+584c636
+< Related: get_file_tree, file_search, workspace_context, apply_edits
+---
+> Related: get_file_tree, file_search, workspace_context, prompt, apply_edits
+634c686
+< Manage workspaces across RepoPrompt windows.
+---
+> Manage workspaces and compose-tab lifecycle across RepoPrompt windows.
+635a688,689
+> **This is the workspace inventory view.** For per-window tab routing and context_id discovery, use `bind_context` instead.
+> 
+637,641c691,695
+< • list    – Return all known workspaces (id, name, repoPaths, showing window IDs)
+< • switch  – Switch a window to a specified workspace
+< • create  – Create a new workspace (optional folder_path)
+< • delete  – Delete a workspace (optionally close window)
+< • add_folder – Add a folder to a workspace (defaults to active workspace)
+---
+> • list         – Return all known workspaces (id, name, repoPaths, showing window IDs)
+> • switch       – Switch a window to a specified workspace
+> • create       – Create a new workspace (optional folder_path)
+> • delete       – Delete a workspace (optionally close window)
+> • add_folder   – Add a folder to a workspace (defaults to active workspace)
+643,646c697,698
+< • list_tabs   – List compose tabs for the active workspace in a window
+< • select_tab  – Bind this MCP connection to a specific compose tab
+< • create_tab  – Create a new compose tab in the background
+< • close_tab   – Close a compose tab safely
+---
+> • create_tab   – Create a new compose tab in the background
+> • close_tab    – Close a compose tab safely
+649c701
+< - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" | "create_tab" | "close_tab" (required)
+---
+> - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "create_tab" | "close_tab" (required)
+653c705
+< - tab: string                                   (required for 'select_tab' and 'close_tab'; UUID or name)
+---
+> - tab: string                                   (optional for 'close_tab'; UUID or name)
+657c709
+< - focus: boolean                                (optional for 'select_tab' or 'create_tab'; default false)
+---
+> - focus: boolean                                (optional for 'create_tab'; default false)
+666c718,721
+< After selecting a window (via select_window), use list_tabs and select_tab to pin your connection to a specific compose tab. This ensures your tools operate on consistent context even if the user changes the active tab in the UI. Use create_tab for safe background tab creation and close_tab for explicit tab cleanup.
+---
+> **Relationship with bind_context:**
+> - `manage_workspaces.list` returns workspace inventory: names, folder paths, and which windows show each workspace
+> - `bind_context.list` returns per-window routing state: windows, active tabs, context_ids, and current binding
+> - When the same workspace is open in multiple windows, compose tabs are shared — use `bind_context` to discover per-window context_ids
+668,672c723
+< Tab binding behavior:
+< • If no tab is bound, tools use the user's currently active tab. This can cause inconsistent results if the user switches tabs during your operations.
+< • Use select_tab to explicitly bind to a specific tab for predictable, stable context across multiple tool calls.
+< • create_tab defaults to bind=true and focus=false so automation can create isolated background tabs without stealing UI focus.
+< • Alternatively, pass the hidden '_tabID' parameter with any tool call to bind on-the-fly.
+---
+> create_tab defaults to bind=true and focus=false so automation can create isolated background tabs without stealing UI focus.
+674,677d724
+< Output flags:
+< • [active] = The tab currently visible in the UI for that window
+< • [bound] = The tab this MCP connection is pinned to; your tool calls use this tab even if the user switches the visible tab
+< 
+682,685c729,730
+<   action (string, required)
+<     Action to perform: 'list', 'switch', 'create', 'delete',
+<     'add_folder', 'remove_folder', 'list_tabs', 'select_tab',
+<     'create_tab', or 'close_tab'
+---
+>   action (string, required): list | switch | create | delete | add_folder | remove_folder | create_tab | close_tab
+>     Action to perform
+699,700c744
+<     For 'select_tab' or 'create_tab': if true, also switches the UI to
+<     show the tab
+---
+>     For 'create_tab': if true, also switches the UI to show the tab
+725,726c769,770
+<     Compose tab UUID or name (required for 'select_tab' and
+<     'close_tab')
+---
+>     Compose tab UUID or name (optional for 'close_tab'; compatibility
+>     selector)
+735a780,825
+> oracle_send
+> ----------------------------------------------------------------------
+> Consult a second AI for planning, review, or questions.
+> 
+> Use this to start or continue an oracle conversation in `chat`, `plan`, `edit`, or `review` mode.
+> Use `oracle_utils` for passive helpers like models and sessions.
+> 
+> Build context first with file reads, `manage_selection`, or `workspace_context`.
+> 
+> Parameters:
+> 
+>   message (string, required)
+>     Your message to send
+> 
+>   chat_id (string)
+>     Continue a specific chat in the current tab or current context
+> 
+>   mode (string): chat | plan | edit | review [default: "chat"]
+>     Operation mode
+> 
+>   model (string)
+>     Model preset ID or name override
+> 
+>   new_chat (boolean)
+>     Start a new chat session (default: false; discouraged)
+> 
+> 
+> oracle_utils
+> ----------------------------------------------------------------------
+> Oracle helper utilities.
+> 
+> Use this for read-only oracle-specific helpers:
+> - `op="models"`   → list model choices relevant to oracle sends
+> - `op="sessions"` → list oracle/chat sessions
+> 
+> Use `ask_oracle` for all send/continue turns.
+> 
+> Parameters:
+> 
+>   op (string, required): models | sessions
+>     Helper operation
+> 
+>   limit (integer)
+>     Maximum sessions to return for the sessions operation
+> 
+> 
+759c849
+< Related: workspace_context, manage_selection, chat_send
+---
+> Related: workspace_context, manage_selection, ask_oracle
+838,847d927
+< select_window
+< ----------------------------------------------------------------------
+< Bind all subsequent tool calls of THIS client to the given window ID.
+< 
+< Parameters:
+< 
+<   window_id (integer, required)
+<     ID from list_windows
+< 
+< 
+850c930
+< Snapshot of workspace state: prompt, selection, code structure, tokens.
+---
+> Canonical workspace context render/export tool.
+851a932,934
+> Default behavior returns a snapshot of prompt, selection, code structure, and tokens.
+> Use `op` for render/export helpers, or omit it for the default snapshot.
+> 
+861a945,950
+> **Operations**:
+> - `snapshot` (default) — build/render the current workspace context snapshot
+> - `export` — write the rendered export to disk
+> - `list_presets` — list copy presets
+> - `select_preset` — select the active copy preset for the bound tab
+> 
+863c952
+< - `include`: Array of sections to include
+---
+> - `include`: Array of sections to include for snapshot rendering
+865c954
+< - `copy_preset`: Override copy preset for token calculation (UUID, kind, or name)
+---
+> - `copy_preset`: Override copy preset for token calculation / export rendering
+869a959
+> - Export: `{"op":"export","path":"context.txt"}`
+872c962
+< Related: manage_selection, prompt, get_file_tree, chat_send
+---
+> Related: manage_selection, get_file_tree, ask_oracle
+894a985,990
+>   op (string): snapshot | export | list_presets | select_preset
+>     Operation (default: 'snapshot')
+> 
+>   path (string)
+>     File path for export operation
+> 
+897a994,1009
+>   preset (oneOf(string, object))
+>     Accepts one of:
+>       - string
+>         Preset UUID, kind, or name
+>       - object
+>         Preset selector object
+>       id (string)
+>         Preset UUID
+> 
+>       kind (string)
+>         Built-in preset kind
+> 
+>       name (string)
+>         Preset name
+> 
+> 
