@@ -18,7 +18,7 @@ RepoPrompt (macOS app) organizes state as:
 - **Workspaces** → one or more root folders
 - **Windows** → each shows one workspace
 - **Tabs** → each tab has its own prompt + file selection; selections, slices, and codemaps are tab-scoped
-- **Chats** → each chat lives inside a tab and uses that tab's selected context
+- **Oracle chats** → planning/review conversations live in the current tab/context
 
 MCP tools operate directly against this state, but in Pi you invoke them through `rp`. Bind to the correct window with `rp({ bind: { window: N } })`, then call tools via `rp({ call: "<tool>", args: { ... } })`.
 
@@ -52,18 +52,19 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 |------|----------|-------|
 | Repo structure | `get_file_tree type="files" [mode="folders"] [path="..."] [max_depth=N]` | gitignore-aware |
 | Code search | `file_search pattern="..." [path="..."] [mode="both\|path\|content"] [filter={...}] [context_lines=N]` | regex auto-detected by default |
-| API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | prefer directories first |
-| Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives chat |
-| Snapshot | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` | verify before chat |
+| API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | default `max_results` is now 10; wider scans are opt-in |
+| Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives oracle/review context |
+| Snapshot/export | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` or `workspace_context op="export"` | verify or export current context |
 | Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
-| Planning/review | `chat_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_name="..."]` | uses the current tab's selection as context |
-| List chats | `chats action="list\|log" [scope="workspace\|tab"] [tab_id="..."] [chat_id="..."]` | prefer `scope:"tab"` for session continuity; `log` can omit `chat_id` to read the most recent chat in scope |
-| Model presets | `list_models` | enumerate before chat_send |
-| Prompt management | `prompt op="get\|set\|append\|clear\|export\|list_presets\|select_preset"` | manage instructions |
-| Window routing | `rp({ windows: true })` then `rp({ bind: { window: N } })` | if already bound and roots are correct, keep it |
-| Workspace/tab management | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|list_tabs\|select_tab\|create_tab\|close_tab"` | typically handled automatically; intervene manually only when binding is clearly wrong or the user explicitly wants a separate tab-level workspace |
+| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | uses the current tab/context |
+| Oracle helpers | `oracle_utils op="models\|sessions" [limit=N]` | list models or existing Oracle conversations |
+| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [working_dirs=["..."]] [context_id="..."]` | prefer `working_dirs` for stable routing; `list` exposes `context_id`s |
+| Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
+| Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
+| Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | worktree support via `main`/`trunk` aliases, `@main:<branch>` |
 
@@ -84,7 +85,13 @@ If results look wrong, assume routing first—not tool failure.
 1. `rp({ windows: true })` — list available windows
 2. If `rp` is already bound and the needed roots are present, keep it
 3. Otherwise `rp({ bind: { window: N } })` — bind to the right window
-4. `get_file_tree` — confirm workspace roots
+4. `bind_context op="status"` or `bind_context op="bind"` — inspect or set sticky routing for the repo/tab you want
+5. `get_file_tree` — confirm workspace roots
+
+Notes:
+- Prefer `bind_context op="bind" working_dirs=["/abs/path/to/repo"]` for stable routing without manually chasing tabs
+- Use `bind_context op="list"` when you need the per-window routing view with `context_id` values
+- Use `manage_workspaces action="list"` for workspace inventory, not tab routing
 
 RepoPrompt only operates within workspace root folders.
 
@@ -99,7 +106,7 @@ Runs an agent to explore the codebase and curate file selection automatically.
 - `response_type="plan"`: Generates implementation plan, returns `chat_id`
 - `response_type="review"`: Generates a code review with git diff context, returns `chat_id`
 
-Use returned `chat_id` with `chat_send new_chat=false chat_id="..."` for followup. If you need to inspect or recover that thread, prefer `chats action:"log" scope:"tab"` so you stay inside the current tab's history instead of drifting to another tab or workspace-level chat.
+Use returned `chat_id` with `oracle_send new_chat=false chat_id="..."` for followup.
 
 Token-costly—invoke explicitly when user requests or during planning phases, not automatically.
 
@@ -125,7 +132,8 @@ When the task involves a repository, use `rp` as your toolkit for exploration, r
 
 1. `rp({ windows: true })`
 2. If already bound and roots are correct, keep it; otherwise `rp({ bind: { window: N } })`
-3. Then use `get_file_tree`, `file_search`, `read_file`, `apply_edits`
+3. When routing matters across repeated tool calls, use `rp({ call: "bind_context", args: { op: "bind", working_dirs: ["/abs/path/to/repo"] } })`
+4. Then use `get_file_tree`, `file_search`, `read_file`, `apply_edits`
 
 Use Pi-native `ls/find/grep/read/edit/write` only when `rp` is unavailable after one retry.
 

@@ -2,19 +2,19 @@
 description: RepoPrompt diff review
 ---
 
-# Send RepoPrompt Chat in Review Mode
+# Send RepoPrompt Oracle in Review Mode
 
 Request: $ARGUMENTS
 
-Goal: send a RepoPrompt `chat_send` with `mode="review"` to review diffs, in a fast and token-efficient way, while optionally adding extra context files (even if unchanged) and passing user notes verbatim.
+Goal: send a RepoPrompt `oracle_send` with `mode="review"` to review diffs, in a fast and token-efficient way, while optionally adding extra context files (even if unchanged) and passing user notes verbatim.
 
-RepoPrompt `mode="review"`: analyzes code changes using git diffs of the selected files; it only sees the current selection/context.
+RepoPrompt review mode analyzes code changes using git diffs of the current selection/context.
 
 CRITICAL: Be swift and token-efficient
 - Do NOT run `git diff` to read diff contents
 - Do NOT paste any diff text into the chat message
 - Do NOT “line-by-line” review diff output in your own scratchpad
-- Rely on RepoPrompt review mode with `include_diffs=true` to supply diffs for the selected files automatically
+- Rely on RepoPrompt review mode to supply diff context for the selected files automatically
 
 ## 1) Infer diff scope (no diff reading)
 Prefer explicit user intent if present:
@@ -42,14 +42,15 @@ Prefer explicit user intent if present:
 - Paths may be repo-relative if unambiguous; if multiple loaded roots make a path ambiguous, use `RootName:relative/path`
 - If a referenced path doesn’t exist, mention it in the message and continue (do not block)
 
-## 5) Send the review chat (no diff pasted)
+## 5) Send the review request (no diff pasted)
 ```
-mcp__RepoPrompt__chat_send:
+mcp__RepoPrompt__manage_selection:
+  op: set
+  paths: [<selected_paths>]
+
+mcp__RepoPrompt__oracle_send:
   new_chat: true
-  chat_name: "Review: <name based on context>"
   mode: review
-  include_diffs: true
-  selected_paths: [<selected_paths>]
   message: |
     Review the diffs for the selected files, and if there is a selected file that does not have diffs, use it as context for interpreting the diffs.
 

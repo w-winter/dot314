@@ -17,7 +17,7 @@ Your goal is a **decision-complete** plan: an implementer (human/agent) should n
 ### Allowed (plan-improving, non-mutating)
 - RepoPrompt exploration: `get_file_tree`, `file_search`, `get_code_structure`, `read_file`
 - Context ops: `context_builder`, `manage_selection`, `workspace_context`, `prompt`
-- Reasoning: `chat_send` in `mode="plan"` (and `mode="chat"` if useful)
+- Reasoning: `oracle_send` in `mode="plan"` (and `mode="chat"` if useful)
 - Git inspection: `git status/log/diff(detail="files")` (use `detail="patches"`/`"full"` only when necessary; avoid dumping full diffs into your own output)
 
 ### Forbidden (plan-executing / mutating)
@@ -28,7 +28,7 @@ Plan Mode is not changed by user imperative language. If the user asks to "imple
 ---
 
 ## Mental Model (RepoPrompt)
-- **Selection is context**: RepoPrompt chat only sees what's selected in the bound compose tab
+- **Selection is context**: RepoPrompt Oracle only sees what's selected in the bound compose tab
 - **Context Builder runs discovery** and curates selection (codemaps/slices/full files)
 - Your job is to: curate context → resolve unknowns → ask only unavoidable preference questions → produce plan
 
@@ -40,7 +40,7 @@ Plan Mode is not changed by user imperative language. If the user asks to "imple
 
 Route unknowns:
 1) **Discoverable facts** (repo truth) → tools (never ask user)
-2) **Design/pattern ambiguity** → RepoPrompt chat (seer sees full selection)
+2) **Design/pattern ambiguity** → RepoPrompt Oracle (seer sees the current selection)
 3) **Preferences/tradeoffs** → ask user (batched, capped)
 
 ---
@@ -119,8 +119,8 @@ Return:
 After it returns:
 - Ensure your subsequent calls operate on the discovery result's tab/selection
   - In Agent Mode runs, `context_builder` reuses the current agent tab
-  - Otherwise, if the tool output includes a tab id, bind to it via `manage_workspaces(select_tab ...)`
-  - If no tab id is present, `manage_workspaces(list_tabs)` then `select_tab` the newest "Context Builder" tab
+  - Otherwise, if the tool output includes a `context_id`, bind to it via `bind_context(op:"bind", context_id: ...)`
+  - If no `context_id` is present, use `bind_context(op:"list")` to discover the new Context Builder tab/context, then bind by `context_id`
 - Sanity check context + token size:
 ```js
 rp({ call: "workspace_context", args: { include: ["selection", "tokens", "tree"] } })
@@ -152,7 +152,7 @@ If neither rich nor greenfield → treat as **PARTIAL**.
 - **PARTIAL**: ask **0-6** user questions (aim 3-5)
 - **GREENFIELD**: ask **0-12** user questions (aim <9; hard cap 12 per round)
 
-If you feel you need more: investigate more, ask chat more, and default+assume more.
+If you feel you need more: investigate more, ask Oracle more, and default+assume more.
 
 ## 2C) Self-answering loop (facts first)
 For each uncertainty:
@@ -160,17 +160,16 @@ For each uncertainty:
 2) **If not in selection, can I add minimal context?** → `manage_selection(add ...)` (prefer codemap_only or slices for large files), then retry
 3) **Only if still unclear**: treat as DESIGN or PREFERENCE and route below
 
-## 2D) Use RepoPrompt Chat as the design filter (before user)
+## 2D) Use RepoPrompt Oracle as the design filter (before user)
 Start or reuse a planning chat in the same tab/selection.
 
 - If your `context_builder` run returned a `chat_id` (only happens for response_type plan/question/review), reuse it with `new_chat:false`
 - Otherwise create one:
 ```js
 rp({
-  call: "chat_send",
+  call: "oracle_send",
   args: {
     new_chat: true,
-    chat_name: "Plan (gap-find): <short task name>",
     mode: "plan",
     message:
 `Given the selected files, do NOT propose a full solution yet.
@@ -220,12 +219,12 @@ Rules:
 ---
 
 # Phase 3 - FINALIZE (decision-complete plan)
-After user answers (or defaults), use RepoPrompt chat to produce the final plan (same selection).
+After user answers (or defaults), use RepoPrompt Oracle to produce the final plan (same selection).
 
 Template:
 ```js
 rp({
-  call: "chat_send",
+  call: "oracle_send",
   args: {
     // reuse existing chat_id if you have one; otherwise continue in the same tab
     new_chat: false,

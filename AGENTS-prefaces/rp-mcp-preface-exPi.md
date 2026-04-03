@@ -11,9 +11,12 @@ RepoPrompt MCP tools are the default for repo-scoped work because they materiall
 RepoPrompt (macOS app) organizes state as:
 - **Workspaces** → one or more root folders
 - **Windows** → each shows one workspace
-- **Compose tabs** → each tab has a prompt + file selection (selection is what chat/review sees)
+- **Compose tabs** → each tab has a prompt + file selection (selection is what oracle/review sees)
 
-MCP tools operate directly against this state. Use `select_window window_id=N` to bind to a specific window, then `manage_workspaces action="select_tab" tab="..."` to pin to a compose tab.
+MCP tools operate directly against this state.
+- Use `bind_context op="bind" working_dirs=["/abs/path"]` as the preferred routing primitive
+- Use `bind_context op="list"` when you need window/tab routing details plus `context_id` values
+- Use `bind_context op="bind" context_id="..."` when you need to pin a specific compose context
 
 **Mandatory routing check:** Do not infer availability of any repo of interest from workspace/window titles; workspaces may have more roots available than the title implies. Before any repo-scoped work, confirm the target repo/root is (or isn’t) present by checking workspace roots (e.g. `get_file_tree`). If it’s not confirmed, pause and resolve routing (bind the right window/tab or open the repo).
 
@@ -24,7 +27,7 @@ MCP tools operate directly against this state. Use `select_window window_id=N` t
 Use RepoPrompt MCP tools over native tools for repo work because they improve context quality:
 
 - **Better exploration primitives**: `get_file_tree`, `file_search`, and `get_code_structure` are gitignore-aware and tuned for codebase navigation
-- **Selection = context**: the compose tab's selection is the single source of truth for what `chat_send` sees
+- **Selection = context**: the compose tab's selection is the single source of truth for what `oracle_send` sees
 - **Token-efficient structure**: codemaps (signatures) and slices let you include APIs and relevant portions without dumping whole files
 - **Less context pollution**: MCP tool output is bounded and formatted; native shell output injects large, low-signal logs into the model context
 
@@ -64,19 +67,19 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 |------|----------|-------|
 | Repo structure | `get_file_tree type="files" [mode="folders"] [path="..."] [max_depth=N]` | gitignore-aware |
 | Code search | `file_search pattern="..." [mode="both\|path\|content"] [filter={...}] [context_lines=N]` | regex auto-detected by default |
-| API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | prefer directories first |
-| Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives chat |
-| Snapshot | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` | verify before chat |
+| API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | default `max_results` is now 10; broader scans are opt-in |
+| Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives oracle/review context |
+| Snapshot/export | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` or `workspace_context op="export"` | canonical context render/export tool |
 | Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
-| Planning/review | `chat_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_name="..."]` | uses selection as context |
-| List chats | `chats action="list\|log" [chat_id="..."]` | view sessions or history |
-| Model presets | `list_models` | enumerate before chat_send |
-| Prompt management | `prompt op="get\|set\|append\|clear\|export\|list_presets\|select_preset"` | manage instructions |
-| Window routing | `list_windows` then `select_window window_id=N` | bind before operating |
-| Workspace/tab mgmt | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|list_tabs\|select_tab"` | see workspace hygiene |
+| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | current selection is the input context |
+| Oracle helpers | `oracle_utils op="models\|sessions" [limit=N]` | list models or existing Oracle conversations |
+| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [working_dirs=["..."]] [context_id="..."]` | prefer `working_dirs`; `list` exposes `context_id`s |
+| Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
+| Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | detail levels: `summary\|files\|patches\|full`; worktree support via `main`/`trunk` aliases, `@main:<branch>` |
 
 ---
@@ -95,11 +98,15 @@ Notes:
 
 If results look wrong, assume routing first—not tool failure.
 
-1. `list_windows` — see available windows
-2. `select_window window_id=N` — bind to a window
-3. `manage_workspaces action="list_tabs"` — see tabs in that window
-4. `manage_workspaces action="select_tab" tab="..."` — pin to a tab
-5. `get_file_tree` — confirm workspace roots
+1. `bind_context op="status"` — inspect the current sticky binding
+2. `bind_context op="bind" working_dirs=["/abs/path/to/repo"]` — prefer this for stable routing
+3. `bind_context op="list"` — inspect windows, tabs, `context_id`s, and current binding when you need to disambiguate
+4. `get_file_tree` — confirm workspace roots
+
+Notes:
+- `bind_context.list` is the per-window routing view
+- `manage_workspaces.list` is the workspace inventory view
+- When the same workspace is open in multiple windows, use `bind_context` to discover the right `context_id`
 
 RepoPrompt only operates within workspace root folders.
 
@@ -126,13 +133,13 @@ RepoPrompt only operates within workspace root folders.
 ### [PAIR] (collaborative planning)
 
 1. Curate context: `manage_selection op="set" paths=[...]`
-2. Plan: `chat_send mode="plan" message="Propose a safe plan for ..." new_chat=true chat_name="..."`
+2. Plan: `oracle_send mode="plan" message="Propose a safe plan for ..." new_chat=true`
 3. Apply iteratively with `apply_edits`
 
 ### [SECOND OPINION] (complex/risky changes)
 
-Use RepoPrompt chat as reviewer:
-`chat_send mode="plan" message="Review my approach for ... and call out risks" new_chat=true`
+Use RepoPrompt Oracle as reviewer:
+`oracle_send mode="plan" message="Review my approach for ... and call out risks" new_chat=true`
 
 ---
 
@@ -149,7 +156,7 @@ Describe **what** you need, not **where** to look. Mention what you know and wha
 - `response_type="plan"`: Generates implementation plan, returns `chat_id`
 - `response_type="review"`: Generates a code review with git diff context, returns `chat_id`
 
-Use returned `chat_id` with `chat_send new_chat=false chat_id="..."` for followup.
+Use returned `chat_id` with `oracle_send new_chat=false chat_id="..."` for followup.
 
 If invoked during an Agent Mode run, `context_builder` reuses the current agent tab instead of creating a new tab.
 
@@ -163,8 +170,8 @@ Token-costly—invoke explicitly when user requests or during planning phases, n
 
 When the task involves a repository, RepoPrompt is your toolkit for exploration, reading, editing, and file operations.
 
-1. `list_windows`
-2. `select_window window_id=N`
+1. `bind_context op="status"`
+2. If needed, `bind_context op="bind" working_dirs=["/abs/path/to/repo"]`
 3. Then use `get_file_tree`, `file_search`, `read_file`, `apply_edits`
 
 Use native tools only when RepoPrompt is unavailable after one retry.
@@ -178,4 +185,4 @@ Unexpected output is usually a routing issue—wrong workspace, wrong window, wr
 - Re-read the target region of a file before editing if: (a) the last read was >2 turns ago, (b) you edited the same file since last reading it, or (c) you switched RP windows since last reading it
 - After an `apply_edits` failure, always re-read before retrying — never guess at what changed
 - When making multiple edits to the same file, apply them one at a time (each edit shifts content for subsequent ones)
-- Confirm you are bound to the correct RP window before any `apply_edits` — relative paths resolve against the bound workspace
+- Confirm you are bound to the correct RP window/context before any `apply_edits` — relative paths resolve against the bound workspace

@@ -17,25 +17,27 @@ Native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automati
 RepoPrompt (macOS app) organizes state as:
 - **Workspaces** → one or more root folders
 - **Windows** → each shows one workspace
-- **Compose tabs** → each tab has a prompt + file selection (selection is what chat/review sees)
+- **Compose tabs / contexts** → each tab has a prompt + file selection (selection is what Oracle/review sees)
 
 Integration layers:
 - **rp-cli** → CLI client talking to the app's MCP server
 - **rp_exec** (pi tool) → runs `rp-cli -e <cmd>` with safe defaults
-- **rp_bind(windowId, tab)** (pi tool) → pins rp_exec to a specific window + tab
+- **rp_bind(windowId, tab)** (pi tool) → pins rp_exec to a specific window + context identifier; prefer a `context_id` from `windows` or `tabs list`
 
 ---
 
 ## Bind Before Operating
 
 1. `windows`
-2. `workspace tabs` (if needed)
-3. `rp_bind(windowId, tab)` (usually `"Compose"`)
+2. `tabs list` (only if `windows` does not give you the context you need)
+3. `rp_bind(windowId, contextId)`
 4. Then use `tree/search/read/select/context/structure/...`
+
+`windows` is now the preferred bootstrap because it reports the active tab/context directly. Use `tabs list` only when you need more detail for a specific window.
 
 **Mandatory routing check:** Do not infer availability of any repo of interest from workspace/window titles; workspaces may have more roots available than the title implies. Before any repo-scoped work, confirm the target repo/root is (or isn’t) present by checking workspace roots (e.g. `tree`). If it’s not confirmed, pause and resolve routing (bind the right window/tab or open/create the repo workspace).
 
-Until bound, only run safe bootstrap commands: `windows`, `workspace list`, `workspace tabs`, `help`, `refresh`, or `workspace switch ... --new-window`.
+Until bound, only run safe bootstrap commands: `windows`, `tabs list`, `workspace list`, `help`, `refresh`, or `workspace switch ... --new-window`.
 
 If output looks wrong (0 matches / wrong files / empty results), check routing first (window/tab/workspace roots).
 
@@ -80,12 +82,12 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 | Repo structure | rp_exec `tree` | gitignore-aware, fast orientation |
 | Code search | rp_exec `search` | extension filtering, context lines |
 | API signatures | rp_exec `structure` | token-efficient, no native equivalent |
-| Context curation | rp_exec `select`, `context` | selection is the chat/review input |
+| Context curation | rp_exec `select`, `context` | selection is the Oracle/review input |
 | Reading repo files | rp_exec `read` | workspace-scoped, supports tail reads |
-| Code editing (preferred) | `rp-cli -c apply_edits -j '{...}'` | JSON args required; reliable edits (multiline, multi-edit, rewrite) |
+| Code editing (preferred) | `rp-cli -w <id> -t <context_id> -c apply_edits -j '{...}'` | JSON args required; reliable edits (multiline, multi-edit, rewrite) |
 | Code editing (fallback) | pi native `edit` | use when direct rp-cli call mode isn't available |
 | File create/move/delete | rp_exec `file create/move/delete` | workspace-aware |
-| File creation with content | `rp-cli -c file_actions -j '{...}'` | JSON args required; create files with explicit content |
+| File creation with content | `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` | JSON args required; create files with explicit content |
 
 ---
 
@@ -128,9 +130,9 @@ Rules:
 
 Use direct tool invocation with JSON args:
 
-`rp-cli -w <id> -t <tab> -c apply_edits -j '{"path":"file.ts","search":"old","replace":"new"}'`
-`rp-cli -w <id> -t <tab> -c apply_edits -j @edits.json`  (from file)
-`echo '{...}' | rp-cli -w <id> -t <tab> -c apply_edits -j @-`  (from stdin)
+`rp-cli -w <id> -t <context_id> -c apply_edits -j '{"path":"file.ts","search":"old","replace":"new"}'`
+`rp-cli -w <id> -t <context_id> -c apply_edits -j @edits.json`  (from file)
+`echo '{...}' | rp-cli -w <id> -t <context_id> -c apply_edits -j @-`  (from stdin)
 
 `-j/--json` accepts inline JSON, `@file`, `@-`, or `path.json` (auto-detected). Raw newlines/tabs in JSON strings are auto-repaired.
 
@@ -152,8 +154,8 @@ If you can't invoke rp-cli call mode (for example, your harness only exposes `rp
 Use rp_exec `file create/move/delete` for workspace-aware file ops.
 
 If you need to create a file with full content in one step, call `file_actions` with JSON via rp-cli call mode:
-`rp-cli -c file_actions -j '{"action":"create","path":"...","content":"..."}'`
-`rp-cli -c file_actions -j @create-file.json`
+`rp-cli -w <id> -t <context_id> -c file_actions -j '{"action":"create","path":"...","content":"..."}'`
+`rp-cli -w <id> -t <context_id> -c file_actions -j @create-file.json`
 
 ---
 
@@ -163,7 +165,7 @@ If results look wrong:
 
 1. Assume routing first (wrong window/tab)
 2. `tree` (no args) to confirm workspace roots
-3. `workspace tabs` then bind to the correct tab
+3. `tabs list` if needed, then bind to the correct context
 4. Don't "fix" confusion by switching workspaces in-place
 
 RepoPrompt only operates within workspace root folders. If the repo isn't in any workspace:
@@ -211,17 +213,17 @@ For applying code changes, pi native `edit` is an acceptable fallback when rp-cl
 
 ### [AGENT] (autonomous implementation loop)
 1) Ensure tight selection: `select set … && context`
-2) Apply edits (see **Editing** section): preferred `rp-cli -c apply_edits -j '{...}'`; fallback pi native `edit`
-3) Create/move files only when necessary: `file create/delete/move` (for file content, use `rp-cli -c file_actions -j '{...}'`)
+2) Apply edits (see **Editing** section): preferred `rp-cli -w <id> -t <context_id> -c apply_edits -j '{...}'`; fallback pi native `edit`
+3) Create/move files only when necessary: `file create/delete/move` (for file content, use `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'`)
 4) Re-check selection + context after edits: `context`
 
 ### [PAIR] (collaborative planning / second opinion)
 1) Curate context first: `select set … && context --all` (full context justified for planning here)
-2) Ask for a plan: `plan "Propose a safe plan for …"`
+2) Ask Oracle for a plan: `plan "Propose a safe plan for …"`
 3) Apply changes iteratively (see **Editing** section) and re-run `context` after meaningful changes
 
 ### [SECOND OPINION] (complex / risky changes)
-Use RepoPrompt chat as a reviewer (not an executor):
+Use RepoPrompt Oracle as a reviewer (not an executor):
 `plan "Review my approach for … and call out risks"`
 
 ---
@@ -231,7 +233,7 @@ Use RepoPrompt chat as a reviewer (not an executor):
 Shell-level patterns:
 - List tools: `rp-cli -l`
 - Describe a tool: `rp-cli -d <tool>`
-- Call a tool: `rp-cli -w <id> -t <tab> -c <tool> -j '{"param":"value"}'`
+- Call a tool: `rp-cli -w <id> -t <context_id> -c <tool> -j '{"param":"value"}'`
 
 Machine-readable schemas:
 - All tools as JSON: `rp-cli --tools-schema`
@@ -239,13 +241,13 @@ Machine-readable schemas:
 - Same via exec mode: `rp-cli -e 'tools --schema'`
 
 Common calls:
-- `rp-cli -c apply_edits -j '{...}'` — complex edits (multi-edit, multiline, rewrite)
-- `rp-cli -c file_actions -j '{...}'` — creating files with complex content
-- `rp-cli -c git -j '{"op":"diff","detail":"files"}'` — token-efficient git operations
-- `rp-cli -c git -j '{"op":"diff","detail":"patches"}'` — inline patch hunks (truncated)
-- `rp-cli -c git -j '{"op":"diff","detail":"full"}'` — untruncated patch output
-- `rp-cli -c git -j '{"op":"diff","compare":"main"}'` — diff vs auto-detected trunk branch
-- `rp-cli -c git -j '{"op":"status","repo_root":"@main:feature-branch"}'` — target worktree by branch
+- `rp-cli -w <id> -t <context_id> -c apply_edits -j '{...}'` — complex edits (multi-edit, multiline, rewrite)
+- `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` — creating files with complex content
+- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"files"}'` — token-efficient git operations
+- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"patches"}'` — inline patch hunks (truncated)
+- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"full"}'` — untruncated patch output
+- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","compare":"main"}'` — diff vs auto-detected trunk branch
+- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"status","repo_root":"@main:feature-branch"}'` — target worktree by branch
 
 ---
 
