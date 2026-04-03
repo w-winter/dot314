@@ -60,7 +60,7 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
 | Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | uses the current tab/context |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N]` | list models or existing Oracle conversations |
-| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [context_id="..."]` | use `list` to discover `context_id`s, then bind by `context_id` for actual work |
+| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [context_id="..."]` | use `list` to discover `context_id`s, then bind by `context_id` to work therein |
 | Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
