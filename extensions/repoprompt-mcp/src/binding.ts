@@ -1141,7 +1141,6 @@ async function selectTab(
 
   const result = await client.callTool(bindContextToolName, {
     op: "bind",
-    window_id: windowId,
     context_id: tabId,
   });
 

@@ -14,7 +14,6 @@ RepoPrompt (macOS app) organizes state as:
 - **Compose tabs** → each tab has a prompt + file selection (selection is what oracle/review sees)
 
 MCP tools operate directly against this state.
-- Use `bind_context op="bind" working_dirs=["/abs/path"]` as the preferred routing primitive
 - Use `bind_context op="list"` when you need window/tab routing details plus `context_id` values
 - Use `bind_context op="bind" context_id="..."` when you need to pin a specific compose context
 
@@ -75,7 +74,7 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
 | Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | current selection is the input context |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N]` | list models or existing Oracle conversations |
-| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [working_dirs=["..."]] [context_id="..."]` | prefer `working_dirs`; `list` exposes `context_id`s |
+| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [context_id="..."]` | use `list` to discover `context_id`s, then bind by `context_id` to work therein |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
@@ -99,8 +98,8 @@ Notes:
 If results look wrong, assume routing first—not tool failure.
 
 1. `bind_context op="status"` — inspect the current sticky binding
-2. `bind_context op="bind" working_dirs=["/abs/path/to/repo"]` — prefer this for stable routing
-3. `bind_context op="list"` — inspect windows, tabs, `context_id`s, and current binding when you need to disambiguate
+2. `bind_context op="list"` — inspect windows, tabs, `context_id`s, and current binding when you need to disambiguate
+3. `bind_context op="bind" context_id="..."` — pin the specific compose context you want after choosing it from `list`
 4. `get_file_tree` — confirm workspace roots
 
 Notes:
@@ -171,7 +170,7 @@ Token-costly—invoke explicitly when user requests or during planning phases, n
 When the task involves a repository, RepoPrompt is your toolkit for exploration, reading, editing, and file operations.
 
 1. `bind_context op="status"`
-2. If needed, `bind_context op="bind" working_dirs=["/abs/path/to/repo"]`
+2. If needed, `bind_context op="list"`, then `bind_context op="bind" context_id="..."`
 3. Then use `get_file_tree`, `file_search`, `read_file`, `apply_edits`
 
 Use native tools only when RepoPrompt is unavailable after one retry.

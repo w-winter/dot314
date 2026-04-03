@@ -60,7 +60,7 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
 | Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | uses the current tab/context |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N]` | list models or existing Oracle conversations |
-| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [working_dirs=["..."]] [context_id="..."]` | prefer `working_dirs` for stable routing; `list` exposes `context_id`s |
+| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [context_id="..."]` | use `list` to discover `context_id`s, then bind by `context_id` for actual work |
 | Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
@@ -89,8 +89,8 @@ If results look wrong, assume routing first—not tool failure.
 5. `get_file_tree` — confirm workspace roots
 
 Notes:
-- Prefer `bind_context op="bind" working_dirs=["/abs/path/to/repo"]` for stable routing without manually chasing tabs
 - Use `bind_context op="list"` when you need the per-window routing view with `context_id` values
+- Prefer `bind_context op="bind" context_id="..."` after choosing the right window/context from `list`
 - Use `manage_workspaces action="list"` for workspace inventory, not tab routing
 
 RepoPrompt only operates within workspace root folders.
@@ -132,7 +132,7 @@ When the task involves a repository, use `rp` as your toolkit for exploration, r
 
 1. `rp({ windows: true })`
 2. If already bound and roots are correct, keep it; otherwise `rp({ bind: { window: N } })`
-3. When routing matters across repeated tool calls, use `rp({ call: "bind_context", args: { op: "bind", working_dirs: ["/abs/path/to/repo"] } })`
+3. When routing matters across repeated tool calls, use `rp({ call: "bind_context", args: { op: "list", window_id: N } })`, then `rp({ call: "bind_context", args: { op: "bind", context_id: "..." } })`
 4. Then use `get_file_tree`, `file_search`, `read_file`, `apply_edits`
 
 Use Pi-native `ls/find/grep/read/edit/write` only when `rp` is unavailable after one retry.
