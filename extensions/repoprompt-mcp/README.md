@@ -137,7 +137,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 - `/rp tab` — interactive tab picker for the current bound window, with `Create new tab` as the first option followed by existing tab names
 - `/rp tab new` — create and bind a fresh tab on the current bound window
 - `/rp tab <name-or-id>` — bind an existing tab on the current bound window by name or id
-- `/rp oracle [--mode <chat|plan|edit|review>] [--name <chat name>] [--continue|--chat-id <id>] <message>` — ask RepoPrompt chat with current selection context.  If `--mode` not specified, uses `oracleDefaultMode` config.
+- `/rp oracle [--mode <chat|plan|edit|review>] [--name <chat name>] [--continue|--chat-id <id>] <message>` — ask RepoPrompt Oracle with current selection context.  If `--mode` not specified, uses `oracleDefaultMode` config.
 - `/rp reconnect` — reconnect to RepoPrompt
 
 ### Tool: `rp`
@@ -219,7 +219,7 @@ Options:
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |
 | `confirmEdits` | `false` | Block edit-like operations unless `confirmEdits: true` |
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
-| `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `chat_send` (or a manually created chat in the RP app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
+| `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `oracle_send` (or a manually created Oracle session in the RP app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
 | `oracleDefaultMode` | `"chat"` | Default mode for `/rp oracle` when `--mode` is omitted (`chat`, `plan`, `edit`, or `review`) |
 | `collapsedMaxLines` | `3` | Lines shown in collapsed view |
 | `diffViewMode` | `"auto"` | Diff layout for RepoPrompt `git` / `apply_edits` fenced diff output (`auto`, `split`, `unified`) |

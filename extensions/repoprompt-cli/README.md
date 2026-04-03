@@ -7,6 +7,8 @@ It provides two Pi tools:
 - `rp_bind` — bind to a specific RepoPrompt **window id** + **compose tab** (routing)
 - `rp_exec` — run `rp-cli -e <cmd>` against that binding
 
+For discovery, prefer `windows` first: since v2.1.x, RepoPrompt includes tab/context reporting directly in that output, so you often no longer need a separate `workspace tabs` step just to find a bind target.
+
 Diff blocks in `rp_exec` output use `delta` when installed (honoring the user's global git/delta color config), with graceful fallback otherwise
 
 When enabled (default), `rp_exec` also auto-tracks `read` / `cat` / `read_file` calls and updates RepoPrompt selection with owned file/slice context. The owned selection state is branch-safe across `/tree` and `/fork`, and replays after reconnect/restart using workspace-aware rebinding
@@ -100,7 +102,7 @@ These are **Pi slash commands** (for the chat UI), not `rp_exec` commands:
 
 ## Smoke test
 
-1) Bind:
+1) Bind (after checking `windows` for the current window/tab names):
 
 ```text
 /rpbind 4 Compose

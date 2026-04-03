@@ -857,7 +857,7 @@ function isSafeSingleCommandToRunUnbound(cmd: string): boolean {
     if (commandName === "windows") return true;
     if (commandName === "help") return true;
     if (commandName === "refresh" && args.length === 0) return true;
-    if (commandName === "tabs" && args.length === 0) return true;
+    if (commandName === "tabs" && (args.length === 0 || args[0] === "list")) return true;
 
     if (commandName === "workspace") {
       const action = args[0] ?? "";
@@ -879,7 +879,7 @@ function isSafeSingleCommandToRunUnbound(cmd: string): boolean {
 
   if (normalized === "workspace list") return true;
   if (normalized === "workspace tabs") return true;
-  if (normalized === "tabs") return true;
+  if (normalized === "tabs" || normalized === "tabs list") return true;
 
   if (normalized.startsWith("workspace switch ") && normalized.includes("--new-window")) return true;
   if (normalized.startsWith("workspace create ") && normalized.includes("--new-window")) return true;
@@ -2958,7 +2958,7 @@ export default function (pi: ExtensionAPI) {
               text:
                 "Blocked rp_exec because it is not bound to a window+tab. " +
                 "Do not fall back to native Pi tools—bind first. " +
-                "Run `windows` and `workspace tabs`, then bind with rp_bind(windowId, tab). " +
+                "Run `windows` (it now reports tabs/context IDs) or `tabs list`, then bind with rp_bind(windowId, tab). " +
                 "If RepoPrompt is in single-window mode, windowId is usually 1",
             },
           ],

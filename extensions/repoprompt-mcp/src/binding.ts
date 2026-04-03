@@ -754,7 +754,7 @@ function parseTabFromJson(raw: unknown): RpTab | null {
   }
 
   const obj = raw as Record<string, unknown>;
-  const idRaw = obj.id ?? obj.tabId ?? obj.tab_id ?? obj.uuid;
+  const idRaw = obj.contextId ?? obj.context_id ?? obj.id ?? obj.tabId ?? obj.tab_id ?? obj.uuid;
   if (typeof idRaw !== "string" || !idRaw.trim()) {
     return null;
   }
@@ -786,7 +786,20 @@ function collectTabsFromJson(raw: unknown): RpTab[] {
   }
 
   const obj = raw as Record<string, unknown>;
-  const containers = [obj.tabs, obj.tab, obj.createdTab, obj.created_tab, obj.selectedTab, obj.selected_tab];
+  const containers = [
+    obj.tabs,
+    obj.contexts,
+    obj.tab,
+    obj.context,
+    obj.createdTab,
+    obj.created_tab,
+    obj.createdContext,
+    obj.created_context,
+    obj.selectedTab,
+    obj.selected_tab,
+    obj.selectedContext,
+    obj.selected_context,
+  ];
 
   for (const candidate of containers) {
     const parsed = collectTabsFromJson(candidate);
@@ -835,7 +848,26 @@ function dedupeTabs(tabs: RpTab[]): RpTab[] {
 
 function parseTabLine(line: string): RpTab | null {
   const trimmed = line.trim();
-  if (!trimmed || !trimmed.includes("`")) {
+  if (!trimmed) {
+    return null;
+  }
+
+  const contextMatch = trimmed.match(/^[\u2022-]\s*(.+?)(?:\s+\[([^\]]+)\])?\s+—\s+context_id:\s*`([^`]+)`/i);
+  if (contextMatch) {
+    const state = contextMatch[2] ?? "";
+    return {
+      id: contextMatch[3].trim(),
+      name: stripTrailingTabStateAnnotations(contextMatch[1].trim()) || contextMatch[3].trim(),
+      isActive: /\bactive\b|\bin-focus\b/i.test(state)
+        ? true
+        : /\bout-of-focus\b/i.test(state)
+          ? false
+          : undefined,
+      isBound: /\bbound\b/i.test(state) ? true : undefined,
+    };
+  }
+
+  if (!trimmed.includes("`")) {
     return null;
   }
 
@@ -869,6 +901,17 @@ function parseTabLine(line: string): RpTab | null {
   };
 }
 
+function parseTabsFromBindContextText(text: string): RpTab[] {
+  return dedupeTabs(
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /—\s+context_id:\s*`[^`]+`/i.test(line))
+      .map(parseTabLine)
+      .filter((tab): tab is RpTab => tab !== null)
+  );
+}
+
 export function parseTabList(text: string): RpTab[] {
   const tabs: RpTab[] = [];
   let lastTab: RpTab | null = null;
@@ -899,87 +942,6 @@ function parseTabsFromJson(value: unknown): RpTab[] | null {
   return tabs.length > 0 ? dedupeTabs(tabs) : null;
 }
 
-function parseChatCountFromJson(value: unknown): number | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  if (Array.isArray(value)) {
-    return value.length;
-  }
-
-  if (typeof value !== "object") {
-    return undefined;
-  }
-
-  const obj = value as Record<string, unknown>;
-  const directCount = parseCountMaybe(
-    obj.count ?? obj.chatCount ?? obj.chat_count ?? obj.total ?? obj.totalCount ?? obj.total_count
-  );
-  if (directCount !== undefined) {
-    return directCount;
-  }
-
-  for (const key of ["chats", "sessions", "items", "results"]) {
-    const candidate = obj[key];
-    if (Array.isArray(candidate)) {
-      return candidate.length;
-    }
-  }
-
-  return undefined;
-}
-
-function parseChatCountFromText(text: string): number | undefined {
-  const countMatch = text.match(/\bCount\b[^\d]*([\d,]+)/i);
-  if (countMatch?.[1]) {
-    return parseCountMaybe(countMatch[1]);
-  }
-
-  if (/\bNo chats\b/i.test(text)) {
-    return 0;
-  }
-
-  const sessionCount = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^•\s*\[[^\]]+\]/.test(line)).length;
-
-  return sessionCount > 0 ? sessionCount : undefined;
-}
-
-async function fetchTabChatCount(
-  tabId: string,
-  client: ReturnType<typeof getRpClient> = getRpClient()
-): Promise<number | undefined> {
-  if (!client.isConnected) {
-    return undefined;
-  }
-
-  const chatsToolName = resolveToolName(client.tools, "chats");
-  if (!chatsToolName) {
-    return undefined;
-  }
-
-  const result = await client.callTool(chatsToolName, {
-    action: "list",
-    scope: "tab",
-    tab_id: tabId,
-    limit: 1,
-  });
-
-  if (result.isError) {
-    return undefined;
-  }
-
-  const countFromJson = parseChatCountFromJson(extractJsonContent(result.content));
-  if (countFromJson !== undefined) {
-    return countFromJson;
-  }
-
-  return parseChatCountFromText(extractTextContent(result.content));
-}
-
 function findLiveTab(tabs: RpTab[], reference: string | undefined): RpTab | null {
   if (!reference) {
     return null;
@@ -992,39 +954,117 @@ function isExplicitlyEmptyTab(tab: RpTab): boolean {
   return tab.selectedFileCount === 0;
 }
 
-async function isSafeReusableTab(
-  tab: RpTab,
-  client: ReturnType<typeof getRpClient> = getRpClient()
-): Promise<boolean> {
-  if (!isExplicitlyEmptyTab(tab)) {
-    return false;
-  }
-
-  const chatCount = await fetchTabChatCount(tab.id, client);
-  return chatCount === 0;
-}
-
-function orderReusableEmptyTabs(tabs: RpTab[]): RpTab[] {
-  const emptyTabs = tabs.filter(isExplicitlyEmptyTab);
-  if (emptyTabs.length === 0) {
-    return [];
-  }
-
+function orderReusableTabCandidates(tabs: RpTab[]): RpTab[] {
   const ordered = [
-    ...emptyTabs.filter((tab) => tab.isBound === true),
-    ...emptyTabs.filter((tab) => tab.isBound !== true && tab.isActive === true),
-    ...emptyTabs.filter((tab) => tab.isBound !== true && tab.isActive !== true),
+    ...tabs.filter((tab) => tab.isBound === true),
+    ...tabs.filter((tab) => tab.isBound !== true && tab.isActive === true),
+    ...tabs.filter((tab) => tab.isBound !== true && tab.isActive !== true),
   ];
 
   return ordered.filter((tab, index) => ordered.findIndex((candidate) => candidate.id === tab.id) === index);
 }
 
+function parseOracleSessionTabPrefixes(text: string): Set<string> {
+  const prefixes = new Set<string>();
+
+  for (const match of text.matchAll(/\btab=([A-F0-9-]{6,})(?:…|\b)/gi)) {
+    const prefix = match[1]?.trim().toUpperCase();
+    if (prefix) {
+      prefixes.add(prefix);
+    }
+  }
+
+  return prefixes;
+}
+
+async function fetchOracleSessionTabPrefixes(
+  windowId: number,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<Set<string> | null> {
+  const oracleUtilsToolName = resolveToolName(client.tools, "oracle_utils");
+  if (!oracleUtilsToolName) {
+    return null;
+  }
+
+  const result = await client.callTool(oracleUtilsToolName, {
+    op: "sessions",
+    limit: 200,
+    _windowID: windowId,
+  });
+
+  if (result.isError) {
+    return null;
+  }
+
+  return parseOracleSessionTabPrefixes(extractTextContent(result.content));
+}
+
+function tabHasOracleHistory(tabId: string, sessionTabPrefixes: Set<string> | null): boolean {
+  if (!sessionTabPrefixes || sessionTabPrefixes.size === 0) {
+    return false;
+  }
+
+  const normalizedTabId = tabId.trim().toUpperCase();
+  for (const prefix of sessionTabPrefixes) {
+    if (normalizedTabId.startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function hasEmptySelection(
+  windowId: number,
+  tab: RpTab,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<boolean> {
+  if (isExplicitlyEmptyTab(tab)) {
+    return true;
+  }
+
+  const manageSelectionToolName = resolveToolName(client.tools, "manage_selection");
+  if (!manageSelectionToolName) {
+    return false;
+  }
+
+  const result = await client.callTool(manageSelectionToolName, {
+    op: "get",
+    view: "summary",
+    _windowID: windowId,
+    context_id: tab.id,
+  });
+
+  if (result.isError) {
+    return false;
+  }
+
+  const text = extractTextContent(result.content);
+  return /\b0 total tokens\b/i.test(text);
+}
+
+async function isSafeReusableTab(
+  windowId: number,
+  tab: RpTab,
+  sessionTabPrefixes: Set<string> | null,
+  client: ReturnType<typeof getRpClient> = getRpClient()
+): Promise<boolean> {
+  if (tabHasOracleHistory(tab.id, sessionTabPrefixes)) {
+    return false;
+  }
+
+  return await hasEmptySelection(windowId, tab, client);
+}
+
 async function findReusableSafeTab(
+  windowId: number,
   tabs: RpTab[],
   client: ReturnType<typeof getRpClient> = getRpClient()
 ): Promise<RpTab | null> {
-  for (const tab of orderReusableEmptyTabs(tabs)) {
-    if (await isSafeReusableTab(tab, client)) {
+  const sessionTabPrefixes = await fetchOracleSessionTabPrefixes(windowId, client);
+
+  for (const tab of orderReusableTabCandidates(tabs)) {
+    if (await isSafeReusableTab(windowId, tab, sessionTabPrefixes, client)) {
       return tab;
     }
   }
@@ -1066,14 +1106,14 @@ export async function fetchWindowTabs(
     throw new Error("Not connected to RepoPrompt");
   }
 
-  const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
-  if (!manageWorkspacesToolName) {
+  const bindContextToolName = resolveToolName(client.tools, "bind_context");
+  if (!bindContextToolName) {
     return [];
   }
 
-  const result = await client.callTool(manageWorkspacesToolName, {
-    action: "list_tabs",
-    ...bindingWindowArgs(windowId),
+  const result = await client.callTool(bindContextToolName, {
+    op: "list",
+    window_id: windowId,
   });
 
   if (result.isError) {
@@ -1086,7 +1126,7 @@ export async function fetchWindowTabs(
     return tabsFromJson;
   }
 
-  return parseTabList(extractTextContent(result.content));
+  return parseTabsFromBindContextText(extractTextContent(result.content));
 }
 
 async function selectTab(
@@ -1094,16 +1134,15 @@ async function selectTab(
   tabId: string,
   client: ReturnType<typeof getRpClient> = getRpClient()
 ): Promise<void> {
-  const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
-  if (!manageWorkspacesToolName) {
+  const bindContextToolName = resolveToolName(client.tools, "bind_context");
+  if (!bindContextToolName) {
     return;
   }
 
-  const result = await client.callTool(manageWorkspacesToolName, {
-    action: "select_tab",
-    tab: tabId,
-    focus: false,
-    ...bindingWindowArgs(windowId),
+  const result = await client.callTool(bindContextToolName, {
+    op: "bind",
+    window_id: windowId,
+    context_id: tabId,
   });
 
   if (result.isError) {
@@ -1290,7 +1329,7 @@ export async function ensureBindingHasTab(
   }
 
   if (!binding.tab || reuseSoleEmptyTab || recoverIfMissing) {
-    const reusableSafeTab = await findReusableSafeTab(liveTabs, client);
+    const reusableSafeTab = await findReusableSafeTab(binding.windowId, liveTabs, client);
     if (reusableSafeTab) {
       return await adoptTab(reusableSafeTab, true);
     }
@@ -1498,7 +1537,7 @@ export function getBindingArgs(): Record<string, unknown> {
   };
 
   if (currentBinding.tab) {
-    args._tabID = currentBinding.tab;
+    args.context_id = currentBinding.tab;
   }
 
   return args;

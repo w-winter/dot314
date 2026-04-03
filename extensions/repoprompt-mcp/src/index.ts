@@ -813,7 +813,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   function bindingArgsForAutoSelectionState(state: AutoSelectionEntryData): Record<string, unknown> {
     return {
       _windowID: state.windowId,
-      ...(state.tab ? { _tabID: state.tab } : {}),
+      ...(state.tab ? { context_id: state.tab } : {}),
     };
   }
 
@@ -1582,9 +1582,9 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           try {
             await ensureTabScopedBinding(ctx, "RepoPrompt binding has no tab. Use /rp bind or /rp tab new first.");
 
-            const chatSendToolName = resolveToolName(client.tools, "chat_send");
-            if (!chatSendToolName) {
-              ctx.ui.notify("RepoPrompt tool 'chat_send' not available", "error");
+            const oracleSendToolName = resolveToolName(client.tools, "oracle_send");
+            if (!oracleSendToolName) {
+              ctx.ui.notify("RepoPrompt tool 'oracle_send' not available", "error");
               return;
             }
 
@@ -1598,7 +1598,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
             if (chatName) callArgs.chat_name = chatName;
             if (chatId) callArgs.chat_id = chatId;
 
-            const result = await client.callTool(chatSendToolName, callArgs);
+            const result = await client.callTool(oracleSendToolName, callArgs);
 
             const text = extractTextContent(result.content);
 
