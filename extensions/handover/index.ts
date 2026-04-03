@@ -1,8 +1,9 @@
-import { access, readFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as readline from "node:readline";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -18,17 +19,7 @@ import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-to
 const STATUS_KEY = "handover";
 const DEFAULT_AUTO_SUBMIT_SECONDS = 10;
 const HANDOVER_TITLE = "Handover message";
-
-const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
-
-const REWIND_EXTENSION_DIR = path.join(AGENT_DIR, "extensions", "rewind");
-const REWIND_EXTENSION_CANDIDATES = [
-    "index.ts",
-    "index.js",
-    path.join("dist", "index.js"),
-    path.join("build", "index.js"),
-    "package.json",
-];
+const PENDING_HANDOVER_DIR = path.join(os.tmpdir(), "pi-handover-pending");
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
@@ -82,6 +73,12 @@ type PendingAutoSubmit = {
     sessionFile: string;
     interval: ReturnType<typeof setInterval>;
     unsubscribeInput: () => void;
+};
+
+type PendingHandoverDraft = {
+    previousSessionFile: string;
+    draft: string;
+    autoSubmitSeconds: number;
 };
 
 type SessionRecord = {
@@ -178,54 +175,6 @@ async function loadConfig(): Promise<ExtensionConfig> {
     }
 }
 
-async function isRewindInstalled(): Promise<boolean> {
-    try {
-        await access(REWIND_EXTENSION_DIR);
-    } catch {
-        return false;
-    }
-
-    for (const relPath of REWIND_EXTENSION_CANDIDATES) {
-        try {
-            await access(path.join(REWIND_EXTENSION_DIR, relPath));
-            return true;
-        } catch {
-            // keep looking
-        }
-    }
-
-    return false;
-}
-
-async function requestConversationOnlyForkWhenRewindIsInstalled(pi: ExtensionAPI): Promise<boolean> {
-    if (!(await isRewindInstalled())) {
-        return false;
-    }
-
-    // Only emit the preference when rewind is actually installed to avoid
-    // accidentally influencing forks in environments without rewind.
-    pi.events.emit("rewind:fork-preference", {
-        mode: "conversation-only",
-        source: "fork-from-first",
-    });
-
-    return true;
-}
-
-function getFirstUserEntryId(entries: SessionEntry[]): string | undefined {
-    for (const entry of entries) {
-        if (entry.type !== "message") {
-            continue;
-        }
-
-        if (entry.message?.role === "user") {
-            return entry.id;
-        }
-    }
-
-    return undefined;
-}
-
 async function loadCompactionRecords(sessionPath: string): Promise<SessionRecord[]> {
     const records: SessionRecord[] = [];
 
@@ -269,6 +218,52 @@ async function loadCompactionRecords(sessionPath: string): Promise<SessionRecord
     }
 
     return records;
+}
+
+function getPendingHandoverPath(previousSessionFile: string): string {
+    const hash = createHash("sha256").update(previousSessionFile).digest("hex");
+    return path.join(PENDING_HANDOVER_DIR, `${hash}.json`);
+}
+
+async function writePendingHandoverDraft(payload: PendingHandoverDraft): Promise<void> {
+    await mkdir(PENDING_HANDOVER_DIR, { recursive: true });
+    await writeFile(getPendingHandoverPath(payload.previousSessionFile), JSON.stringify(payload), "utf8");
+}
+
+async function consumePendingHandoverDraft(previousSessionFile: string): Promise<PendingHandoverDraft | null> {
+    const pendingPath = getPendingHandoverPath(previousSessionFile);
+
+    try {
+        const raw = await readFile(pendingPath, "utf8");
+        await unlink(pendingPath).catch(() => {
+            // ignore
+        });
+
+        const parsed = JSON.parse(raw) as Partial<PendingHandoverDraft>;
+        if (
+            parsed.previousSessionFile !== previousSessionFile
+            || typeof parsed.draft !== "string"
+            || typeof parsed.autoSubmitSeconds !== "number"
+        ) {
+            return null;
+        }
+
+        return {
+            previousSessionFile,
+            draft: parsed.draft,
+            autoSubmitSeconds: parsed.autoSubmitSeconds,
+        };
+    } catch {
+        return null;
+    }
+}
+
+async function clearPendingHandoverDraft(previousSessionFile: string): Promise<void> {
+    try {
+        await unlink(getPendingHandoverPath(previousSessionFile));
+    } catch {
+        // ignore
+    }
 }
 
 async function buildPriorCompactionsAddendum(ctx: ExtensionCommandContext): Promise<string> {
@@ -757,6 +752,12 @@ export default function (pi: ExtensionAPI) {
             return;
         }
 
+        const previousSessionFile = ctx.sessionManager.getSessionFile();
+        if (!previousSessionFile) {
+            ctx.ui.notify("/handover requires a persisted session file", "error");
+            return;
+        }
+
         // Purpose is optional: if omitted, default to a simple continuation goal
         // (do not prompt, so `/handover` is a fast one-shot workflow)
         const purpose = args.trim() || "Continue from the current milestone/state with a clean child session and a rich rehydration message";
@@ -778,40 +779,35 @@ export default function (pi: ExtensionAPI) {
         }
 
         const finalDraft = finalizeDraft(draftResult.draft, draftResult.filesTouchedManifestBlock);
-
-        const firstUserEntryId = getFirstUserEntryId(ctx.sessionManager.getEntries());
-        if (!firstUserEntryId) {
-            ctx.ui.notify("No user message found to fork from", "warning");
-            return;
-        }
-
-        const rewindInstalled = await requestConversationOnlyForkWhenRewindIsInstalled(pi);
-        if (rewindInstalled) {
-            ctx.ui.notify("Rewind detected: forcing conversation-only fork", "info");
-        }
-
-        const forkResult = await ctx.fork(firstUserEntryId);
-        if (forkResult.cancelled) {
-            ctx.ui.notify("Fork cancelled", "warning");
-            return;
-        }
-
-        ctx.ui.setEditorText(finalDraft);
-
         const config = await loadConfig();
-        if (config.autoSubmitSeconds <= 0) {
-            ctx.ui.notify("Draft ready in editor (auto-submit disabled)", "info");
-            return;
-        }
 
-        startCountdown(ctx, config.autoSubmitSeconds);
+        await writePendingHandoverDraft({
+            previousSessionFile,
+            draft: finalDraft,
+            autoSubmitSeconds: config.autoSubmitSeconds,
+        });
+
+        try {
+            const newSessionResult = await ctx.newSession({ parentSession: previousSessionFile });
+            if (newSessionResult.cancelled) {
+                await clearPendingHandoverDraft(previousSessionFile);
+                ctx.ui.notify("Child session creation cancelled", "warning");
+                return;
+            }
+
+            ctx.ui.setEditorText(finalDraft);
+            if (config.autoSubmitSeconds <= 0) {
+                ctx.ui.notify("Draft ready in editor (auto-submit disabled)", "info");
+            }
+        } catch (error) {
+            await clearPendingHandoverDraft(previousSessionFile);
+            throw error;
+        }
     };
 
     for (const eventName of [
         "session_before_switch",
-        "session_switch",
         "session_before_fork",
-        "session_fork",
         "session_before_tree",
         "session_tree",
         "session_shutdown",
@@ -823,8 +819,25 @@ export default function (pi: ExtensionAPI) {
         });
     }
 
+    pi.on("session_start", async (event, ctx) => {
+        if (event.reason !== "new" || !event.previousSessionFile || !ctx.hasUI) {
+            return;
+        }
+
+        const pendingDraft = await consumePendingHandoverDraft(event.previousSessionFile);
+        if (!pendingDraft) {
+            return;
+        }
+
+        if (pendingDraft.autoSubmitSeconds <= 0) {
+            return;
+        }
+
+        startCountdown(ctx, pendingDraft.autoSubmitSeconds);
+    });
+
     pi.registerCommand("handover", {
-        description: "Generate rich handover draft, fork from first user message, prefill editor, optional auto-submit",
+        description: "Generate rich handover draft, create a linked child session, prefill editor, optional auto-submit",
         handler: runHandover,
     });
 

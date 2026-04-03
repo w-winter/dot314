@@ -1025,7 +1025,7 @@ function openInGhostty(ctx: ExtensionCommandContext, forkFile: string): void {
 }
 
 async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext, forkFile: string): Promise<void> {
-	const terminalFlag = normalizeTerminalFlag(pi.getFlag(`--${TERMINAL_FLAG}`))
+	const terminalFlag = normalizeTerminalFlag(pi.getFlag(TERMINAL_FLAG))
 	if (terminalFlag) {
 		const command = renderTerminalCommand(terminalFlag, forkFile)
 		spawnDetached("bash", ["-lc", command], (error) => {
@@ -1174,9 +1174,7 @@ export default function (pi: ExtensionAPI) {
 
 	for (const eventName of [
 		"session_before_switch",
-		"session_switch",
 		"session_before_fork",
-		"session_fork",
 		"session_before_tree",
 		"session_tree",
 		"session_shutdown",
@@ -1235,7 +1233,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (ctx.hasUI) {
 				if (!launchData) {
-					ctx.ui.notify("Opened fork", "info")
+					ctx.ui.notify("Created fork and requested terminal launch", "info")
 					return
 				}
 
@@ -1245,7 +1243,12 @@ export default function (pi: ExtensionAPI) {
 						: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 					launchData.message ? "draft queued" : undefined,
 				].filter(Boolean).join(" · ")
-				ctx.ui.notify(details ? `Opened fork (${details})` : "Opened fork", "info")
+				ctx.ui.notify(
+					details
+						? `Created fork and requested terminal launch (${details})`
+						: "Created fork and requested terminal launch",
+					"info",
+				)
 			}
 		},
 	})

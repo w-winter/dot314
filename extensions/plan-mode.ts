@@ -768,23 +768,13 @@ You are in plan mode (read-only). Describe what you would change rather than mak
 		updateStatus(ctx);
 	}
 
-	// Initialize state on session start
-	pi.on("session_start", async (_event, ctx) => {
-		restorePlanModeFromBranch(ctx, { preferStartFlag: true });
-		applyRestoredState(ctx);
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		restorePlanModeFromBranch(ctx);
+	// Initialize state on session start and post-transition runtime recreation
+	pi.on("session_start", async (event, ctx) => {
+		restorePlanModeFromBranch(ctx, { preferStartFlag: event.reason === "startup" });
 		applyRestoredState(ctx);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
-		restorePlanModeFromBranch(ctx);
-		applyRestoredState(ctx);
-	});
-
-	pi.on("session_fork", async (_event, ctx) => {
 		restorePlanModeFromBranch(ctx);
 		applyRestoredState(ctx);
 	});
