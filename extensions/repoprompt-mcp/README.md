@@ -219,7 +219,7 @@ Options:
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |
 | `confirmEdits` | `false` | Block edit-like operations unless `confirmEdits: true` |
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
-| `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `oracle_send` (or a manually created Oracle session in the RP app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
+| `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `oracle_send` (or a manually created Oracle chat in the RP app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
 | `oracleDefaultMode` | `"chat"` | Default mode for `/rp oracle` when `--mode` is omitted (`chat`, `plan`, `edit`, or `review`) |
 | `collapsedMaxLines` | `3` | Lines shown in collapsed view |
 | `diffViewMode` | `"auto"` | Diff layout for RepoPrompt `git` / `apply_edits` fenced diff output (`auto`, `split`, `unified`) |
