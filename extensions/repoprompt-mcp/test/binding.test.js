@@ -55,6 +55,49 @@ function makeChatListResult(count, tabId) {
   ].join("\n"));
 }
 
+function renderContexts(tabs) {
+  return tabs
+    .map((tab) => {
+      const states = [];
+      if (tab.active) states.push("active");
+      if (tab.bound) states.push("bound");
+      const stateText = states.length > 0 ? ` [${states.join(", ")}]` : "";
+      return `- ${tab.name}${stateText} — context_id: \`${tab.id}\``;
+    })
+    .join("\n");
+}
+
+function isTabListCall(name, args) {
+  return args?.action === "list_tabs" || (name === "bind_context" && args?.op === "list");
+}
+
+function isTabBindCall(name, args) {
+  return args?.action === "select_tab" || (name === "bind_context" && args?.op === "bind");
+}
+
+function makeTabLookupResult(name, args, text) {
+  if (name !== "bind_context" || args?.op !== "list") {
+    return makeTextResult(text);
+  }
+
+  const tabs = parseTabList(text).map((tab) => ({
+    id: tab.id,
+    name: tab.name,
+    active: tab.isActive === true,
+    bound: tab.isBound === true,
+    selectedFileCount: tab.selectedFileCount,
+  }));
+  return makeTextResult([
+    "```json",
+    JSON.stringify({ tabs }, null, 2),
+    "```",
+  ].join("\n"));
+}
+
+function getBindContextCalls(calls) {
+  return calls.filter((call) => call.name === "bind_context" && call.args?.op === "bind");
+}
+
 test.afterEach(() => {
   clearBinding();
 });
@@ -270,16 +313,16 @@ test("bindToTab selects a live tab by name and persists its concrete id", async 
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }],
+    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
       if (name === "list_windows") {
         return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
       }
-      if (args.action === "list_tabs") {
-        return makeTextResult("## Tabs ✅\n\n- `UUID-T1` • T1 [active]\n- `UUID-T2` • T2 [bound]");
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `UUID-T1` • T1 [active]\n- `UUID-T2` • T2 [bound]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `UUID-T1`");
       }
       throw new Error(`Unexpected action: ${args.action}`);
@@ -290,7 +333,7 @@ test("bindToTab selects a live tab by name and persists its concrete id", async 
 
   assert.equal(binding.tab, "UUID-T1");
   assert.equal(binding.workspace, "pi-agent");
-  assert.equal(calls.filter((call) => call.args?.action === "select_tab")[0]?.args?.tab, "UUID-T1");
+  assert.equal(getBindContextCalls(calls)[0]?.args?.context_id, "UUID-T1");
   assert.equal(entries.at(-1)?.data?.tab, "UUID-T1");
 });
 
@@ -301,7 +344,7 @@ test("createAndBindTab persists the created bound tab id", async () => {
   let listTabsCount = 0;
   const client = {
     isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }],
+    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       if (name === "list_windows") {
         return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
@@ -309,14 +352,14 @@ test("createAndBindTab persists the created bound tab id", async () => {
       if (args.action === "create_tab") {
         return makeTextResult("Created tab `UUID-T3` • T3 [bound]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `UUID-T3`");
       }
-      if (args.action === "list_tabs") {
+      if (isTabListCall(name, args)) {
         listTabsCount += 1;
         return listTabsCount === 1
-          ? makeTextResult("## Tabs ✅\n\n- `UUID-T3` • T3 [bound]")
-          : makeTextResult("## Tabs ✅\n\n- `UUID-T3` • T3 [bound]");
+          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `UUID-T3` • T3 [bound]")
+          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `UUID-T3` • T3 [bound]");
       }
       throw new Error(`Unexpected action: ${args.action}`);
     },
@@ -336,7 +379,7 @@ test("createAndBindTab prefers the created tab when list_tabs still reports the 
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }],
+    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
       if (name === "list_windows") {
@@ -345,11 +388,11 @@ test("createAndBindTab prefers the created tab when list_tabs still reports the 
       if (args.action === "create_tab") {
         return makeTextResult("Created tab `UUID-T14` • T14 [bound]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `UUID-T14`");
       }
-      if (args.action === "list_tabs") {
-        return makeTextResult([
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, [
           "## Tabs ✅",
           "",
           "- `UUID-T1` • T1 [active] [bound]",
@@ -364,7 +407,7 @@ test("createAndBindTab prefers the created tab when list_tabs still reports the 
 
   assert.equal(binding.tab, "UUID-T14");
   assert.equal(entries.at(-1)?.data?.tab, "UUID-T14");
-  assert.equal(calls.filter((call) => call.args?.action === "select_tab")[0]?.args?.tab, "UUID-T14");
+  assert.equal(getBindContextCalls(calls)[0]?.args?.context_id, "UUID-T14");
 });
 
 test("createAndBindTab identifies the new tab from list_tabs delta when create_tab output is unparseable", async () => {
@@ -375,7 +418,7 @@ test("createAndBindTab identifies the new tab from list_tabs delta when create_t
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }],
+    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
       if (name === "list_windows") {
@@ -384,18 +427,18 @@ test("createAndBindTab identifies the new tab from list_tabs delta when create_t
       if (args.action === "create_tab") {
         return makeTextResult("Created new tab");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `UUID-T14`");
       }
-      if (args.action === "list_tabs") {
+      if (isTabListCall(name, args)) {
         listTabsCount += 1;
         return listTabsCount === 1
-          ? makeTextResult([
+          ? makeTabLookupResult(name, args, [
               "## Tabs ✅",
               "",
               "- `UUID-T1` • T1 [active] [bound]",
             ].join("\n"))
-          : makeTextResult([
+          : makeTabLookupResult(name, args, [
               "## Tabs ✅",
               "",
               "- `UUID-T1` • T1 [active] [bound]",
@@ -410,7 +453,7 @@ test("createAndBindTab identifies the new tab from list_tabs delta when create_t
 
   assert.equal(binding.tab, "UUID-T14");
   assert.equal(entries.at(-1)?.data?.tab, "UUID-T14");
-  assert.equal(calls.filter((call) => call.args?.action === "select_tab")[0]?.args?.tab, "UUID-T14");
+  assert.equal(getBindContextCalls(calls)[0]?.args?.context_id, "UUID-T14");
 });
 
 test("createAndBindTab fails closed when create_tab output is unparseable and no unique new tab appears", async () => {
@@ -419,7 +462,7 @@ test("createAndBindTab fails closed when create_tab output is unparseable and no
 
   const client = {
     isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }],
+    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       if (name === "list_windows") {
         return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
@@ -427,8 +470,8 @@ test("createAndBindTab fails closed when create_tab output is unparseable and no
       if (args.action === "create_tab") {
         return makeTextResult("Created new tab");
       }
-      if (args.action === "list_tabs") {
-        return makeTextResult([
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, [
           "## Tabs ✅",
           "",
           "- `UUID-T1` • T1 [active] [bound]",
@@ -508,16 +551,16 @@ test("ensureBindingHasTab reuses the most recent branch tab when it is explicitl
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult("## Tabs ✅\n\n- `TAB-1` • Alpha [bound]\n  • 0 files\n- `TAB-2` • Beta [active]");
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-1` • Alpha [bound]\n  • 0 files\n- `TAB-2` • Beta [active]");
       }
       if (name === "chats") {
         return makeChatListResult(0, args.tab_id);
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-1`");
       }
       throw new Error(`Unexpected action: ${args.action}`);
@@ -527,9 +570,9 @@ test("ensureBindingHasTab reuses the most recent branch tab when it is explicitl
   const binding = await ensureBindingHasTab(pi, ctx, config, client);
 
   assert.equal(binding?.tab, "TAB-1");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 1);
+  assert.equal(calls.filter((call) => call.name === "chats").length, 0);
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 0);
+  assert.equal(getBindContextCalls(calls).length, 0);
   assert.equal(entries.at(-1)?.data?.tab, "TAB-1");
 });
 
@@ -554,16 +597,16 @@ test("ensureBindingHasTab reuses the most recent auto-selection tab when it is e
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult("## Tabs ✅\n\n- `TAB-AUTO` • T3 [bound]\n  • 0 files\n- `TAB-OTHER` • T4 [active]");
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-AUTO` • T3 [bound]\n  • 0 files\n- `TAB-OTHER` • T4 [active]");
       }
       if (name === "chats") {
         return makeChatListResult(0, args.tab_id);
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-AUTO`");
       }
       throw new Error(`Unexpected action: ${args.action}`);
@@ -573,9 +616,9 @@ test("ensureBindingHasTab reuses the most recent auto-selection tab when it is e
   const binding = await ensureBindingHasTab(pi, ctx, config, client);
 
   assert.equal(binding?.tab, "TAB-AUTO");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 1);
+  assert.equal(calls.filter((call) => call.name === "chats").length, 0);
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 0);
+  assert.equal(getBindContextCalls(calls).length, 0);
   assert.equal(entries.at(-1)?.data?.tab, "TAB-AUTO");
 });
 
@@ -588,13 +631,13 @@ test("ensureBindingHasTab skips tab creation during replay when createIfMissing 
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult("## Tabs ✅\n\n- `TAB-OLD` • Existing [active]");
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OLD` • Existing [active]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-OLD`");
       }
       if (args.action === "create_tab") {
@@ -608,7 +651,7 @@ test("ensureBindingHasTab skips tab creation during replay when createIfMissing 
 
   assert.equal(binding?.tab, undefined);
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 0);
+  assert.equal(getBindContextCalls(calls).length, 0);
 });
 
 test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab for a window-only binding", async () => {
@@ -620,11 +663,11 @@ test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab 
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult([
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, [
           "## Tabs ✅",
           "",
           "- `TAB-1` • T1 [active]",
@@ -636,7 +679,7 @@ test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab 
       if (name === "chats") {
         return makeChatListResult(0, args.tab_id);
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-2`");
       }
       if (args.action === "create_tab") {
@@ -651,9 +694,9 @@ test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab 
   });
 
   assert.equal(binding?.tab, "TAB-2");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 1);
+  assert.equal(calls.filter((call) => call.name === "chats").length, 0);
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 0);
+  assert.equal(getBindContextCalls(calls).length, 0);
   assert.equal(entries.at(-1)?.data?.tab, "TAB-2");
 });
 
@@ -661,46 +704,46 @@ test("ensureBindingHasTab creates a new tab when window-only binding finds no sa
   const { pi, ctx, entries } = makeMockSession();
   const config = {};
 
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
+  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "ABCDEF-0001" }, config);
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
   let listTabsCount = 0;
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "oracle_utils" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
+      if (isTabListCall(name, args)) {
         listTabsCount += 1;
         return listTabsCount === 1
-          ? makeTextResult([
+          ? makeTabLookupResult(name, args, [
               "## Tabs ✅",
               "",
-              "- `TAB-ACTIVE` • T2 [active]",
+              "- `FEDCBA-0001` • T2 [active]",
               "  • 3 files: package.json, ConversationTree.tsx, constants.ts",
-              "- `TAB-OLD` • T1 [bound]",
+              "- `ABCDEF-0001` • T1 [bound]",
               "  • 0 files",
             ].join("\n"))
-          : makeTextResult([
+          : makeTabLookupResult(name, args, [
               "## Tabs ✅",
               "",
-              "- `TAB-ACTIVE` • T2 [active]",
+              "- `FEDCBA-0001` • T2 [active]",
               "  • 3 files: package.json, ConversationTree.tsx, constants.ts",
-              "- `TAB-OLD` • T1 [bound]",
+              "- `ABCDEF-0001` • T1 [bound]",
               "  • 0 files",
-              "- `TAB-NEW` • T3 [bound]",
+              "- `ABCDEF-9999` • T3 [bound]",
               "  • 0 files",
             ].join("\n"));
       }
-      if (name === "chats") {
-        return makeChatListResult(args.tab_id === "TAB-OLD" ? 1 : 0, args.tab_id);
+      if (name === "oracle_utils") {
+        return makeTextResult("session-1 tab=ABCDEF…");
       }
-      if (args.action === "select_tab") {
-        return makeTextResult("Selected tab `TAB-NEW`");
+      if (isTabBindCall(name, args)) {
+        return makeTextResult("Selected tab `ABCDEF-9999`");
       }
       if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-NEW` • T3 [bound]");
+        return makeTextResult("Created tab `ABCDEF-9999` • T3 [bound]");
       }
       throw new Error(`Unexpected action: ${args.action}`);
     },
@@ -710,10 +753,10 @@ test("ensureBindingHasTab creates a new tab when window-only binding finds no sa
     reuseSoleEmptyTab: true,
   });
 
-  assert.equal(binding?.tab, "TAB-NEW");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 1);
+  assert.equal(binding?.tab, "ABCDEF-9999");
+  assert.equal(calls.filter((call) => call.name === "oracle_utils").length, 1);
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 1);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-NEW");
+  assert.equal(entries.at(-1)?.data?.tab, "ABCDEF-9999");
 });
 
 test("ensureBindingHasTab reuses the sole empty tab instead of creating a new tab", async () => {
@@ -725,11 +768,11 @@ test("ensureBindingHasTab reuses the sole empty tab instead of creating a new ta
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult([
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, [
           "## Tabs ✅",
           "",
           "- `TAB-1` • T1 [active]",
@@ -739,7 +782,7 @@ test("ensureBindingHasTab reuses the sole empty tab instead of creating a new ta
       if (name === "chats") {
         return makeChatListResult(0, args.tab_id);
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-1`");
       }
       if (args.action === "create_tab") {
@@ -755,7 +798,7 @@ test("ensureBindingHasTab reuses the sole empty tab instead of creating a new ta
 
   assert.equal(binding?.tab, "TAB-1");
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 1);
+  assert.equal(getBindContextCalls(calls).length, 1);
   assert.equal(entries.at(-1)?.data?.tab, "TAB-1");
 });
 
@@ -768,11 +811,11 @@ test("ensureBindingHasTab reuses an already bound empty tab before creating a ne
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult([
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, [
           "## Tabs ✅",
           "",
           "- `TAB-1` • T1 [active]",
@@ -784,7 +827,7 @@ test("ensureBindingHasTab reuses an already bound empty tab before creating a ne
       if (name === "chats") {
         return makeChatListResult(0, args.tab_id);
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-2`");
       }
       if (args.action === "create_tab") {
@@ -800,7 +843,7 @@ test("ensureBindingHasTab reuses an already bound empty tab before creating a ne
 
   assert.equal(binding?.tab, "TAB-2");
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 0);
+  assert.equal(getBindContextCalls(calls).length, 0);
   assert.equal(entries.at(-1)?.data?.tab, "TAB-2");
 });
 
@@ -813,11 +856,11 @@ test("ensureBindingHasTab reuses an existing empty tab when multiple blank tabs 
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "chats" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult([
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, [
           "## Tabs ✅",
           "",
           "- `TAB-1` • T1 [active]",
@@ -829,7 +872,7 @@ test("ensureBindingHasTab reuses an existing empty tab when multiple blank tabs 
       if (name === "chats") {
         return makeChatListResult(0, args.tab_id);
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-1`");
       }
       if (args.action === "create_tab") {
@@ -845,7 +888,7 @@ test("ensureBindingHasTab reuses an existing empty tab when multiple blank tabs 
 
   assert.equal(binding?.tab, "TAB-1");
   assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "select_tab").length, 1);
+  assert.equal(getBindContextCalls(calls).length, 1);
   assert.equal(entries.at(-1)?.data?.tab, "TAB-1");
 });
 
@@ -858,11 +901,11 @@ test("ensureBindingHasTab does not create a new tab during passive replay when t
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
-        return makeTextResult("## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 3 files: a.ts, b.ts, c.ts");
+      if (isTabListCall(name, args)) {
+        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 3 files: a.ts, b.ts, c.ts");
       }
       if (args.action === "create_tab") {
         return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
@@ -891,19 +934,19 @@ test("ensureBindingHasTab reserves replay tab creation for true recovery", async
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
+      if (isTabListCall(name, args)) {
         listTabsCount += 1;
         return listTabsCount === 1
-          ? makeTextResult("## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 2 files: a.ts, b.ts")
-          : makeTextResult("## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 2 files: a.ts, b.ts\n- `TAB-NEW` • Pi Session [bound]\n  • 0 files");
+          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 2 files: a.ts, b.ts")
+          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 2 files: a.ts, b.ts\n- `TAB-NEW` • Pi Session [bound]\n  • 0 files");
       }
       if (args.action === "create_tab") {
         return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-NEW`");
       }
       throw new Error(`Unexpected action: ${args.action}`);
@@ -931,19 +974,19 @@ test("ensureBindingHasTab provisions exactly one tab when the branch has none", 
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
+      if (isTabListCall(name, args)) {
         listTabsCount += 1;
         return listTabsCount === 1
-          ? makeTextResult("## Tabs ✅\n\n- `TAB-OLD` • Existing [active]")
-          : makeTextResult("## Tabs ✅\n\n- `TAB-OLD` • Existing [active]\n- `TAB-NEW` • Pi Session [bound]");
+          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OLD` • Existing [active]")
+          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OLD` • Existing [active]\n- `TAB-NEW` • Pi Session [bound]");
       }
       if (args.action === "create_tab") {
         return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-NEW`");
       }
       throw new Error(`Unexpected action: ${args.action}`);
@@ -969,19 +1012,19 @@ test("ensureBindingHasTab reprovisions when the stored tab is stale", async () =
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }],
+    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
     async callTool(name, args) {
       calls.push({ name, args });
-      if (args.action === "list_tabs") {
+      if (isTabListCall(name, args)) {
         listTabsCount += 1;
         return listTabsCount === 1
-          ? makeTextResult("## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]")
-          : makeTextResult("## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n- `TAB-NEW` • Pi Session [bound]");
+          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]")
+          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n- `TAB-NEW` • Pi Session [bound]");
       }
       if (args.action === "create_tab") {
         return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
       }
-      if (args.action === "select_tab") {
+      if (isTabBindCall(name, args)) {
         return makeTextResult("Selected tab `TAB-NEW`");
       }
       throw new Error(`Unexpected action: ${args.action}`);

@@ -33,6 +33,18 @@ function renderTabs(tabs) {
   ].join("\n");
 }
 
+function renderContexts(tabs) {
+  return tabs
+    .map((tab) => {
+      const states = [];
+      if (tab.active) states.push("active");
+      if (tab.bound) states.push("bound");
+      const stateText = states.length > 0 ? ` [${states.join(", ")}]` : "";
+      return `- ${tab.name}${stateText} — context_id: \`${tab.id}\``;
+    })
+    .join("\n");
+}
+
 function renderRoots(roots) {
   return roots.map((rootPath) => `- ${rootPath}`).join("\n");
 }
@@ -51,9 +63,9 @@ function createMockPi(entries) {
     appendEntry(customType, data) {
       entries.push({ type: "custom", customType, data });
     },
-    async emit(event, ctx) {
+    async emit(event, ctx, eventData = {}) {
       for (const handler of handlers.get(event) ?? []) {
-        await handler({ type: event }, ctx);
+        await handler({ type: event, ...eventData }, ctx);
       }
     },
   };
@@ -128,6 +140,7 @@ test("session_start recovers selection into a different live workspace that cont
       client._tools = [
         { name: "list_windows", description: "" },
         { name: "manage_workspaces", description: "" },
+        { name: "bind_context", description: "" },
         { name: "manage_selection", description: "" },
         { name: "get_file_tree", description: "" },
         { name: "chats", description: "" },
@@ -171,6 +184,14 @@ test("session_start recovers selection into a different live workspace that cont
         return makeTextResult("Selection updated");
       }
 
+      if (name === "bind_context" && args.op === "list") {
+        return makeTextResult(renderContexts(tabsByWindow.get(args.window_id) ?? []));
+      }
+
+      if (name === "bind_context" && args.op === "bind") {
+        return makeTextResult(`Bound context \`${args.context_id}\``);
+      }
+
       if (name === "manage_workspaces" && args.action === "list_tabs") {
         return makeTextResult(renderTabs(tabsByWindow.get(args._windowID) ?? []));
       }
@@ -203,10 +224,19 @@ test("session_start recovers selection into a different live workspace that cont
         getBranch() {
           return branchEntries;
         },
+        getSessionFile() {
+          return path.join(tempRoot, "session.jsonl");
+        },
+        getSessionId() {
+          return "session-id";
+        },
+        getLeafId() {
+          return "leaf-id";
+        },
       },
     };
 
-    await pi.emit("session_start", ctx);
+    await pi.emit("session_start", ctx, { reason: "startup" });
     await drainStartupReplay();
 
     const selectionAdds = calls.filter(

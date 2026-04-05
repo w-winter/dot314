@@ -33,6 +33,18 @@ function renderTabs(tabs) {
   ].join("\n");
 }
 
+function renderContexts(tabs) {
+  return tabs
+    .map((tab) => {
+      const states = [];
+      if (tab.active) states.push("active");
+      if (tab.bound) states.push("bound");
+      const stateText = states.length > 0 ? ` [${states.join(", ")}]` : "";
+      return `- ${tab.name}${stateText} — context_id: \`${tab.id}\``;
+    })
+    .join("\n");
+}
+
 function createDeferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => {
@@ -61,9 +73,9 @@ function createMockPi(entries) {
     appendEntry(customType, data) {
       entries.push({ type: "custom", customType, data });
     },
-    async emit(event, ctx) {
+    async emit(event, ctx, eventData = {}) {
       for (const handler of handlers.get(event) ?? []) {
-        await handler({ type: event }, ctx);
+        await handler({ type: event, ...eventData }, ctx);
       }
     },
   };
@@ -137,6 +149,7 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
       client._tools = [
         { name: "list_windows", description: "" },
         { name: "manage_workspaces", description: "" },
+        { name: "bind_context", description: "" },
         { name: "manage_selection", description: "" },
         { name: "read_file", description: "" },
       ];
@@ -150,6 +163,16 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
     client.callTool = async (name, args = {}) => {
       if (name === "list_windows") {
         return makeTextResult("- Window `19` • WS: chat-tree • Roots: 1");
+      }
+
+      if (name === "bind_context" && args.op === "list") {
+        return makeTextResult(renderContexts([
+          { id: "TAB-1", name: "T1", active: true, bound: true, files: selectionState.fullPaths.size + selectionState.slicePaths.size },
+        ]));
+      }
+
+      if (name === "bind_context" && args.op === "bind") {
+        return makeTextResult(`Bound context \`${args.context_id}\``);
       }
 
       if (name === "manage_workspaces" && args.action === "list_tabs") {
@@ -210,10 +233,19 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
         getBranch() {
           return branchEntries;
         },
+        getSessionFile() {
+          return path.join(tempRoot, "session.jsonl");
+        },
+        getSessionId() {
+          return "session-id";
+        },
+        getLeafId() {
+          return "leaf-id";
+        },
       },
     };
 
-    await pi.emit("session_start", ctx);
+    await pi.emit("session_start", ctx, { reason: "startup" });
     await drainStartupReplay();
 
     const rpTool = pi.getTool("rp");

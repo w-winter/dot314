@@ -28,6 +28,7 @@ import type {
   RpTab,
   RpToolMeta,
   McpContent,
+  McpToolResult,
   AutoSelectionEntryData,
   AutoSelectionEntrySliceData,
   AutoSelectionEntryRangeData,
@@ -69,7 +70,7 @@ import { buildInvalidationV1 } from "./readcache/meta.js";
 import { clearReplayRuntimeState, createReplayRuntimeState } from "./readcache/replay.js";
 import type { RpReadcacheMetaV1, ScopeKey } from "./readcache/types.js";
 import { getStoreStats, pruneObjectsOlderThan } from "./readcache/object-store.js";
-import { resolveReadFilePath } from "./readcache/resolve.js";
+import { clearRootsCache, resolveReadFilePath } from "./readcache/resolve.js";
 
 import {
   applyFullReadToSelectionState,
@@ -81,6 +82,13 @@ import {
   isWholeFileReadFromArgs,
   toPosixPath,
 } from "./auto-select.js";
+import {
+  clearPendingTransitionSelectionState,
+  getPendingTransitionState,
+  setPendingTransitionSelectionState,
+  setPendingTransitionTargetState,
+} from "./transition-state.js";
+import type { PendingTransitionRetryMode, PendingTransitionTargetIdentity } from "./transition-state.js";
 
 function parseSummaryCount(value: string | undefined): number | undefined {
   if (!value) {
@@ -570,12 +578,34 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     clearReplayRuntimeState(readcacheRuntimeState);
   };
 
+  type AutoSelectionSyncOptions = {
+    provisionTab?: boolean;
+    recoverClosedTab?: boolean;
+    reuseSoleEmptyTab?: boolean;
+    allowSyntheticSource?: boolean;
+  };
+
+  const STARTUP_AUTO_SELECTION_SYNC_OPTIONS: AutoSelectionSyncOptions = {
+    provisionTab: true,
+    recoverClosedTab: false,
+    reuseSoleEmptyTab: false,
+    allowSyntheticSource: true,
+  };
+
+  const TRANSITION_AUTO_SELECTION_SYNC_OPTIONS: AutoSelectionSyncOptions = {
+    provisionTab: false,
+    recoverClosedTab: true,
+    reuseSoleEmptyTab: true,
+    allowSyntheticSource: false,
+  };
+
   let activeAutoSelectionState: AutoSelectionEntryData | null = null;
   let autoSelectionUpdateQueue: Promise<void> = Promise.resolve();
+  let ownsLiveAutoSelection = false;
 
-  function runAutoSelectionUpdate(task: () => Promise<void>): Promise<void> {
+  function runAutoSelectionUpdate<T>(task: () => Promise<T>): Promise<T> {
     const queued = autoSelectionUpdateQueue.then(task, task);
-    autoSelectionUpdateQueue = queued.catch(() => {});
+    autoSelectionUpdateQueue = queued.then(() => undefined, () => undefined);
     return queued;
   }
 
@@ -804,10 +834,118 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     return findAutoSelectionStateInEntries(entries, binding) ?? makeEmptyAutoSelectionState(binding);
   }
 
+  function resetAutoSelectionRuntimeState(): void {
+    activeAutoSelectionState = null;
+    autoSelectionUpdateQueue = Promise.resolve();
+    ownsLiveAutoSelection = false;
+  }
+
+  function commitLiveAutoSelectionState(state: AutoSelectionEntryData | null): void {
+    activeAutoSelectionState = state ? normalizeAutoSelectionState(state) : null;
+    ownsLiveAutoSelection = true;
+  }
+
+  function hasManagedAutoSelectionPaths(state: AutoSelectionEntryData | null): boolean {
+    return state !== null && autoSelectionManagedPaths(state).length > 0;
+  }
+
+  function updatePendingTransitionSelectionFromLiveState(): void {
+    if (!ownsLiveAutoSelection) {
+      return;
+    }
+
+    if (!hasManagedAutoSelectionPaths(activeAutoSelectionState)) {
+      clearPendingTransitionSelectionState();
+      return;
+    }
+
+    setPendingTransitionSelectionState(activeAutoSelectionState);
+  }
+
+  function autoSelectionRetryModeForSessionStartReason(
+    reason: "startup" | "reload" | "new" | "resume" | "fork"
+  ): PendingTransitionRetryMode {
+    return reason === "startup" || reason === "reload" ? "startup" : "transition";
+  }
+
+  function autoSelectionRetryModeForSyncOptions(
+    options: AutoSelectionSyncOptions
+  ): PendingTransitionRetryMode {
+    return options.provisionTab === false ? "transition" : "startup";
+  }
+
+  function autoSelectionSyncOptionsForRetryMode(
+    retryMode: PendingTransitionRetryMode
+  ): AutoSelectionSyncOptions {
+    return retryMode === "startup"
+      ? STARTUP_AUTO_SELECTION_SYNC_OPTIONS
+      : TRANSITION_AUTO_SELECTION_SYNC_OPTIONS;
+  }
+
+  function autoSelectionSyncOptionsForSessionStartReason(
+    reason: "startup" | "reload" | "new" | "resume" | "fork"
+  ): AutoSelectionSyncOptions {
+    return autoSelectionSyncOptionsForRetryMode(autoSelectionRetryModeForSessionStartReason(reason));
+  }
+
+  function reconnectAutoSelectionSyncOptions(): AutoSelectionSyncOptions {
+    return autoSelectionSyncOptionsForRetryMode(getPendingTransitionState()?.retryMode ?? "startup");
+  }
+
   function persistAutoSelectionState(state: AutoSelectionEntryData): void {
     const normalized = normalizeAutoSelectionState(state);
-    activeAutoSelectionState = normalized;
+    commitLiveAutoSelectionState(normalized);
     pi.appendEntry(AUTO_SELECTION_ENTRY_TYPE, normalized);
+  }
+
+  function getPendingTransitionTargetIdentity(ctx: ExtensionContext): PendingTransitionTargetIdentity {
+    return {
+      sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+      sessionId: ctx.sessionManager.getSessionId(),
+    };
+  }
+
+  function samePendingTransitionTargetIdentity(
+    left: PendingTransitionTargetIdentity | null,
+    right: PendingTransitionTargetIdentity | null
+  ): boolean {
+    return left?.sessionFile === right?.sessionFile && left?.sessionId === right?.sessionId;
+  }
+
+  function seedPendingTransitionTargetForSessionStart(
+    ctx: ExtensionContext,
+    options: AutoSelectionSyncOptions
+  ): void {
+    const binding = getBinding();
+    const state = config.autoSelectReadSlices === true && binding?.tab
+      ? getAutoSelectionStateFromBranch(ctx, binding)
+      : null;
+
+    setPendingTransitionTargetState(
+      getPendingTransitionTargetIdentity(ctx),
+      binding,
+      state,
+      autoSelectionRetryModeForSyncOptions(options)
+    );
+  }
+
+  function throwOnMcpToolResultError(result: McpToolResult, fallbackMessage: string): void {
+    if (!result.isError) {
+      return;
+    }
+
+    throw new Error(extractTextContent(result.content) || fallbackMessage);
+  }
+
+  function isIgnorableOldBindingRemovalError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    const lower = message.toLowerCase();
+
+    return (
+      (lower.includes("window") && lower.includes("not found")) ||
+      (lower.includes("tab") && lower.includes("not found")) ||
+      (lower.includes("context") && lower.includes("not found"))
+    );
   }
 
   function bindingArgsForAutoSelectionState(state: AutoSelectionEntryData): Record<string, unknown> {
@@ -836,11 +974,12 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       return;
     }
 
-    await client.callTool(manageSelectionToolName, {
+    const result = await client.callTool(manageSelectionToolName, {
       op: "remove",
       paths,
       ...bindingArgsForAutoSelectionState(state),
     });
+    throwOnMcpToolResultError(result, "RepoPrompt manage_selection remove failed");
   }
 
   async function addAutoSelectionFullPaths(
@@ -853,12 +992,13 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       return;
     }
 
-    await client.callTool(manageSelectionToolName, {
+    const result = await client.callTool(manageSelectionToolName, {
       op: "add",
       mode: "full",
       paths,
       ...bindingArgsForAutoSelectionState(state),
     });
+    throwOnMcpToolResultError(result, "RepoPrompt manage_selection add(full) failed");
   }
 
   async function addAutoSelectionSlices(
@@ -871,11 +1011,12 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       return;
     }
 
-    await client.callTool(manageSelectionToolName, {
+    const result = await client.callTool(manageSelectionToolName, {
       op: "add",
       slices,
       ...bindingArgsForAutoSelectionState(state),
     });
+    throwOnMcpToolResultError(result, "RepoPrompt manage_selection add(slices) failed");
   }
 
   async function reconcileAutoSelectionWithinBinding(
@@ -1005,8 +1146,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           currentState,
           autoSelectionManagedPaths(currentState)
         );
-      } catch {
-        // Old binding/window may no longer exist after RepoPrompt app restart
+      } catch (error) {
+        if (!isIgnorableOldBindingRemovalError(error)) {
+          throw error;
+        }
       }
 
       await addAutoSelectionFullPaths(client, manageSelectionToolName, desiredState, desiredState.fullPaths);
@@ -1022,8 +1165,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           currentState,
           autoSelectionManagedPaths(currentState)
         );
-      } catch {
-        // Old binding/window may no longer exist after RepoPrompt app restart
+      } catch (error) {
+        if (!isIgnorableOldBindingRemovalError(error)) {
+          throw error;
+        }
       }
       return;
     }
@@ -1136,56 +1281,86 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
   async function syncAutoSelectionToCurrentBranch(
     ctx: ExtensionContext,
-    options: { provisionTab?: boolean; recoverClosedTab?: boolean; reuseSoleEmptyTab?: boolean } = {}
+    options: AutoSelectionSyncOptions = reconnectAutoSelectionSyncOptions(),
+    pendingTargetPolicy: "reuse" | "refresh" = "reuse"
   ): Promise<RpBinding | null> {
-    const previousBinding = getBinding();
-    const previousState = previousBinding
-      ? findAutoSelectionStateInEntries(ctx.sessionManager.getBranch(), previousBinding)
-      : null;
+    return await runAutoSelectionUpdate(async () => {
+      const transitionTargetIdentity = getPendingTransitionTargetIdentity(ctx);
+      const pendingTransitionState = getPendingTransitionState();
+      const pendingTargetMatchesCurrentSession = samePendingTransitionTargetIdentity(
+        pendingTransitionState?.targetIdentity ?? null,
+        transitionTargetIdentity
+      );
+      const reusePendingTarget = pendingTargetPolicy === "reuse" && pendingTargetMatchesCurrentSession;
 
-    const recoveryPaths = previousState ? autoSelectionManagedPaths(previousState) : [];
-    const hasRecoverableState = recoveryPaths.length > 0;
-    const binding = await ensureBindingTargetsLiveWindow(ctx, {
-      ...options,
-      hasRecoverableState,
-      recoveryPaths,
-    });
+      const desiredBindingBeforeRecovery = reusePendingTarget
+        ? pendingTransitionState?.targetBinding ?? getBinding()
+        : getBinding();
+      const desiredStateBeforeRecovery = reusePendingTarget
+        ? pendingTransitionState?.targetState ?? null
+        : config.autoSelectReadSlices === true && desiredBindingBeforeRecovery?.tab
+          ? getAutoSelectionStateFromBranch(ctx, desiredBindingBeforeRecovery)
+          : null;
 
-    if (config.autoSelectReadSlices !== true) {
-      activeAutoSelectionState = null;
-      return binding;
-    }
-
-    let desiredState = binding?.tab ? getAutoSelectionStateFromBranch(ctx, binding) : null;
-    let recoveredState = false;
-
-    if (binding?.tab && desiredState && autoSelectionManagedPaths(desiredState).length === 0) {
-      const recovered = recoverAutoSelectionStateForTabRecovery(previousState, previousBinding, binding);
-      if (recovered) {
-        desiredState = recovered;
-        recoveredState = true;
+      if (!reusePendingTarget) {
+        setPendingTransitionTargetState(
+          transitionTargetIdentity,
+          desiredBindingBeforeRecovery,
+          desiredStateBeforeRecovery,
+          autoSelectionRetryModeForSyncOptions(options)
+        );
       }
-    }
 
-    if (!binding?.tab) {
-      activeAutoSelectionState = desiredState;
-      return binding;
-    }
+      const recoveryPaths = desiredStateBeforeRecovery ? autoSelectionManagedPaths(desiredStateBeforeRecovery) : [];
+      const hasRecoverableState = recoveryPaths.length > 0;
+      const liveBinding = await ensureBindingTargetsLiveWindow(ctx, {
+        ...options,
+        hasRecoverableState,
+        recoveryPaths,
+      });
 
-    let reconcileSucceeded = true;
-    try {
-      await reconcileAutoSelectionStates(activeAutoSelectionState, desiredState);
-    } catch {
-      reconcileSucceeded = false;
-    }
+      if (config.autoSelectReadSlices !== true) {
+        clearPendingTransitionSelectionState();
+        activeAutoSelectionState = null;
+        return liveBinding;
+      }
 
-    if (recoveredState && desiredState && reconcileSucceeded) {
-      persistAutoSelectionState(desiredState);
-      return binding;
-    }
+      const sourceState =
+        pendingTransitionState?.sourceState ??
+        activeAutoSelectionState ??
+        (options.allowSyntheticSource === true ? desiredStateBeforeRecovery : null);
 
-    activeAutoSelectionState = desiredState;
-    return binding;
+      let desiredState = liveBinding?.tab ? getAutoSelectionStateFromBranch(ctx, liveBinding) : null;
+      let recoveredState = false;
+
+      if (
+        liveBinding?.tab &&
+        desiredState &&
+        desiredStateBeforeRecovery &&
+        autoSelectionManagedPaths(desiredState).length === 0
+      ) {
+        const recovered = recoverAutoSelectionStateForTabRecovery(
+          desiredStateBeforeRecovery,
+          desiredBindingBeforeRecovery,
+          liveBinding
+        );
+        if (recovered) {
+          desiredState = recovered;
+          recoveredState = true;
+        }
+      }
+
+      await reconcileAutoSelectionStates(sourceState, desiredState);
+
+      if (recoveredState && desiredState) {
+        persistAutoSelectionState(desiredState);
+      } else {
+        commitLiveAutoSelectionState(desiredState);
+      }
+
+      clearPendingTransitionSelectionState();
+      return liveBinding;
+    });
   }
 
   function getBaseAutoSelectionState(
@@ -1224,20 +1399,19 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   // Lifecycle Events
   // ───────────────────────────────────────────────────────────────────────────
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     shutdownRequested = false;
     extensionPaused = false;
+    clearReadcacheCaches();
+    clearRootsCache();
+    resetAutoSelectionRuntimeState();
 
     if (ctx.hasUI) {
       // This extension used to set a status bar item; clear it to avoid persisting stale UI state
       ctx.ui.setStatus("rp", undefined);
     }
 
-    const restoredBinding = restoreBinding(ctx, config);
-    activeAutoSelectionState =
-      config.autoSelectReadSlices === true && restoredBinding
-        ? getAutoSelectionStateFromBranch(ctx, restoredBinding)
-        : null;
+    restoreBinding(ctx, config);
 
     // Best-effort stale cache pruning (only when readcache is enabled)
     if (config.readcacheReadFile === true) {
@@ -1245,6 +1419,9 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         // Fail-open
       });
     }
+
+    const syncOptions = autoSelectionSyncOptionsForSessionStartReason(event.reason);
+    seedPendingTransitionTargetForSessionStart(ctx, syncOptions);
 
     // Non-blocking initialization
     const pendingInit = initializeExtension(pi, ctx, config);
@@ -1257,8 +1434,8 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       if (shutdownRequested) {
         return;
       }
-      await syncAutoSelectionToCurrentBranch(ctx);
-    }).catch(async (err) => {
+      await syncAutoSelectionToCurrentBranch(ctx, syncOptions, "refresh");
+    }).catch(async () => {
       if (initPromise === pendingInit) {
         initPromise = null;
       }
@@ -1273,8 +1450,9 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           if (launched && !shutdownRequested) {
             try {
               await resetRpClient();
+              clearRootsCache();
               await initializeExtension(pi, ctx, config);
-              await syncAutoSelectionToCurrentBranch(ctx);
+              await syncAutoSelectionToCurrentBranch(ctx, syncOptions, "refresh");
               return;
             } catch {
               // Fall through to pause
@@ -1297,62 +1475,21 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     shutdownRequested = true;
     initPromise = null;
+    updatePendingTransitionSelectionFromLiveState();
 
     // Never block Pi shutdown on an MCP startup handshake that may be stuck waiting on the app
+    clearBinding();
     clearReadcacheCaches();
-    activeAutoSelectionState = null;
+    clearRootsCache();
+    resetAutoSelectionRuntimeState();
     await resetRpClient();
   });
 
-  pi.on("session_switch", async (_event: unknown, ctx: ExtensionContext) => {
+  pi.on("session_tree", async (_event, ctx) => {
     clearReadcacheCaches();
+    clearRootsCache();
     restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx, {
-      provisionTab: false,
-      recoverClosedTab: true,
-      reuseSoleEmptyTab: true,
-    });
-    if (ctx.hasUI) {
-      ctx.ui.setStatus("rp", undefined);
-    }
-  });
-
-  // Restore binding from the current branch on /fork navigation
-  pi.on("session_fork", async (_event: unknown, ctx: ExtensionContext) => {
-    clearReadcacheCaches();
-    restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx, {
-      provisionTab: false,
-      recoverClosedTab: true,
-      reuseSoleEmptyTab: true,
-    });
-    if (ctx.hasUI) {
-      ctx.ui.setStatus("rp", undefined);
-    }
-  });
-
-  // Backwards compatibility (older pi versions)
-  (pi as any).on("session_branch", async (_event: unknown, ctx: ExtensionContext) => {
-    clearReadcacheCaches();
-    restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx, {
-      provisionTab: false,
-      recoverClosedTab: true,
-      reuseSoleEmptyTab: true,
-    });
-    if (ctx.hasUI) {
-      ctx.ui.setStatus("rp", undefined);
-    }
-  });
-
-  pi.on("session_tree", async (_event: unknown, ctx: ExtensionContext) => {
-    clearReadcacheCaches();
-    restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx, {
-      provisionTab: false,
-      recoverClosedTab: true,
-      reuseSoleEmptyTab: true,
-    });
+    await syncAutoSelectionToCurrentBranch(ctx, TRANSITION_AUTO_SELECTION_SYNC_OPTIONS, "refresh");
     if (ctx.hasUI) {
       ctx.ui.setStatus("rp", undefined);
     }
@@ -1619,9 +1756,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           const wasPaused = extensionPaused;
           try {
             await resetRpClient();
+            clearRootsCache();
             extensionPaused = false;
             await initializeExtension(pi, ctx, config);
-            await syncAutoSelectionToCurrentBranch(ctx);
+            await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
             ctx.ui.notify("RepoPrompt reconnected", "info");
 
             if (wasPaused) {
@@ -1890,7 +2028,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     if (ctx) {
       try {
-        await syncAutoSelectionToCurrentBranch(ctx);
+        await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
       } catch {
         // Fail-open
       }
@@ -2141,7 +2279,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       );
 
       if (autoSelectionStatesEqual(baseState, nextState)) {
-        activeAutoSelectionState = nextState;
+        commitLiveAutoSelectionState(nextState);
         return;
       }
 
@@ -2170,7 +2308,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       }
 
       if (!plan.desiredSlice) {
-        activeAutoSelectionState = plan.nextState;
+        commitLiveAutoSelectionState(plan.nextState);
         return;
       }
 
@@ -2203,7 +2341,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     );
 
     if (autoSelectionStatesEqual(baseState, nextState)) {
-      activeAutoSelectionState = nextState;
+      commitLiveAutoSelectionState(nextState);
       return;
     }
 

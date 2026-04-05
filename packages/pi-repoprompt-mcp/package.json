@@ -1,6 +1,6 @@
 {
   "name": "pi-repoprompt-mcp",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "A token-efficient RepoPrompt integration for Pi with automated and branch-safe workspace management",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt", "mcp"],
   "license": "MIT",
@@ -22,7 +22,7 @@
     "diff": "^7.0.0"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "0.64.0",
+    "@mariozechner/pi-coding-agent": "0.65.0",
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
