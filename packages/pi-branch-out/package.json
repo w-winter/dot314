@@ -1,6 +1,6 @@
 {
   "name": "pi-branch-out",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
