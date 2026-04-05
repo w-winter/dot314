@@ -17,7 +17,7 @@
     "extensions": ["extensions/model-aware-compaction/index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "0.65.0"
+    "@mariozechner/pi-coding-agent": "^0.65.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
