@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.4.24",
+  "version": "0.4.25",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -41,7 +41,6 @@
       "./extensions/poly-notify/index.ts",
       "./extensions/oracle.ts",
       "./extensions/plan-mode.ts",
-      "./extensions/repoprompt-cli/index.ts",
       "./extensions/repoprompt-mcp/src/index.ts",
       "./extensions/reverse-thinking.ts",
       "./extensions/rp-native-tools-lock/index.ts",
@@ -71,7 +70,7 @@
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-agent-core": "*",
-    "@mariozechner/pi-coding-agent": "0.64.0",
+    "@mariozechner/pi-coding-agent": "^0.65.0",
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   }
