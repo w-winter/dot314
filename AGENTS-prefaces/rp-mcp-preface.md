@@ -8,10 +8,6 @@ RepoPrompt MCP is the default for repo-scoped work. Use `rp`:
 - **Bind**: `rp({ windows: true })` → `rp({ bind: { window: N } })`
 - **Call tools**: `rp({ call: "<tool>", args: { ... } })` (unless explicitly labeled as a Pi native tool)
 
-### Note on native tool disablement (rp-tools-lock)
-
-In some sessions, Pi may automatically disable the native repo-file tools (`read/write/edit/ls/find/grep`) when RepoPrompt is available. If a native tool call is blocked, this is expected—use the RepoPrompt equivalents via `rp`.
-
 ### Mental Model
 
 RepoPrompt (macOS app) organizes state as:
@@ -109,15 +105,6 @@ Runs an agent to explore the codebase and curate file selection automatically.
 Use returned `chat_id` with `oracle_send new_chat=false chat_id="..."` for followup.
 
 Token-costly—invoke explicitly when user requests or during planning phases, not automatically.
-
-### Readcache
-
-`read_file` may return `[readcache: ...]` markers/diffs on repeat reads.
-
-Rules:
-- Don't use `raw: true` (Pi wrapper flag) unless debugging; it disables readcache/rendering
-- Need full content? rerun `read_file` with `bypass_cache: true`
-- In cases of multi-root ambiguity: use absolute or specific relative paths (MCP `read_file` has no `RootName:rel/path` disambiguation)
 
 ### Edit Discipline
 
