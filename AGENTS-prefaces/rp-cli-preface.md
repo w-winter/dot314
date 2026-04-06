@@ -250,7 +250,7 @@ Common calls:
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"files"}'` — token-efficient git operations
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"patches"}'` — inline patch hunks (truncated)
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"full"}'` — untruncated patch output
-- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","compare":"main"}'` — diff vs auto-detected trunk branch
+- `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","compare":"main"}'` — diff vs merge-base with the auto-detected trunk branch
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"status","repo_root":"@main:feature-branch"}'` — target worktree by branch
 
 ---

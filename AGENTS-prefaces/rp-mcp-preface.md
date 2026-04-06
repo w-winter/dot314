@@ -55,14 +55,14 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
 | Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | uses the current tab/context |
-| Oracle helpers | `oracle_utils op="models\|sessions" [limit=N]` | list models or existing Oracle conversations |
-| Sticky routing | `bind_context op="status\|bind\|unbind\|list" [context_id="..."]` | use `list` to discover `context_id`s, then bind by `context_id` to work therein |
+| Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
+| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs=[...]]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use exact workspace-root `working_dirs` only when you want RepoPrompt to route to the matching open workspace |
 | Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
 | Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
-| Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | worktree support via `main`/`trunk` aliases, `@main:<branch>` |
+| Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
 ### Paths and roots
 
@@ -81,13 +81,14 @@ If results look wrong, assume routing first—not tool failure.
 1. `rp({ windows: true })` — list available windows
 2. If `rp` is already bound and the needed roots are present, keep it
 3. Otherwise `rp({ bind: { window: N } })` — bind to the right window
-4. `bind_context op="status"` or `bind_context op="bind"` — inspect or set sticky routing for the repo/tab you want
-5. `get_file_tree` — confirm workspace roots
+4. `bind_context op="list"` — inspect windows, active workspaces, tabs, `context_id`s, and current bindings when routing is ambiguous
+5. Prefer `bind_context op="bind" context_id="..."` — pin the specific compose tab you want after choosing it from `list`
+6. Use `bind_context op="bind" working_dirs=["/abs/root"]` only when you want RepoPrompt to pick the window for a matching exact workspace root without pinning a tab
+7. `get_file_tree` — confirm workspace roots
 
 Notes:
-- Use `bind_context op="list"` when you need the per-window routing view with `context_id` values
-- Prefer `bind_context op="bind" context_id="..."` after choosing the right window/context from `list`
-- Use `manage_workspaces action="list"` for workspace inventory, not tab routing
+- `bind_context op="bind" working_dirs=[...]` matches the full workspace root set, not descendant paths
+- `manage_workspaces action="list"` is the workspace inventory view; `bind_context op="list"` is the routing view
 
 RepoPrompt only operates within workspace root folders.
 

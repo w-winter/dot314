@@ -1,0 +1,132 @@
+188c188
+< List, inspect, bind, or unbind sticky RepoPrompt window/tab context for this MCP connection.
+---
+> List, inspect, and bind sticky RepoPrompt window/tab context for this MCP connection.
+194d193
+< • unbind  – clear explicit sticky tab binding and window affinity for this connection
+197,199c196,198
+< Bind by `working_dirs` using your project's absolute path. This sets **window affinity** — routing tool calls to the correct window without pinning a specific tab:
+< 	`{"op":"bind","working_dirs":["/path/to/project"]}`
+< Add `create_if_missing=true` to create and pin a new tab if no match exists.
+---
+> Bind by `working_dirs` using the exact absolute workspace root paths. Matching is against the full workspace `repo_paths` set, order-insensitive, not descendant paths:
+> 	`{"op":"bind","working_dirs":["/path/to/root1","/path/to/root2"]}`
+> If the matching workspace is already open, RepoPrompt prefers that window. If it exists but is not open, RepoPrompt opens a window and switches to it. Add `create_if_missing=true` to create a new workspace after approval when no exact match exists.
+202,203c201,202
+< - op: "list" | "status" | "bind" | "unbind" (required)
+< - working_dirs: string | string[]         (for bind: preferred — absolute working directory paths; auto-resolves to the matching tab)
+---
+> - op: "list" | "status" | "bind" (required)
+> - working_dirs: string | string[]         (for bind: preferred — exact absolute workspace root paths)
+205,207c204,206
+< - window_id: integer                      (for list: optional filter to show only one window; for bind: optional disambiguator)
+< - create_if_missing: boolean              (for bind with working_dirs; create a blank tab when no context matches)
+< - tab_name: string                        (optional name when bind creates a blank tab via working_dirs)
+---
+> - window_id: integer                      (for list: filter to one window; for bind with working_dirs: disambiguate when multiple workspaces match; for bind alone: set window affinity)
+> - create_if_missing: boolean              (for bind with working_dirs; create a new workspace after approval when no exact workspace matches)
+> - tab_name: string                        (optional workspace name hint when creating via working_dirs + create_if_missing)
+209,213c208,210
+< **Window/tab model:**
+< - Binding by `working_dirs` or `context_id` auto-resolves across windows — no manual window selection needed
+< - `bind_context.list` is the **per-window routing view** — shows windows with tabs and context_ids
+< - `manage_workspaces.list` is the **workspace inventory view** — shows workspaces with folder paths
+< - When the same workspace is open in multiple windows, compose tabs are shared logical state
+---
+> **Binding modes:**
+> - **Window affinity** (from working_dirs or window_id): routes tool calls to whichever tab is currently active in that window. Most agents should use this.
+> - **Tab binding** (from context_id): pins tool calls to a specific compose tab, even if you switch to another tab. Use when you need a stable context that won't change.
+214a212,215
+> **Discovery:**
+> - Use `bind_context list` to see what's currently open (windows, active workspaces, tabs, context_ids)
+> - Use `manage_workspaces list` to see all saved workspaces, including ones not currently open
+> 
+217,218c218,219
+<   op (string, required): list | status | bind | unbind
+<     Operation: 'list', 'status', 'bind', or 'unbind'
+---
+>   op (string, required): list | status | bind
+>     Operation: 'list', 'status', or 'bind'
+224,225c225,226
+<     For bind with working_dirs: create a blank tab if no existing
+<     context matches
+---
+>     For bind with working_dirs: create a new workspace after approval
+>     if no exact workspace matches
+228c229,230
+<     Optional name to use when bind creates a blank tab
+---
+>     Optional workspace name when creating via working_dirs +
+>     create_if_missing
+231,232c233,235
+<     Optional window ID filter for list, or selector/disambiguator for
+<     bind
+---
+>     For list: filter to one window. For bind with working_dirs:
+>     disambiguate when multiple workspaces match. For bind alone: set
+>     window affinity.
+237c240
+<         For bind: comma-separated absolute working directories
+---
+>         For bind: comma-separated exact absolute workspace root paths
+491,493c494,497
+< | `main` | Working dir vs trunk branch (auto-detected) |
+< | `uncommitted:main` | Uncommitted vs trunk branch |
+< | `staged:main` | Staged vs trunk branch |
+---
+> | `mergebase:X` | Working dir vs merge-base with X |
+> | `main` | Working dir vs merge-base with trunk branch (auto-detected) |
+> | `uncommitted:main` | Uncommitted vs merge-base with trunk branch |
+> | `staged:main` | Staged vs merge-base with trunk branch |
+688c692
+< **This is the workspace inventory view.** For per-window tab routing and context_id discovery, use `bind_context` instead.
+---
+> **This is the workspace inventory view.** `bind_context` remains the canonical API for per-window tab routing and context_id discovery. Legacy-compatible `list_tabs` and `select_tab` actions are restored for older clients, but new integrations should prefer `bind_context`.
+696a701,702
+> • list_tabs    – List compose tabs in one window (Legacy compatibility — prefer bind_context op=list)
+> • select_tab   – Bind this connection to a compose tab (Legacy compatibility — prefer bind_context op=bind context_id=<id>)
+701c707
+< - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "create_tab" | "close_tab" (required)
+---
+> - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" | "create_tab" | "close_tab" (required)
+705c711
+< - tab: string                                   (optional for 'close_tab'; UUID or name)
+---
+> - tab: string                                   (required for 'select_tab'; optional for 'close_tab'; UUID or name)
+709c715
+< - focus: boolean                                (optional for 'create_tab'; default false)
+---
+> - focus: boolean                                (optional for 'select_tab' or 'create_tab'; if true, also switches the UI to show the tab)
+729,730c735,737
+<   action (string, required): list | switch | create | delete | add_folder | remove_folder | create_tab | close_tab
+<     Action to perform
+---
+>   action (string, required): list | switch | create | delete | add_folder | remove_folder | list_tabs | select_tab | create_tab | close_tab
+>     Action to perform. Legacy compatibility: prefer bind_context for
+>     list_tabs/select_tab when building new integrations.
+744c751,752
+<     For 'create_tab': if true, also switches the UI to show the tab
+---
+>     For 'select_tab' or 'create_tab': if true, also switches the UI to
+>     show the tab
+769,770c777,778
+<     Compose tab UUID or name (optional for 'close_tab'; compatibility
+<     selector)
+---
+>     Compose tab UUID or name (required for 'select_tab'; optional for
+>     'close_tab')
+813c821
+< - `op="sessions"` → list oracle/chat sessions
+---
+> - `op="sessions"` → list oracle/chat sessions for the current workspace. Pass context_id to filter to a specific context's sessions.
+821a830,833
+>   context_id (string)
+>     Context UUID to filter to a specific context's sessions. Use
+>     bind_context op=list to discover values.
+> 
+824a837,839
+>   scope (string)
+>     Filter scope: 'workspace' (default) or 'tab'. Auto-inferred when
+>     context_id is provided.
+825a841
+> 
