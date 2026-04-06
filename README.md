@@ -143,7 +143,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ○ | `pi-prompt-template-model/` |
 | ○ | `preset.ts` |
 | ● | `repoprompt-cli/` |
-| ◐ | `rewind/` |
+| ◐ | `rewind/` — archived; use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
 | ○ | `skill-palette/` |
 | ○ | `subagent/` |
 | ○ | `titlebar-spinner.ts` |

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Upstream
+- The session-native rewrite developed in this fork was adopted into [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook) at [`0c08de4`](https://github.com/nicobailon/pi-rewind-hook/commit/0c08de48228468fc09f46567bdc95ee14a592635), which added failure hardening for critical handlers, configurable retention scan modes (`ancestor-only` / `repo-sessions`), and startup sweep budgets on top of the architecture below
+- This fork is no longer actively maintained; use the upstream package instead
+
 ### Changed
 - Replaced the old git-ref checkpoint ledger with session-native `rewind-turn` and `rewind-op` records
 - Rewind points are now aligned to visible session nodes: the triggering user node and each assistant step captured at `turn_end`

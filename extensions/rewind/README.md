@@ -1,5 +1,11 @@
 # Rewind Extension
 
+> **Archived.** This fork's session-native rewrite has been adopted upstream into [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook).  Install that version with `pi install npm:pi-rewind-hook`.
+>
+> Reference: [`dot314@b432676`](https://github.com/w-winter/dot314/commit/b43267682059a4b7c37d557b608e8413ecbd0298) -> [`pi-rewind-hook@0c08de4`](https://github.com/nicobailon/pi-rewind-hook/commit/0c08de48228468fc09f46567bdc95ee14a592635).
+
+---
+
 A Pi agent extension that records exact file-state rewind points, allowing restoration of file states during `/tree` navigation and across resumed and forked sessions
 
 Rewind metadata lives in the session itself as hidden entries, so rewind history survives across forks, resumes, tree navigation, and compaction. Snapshot commits are kept reachable through a single git ref rather than one ref per checkpoint, and rewind points can be resolved across session lineage via `parentSession` links. Retention is optional and configurable; without it, exact history is kept indefinitely.

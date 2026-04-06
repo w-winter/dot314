@@ -183,13 +183,7 @@
       - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi's large-paste markers (e.g. `[paste #3 +122 lines]`)
   - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
-- ◐ [`rewind/`](rewind/) ([README](./rewind/README.md); upstream: [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook))
-  - Records exact file-state rewind points, allowing restoration of file states during `/tree` navigation and across resumed and forked sessions
-  - Differences from the original:
-    - Records exact file-state rewind points and offers restore options during `/fork` and `/tree` navigation, including undo
-    - Rewind history survives across forks, resumes, tree navigation, and compaction; rewind points resolve across session lineage via `parentSession` links
-    - Optional configurable retention (`maxSnapshots`, `maxAgeDays`, `pinLabeledEntries`); without it, exact history is kept indefinitely
-    - Relocates "Keep current files" to the first option of the "Restore Options" menu of `/tree`, and relocates "Conversation only (keep current files)" to the first option of the "Restore Options" menu of `/fork`
+- ◐ [`rewind/`](rewind/) ([README](./rewind/README.md)) — **Archived.** Session-native rewrite developed in ([`b432676`](https://github.com/w-winter/dot314/commit/b43267682059a4b7c37d557b608e8413ecbd0298)) now adopted upstream into [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook).  Install with `pi install npm:pi-rewind-hook`
 
 - ◐ [`agentic-compaction/`](agentic-compaction/) ([README](./agentic-compaction/README.md); upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles/tree/main/shared/.pi/agent/extensions/file-based-compaction))
   - Agentic compaction via a virtual filesystem: mounts `/conversation.json` and lets a summarizer model explore it with portable bash/zsh commands
