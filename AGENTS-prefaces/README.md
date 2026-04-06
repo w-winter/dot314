@@ -4,9 +4,9 @@ Templates for the start of `AGENTS.md` or `CLAUDE.md` files. These steer agents 
 
 ## Files
 
-- `rp-cli-preface.md` — RepoPrompt CLI integration (`rp_exec`, `rp_bind`)
 - `rp-mcp-preface.md` — RepoPrompt MCP integration (`rp` tool)
 - `rp-mcp-preface-exPi.md` — MCP variant for non-Pi harnesses (Claude Code, Codex, etc.)
+- `rp-cli-preface.md` — RepoPrompt CLI integration (deprecated)
 
 ## Notes
 

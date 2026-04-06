@@ -1,3 +1,7 @@
+> **⚠ This AGENTS.md preface is for the deprecated `repoprompt-cli` extension.**  Consider instead to use [`repoprompt-mcp`](../extensions/repoprompt-mcp/) and its recommended AGENTS.md [preface](rp-mcp-preface.md) instead.
+
+---
+
 # Tool Protocol
 
 The following instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.

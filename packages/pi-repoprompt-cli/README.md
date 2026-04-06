@@ -1,5 +1,11 @@
 # RepoPrompt CLI bridge for Pi (`pi-repoprompt-cli`)
 
+> **⚠ Deprecated and not supported for Pi versions >0.64.0.**  Consider instead using [`pi-repoprompt-mcp`](https://www.npmjs.com/package/pi-repoprompt-mcp), which offers everything this extension has and several more reliability and QoL features, with none of the extra token overheads MCP tools typically entail.
+
+I recommend exploring the RepoPrompt CLI more from the angle of an agent skill for writing scripts that invoke rp-cli, while using repoprompt-mcp for Pi-RepoPrompt integration.
+
+---
+
 Integrates RepoPrompt with Pi via RepoPrompt's `rp-cli` executable.
 
 Provides two tools:

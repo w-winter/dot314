@@ -40,7 +40,7 @@
     - Optional [Gurpartap/pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat)
     - Optional auto-selection (in the RP app, e.g. for use in RP Chat) of slices/files the agent has read; these selections are also branch-safe across `/tree` navigation and `/fork`ed sessions
 
-- ● [`repoprompt-cli/`](repoprompt-cli/)
+- ● [`repoprompt-cli/`](repoprompt-cli/) ⚠ **Deprecated and not supported for Pi versions >0.64.0; use [`repoprompt-mcp/`](repoprompt-mcp/) instead.**
   - [RepoPrompt](https://repoprompt.com/docs) bridge for Pi: `rp_bind` + `rp_exec`
   - `rp_exec` wraps `rp-cli -e ...` with safe defaults (quiet, fail-fast, timeout, output truncation)
   - Safety features: blocks unbound usage, delete-like commands (unless `allowDelete=true`), and in-place workspace switching (unless explicitly allowed)
