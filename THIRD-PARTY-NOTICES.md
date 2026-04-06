@@ -74,7 +74,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT (declared in README)
 - **Copyright:** © damianpdr
 - **Used in:**
-  - `extensions/session-switch.ts` (◐ modified — mirrors native /resume layout)
+  - `extensions/session-switch/` (◐ modified — mirrors native /resume layout with an extension-driven startup relaunch workaround)
 
 ### nicobailon/pi-prompt-template-model
 - **URL:** https://github.com/nicobailon/pi-prompt-template-model

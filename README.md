@@ -64,7 +64,7 @@ After installing, use `pi config` to enable/disable individual extensions, skill
       "./extensions/move-session.ts",
       "./extensions/repoprompt-mcp/src/index.ts",
       "./extensions/session-ask/index.ts",
-      "./extensions/session-switch.ts"
+      "./extensions/session-switch/index.ts"
       ]
     }
   ]
@@ -125,7 +125,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `rp-native-tools-lock/` | [`pi-repoprompt-tools-lock`](https://www.npmjs.com/package/pi-repoprompt-tools-lock) | Prefer RP tools over Pi native tools |
 | ◐ | `sandbox/` | | OS-level sandboxing |
 | ● | `session-ask/` | [`pi-session-ask`](https://www.npmjs.com/package/pi-session-ask) | Query "pre-historical" context (post-compaction, post-fork/handoff) via subagent |
-| ◐ | `session-switch.ts` | | `/resume`-style session picker with live preview |
+| ◐ | `session-switch/` | | `/resume`-style session picker with live preview, plus `pi --switch-session` startup relaunch |
 | ◐ | `tools/` | | UI for enabling/disabling active Pi tools |
 | ◐ | `usage-bar.ts` | | Provider quota overlay |
 

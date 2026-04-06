@@ -74,7 +74,7 @@
   - `/anycopy` mirrors all behaviors of Pi's native `/tree` while adding a live, syntax-highlighted preview of each node's content and the ability to copy any node(s) to the clipboard
   - `Enter` navigates to focused node (same semantics as `/tree`, including the summary chooser and `branchSummary.skipPrompt` support)
   - `Space` select/unselect for copy, `Shift+C` copy (selected or focused), `Shift+X` clear selection, `Shift+L` label node
-  - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
+  - `Shift+Up`/`Down` scroll preview by line, `Shift+PageUp`/`PageDown` page preview
   - Single-node copies use just the node's content; role prefixes are only added when copying 2+ nodes
   - Multi-selected nodes are auto-sorted chronologically (by tree position)
   - Configurable in `anycopy/config.json`: `treeFilterMode` (initial filter mode), `keys` (overlay keybindings)
@@ -233,10 +233,11 @@
   - `/oracle` queries an alternate model for a second opinion, with optional file inclusion (`-f`) and injection into the current conversation
   - This version adds a thinking-level picker and fixes text-overflow crashes (CJK-safe wrapping)
 
-- ◐ [`session-switch.ts`](session-switch.ts) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
-  - Session switching (via `/switch-session` command) with a live preview of the highlighted session below the picker
-  - `Shift+Up`/`Down` scroll preview by line, `Shift+Left`/`Right` page preview
-  - This version mirrors the native `/resume` picker's layout, behaviors, and keybindings
+- ◐ [`session-switch/`](session-switch/) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
+  - Session switching via `/switch-session`, or the same picker after interactive startup via `pi --switch-session`, with a live preview of the highlighted session below the picker
+  - `pi --switch-session` is an extension-driven relaunch workaround, not native pre-start `--resume`, so it does not provide native missing-cwd recovery or the normal in-process session-switch lifecycle / shutdown-hook cleanup semantics
+  - `Shift+Up`/`Down` scroll preview by line, `Shift+PageUp`/`PageDown` page preview
+  - Mirrors the native `/resume` picker's layout, behaviors, and keybindings
 
 <p align="center">
   <img width="450" alt="/switch-session demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/switch-session-demo.gif" />

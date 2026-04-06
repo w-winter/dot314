@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.4.25",
+  "version": "0.4.26",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -46,7 +46,7 @@
       "./extensions/rp-native-tools-lock/index.ts",
       "./extensions/sandbox/index.ts",
       "./extensions/session-ask/index.ts",
-      "./extensions/session-switch.ts",
+      "./extensions/session-switch/index.ts",
       "./extensions/tools/index.ts",
       "./extensions/usage-bar.ts"
     ],

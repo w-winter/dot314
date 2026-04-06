@@ -27,6 +27,10 @@ async function copyPath(fromPath, toPath) {
     await fs.copyFile(fromPath, toPath);
 }
 
+async function removePath(targetPath) {
+    await fs.rm(targetPath, { recursive: true, force: true });
+}
+
 async function walkFiles(rootDir) {
     const out = [];
 
@@ -88,8 +92,24 @@ async function main() {
     if (!isObject(spec) || !Array.isArray(spec.copy)) {
         throw new Error(
             "Missing dot314Prepack.copy in package.json. " +
-                "Expected: { dot314Prepack: { copy: [{from,to}, ...] } }",
+                "Expected: { dot314Prepack: { copy: [{from,to}, clean?: [path, ...] } }",
         );
+    }
+
+    if (Array.isArray(spec.clean)) {
+        for (const target of spec.clean) {
+            if (typeof target !== "string") {
+                throw new Error(`Invalid clean entry (must be string): ${JSON.stringify(target)}`);
+            }
+
+            const absTarget = path.resolve(packageDir, target);
+            const withinPackage = absTarget === packageDir || absTarget.startsWith(packageDir + path.sep);
+            if (!withinPackage) {
+                throw new Error(`Refusing to remove outside package dir: ${target}`);
+            }
+
+            await removePath(absTarget);
+        }
     }
 
     for (const entry of spec.copy) {
