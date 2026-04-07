@@ -169,6 +169,15 @@ describe("resolveStartupSessionTarget", () => {
 });
 
 describe("resolveStartupAction", () => {
+	test("returns native-like exit when the picker requests cancel", () => {
+		const action = resolveStartupAction(
+			{ kind: "dismissed", reason: "cancel" },
+			{ cwd: "/tmp/project", argvTokens: ["--switch-session"] },
+		);
+
+		expect(action).toEqual({ kind: "exit", code: 0, message: "No session selected" });
+	});
+
 	test("returns shutdown when the picker requests exit", () => {
 		const action = resolveStartupAction(
 			{ kind: "dismissed", reason: "exit" },

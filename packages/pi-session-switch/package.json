@@ -1,6 +1,6 @@
 {
   "name": "pi-session-switch",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Preview each session before switching in a mirror of Pi's native `/resume`-picker UI",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session"],
   "license": "MIT",

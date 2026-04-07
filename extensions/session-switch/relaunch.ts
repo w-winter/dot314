@@ -10,6 +10,7 @@ import type { SessionPickerResult } from "./picker.ts";
 export type StartupAction =
 	| { kind: "noop" }
 	| { kind: "shutdown" }
+	| { kind: "exit"; code: number; message?: string }
 	| { kind: "relaunch"; command: string; args: string[]; cwd: string };
 
 const SESSION_FLAG = "--session";
@@ -91,7 +92,9 @@ export function resolveStartupAction(
 	},
 ): StartupAction {
 	if (result.kind === "dismissed") {
-		return result.reason === "exit" ? { kind: "shutdown" } : { kind: "noop" };
+		return result.reason === "exit"
+			? { kind: "shutdown" }
+			: { kind: "exit", code: 0, message: "No session selected" };
 	}
 
 	const args = buildStartupRelaunchArgs(options.argvTokens ?? process.argv.slice(2), result.sessionPath);
@@ -104,7 +107,7 @@ export function resolveStartupAction(
 	};
 }
 
-function teardownTerminalForRelaunch(): void {
+function teardownTerminalForExit(): void {
 	process.stdout.write("\x1b[<u");
 	process.stdout.write("\x1b[?2004l");
 	process.stdout.write("\x1b[?25h");
@@ -126,8 +129,15 @@ export function executeStartupAction(
 		ctx.shutdown();
 		return;
 	}
+	if (action.kind === "exit") {
+		teardownTerminalForExit();
+		if (action.message) {
+			process.stdout.write(`${action.message}\n`);
+		}
+		process.exit(action.code);
+	}
 
-	teardownTerminalForRelaunch();
+	teardownTerminalForExit();
 
 	const result = spawnSync(action.command, action.args, {
 		cwd: action.cwd,

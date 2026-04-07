@@ -54,6 +54,48 @@ This is an extension-only workaround for startup switching. Unlike native `pi --
 - `Shift+PageUp` / `Shift+PageDown` page the preview
 - Preserves the native inline rename and delete-confirmation flows
 
+## Optionally replacing native `--resume`
+
+If you want `pi -r` and `pi --resume` to use this extension's picker instead of Pi's built-in resume, add this wrapper to your `.bashrc` or `.zshrc`:
+
+```sh
+pi() {
+  local -a args=()
+
+  while (($#)); do
+    case "$1" in
+      --)
+        args+=("$@")
+        break
+        ;;
+      -r|--resume)
+        if (($# > 1)) && [[ "$2" != -* ]]; then
+          args+=(--session "$2")
+          shift 2
+        else
+          args+=(--switch-session)
+          shift
+        fi
+        ;;
+      --resume=*)
+        args+=(--session "${1#--resume=}")
+        shift
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  command pi "${args[@]}"
+}
+```
+
+This rewrites:
+- `pi -r` / `pi --resume` to `pi --switch-session` (opens the picker)
+- `pi -r <path>` / `pi --resume <path>` to `pi --session <path>` (opens that session directly)
+
 ## Compared with upstream
 
 Derived from Damian Pedroza's [`pi-thread-switcher`](https://github.com/damianpdr/pi-thread-switcher).  This version has a few additions that I found helpful for readability: the session preview lives in a dedicated pane below the picker with syntax-highlighted Markdown rendering, and `Shift+PageUp` / `Shift+PageDown` are also offered for paging through the preview.  The picker itself uses Pi's native `SessionSelectorComponent`, matching the `/resume` interaction model.
