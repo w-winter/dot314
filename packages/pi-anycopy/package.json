@@ -1,6 +1,6 @@
 {
   "name": "pi-anycopy",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Pi's /tree with a live syntax-highlighted preview, ability to copy any node(s) to the clipboard, and persistence of folded branches",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
@@ -18,7 +18,7 @@
     "image": "https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-coding-agent": "^0.65.0",
     "@mariozechner/pi-tui": "*"
   },
   "scripts": {
