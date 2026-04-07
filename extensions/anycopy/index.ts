@@ -10,7 +10,7 @@
  *   Shift+L   - label node
  *   Shift+T   - toggle label timestamps for labeled nodes
  *   Shift+↑/↓ - scroll preview
- *   Shift+←/→ - page preview
+ *   Shift+PageUp/PageDown - page preview
  *   Esc       - close
  */
 
@@ -47,7 +47,15 @@ type SessionTreeNode = {
 	entry: SessionEntry;
 	children: SessionTreeNode[];
 	label?: string;
-	labelTimestamp?: string;
+};
+
+type anycopyTreeList = ReturnType<TreeSelectorComponent["getTreeList"]>;
+
+type anycopyTreeListInternals = anycopyTreeList & {
+	filteredNodes: Array<{ node: SessionTreeNode }>;
+	selectedIndex: number;
+	maxVisibleLines: number;
+	showLabelTimestamps: boolean;
 };
 
 type anycopyKeyConfig = {
@@ -88,8 +96,8 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 	toggleLabelTimestamps: "shift+t",
 	scrollDown: "shift+down",
 	scrollUp: "shift+up",
-	pageDown: "shift+right",
-	pageUp: "shift+left",
+	pageDown: "shift+pagedown",
+	pageUp: "shift+pageup",
 };
 
 const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
@@ -394,64 +402,8 @@ const buildNodeOrder = (roots: SessionTreeNode[]): Map<string, number> => {
 	return order;
 };
 
-const buildLatestLabelTimestamps = (entries: SessionEntry[]): Map<string, string> => {
-	const timestampsById = new Map<string, string>();
-	for (const entry of entries) {
-		if (entry.type !== "label") continue;
-		if (entry.label) {
-			timestampsById.set(entry.targetId, entry.timestamp);
-		} else {
-			timestampsById.delete(entry.targetId);
-		}
-	}
-	return timestampsById;
-};
-
-const applyLabelTimestampsToTree = (roots: SessionTreeNode[], timestampsById: Map<string, string>): void => {
-	const stack = [...roots];
-	while (stack.length > 0) {
-		const node = stack.pop()!;
-		node.labelTimestamp = timestampsById.get(node.entry.id);
-		for (const child of node.children) stack.push(child);
-	}
-};
-
-const formatLabelTimestamp = (timestamp: string): string => {
-	const date = new Date(timestamp);
-	if (Number.isNaN(date.getTime())) return timestamp;
-
-	const now = new Date();
-	const hours = date.getHours().toString().padStart(2, "0");
-	const minutes = date.getMinutes().toString().padStart(2, "0");
-	const time = `${hours}:${minutes}`;
-
-	if (
-		date.getFullYear() === now.getFullYear() &&
-		date.getMonth() === now.getMonth() &&
-		date.getDate() === now.getDate()
-	) {
-		return time;
-	}
-
-	const month = date.getMonth() + 1;
-	const day = date.getDate();
-	if (date.getFullYear() === now.getFullYear()) {
-		return `${month}/${day} ${time}`;
-	}
-
-	const year = date.getFullYear().toString().slice(-2);
-	return `${year}/${month}/${day} ${time}`;
-};
-
-const insertLabelTimestampIntoLine = (line: string, node: SessionTreeNode, theme: any): string => {
-	if (!node.label || !node.labelTimestamp) return line;
-
-	const labelToken = `[${node.label}] `;
-	const labelIndex = line.indexOf(labelToken);
-	if (labelIndex === -1) return line;
-
-	const insertAt = labelIndex + labelToken.length;
-	return `${line.slice(0, insertAt)}${theme.fg("muted", `${formatLabelTimestamp(node.labelTimestamp)} `)}${line.slice(insertAt)}`;
+const getTreeListInternals = (treeList: anycopyTreeList): anycopyTreeListInternals => {
+	return treeList as anycopyTreeListInternals;
 };
 
 /** Clipboard text omits role prefix for a single node and includes it for multi-node copies
@@ -478,7 +430,6 @@ class anycopyOverlay implements Focusable {
 	private _focused = false;
 	private previewScrollOffset = 0;
 	private lastPreviewHeight = 0;
-	private showLabelTimestamps = false;
 	private previewCache: {
 		entryId: string;
 		width: number;
@@ -495,7 +446,6 @@ class anycopyOverlay implements Focusable {
 			beforeTransientFoldedNodeIds: string[],
 			afterTransientFoldedNodeIds: string[],
 		) => void) | null,
-		private onClose: () => void,
 		private getTermHeight: () => number,
 		private requestRender: () => void,
 		private theme: any,
@@ -509,8 +459,12 @@ class anycopyOverlay implements Focusable {
 		this.selector.focused = value;
 	}
 
-	getTreeList() {
+	getTreeList(): anycopyTreeList {
 		return this.selector.getTreeList();
+	}
+
+	private getTreeListInternals(): anycopyTreeListInternals {
+		return getTreeListInternals(this.getTreeList());
 	}
 
 	handleInput(data: string): void {
@@ -533,8 +487,14 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 		if (matchesKey(data, this.keys.toggleLabelTimestamps)) {
-			this.showLabelTimestamps = !this.showLabelTimestamps;
+			const treeList = this.getTreeListInternals();
+			treeList.showLabelTimestamps = !treeList.showLabelTimestamps;
 			this.requestRender();
+			return;
+		}
+
+		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "app.tree.toggleLabelTimestamp")) {
 			return;
 		}
 
@@ -561,7 +521,6 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
-		const keybindings = getKeybindings();
 		const shouldTrackExplicitFoldMutation =
 			this.onExplicitFoldMutation !== null &&
 			(keybindings.matches(data, "app.tree.foldOrUp") || keybindings.matches(data, "app.tree.unfoldOrDown"));
@@ -627,10 +586,6 @@ class anycopyOverlay implements Focusable {
 
 	isSelectedNode(id: string): boolean {
 		return this.selectedNodeIds.has(id);
-	}
-
-	isShowingLabelTimestamps(): boolean {
-		return this.showLabelTimestamps;
 	}
 
 	copySelectedOrFocusedNode(): void {
@@ -824,22 +779,13 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 	) => {
 		if (!ctx.hasUI) return;
 
-		const buildAnnotatedTree = (): SessionTreeNode[] => {
-			const tree = ctx.sessionManager.getTree() as SessionTreeNode[];
-			applyLabelTimestampsToTree(tree, buildLatestLabelTimestamps(ctx.sessionManager.getEntries() as SessionEntry[]));
-			return tree;
-		};
-
-		const initialTree = buildAnnotatedTree();
+		const initialTree = ctx.sessionManager.getTree() as SessionTreeNode[];
 		if (initialTree.length === 0) {
 			ctx.ui.notify("No entries in session", "warning");
 			return;
 		}
 
-		const getTree = () => buildAnnotatedTree();
-		const refreshInitialTreeLabelTimestamps = () => {
-			applyLabelTimestampsToTree(initialTree, buildLatestLabelTimestamps(ctx.sessionManager.getEntries() as SessionEntry[]));
-		};
+		const getTree = () => ctx.sessionManager.getTree() as SessionTreeNode[];
 		const currentLeafId = ctx.sessionManager.getLeafId();
 		const skipSummaryPrompt = loadBranchSummarySkipPrompt(ctx.cwd);
 
@@ -880,7 +826,6 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				() => done(),
 				(entryId, label) => {
 					pi.setLabel(entryId, label);
-					refreshInitialTreeLabelTimestamps();
 				},
 				opts?.initialSelectedId,
 				treeFilterMode,
@@ -939,60 +884,38 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				nodeById,
 				keys,
 				persistFoldState ? handleExplicitFoldMutation : null,
-				() => done(),
 				() => tui.terminal?.rows ?? 40,
 				() => tui.requestRender(),
 				theme,
 			);
 
 			const treeList = selector.getTreeList();
+			const treeListInternals = getTreeListInternals(treeList);
 			const originalRender = treeList.render.bind(treeList);
 			treeList.render = (width: number) => {
 				const innerWidth = Math.max(10, width - 2);
 				const lines = originalRender(innerWidth);
+				const filtered = treeListInternals.filteredNodes;
 
-				const tl = treeList as any;
-				const filteredRaw = tl.filteredNodes;
-				const decorateStatusLine = (line: string): string => {
-					const status = overlay.isShowingLabelTimestamps() ? `${line}${theme.fg("muted", " [+label time]")}` : line;
-					return truncateToWidth(`  ${status}`, width);
-				};
-
-				if (!Array.isArray(filteredRaw) || filteredRaw.length === 0) {
-					return lines.map((line: string, i: number) =>
-						i === lines.length - 1 ? decorateStatusLine(line) : truncateToWidth(`  ${line}`, width),
-					);
+				if (!Array.isArray(filtered) || filtered.length === 0) {
+					return lines.map((line: string) => truncateToWidth(`  ${line}`, width));
 				}
-				const filtered = filteredRaw as { node: SessionTreeNode }[];
 
-				const selectedIdxRaw = tl.selectedIndex;
-				const maxVisibleRaw = tl.maxVisibleLines;
-				const selectedIdx =
-					typeof selectedIdxRaw === "number" && Number.isFinite(selectedIdxRaw) ? selectedIdxRaw : 0;
-				const maxVisible =
-					typeof maxVisibleRaw === "number" && Number.isFinite(maxVisibleRaw) && maxVisibleRaw > 0
-						? maxVisibleRaw
-						: filtered.length;
-
+				const maxVisible = Math.max(1, treeListInternals.maxVisibleLines);
 				const startIdx = Math.max(
 					0,
-					Math.min(selectedIdx - Math.floor(maxVisible / 2), filtered.length - maxVisible),
+					Math.min(treeListInternals.selectedIndex - Math.floor(maxVisible / 2), filtered.length - maxVisible),
 				);
 				const treeRowCount = Math.max(0, lines.length - 1);
 
 				return lines.map((line: string, i: number) => {
-					if (i >= treeRowCount) return decorateStatusLine(line);
+					if (i >= treeRowCount) return truncateToWidth(`  ${line}`, width);
 
-					const nodeIdx = startIdx + i;
-					const node = filtered[nodeIdx]?.node as SessionTreeNode | undefined;
-					const nodeId = node?.entry?.id;
+					const nodeId = filtered[startIdx + i]?.node.entry.id;
 					if (typeof nodeId !== "string") return truncateToWidth(`  ${line}`, width);
 
-					const selected = overlay.isSelectedNode(nodeId);
-					const marker = selected ? theme.fg("success", "✓ ") : theme.fg("dim", "○ ");
-					const lineWithTimestamp =
-						overlay.isShowingLabelTimestamps() && node ? insertLabelTimestampIntoLine(line, node, theme) : line;
-					return truncateToWidth(marker + lineWithTimestamp, width);
+					const marker = overlay.isSelectedNode(nodeId) ? theme.fg("success", "✓ ") : theme.fg("dim", "○ ");
+					return truncateToWidth(marker + line, width);
 				});
 			};
 

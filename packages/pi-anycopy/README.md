@@ -53,7 +53,7 @@ Defaults (customizable in `config.json`):
 | `Shift+L` | Label node (native tree behavior) |
 | `Shift+T` | Toggle label timestamps for labeled nodes |
 | `Shift+Up` / `Shift+Down` | Scroll node preview by line |
-| `Shift+Left` / `Shift+Right` | Page through node preview |
+| `Shift+PageUp` / `Shift+PageDown` | Page through node preview |
 | `Esc` | Close |
 
 Notes:
@@ -93,8 +93,8 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
     "toggleLabelTimestamps": "shift+t",
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
-    "pageUp": "shift+left",
-    "pageDown": "shift+right"
+    "pageUp": "shift+pageup",
+    "pageDown": "shift+pagedown"
   }
 }
 ```

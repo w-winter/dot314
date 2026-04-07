@@ -8,7 +8,7 @@
     "toggleLabelTimestamps": "shift+t",
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
-    "pageUp": "shift+left",
-    "pageDown": "shift+right"
+    "pageUp": "shift+pageup",
+    "pageDown": "shift+pagedown"
   }
 }
