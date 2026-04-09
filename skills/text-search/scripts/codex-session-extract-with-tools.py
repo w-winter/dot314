@@ -229,9 +229,18 @@ def process_session(
 
     for obj in records:
         typ = str(obj.get("type") or obj.get("record_type") or "").lower()
+
+        if typ == "response_item" and isinstance(obj.get("payload"), dict):
+            payload = obj["payload"]
+            payload_type = str(payload.get("type") or payload.get("record_type") or "").lower()
+            normalized = dict(payload)
+            if payload_type and "type" not in normalized:
+                normalized["type"] = payload_type
+            obj = normalized
+            typ = str(obj.get("type") or obj.get("record_type") or "").lower()
         
         # Skip session metadata
-        if typ == "session_meta":
+        if typ in ("session_meta", "session", "state"):
             continue
         
         # Reasoning traces - include summary only

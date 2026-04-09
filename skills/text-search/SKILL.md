@@ -114,19 +114,17 @@ qmd ls sessions/claude
 
 Use `get`, `multi-get`, and `ls` to retrieve or browse content after discovery.
 
-For session logs, use this inspection path:
+For session discovery, use this inspection path:
 
 ```bash
-# Default: omit tool result/output blocks
-qmd get "qmd://sessions/pi/...jsonl" --full | session-view - pi
-qmd get "qmd://sessions/codex/...jsonl" --full | session-view - codex
-qmd get "qmd://sessions/claude/...jsonl" --full | session-view - claude
+# 1. Discover a session transcript
+qmd search -c sessions --files 'apply_edits' -n 5
 
-# Opt-in: include tool result/output blocks
-qmd get "qmd://sessions/pi/...jsonl" --full | session-view --include-tool-results - pi
+# 2. Read the session transcript directly
+qmd get "qmd://sessions/path/to/session-transcript.md" --full
 ```
 
-This is the canonical, reliable path. Do not manually guess filesystem paths from `qmd://` paths.
+Each session transcript includes `original_session` metadata in frontmatter. When exact tool outputs, commands, SQL, or ad-hoc code matter, recover them from the original session JSONL with `session_ask` or `session-view --include-tool-results`.
 
 ## If qmd is missing
 
@@ -140,41 +138,46 @@ qmd status
 
 # Sessions
 
-Session logs are indexed as the `sessions` collection.
+Agent session transcripts are indexed as the `sessions` collection.
+
+The `sessions` collection is a corpus of agent session transcripts generated from session JSONL via `session-view`. It is optimized for readable search. Very large sessions may be split across multiple transcript documents; use the `original_session` metadata when you need exact raw-session recovery.
 
 ## Required workflow
 
-Use this two-step process:
+Use this three-step process:
 1. **Discover** candidate sessions with qmd or `analyze-sessions.sh`
-2. **Inspect** a chosen session with `session-view`
+2. **Inspect** the session transcript with `qmd get`
+3. **Recover exact raw-session details only when needed** via `original_session` + `session_ask` or `session-view --include-tool-results`
 
 Do **not** try to understand a session from raw JSONL snippets alone.
 
-## Inspecting `qmd://` session paths
+## Inspecting session transcript paths
 
 Use one reliable inspection path:
 
 ```bash
-# Default: omit tool result/output blocks (cleaner to read)
-qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view - pi
-qmd get "qmd://sessions/codex/2025/10/30/rollout-....jsonl" --full | session-view - codex
-qmd get "qmd://sessions/claude/1234....jsonl" --full | session-view - claude
-
-# Opt-in: include tool result/output blocks (noisy, but useful for debugging)
-qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view --include-tool-results - pi
+# Read the session transcript directly
+qmd get "qmd://sessions/path/to/session-transcript.md" --full
 ```
 
-Format mapping:
-- `qmd://sessions/pi/...` → `session-view - pi`
-- `qmd://sessions/codex/...` → `session-view - codex`
-- `qmd://sessions/claude/...` → `session-view - claude`
+If the transcript is enough, stop there.
 
-Do not manually guess a filesystem path from a `qmd://` session path.
-
-Filtering rendered output is fine:
+If exact raw-session details matter:
 
 ```bash
-qmd get "qmd://sessions/pi/...jsonl" --full | session-view - pi | grep -iE 'USER:.*(error|bug|regression)'
+# 1. Read the transcript and note its `original_session` frontmatter
+qmd get "qmd://sessions/path/to/session-transcript.md" --full
+
+# 2. Recover exact details from the original session
+session-view --include-tool-results /absolute/path/to/original/session.jsonl
+```
+
+Or use `session_ask` against that `original_session` path when you want targeted recovery without reading the whole session.
+
+Filtering transcript output is fine:
+
+```bash
+qmd get "qmd://sessions/path/to/session-transcript.md" --full | grep -iE 'USER:.*(error|bug|regression)'
 ```
 
 ## Session search playbook
@@ -194,10 +197,10 @@ After 2-3 bad searches, stop iterating blindly and ask for more context.
 Start here when you have hard clues. Use `--files` first to avoid wasting tokens on snippets. If lexical search returns an obvious hit, inspect it immediately instead of escalating to `query`.
 
 ```bash
-qmd search -c sessions --files '"toolName":"rp_exec"' -n 20
-qmd search -c sessions --files '"isError":true' -n 20
-qmd search -c sessions --files '"role":"user"' -n 20
+qmd search -c sessions --files 'rp_exec' -n 20
 qmd search -c sessions --files 'apply_edits' -n 20
+qmd search -c sessions --files 'git rebase' -n 20
+qmd search -c sessions --files 'search block not found' -n 20
 ```
 
 If lexical search returns many same-score candidates because the clue is broad or common, do not keep repeating broad lexical searches. Tighten the query with a more distinctive phrase, tool name, error string, or timeframe clue, or switch to `qmd query --intent ...`.
@@ -234,16 +237,14 @@ qmd ls sessions/pi
 
 `session-view` lives at `~/.pi/agent/skills/text-search/scripts/session-view`.
 
-Use this path:
+Use it when a session transcript points you at an `original_session` and you need exact raw-session details.
 
 ```bash
 # Default: omit tool result/output blocks
-qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view - pi
-qmd get "qmd://sessions/codex/2025/10/30/rollout-2025-10-30t15-36-39-....jsonl" --full | session-view - codex
-qmd get "qmd://sessions/claude/1234....jsonl" --full | session-view - claude
+session-view /absolute/path/to/original/session.jsonl
 
 # Opt-in: include tool result/output blocks
-qmd get "qmd://sessions/pi/users-ww-project/2026-01-20....jsonl" --full | session-view --include-tool-results - pi
+session-view --include-tool-results /absolute/path/to/original/session.jsonl
 ```
 
 You can also inspect the latest local session directly:
@@ -281,8 +282,11 @@ TOOL [name]: ✓ truncated_output
 # 1. Start with lexical search and compact path output
 qmd search -c sessions --files 'git rebase' -n 20
 
-# 2. Inspect a chosen result
-qmd get "qmd://sessions/pi/users-ww-dot314/2026-01-21....jsonl" --full | session-view - pi
+# 2. Inspect the transcript
+qmd get "qmd://sessions/path/to/session-transcript.md" --full
+
+# 3. If exact details matter, recover them from original_session
+session-view --include-tool-results /absolute/path/to/original/session.jsonl
 ```
 
 ### Escalate when lexical search is weak
