@@ -74,11 +74,11 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
 | Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | current selection is the input context |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
-| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs=[...]]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use exact workspace-root `working_dirs` only when you want RepoPrompt to route to the matching open workspace |
+| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use exact workspace-root `working_dirs` only when you want RepoPrompt to route to the matching open workspace |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
-| Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control |
-| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state |
+| Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state; `list_sessions` uses MCP-facing states and `list_workflows` includes `orchestrate` |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | detail levels: `summary\|files\|patches\|full`; worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
 ---
@@ -99,15 +99,26 @@ If results look wrong, assume routing first—not tool failure.
 
 1. `bind_context op="list"` — inspect windows, active workspaces, tabs, `context_id`s, and current bindings when you need to disambiguate
 2. Prefer `bind_context op="bind" context_id="..."` — pin the specific compose context you want after choosing it from `list`
-3. Use `bind_context op="bind" working_dirs=["/abs/root"]` only when you want RepoPrompt to pick the window for a matching exact workspace root without pinning a tab
+3. Use `bind_context op="bind" working_dirs="/abs/root"` only when you want RepoPrompt to pick the window for a matching exact workspace root without pinning a tab
 4. `get_file_tree` — confirm workspace roots
 
 Notes:
 - `bind_context.list` is the per-window routing view
 - `manage_workspaces.list` is the workspace inventory view
-- `working_dirs` matches exact workspace roots, not descendant paths
+- `bind_context op="bind" working_dirs="/abs/root[,/abs/root2]"` matches exact workspace roots, not descendant paths
 
 RepoPrompt only operates within workspace root folders.
+
+## Agent Mode
+
+`agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab agent session, not just make one-off MCP file/chat calls.
+
+- Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`
+- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, inspect logs
+- Session state uses MCP-facing values such as `running`, `waiting_for_input`, `completed`, and `failed`; `waiting_for_input` means reply with `agent_run op="respond"`
+- `agent_manage op="list_workflows"` includes `orchestrate` for planning, decomposition, and sub-agent dispatch
+- `agent_run op="wait"` / `op="poll"` accept either `session_id` or `session_ids`; multi-wait wakes on the first interesting session
+- MCP-started `orchestrate` runs may spawn sub-agents, but nested sub-agents cannot recursively start more agent runs
 
 ---
 

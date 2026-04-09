@@ -1,0 +1,117 @@
+11c11
+< - `list_sessions`: Browse sessions. Returns `session_id` for each session. Filter by `state` (e.g. `failed`, `completed`, `running`). When called from agent mode, automatically scopes to sessions spawned by the current agent session.
+---
+> - `list_sessions`: Browse sessions. Returns `session_id` for each session. Filter by MCP-facing `state` (e.g. `running`, `waiting_for_input`, `completed`, `failed`). When called from agent mode, automatically scopes to sessions spawned by the current agent session.
+16c16
+< - `list_workflows`: Discover workflows usable with `agent_run` operations.
+---
+> - `list_workflows`: Discover workflows usable with `agent_run` operations, including `orchestrate` for planning, decomposition, and sub-agent dispatch.
+46c46,47
+<     [list_sessions] Session state filter.
+---
+>     [list_sessions] Session state filter. Use MCP-facing values such
+>     as running, waiting_for_input, completed, failed.
+62,63c63,64
+< - `poll`: Return current snapshot immediately. Requires `session_id` from a prior start. Returns `interaction_id` when input is pending.
+< - `wait`: Block until the run finishes or needs input. Default 300s. `timeout: 0` = poll. Requires `session_id`. Returns `interaction_id` when input is pending.
+---
+> - `poll`: Return current snapshot immediately. Accepts `session_id` (single) or `session_ids` (array — returns all current snapshots).
+> - `wait`: Block until the run finishes or needs input. Default 300s. `timeout: 0` = poll. Accepts `session_id` (single) or `session_ids` (array — returns when first session reaches interesting state). Returns `interaction_id` when input is pending.
+69a71,72
+> **Sub-agent spawning**: MCP-started `orchestrate` runs can dispatch sub-agents. Sub-agents cannot recursively start additional agent runs.
+> 
+107a111,115
+>   session_ids (array<string>)
+>     [wait, poll] Array of session UUIDs. For wait: returns when first
+>     session reaches interesting state. For poll: returns all current
+>     snapshots. Mutually exclusive with session_id.
+> 
+237,241c245,246
+<   working_dirs (oneOf(string, array<string>))
+<     Accepts one of:
+<       - string
+<         For bind: comma-separated exact absolute workspace root paths
+<       - array<string>
+---
+>   working_dirs (string)
+>     For bind: comma-separated exact absolute workspace root paths
+869,879c874,875
+<   copy_preset (oneOf(string, object))
+<     Accepts one of:
+<       - string
+<         Preset UUID, kind, or name
+<       - object
+<         Preset selector object
+<       id (string)
+<         Preset UUID
+< 
+<       kind (string)
+<         Built-in preset kind
+---
+>   copy_preset (string)
+>     Preset UUID, kind, or name
+881,884d876
+<       name (string)
+<         Preset name
+< 
+< 
+891,898c883,884
+<   preset (oneOf(string, object))
+<     Accepts one of:
+<       - string
+<         Preset UUID, kind, or name
+<       - object
+<         Preset selector object
+<       id (string)
+<         Preset UUID
+---
+>   preset (string)
+>     Preset UUID, kind, or name
+900,906d885
+<       kind (string)
+<         Built-in preset kind
+< 
+<       name (string)
+<         Preset name
+< 
+< 
+982,989c961,962
+<   copy_preset (oneOf(string, object))
+<     Accepts one of:
+<       - string
+<         Preset UUID, kind, or name
+<       - object
+<         Preset selector object
+<       id (string)
+<         Preset UUID
+---
+>   copy_preset (string)
+>     Preset UUID, kind, or name
+991,997d963
+<       kind (string)
+<         Built-in preset kind
+< 
+<       name (string)
+<         Preset name
+< 
+< 
+1010,1017c976,977
+<   preset (oneOf(string, object))
+<     Accepts one of:
+<       - string
+<         Preset UUID, kind, or name
+<       - object
+<         Preset selector object
+<       id (string)
+<         Preset UUID
+---
+>   preset (string)
+>     Preset UUID, kind, or name
+1019,1025d978
+<       kind (string)
+<         Built-in preset kind
+< 
+<       name (string)
+<         Preset name
+< 
+< 

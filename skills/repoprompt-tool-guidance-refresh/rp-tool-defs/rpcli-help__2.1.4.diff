@@ -1,0 +1,11 @@
+147a148,149
+>       agent_run op=wait session_ids=["<uuid1>","<uuid2>"] timeout=60
+>                                                     Wait for first of multiple sessions
+148a151,152
+>       agent_run op=poll session_ids=["<uuid1>","<uuid2>","<uuid3>"]
+>                                                     Poll multiple snapshots
+154a159,162
+>       session_ids is accepted only for wait/poll and is mutually exclusive
+>       with session_id. Multi-wait returns the winning snapshot plus wait
+>       metadata (mode, result, winner_session_id, pending_session_ids).
+>       Multi-poll returns poll metadata plus a snapshots array.
