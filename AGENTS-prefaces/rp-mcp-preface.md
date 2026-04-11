@@ -54,9 +54,9 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
-| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."]` | uses the current tab/context |
+| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | uses the current tab/context; exporting returns `oracle_export_path` |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
-| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use exact workspace-root `working_dirs` only when you want RepoPrompt to route to the matching open workspace |
+| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use `working_dirs` when you want RepoPrompt to route to a workspace by roots (exact match first, repo_paths superset fallback) |
 | Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
@@ -83,11 +83,12 @@ If results look wrong, assume routing first—not tool failure.
 3. Otherwise `rp({ bind: { window: N } })` — bind to the right window
 4. `bind_context op="list"` — inspect windows, active workspaces, tabs, `context_id`s, and current bindings when routing is ambiguous
 5. Prefer `bind_context op="bind" context_id="..."` — pin the specific compose tab you want after choosing it from `list`
-6. Use `bind_context op="bind" working_dirs="/abs/root"` only when you want RepoPrompt to pick the window for a matching exact workspace root without pinning a tab
+6. Use `bind_context op="bind" working_dirs="/abs/root"` when you want RepoPrompt to route to a workspace by roots without pinning a tab
 7. `get_file_tree` — confirm workspace roots
 
 Notes:
-- `bind_context op="bind" working_dirs="/abs/root[,/abs/root2]"` matches the full workspace root set, not descendant paths
+- `bind_context op="bind" working_dirs="/abs/root[,/abs/root2]"` matches workspace roots, not descendant paths
+- Matching prefers an exact workspace `repo_paths` set; if none exists, RepoPrompt may fall back to a workspace whose roots are a strict superset
 - `manage_workspaces action="list"` is the workspace inventory view; `bind_context op="list"` is the routing view
 
 RepoPrompt only operates within workspace root folders.
@@ -101,6 +102,7 @@ RepoPrompt only operates within workspace root folders.
 - Session state uses MCP-facing values such as `running`, `waiting_for_input`, `completed`, and `failed`; `waiting_for_input` means reply with `agent_run op="respond"`
 - `agent_manage op="list_workflows"` includes `orchestrate` for planning, decomposition, and sub-agent dispatch
 - `agent_run op="wait"` / `op="poll"` accept either `session_id` or `session_ids`; multi-wait wakes on the first interesting session
+- If you start sub-agents, do not end your turn while any started session is still unattended; always `wait`/`poll` and handle pending input first
 - MCP-started `orchestrate` runs may spawn sub-agents, but nested sub-agents cannot recursively start more agent runs
 
 ### Context Builder
@@ -115,6 +117,8 @@ Runs an agent to explore the codebase and curate file selection automatically.
 - `response_type="review"`: Generates a code review with git diff context, returns `chat_id`
 
 Use returned `chat_id` with `oracle_send new_chat=false chat_id="..."` for followup.
+
+When you need a shareable handoff artifact, `context_builder` and `oracle_send` can export generated responses with `export_response=true`, returning `oracle_export_path`.
 
 Token-costly—invoke explicitly when user requests or during planning phases, not automatically.
 
