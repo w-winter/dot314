@@ -159,6 +159,7 @@ These other extensions have also improved my QoL in Pi, so I recommend checking 
 | [diff](https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/diff.ts) (badlogic) | `/diff` shows git-changed files and opens selected file in VS Code's diff view | Copy to `~/.pi/agent/extensions/` |
 | [greprip](https://github.com/kaofelix/greprip) (kaofelix) | Transparent interception of `grep`/`find` commands, translating them to `rg`/`fd` for speed | `uv tool install git+https://github.com/kaofelix/greprip` + [shell config](https://github.com/kaofelix/greprip#2-configure-pi) |
 | [loop](https://github.com/mitsuhiko/agent-stuff/blob/main/pi-extensions/loop.ts) (mitsuhiko) | `/loop` starts a follow-up loop with a breakout condition | Copy to `~/.pi/agent/extensions/` |
+| [pi-gpt-config](https://github.com/edxeth/pi-gpt-config) (edxeth) | Configuration of OpenAI models' API-side parameters like verbosity, fast mode, etc. | `pi install git:github.com/edxeth/pi-gpt-config` |
 | [pi-guardrails](https://github.com/aliou/pi-guardrails) (aliou) | `.env` file protection + AST-based dangerous command gates | `pi install npm:@aliou/pi-guardrails` |
 | [pi-interview](https://github.com/nicobailon/pi-interview-tool) (nicobailon) | Interactive form-based input gathering with native window support | `pi install npm:pi-interview` |
 | [pi-nvim](https://github.com/aliou/pi-harness/tree/main/integrations/neovim) (aliou) | Bidirectional Neovim integration: `nvim_context` tool, LSP diagnostics at turn end, file reload after edits, visible-splits injection | Neovim plugin; see [setup instructions](https://github.com/aliou/pi-harness/tree/main/integrations/neovim#installation) |
@@ -166,7 +167,6 @@ These other extensions have also improved my QoL in Pi, so I recommend checking 
 | [pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker) (Graffioh) | Quick screenshot selection and attachment for prompts | `pi install npm:pi-screenshots-picker` |
 | [pi-token-burden](https://github.com/Whamp/pi-token-burden) (Whamp) | Token usage breakdown and context burden analysis | `pi install npm:pi-token-burden` |
 | [pi-tool-display](https://github.com/MasuRii/pi-tool-display) (MasuRii) | Compact tool call rendering with diff visualization | `pi install npm:pi-tool-display` |
-| [pi-verbosity-control](https://github.com/ferologics/pi-verbosity-control) (ferologics) | Per-model OpenAI verbosity presets with configurable shortcut | `pi install npm:pi-verbosity-control` |
 | [pi-web-access](https://github.com/nicobailon/pi-web-access) (nicobailon) | Gemini-powered web search with AI-synthesized overviews and citations | `pi install npm:pi-web-access` |
 | [whimsical](https://github.com/mitsuhiko/agent-stuff/blob/main/pi-extensions/whimsical.ts) (mitsuhiko) | Whimsical messages while the agent is working | Copy to `~/.pi/agent/extensions/` |
 
