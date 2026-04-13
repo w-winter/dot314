@@ -31,7 +31,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
-import { runAnycopyEnterNavigation } from "./enter-navigation.ts";
+import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
 import {
 	ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
 	createFoldStateEntryData,
@@ -799,30 +799,33 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				: null;
 			let durableFoldedNodeIds = restoredFoldState?.foldedNodeIds ?? [];
 			let lastPersistedFoldedNodeIds = durableFoldedNodeIds;
+			const currentLeafIdForNoop = currentLeafId;
+
+			const startEnterNavigation = createAnycopyEnterNavigationLauncher(async (entryId) =>
+				runAnycopyEnterNavigation({
+					entryId,
+					currentLeafIdForNoop,
+					skipSummaryPrompt,
+					close: done,
+					reopen: (reopenOpts) => {
+						void openAnycopy(ctx, reopenOpts);
+					},
+					navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
+					ui: {
+						select: (title, options) => ctx.ui.select(title, options),
+						editor: (title) => ctx.ui.editor(title),
+						setStatus: (source, message) => ctx.ui.setStatus(source, message),
+						setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
+						notify: (message, level) => ctx.ui.notify(message, level),
+					},
+				}),
+			);
 
 			const selector = new TreeSelectorComponent(
 				initialTree,
 				currentLeafId,
 				treeTermHeight,
-				(entryId) => {
-					void runAnycopyEnterNavigation({
-						entryId,
-						effectiveLeafIdForNoop,
-						skipSummaryPrompt,
-						close: done,
-						reopen: (reopenOpts) => {
-							void openAnycopy(ctx, reopenOpts);
-						},
-						navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
-						ui: {
-							select: (title, options) => ctx.ui.select(title, options),
-							editor: (title) => ctx.ui.editor(title),
-							setStatus: (source, message) => ctx.ui.setStatus(source, message),
-							setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
-							notify: (message, level) => ctx.ui.notify(message, level),
-						},
-					});
-				},
+				startEnterNavigation,
 				() => done(),
 				(entryId, label) => {
 					pi.setLabel(entryId, label);
@@ -877,7 +880,6 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				persistDurableFoldState(nextDurableFoldedNodeIds);
 			};
 
-			const effectiveLeafIdForNoop = selector.getTreeList().getSelectedNode()?.entry.id ?? currentLeafId;
 			const overlay = new anycopyOverlay(
 				selector,
 				getTree,

@@ -4,7 +4,7 @@ export type AnycopySummaryChoice = "No summary" | "Summarize" | "Summarize with 
 
 export type AnycopyEnterNavigationDeps = {
 	entryId: string;
-	effectiveLeafIdForNoop: string | null;
+	currentLeafIdForNoop: string | null;
 	skipSummaryPrompt: boolean;
 	close: () => void;
 	reopen: (options: { initialSelectedId: string }) => void;
@@ -21,12 +21,29 @@ export type AnycopyEnterNavigationDeps = {
 	};
 };
 
+export function createAnycopyEnterNavigationLauncher(
+	run: (entryId: string) => Promise<AnycopyEnterNavigationResult>,
+): (entryId: string) => void {
+	let navigationInFlight = false;
+
+	return (entryId: string) => {
+		if (navigationInFlight) {
+			return;
+		}
+
+		navigationInFlight = true;
+		void run(entryId).finally(() => {
+			navigationInFlight = false;
+		});
+	};
+}
+
 export async function runAnycopyEnterNavigation(
 	deps: AnycopyEnterNavigationDeps,
 ): Promise<AnycopyEnterNavigationResult> {
-	const { entryId, effectiveLeafIdForNoop, skipSummaryPrompt, close, reopen, navigateTree, ui } = deps;
+	const { entryId, currentLeafIdForNoop, skipSummaryPrompt, close, reopen, navigateTree, ui } = deps;
 
-	if (effectiveLeafIdForNoop !== null && entryId === effectiveLeafIdForNoop) {
+	if (currentLeafIdForNoop !== null && entryId === currentLeafIdForNoop) {
 		close();
 		ui.setStatus("anycopy", "Already at this point");
 		return "closed";

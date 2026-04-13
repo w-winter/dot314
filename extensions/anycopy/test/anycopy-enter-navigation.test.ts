@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runAnycopyEnterNavigation } from "../enter-navigation.ts";
+import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "../enter-navigation.ts";
 
 type SummaryChoice = "No summary" | "Summarize" | "Summarize with custom prompt";
 
@@ -11,7 +11,7 @@ function createHarness(options?: {
 	editorResults?: Array<string | undefined>;
 	navigateResult?: { cancelled: boolean; aborted?: boolean };
 	navigateError?: Error;
-	effectiveLeafIdForNoop?: string | null;
+	currentLeafIdForNoop?: string | null;
 	skipSummaryPrompt?: boolean;
 }) {
 	const selectQueue = [...(options?.selectResults ?? [])];
@@ -32,7 +32,7 @@ function createHarness(options?: {
 		run: () =>
 			runAnycopyEnterNavigation({
 				entryId: "target-node",
-				effectiveLeafIdForNoop: options?.effectiveLeafIdForNoop ?? "current-node",
+				currentLeafIdForNoop: options?.currentLeafIdForNoop ?? "current-node",
 				skipSummaryPrompt: options?.skipSummaryPrompt ?? false,
 				close: () => {
 					calls.close += 1;
@@ -70,8 +70,31 @@ function createHarness(options?: {
 	};
 }
 
-test("runAnycopyEnterNavigation closes with already-at-point status on noop", async () => {
-	const harness = createHarness({ effectiveLeafIdForNoop: "target-node" });
+test("createAnycopyEnterNavigationLauncher ignores re-entry while navigation is in flight", async () => {
+	const calls: string[] = [];
+	let resolveRun: ((result: "closed") => void) | undefined;
+
+	const launcher = createAnycopyEnterNavigationLauncher(
+		(entryId) =>
+			new Promise((resolve) => {
+				calls.push(entryId);
+				resolveRun = resolve;
+			}),
+	);
+
+	launcher("first-node");
+	launcher("second-node");
+	assert.deepEqual(calls, ["first-node"]);
+
+	resolveRun?.("closed");
+	await new Promise((resolve) => setImmediate(resolve));
+
+	launcher("third-node");
+	assert.deepEqual(calls, ["first-node", "third-node"]);
+});
+
+test("runAnycopyEnterNavigation closes with already-at-point status on noop against current leaf", async () => {
+	const harness = createHarness({ currentLeafIdForNoop: "target-node" });
 
 	const result = await harness.run();
 
