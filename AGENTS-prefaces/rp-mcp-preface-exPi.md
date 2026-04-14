@@ -78,7 +78,7 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
-| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state; `list_sessions` uses MCP-facing states and `list_workflows` includes `orchestrate` |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|extract_handoff\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state and export agent handoff transcript; `list_sessions` uses MCP-facing states and `list_workflows` includes `orchestrate` |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | detail levels: `summary\|files\|patches\|full`; worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
 ---
@@ -104,7 +104,7 @@ If results look wrong, assume routing first—not tool failure.
 
 Notes:
 - `bind_context.list` is the per-window routing view
-- `manage_workspaces.list` is the workspace inventory view
+- `manage_workspaces.list` is the workspace inventory
 - `bind_context op="bind" working_dirs="/abs/root[,/abs/root2]"` matches workspace roots, not descendant paths
 - Matching prefers an exact workspace `repo_paths` set; if none exists, RepoPrompt may fall back to a workspace whose roots are a strict superset
 
@@ -112,10 +112,11 @@ RepoPrompt only operates within workspace root folders.
 
 ## Agent Mode
 
-`agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab agent session, not just make one-off MCP file/chat calls.
+`agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab subagent session, not just make one-off MCP file/chat calls.
 
 - Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`
-- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, inspect logs
+- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, and export handoff transcript
+- Use `agent_manage op="extract_handoff"` to pull into your context a handoff transcript of the subagent's context. It exports a `<forked_session ...>` payload; set `output_path` to write a file, or omit it for inline XML.
 - Session state uses MCP-facing values such as `running`, `waiting_for_input`, `completed`, and `failed`; `waiting_for_input` means reply with `agent_run op="respond"`
 - `agent_manage op="list_workflows"` includes `orchestrate` for planning, decomposition, and sub-agent dispatch
 - `agent_run op="wait"` / `op="poll"` accept either `session_id` or `session_ids`; multi-wait wakes on the first interesting session

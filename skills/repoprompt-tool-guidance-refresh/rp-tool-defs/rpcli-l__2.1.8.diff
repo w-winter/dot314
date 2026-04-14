@@ -1,0 +1,90 @@
+8c8
+< **Operations**: list_agents | list_sessions | get_log | create_session | resume_session | stop_session | cleanup_sessions | list_workflows
+---
+> **Operations**: list_agents | list_sessions | get_log | extract_handoff | handoff | create_session | resume_session | stop_session | cleanup_sessions | list_workflows
+12a13
+> - `extract_handoff` (`handoff` alias): Export the full `<forked_session ...>` handoff XML for a live or persisted session. Persisted sessions export transcript-only payloads; `include_file_contents` is accepted only for a live source tab that is currently active so file selection can be snapshotted reliably. Use `output_path` to write to a file; inline XML is returned by default only when no output path is provided.
+20c21
+<   op (string, required): list_agents | list_sessions | get_log | create_session | resume_session | stop_session | cleanup_sessions | list_workflows
+---
+>   op (string, required): list_agents | list_sessions | get_log | extract_handoff | handoff | create_session | resume_session | stop_session | cleanup_sessions | list_workflows
+22a24,31
+>   include_file_contents (boolean)
+>     [extract_handoff] Include file contents only when the source
+>     session is live and its tab is active. Default false.
+> 
+>   inline (boolean)
+>     [extract_handoff] Include handoff_xml in the response. Default
+>     true without output_path, false with output_path.
+> 
+25a35,42
+>   max_tool_args_characters (integer)
+>     [extract_handoff] Tool argument character budget; clamped to
+>     0...20000. Default 2000.
+> 
+>   max_transcript_items (integer)
+>     [extract_handoff] Transcript item budget; clamped to 1...1000.
+>     Default 200.
+> 
+35a53,60
+>   output_path (string)
+>     [extract_handoff] Absolute output path (or ~/...) for the handoff
+>     XML. When set, inline XML is omitted unless inline=true.
+> 
+>   overwrite (boolean)
+>     [extract_handoff] Whether output_path may replace an existing
+>     file. Default true.
+> 
+37c62,63
+<     [get_log, resume_session, stop_session] Session UUID.
+---
+>     [get_log, extract_handoff, resume_session, stop_session] Session
+>     UUID.
+48a75,76
+>   up_to_item_id (string)
+>     [extract_handoff] Optional transcript row UUID cutoff.
+49a78
+> 
+231c260
+< - Use `manage_workspaces list` to see all saved workspaces, including ones not currently open
+---
+> - Use `manage_workspaces list` to see saved visible workspaces, or `include_hidden=true` to include recoverable hidden workspaces
+717c746
+< • list         – Return all known workspaces (id, name, repoPaths, showing window IDs)
+---
+> • list         – Return known visible workspaces by default (id, name, repoPaths, showing window IDs, is_hidden)
+720c749,751
+< • delete       – Delete a workspace (optionally close window)
+---
+> • hide         – Hide a workspace from default workspace lists without deleting it
+> • unhide       – Restore a hidden workspace to default workspace lists
+> • delete       – Delete a workspace permanently (optionally close window)
+729,730c760,761
+< - action: "list" | "switch" | "create" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" | "create_tab" | "close_tab" (required)
+< - workspace: string                             (required for 'switch', 'delete'; optional for 'add_folder', 'remove_folder' - defaults to active workspace; UUID or name)
+---
+> - action: "list" | "switch" | "create" | "hide" | "unhide" | "delete" | "add_folder" | "remove_folder" | "list_tabs" | "select_tab" | "create_tab" | "close_tab" (required)
+> - workspace: string                             (required for 'switch', 'hide', 'unhide', 'delete'; optional for 'add_folder', 'remove_folder' - defaults to active workspace; UUID or name)
+742a774
+> - include_hidden: boolean                       (optional; default false. For 'list', includes hidden workspaces. For name-based 'switch'/'delete', allows hidden matches. UUID lookup remains explicit and can resolve hidden workspaces.)
+744c776
+< For 'switch', provide a single 'workspace' value. If it parses as a UUID, that workspace is selected by ID; otherwise it is treated as a name and the first match is used.
+---
+> Hidden workspaces remain persisted/recoverable. Default 'list' and name-based 'switch'/'delete' exclude hidden workspaces unless include_hidden=true; 'hide'/'unhide' are non-destructive. Explicit UUID switch/delete can target hidden workspaces without unhiding them.
+757c789
+<   action (string, required): list | switch | create | delete | add_folder | remove_folder | list_tabs | select_tab | create_tab | close_tab
+---
+>   action (string, required)
+779a812,816
+>   include_hidden (boolean)
+>     Default false. For list, includes hidden workspaces. For
+>     name-based switch/delete, allows hidden matches; UUID lookup
+>     remains explicit.
+> 
+806,807c843,845
+<     Workspace UUID or name (required for 'switch', 'delete'; optional
+<     for 'add_folder', 'remove_folder' - defaults to active workspace)
+---
+>     Workspace UUID or name (required for 'switch', 'hide', 'unhide',
+>     'delete'; optional for 'add_folder', 'remove_folder' - defaults to
+>     active workspace)

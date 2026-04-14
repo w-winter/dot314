@@ -1,0 +1,25 @@
+133c133,136
+<       workspace list                               List all workspaces
+---
+>       workspace list                               List visible workspaces
+>       workspace list --include-hidden              Include recoverable hidden workspaces
+>       workspace hide MyProject                     Hide from default lists (non-destructive)
+>       workspace unhide MyProject                   Restore to default lists
+134a138
+>       workspace switch MyProject --include-hidden  Switch hidden workspace by name
+137a142
+>       workspace delete MyProject --include-hidden  Delete hidden workspace by name
+142a148,150
+>       manage_workspaces action=list include_hidden=true
+>       manage_workspaces action=hide workspace=X
+>       manage_workspaces action=unhide workspace=X
+168a177,179
+>       agent_manage handoff <id> --output handoff.xml  Export <forked_session> XML
+>       agent_manage op=extract_handoff session_id="<id>" output_path="/tmp/handoff.xml"
+>       agent_manage op=handoff session_id="<id>" inline=true  Alias for extract_handoff
+173,174c184,185
+<       Operations: list_agents, list_sessions, get_log, create_session,
+<                   resume_session, stop_session, list_workflows
+---
+>       Operations: list_agents, list_sessions, get_log, extract_handoff/handoff,
+>                   create_session, resume_session, stop_session, list_workflows
