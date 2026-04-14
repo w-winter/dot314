@@ -7,7 +7,7 @@ For investigating what actually happened, not just the conversation flow.
 
 Output format:
   USER: message
-  A: assistant text
+  ASSISTANT: assistant text
     [tool_name] key_args
   TOOL [name]: ✓/✗ truncated_output
 
@@ -29,6 +29,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 MAX_OUTPUT_LINES = 8
 MAX_OUTPUT_CHARS = 500
+ENVIRONMENT_CONTEXT_END = "</environment_context>"
+LEADING_TRANSCRIPT_PREAMBLE_PREFIXES = (
+    "# AGENTS.md instructions",
+    "<INSTRUCTIONS>",
+    "<user_instructions>",
+    "<environment_context>",
+)
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -226,6 +233,50 @@ def process_session(
 ) -> List[str]:
     """Process Codex session records into diagnostic output"""
     output = []
+    transcript_started = False
+    dropping_leading_preamble = False
+
+    def normalize_leading_text(text: str) -> str:
+        nonlocal transcript_started, dropping_leading_preamble
+
+        if not text:
+            return ""
+
+        if transcript_started:
+            return text
+
+        if dropping_leading_preamble:
+            end_index = text.find(ENVIRONMENT_CONTEXT_END)
+            if end_index < 0:
+                return ""
+
+            dropping_leading_preamble = False
+            stripped = text[end_index + len(ENVIRONMENT_CONTEXT_END):].lstrip()
+            if stripped:
+                transcript_started = True
+            return stripped
+
+        stripped_leading = text.lstrip()
+        if ENVIRONMENT_CONTEXT_END in stripped_leading:
+            end_index = stripped_leading.find(ENVIRONMENT_CONTEXT_END)
+            stripped = stripped_leading[end_index + len(ENVIRONMENT_CONTEXT_END):].lstrip()
+            if stripped:
+                transcript_started = True
+            return stripped
+
+        if stripped_leading.startswith(LEADING_TRANSCRIPT_PREAMBLE_PREFIXES):
+            dropping_leading_preamble = True
+            return ""
+
+        transcript_started = True
+        return text
+
+    def append_output(item: str) -> None:
+        nonlocal transcript_started
+        if not item:
+            return
+        output.append(item)
+        transcript_started = True
 
     for obj in records:
         typ = str(obj.get("type") or obj.get("record_type") or "").lower()
@@ -252,7 +303,9 @@ def process_session(
                 if isinstance(s, dict):
                     text = s.get("text", "")
                     if text:
-                        output.append(f"A: [reasoning] {_truncate(text, max_lines=4, max_chars=200)}")
+                        if dropping_leading_preamble and not transcript_started:
+                            continue
+                        append_output(f"ASSISTANT: [reasoning] {_truncate(text, max_lines=4, max_chars=200)}")
             continue
         
         # Function calls
@@ -260,7 +313,9 @@ def process_session(
             name = obj.get("name") or obj.get("function") or obj.get("func") or "unknown"
             args = obj.get("arguments") or obj.get("args") or obj.get("parameters") or {}
             formatted = _format_tool_call(name, args)
-            output.append(f"A:\n  {formatted}")
+            if dropping_leading_preamble and not transcript_started:
+                continue
+            append_output(f"ASSISTANT:\n  {formatted}")
             continue
         
         # Function call output
@@ -272,7 +327,9 @@ def process_session(
             content = _flatten_text(obj.get("output") or obj.get("content") or obj.get("result"))
             is_error = bool(obj.get("error") or obj.get("is_error") or obj.get("isError"))
             formatted = _format_tool_result(name, is_error, content, max_lines=max_lines, max_chars=max_chars)
-            output.append(formatted)
+            if dropping_leading_preamble and not transcript_started:
+                continue
+            append_output(formatted)
             continue
         
         # Response items (Codex uses payload wrapper)
@@ -286,12 +343,9 @@ def process_session(
             content = payload.get("content", [])
             
             if role == "user" or msg_type == "user":
-                text = _flatten_text(content)
-                if text and not text.startswith("<environment_context>") and not text.startswith("<user_instructions>"):
-                    # Skip system injection blocks
-                    if len(text) > 500 and ("<" in text[:50] and ">" in text[:100]):
-                        continue
-                    output.append(f"USER: {text}")
+                text = normalize_leading_text(_flatten_text(content))
+                if text:
+                    append_output(f"USER: {text}")
             
             elif role == "assistant" or msg_type == "assistant":
                 text_parts = []
@@ -322,23 +376,28 @@ def process_session(
                     if text_parts:
                         text = "\n".join(text_parts)
                         text_lines = text.split("\n")
-                        lines.append(f"A: {text_lines[0]}")
+                        lines.append(f"ASSISTANT: {text_lines[0]}")
                         lines.extend(f"   {l}" for l in text_lines[1:] if l.strip())
                     if tool_parts:
                         if not text_parts:
-                            lines.append("A:")
+                            lines.append("ASSISTANT:")
                         lines.extend(tool_parts)
-                    output.append("\n".join(lines))
+                    rendered = normalize_leading_text("\n".join(lines)) if not transcript_started else "\n".join(lines)
+                    if rendered:
+                        append_output(rendered)
             continue
         
         # Generic message handling
         role, text = _extract_role_and_text(obj)
         if role == "user" and text:
             # Skip system blocks
-            if not (text.startswith("<") and ">" in text[:100]):
-                output.append(f"USER: {text}")
+            rendered = normalize_leading_text(text)
+            if rendered:
+                append_output(f"USER: {rendered}")
         elif role == "assistant" and text:
-            output.append(f"A: {text}")
+            if dropping_leading_preamble and not transcript_started:
+                continue
+            append_output(f"ASSISTANT: {text}")
     
     return output
 

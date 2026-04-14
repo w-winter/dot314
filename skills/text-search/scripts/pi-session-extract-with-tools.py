@@ -7,7 +7,7 @@ For investigating what actually happened, not just the conversation flow.
 
 Output format:
   USER: message
-  A: assistant text
+  ASSISTANT: assistant text
     [tool_name] key_args
   TOOL [name]: ✓/✗ truncated_output
 
@@ -235,15 +235,15 @@ def process_session(
             if text_parts or tool_parts:
                 lines = []
                 if text_parts:
-                    # Prefix first line with "A:", indent rest
+                    # Prefix first line with "ASSISTANT:", indent rest
                     text = "\n".join(text_parts)
                     text_lines = text.split("\n")
-                    lines.append(f"A: {text_lines[0]}")
+                    lines.append(f"ASSISTANT: {text_lines[0]}")
                     lines.extend(f"   {l}" for l in text_lines[1:])
                 
                 if tool_parts:
                     if not text_parts:
-                        lines.append("A:")
+                        lines.append("ASSISTANT:")
                     lines.extend(tool_parts)
                 
                 output.append("\n".join(lines))

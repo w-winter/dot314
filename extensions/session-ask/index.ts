@@ -714,10 +714,10 @@ async function loadSessionAsRenderedEntries(sessionPath: string): Promise<Render
                     const text = textBlocks.join("\n");
                     if (text) {
                         const split = text.split("\n");
-                        linesOut.push(`A: ${split[0]}`);
+                        linesOut.push(`ASSISTANT: ${split[0]}`);
                         linesOut.push(...split.slice(1).map((l) => `   ${l}`));
                     } else {
-                        linesOut.push("A:");
+                        linesOut.push("ASSISTANT:");
                     }
 
                     if (toolCalls.length > 0) {
@@ -1294,7 +1294,7 @@ ${explorationStrategyLines.join("\n")}
                                 "",
                                 ...matches.map((m) => {
                                     const preview = m.lines
-                                        .find((l) => l.startsWith("USER:") || l.startsWith("A:") || l.startsWith("TOOL ") || l.startsWith("[compaction]"))
+                                        .find((l) => l.startsWith("USER:") || l.startsWith("ASSISTANT:") || l.startsWith("TOOL ") || l.startsWith("[compaction]"))
                                         ?? m.lines[1]
                                         ?? "";
                                     return `- [#${m.index}] ${preview.trim()}`;

@@ -238,6 +238,8 @@ qmd ls sessions/pi
 `session-view` lives at `~/.pi/agent/skills/text-search/scripts/session-view`.
 
 Use it when a session transcript points you at an `original_session` and you need exact raw-session details.
+It also accepts RepoPrompt `AgentSession-*.json` files when you want the compressed RP-side view plus its `codexRolloutPath`.
+For Codex sessions, `session-view` strips the leading injected AGENTS/environment preamble through `</environment_context>` before rendering the transcript.
 
 ```bash
 # Default: omit tool result/output blocks
@@ -245,6 +247,9 @@ session-view /absolute/path/to/original/session.jsonl
 
 # Opt-in: include tool result/output blocks
 session-view --include-tool-results /absolute/path/to/original/session.jsonl
+
+# RepoPrompt AgentSession JSON
+session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessions/AgentSession-ABC123.json
 ```
 
 You can also inspect the latest local session directly:
@@ -254,6 +259,7 @@ You can also inspect the latest local session directly:
 session-view --latest pi
 session-view --latest codex
 session-view --latest claude
+session-view --latest rp
 
 # Opt-in: include tool result/output blocks
 session-view --include-tool-results --latest pi
@@ -264,7 +270,7 @@ Rendered output looks like this (tool calls are shown; tool results are omitted 
 ```text
 USER: message
 
-A: response text
+ASSISTANT: response text
   [tool_name] key_args
 ```
 
