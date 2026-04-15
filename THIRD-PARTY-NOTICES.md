@@ -90,13 +90,6 @@ text. This file provides a consolidated overview.
 - **Used in:**
   - `extensions/skill-palette/` (○ unmodified)
 
-### nicobailon/pi-subagents
-- **URL:** https://github.com/nicobailon/pi-subagents
-- **License:** MIT (declared in package.json)
-- **Copyright:** © Nico Bailon
-- **Used in:**
-  - `extensions/subagent/` (○ unmodified)
-
 ### nicobailon/pi-rewind-hook
 - **URL:** https://github.com/nicobailon/pi-rewind-hook
 - **License:** MIT (declared in package.json)

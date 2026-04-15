@@ -4,7 +4,7 @@
   "injectForkHintSystemPrompt": true,
 
   "sessionAskModels": [
-    { "provider": "openai-codex", "id": "gpt-5.1-codex-mini", "thinkingLevel": "medium" }
+    { "provider": "openai-codex", "id": "gpt-5.4-mini", "thinkingLevel": "medium" }
   ],
   "thinkingLevel": "medium",
 

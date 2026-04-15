@@ -272,7 +272,6 @@
 - ○ [`status-line.ts`](status-line.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`titlebar-spinner.ts`](titlebar-spinner.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`skill-palette/`](skill-palette/) (upstream: [nicobailon/pi-skill-palette](https://github.com/nicobailon/pi-skill-palette))
-- ○ [`subagent/`](subagent/) (upstream: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents))
 - ○ [`pi-prompt-template-model/`](pi-prompt-template-model/) (upstream: [nicobailon/pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model))
 - ○ [`code-actions/`](code-actions/) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/code` to pick code blocks or inline code from recent assistant messages, then copy or insert

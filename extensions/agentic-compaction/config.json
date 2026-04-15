@@ -1,6 +1,6 @@
 {
   "compactionModels": [
-    { "provider": "openai-codex", "id": "gpt-5.1-codex-mini" }
+    { "provider": "openai-codex", "id": "gpt-5.4-mini" }
   ],
   "thinkingLevel": "medium",
 

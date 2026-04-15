@@ -4,7 +4,8 @@
   "_wildcard": "Use * for pattern matching, e.g., 'gpt-5.2*' matches 'gpt-5.2' and 'gpt-5.2-codex'",
   "global": 70,
   "models": {
-    "claude-opus-4-6": 85,
+    "claude-*-4-6": 55,
+    "gpt-5.4*": 55,
     "gpt-5.3*": 75,
     "gpt-5.2*": 75
   }
