@@ -280,7 +280,7 @@ def render_session(
 
     rollout_path = session.get("codexRolloutPath")
     if isinstance(rollout_path, str) and rollout_path.strip():
-        lines.append(f"Exact history: session-view --include-tool-results {rollout_path}")
+        lines.append(f"Codex session JSONL: {rollout_path}")
 
     lines.extend(["", "Transcript", ""])
 

@@ -71,7 +71,7 @@ detect_format() {
     local path="$1"
     
     case "$path" in
-        */Library/Application\ Support/RepoPrompt/*/AgentSessions/AgentSession-*.json|*/RepoPrompt/*/AgentSessions/AgentSession-*.json|*/AgentSessions/AgentSession-*.json)
+        AgentSession-*.json|./AgentSession-*.json|../AgentSession-*.json|*/Library/Application\ Support/RepoPrompt/*/AgentSessions/AgentSession-*.json|*/RepoPrompt/*/AgentSessions/AgentSession-*.json|*/AgentSessions/AgentSession-*.json)
             echo "rp"
             ;;
         */.pi/*|*/pi-session*|*pi/*)
