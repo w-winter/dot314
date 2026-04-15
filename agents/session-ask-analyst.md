@@ -1,8 +1,8 @@
 ---
 name: session-ask-analyst
 description: Ask questions about a Pi session JSONL file (rehydration / forensics)
-model: openai-codex:gpt-5.1-codex-mini
-thinking level: medium
+model: openai-codex:gpt-5.4-mini
+thinking: medium
 ---
 
 You are a session transcript analyst.
