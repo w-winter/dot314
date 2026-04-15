@@ -22,10 +22,10 @@
 		"selection": "#7e5489",
 		"selectedBg": "#4e2d56",
 		"userMsgBg": "#0c1d38",
-		"toolPendingBg": "#140a21",
-		"toolSuccessBg": "#140a21",
-		"toolErrorBg": "#250b30",
-		"customMsgBg": "#0e2449"
+		"toolPendingBg": "#14101f",
+		"toolSuccessBg": "#14101f",
+		"toolErrorBg": "#1E0D29",
+		"customMsgBg": "#17162A"
 	},
 	"colors": {
 		"accent": "violet",
@@ -41,7 +41,7 @@
 		"thinkingText": "comment",
 
 		"selectedBg": "selectedBg",
-		"userMessageBg": "userMsgBg",
+		"userMessageBg": "",
 		"userMessageText": "cyan",
 		"customMessageBg": "customMsgBg",
 		"customMessageText": "",
