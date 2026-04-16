@@ -161,6 +161,7 @@ These other extensions have also improved my QoL in Pi, so I recommend checking 
 | [pi-gpt-config](https://github.com/edxeth/pi-gpt-config) (edxeth) | Configuration of OpenAI models' API-side parameters like verbosity, fast mode, etc. | `pi install git:github.com/edxeth/pi-gpt-config` |
 | [pi-guardrails](https://github.com/aliou/pi-guardrails) (aliou) | `.env` file protection + AST-based dangerous command gates | `pi install npm:@aliou/pi-guardrails` |
 | [pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents) (HazAT) | Spawn, orchestrate, and manage async subagent sessions in multiplexer cmux panes; main agent keeps working while subagents run in the background |
+| [pi-intercom](https://github.com/nicobailon/pi-intercom) (nicobailon) | Direct 1:1 messaging between Pi sessions; augments subagents nicely | `pi install npm:pi-interview` |
 | [pi-interview](https://github.com/nicobailon/pi-interview-tool) (nicobailon) | Interactive form-based input gathering with native window support | `pi install npm:pi-interview` |
 | [pi-nvim](https://github.com/aliou/pi-harness/tree/main/integrations/neovim) (aliou) | Bidirectional Neovim integration: `nvim_context` tool, LSP diagnostics at turn end, file reload after edits, visible-splits injection | Neovim plugin; see [setup instructions](https://github.com/aliou/pi-harness/tree/main/integrations/neovim#installation) |
 | [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer) (MasuRii) | Read-tool-kit context optimization for token efficiency | `pi install npm:pi-rtk-optimizer` |
