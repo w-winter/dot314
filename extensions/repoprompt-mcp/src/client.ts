@@ -2,6 +2,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "./types.js";
 import type {
   RpConnection,
   RpToolMeta,
@@ -17,10 +18,6 @@ const CLIENT_INFO = {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 6_000;
 const DEFAULT_LIST_TOOLS_TIMEOUT_MS = 10_000;
-
-// Keep parity with the rp-cli integration default (15 minutes). Some RepoPrompt tools
-// (notably context_builder and chat_send) can legitimately take longer than 10s
-const DEFAULT_TOOL_CALL_TIMEOUT_MS = 15 * 60 * 1000;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -51,6 +48,7 @@ export class RpClient {
   private _status: ConnectionStatus = "disconnected";
   private _tools: RpToolMeta[] = [];
   private _error: string | undefined;
+  private toolCallTimeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS;
 
   get status(): ConnectionStatus {
     return this._status;
@@ -68,13 +66,18 @@ export class RpClient {
     return this._status === "connected" && this.client !== null;
   }
 
+  setToolCallTimeoutMs(timeoutMs: number): void {
+    this.toolCallTimeoutMs = timeoutMs;
+  }
+
   /**
    * Connect to the RepoPrompt MCP server
    */
   async connect(
     command: string,
     args: string[],
-    env?: Record<string, string>
+    env?: Record<string, string>,
+    toolCallTimeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS
   ): Promise<void> {
     if (this._status === "connecting") {
       throw new Error("Connection already in progress");
@@ -85,6 +88,7 @@ export class RpClient {
 
     this._status = "connecting";
     this._error = undefined;
+    this.toolCallTimeoutMs = toolCallTimeoutMs;
 
     try {
       // Create transport
@@ -156,11 +160,13 @@ export class RpClient {
   async callTool(
     name: string,
     args?: Record<string, unknown>,
-    timeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS
+    timeoutMs?: number
   ): Promise<McpToolResult> {
     if (!this.client) {
       throw new Error("Not connected to RepoPrompt MCP server");
     }
+
+    const resolvedTimeoutMs = timeoutMs ?? this.toolCallTimeoutMs;
 
     let result;
     try {
@@ -170,7 +176,7 @@ export class RpClient {
           arguments: args ?? {},
         },
         undefined,
-        { timeout: timeoutMs }
+        { timeout: resolvedTimeoutMs }
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

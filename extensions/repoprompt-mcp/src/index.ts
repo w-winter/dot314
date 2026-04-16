@@ -569,6 +569,9 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   pi.on("before_agent_start", async () => {
     // Reload config so display knobs (collapsedMaxLines etc.) apply without requiring /reload
     config = loadConfig();
+    if (config.toolCallTimeoutMs !== undefined) {
+      getRpClient().setToolCallTimeoutMs(config.toolCallTimeoutMs);
+    }
   });
 
   // Replay-aware read_file caching state (optional; guarded by config.readcacheReadFile)
@@ -2008,15 +2011,19 @@ Mode priority: call > describe > search > windows > bind > status`,
       await initPromise;
     }
 
+    // Reload config so connection/runtime knobs apply without requiring /reload
+    config = loadConfig();
+
     const client = getRpClient();
+    if (config.toolCallTimeoutMs !== undefined) {
+      client.setToolCallTimeoutMs(config.toolCallTimeoutMs);
+    }
     if (client.isConnected) {
       return;
     }
 
     // Lazy reconnect: allow the user to install/configure RepoPrompt after Pi starts
     // and have `rp(...)` work without requiring a restart.
-    config = loadConfig();
-
     const server = getServerCommand(config);
     if (!server) {
       throw new Error(
@@ -2024,7 +2031,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       );
     }
 
-    await client.connect(server.command, server.args, config.env);
+    await client.connect(server.command, server.args, config.env, config.toolCallTimeoutMs);
 
     if (ctx) {
       try {
@@ -3151,7 +3158,7 @@ async function initializeExtension(
 
   // Connect to RepoPrompt
   const client = getRpClient();
-  await client.connect(server.command, server.args, config.env);
+  await client.connect(server.command, server.args, config.env, config.toolCallTimeoutMs);
 
   // Notify connection
   if (ctx.hasUI) {

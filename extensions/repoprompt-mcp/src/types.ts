@@ -95,25 +95,28 @@ export interface RpConnection {
 export const DIFF_VIEW_MODES = ["auto", "split", "unified"] as const;
 export type DiffViewMode = (typeof DIFF_VIEW_MODES)[number];
 
+export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 90 * 60 * 1000;
+
 export interface RpConfig {
   // Server connection
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  
+  toolCallTimeoutMs?: number;      // MCP tool call timeout in ms (default: 5_400_000 / 90 minutes)
+
   // Logging
   suppressHostDisconnectedLog?: boolean;  // Filter known-noisy shutdown log line (default: true)
-  
+
   // Behavior
   autoBindOnStart?: boolean;       // Auto-detect and bind to matching window (default: true)
   persistBinding?: boolean;        // Remember binding across session (default: true)
-  
+
   // Safety
   confirmDeletes?: boolean;        // Require confirmation for deletes (default: true)
   confirmEdits?: boolean;          // Require confirmation for edit-like operations (default: false)
-  
+
   // Display
-  collapsedMaxLines?: number;      // Max lines in collapsed view (default: 15)
+  collapsedMaxLines?: number;      // Max lines in collapsed view (default: 3)
   diffViewMode?: DiffViewMode;     // Diff layout mode: auto, split, unified (default: auto)
   diffSplitMinWidth?: number;      // Minimum width before auto mode uses split diff layout (default: 120)
 
@@ -124,12 +127,12 @@ export interface RpConfig {
   // (tracks read slices/full files so chat_send/"Oracle" has context without manual selection)
   autoSelectReadSlices?: boolean;  // When true, read_file calls add slices/full selection (default: true)
 
-    // App launch
-    autoLaunchApp?: boolean;         // Auto-launch RepoPrompt.app on connection failure (default: false)
-    appPath?: string;                // Explicit path to RepoPrompt.app (inferred from command if omitted)
+  // App launch
+  autoLaunchApp?: boolean;         // Auto-launch RepoPrompt.app on connection failure (default: false)
+  appPath?: string;                // Explicit path to Repo Prompt.app (inferred from command if omitted)
 
-    // /rp oracle behavior
-    oracleDefaultMode?: "chat" | "plan" | "edit" | "review"; // Default mode when /rp oracle omits --mode (default: "chat")
+  // /rp oracle behavior
+  oracleDefaultMode?: "chat" | "plan" | "edit" | "review"; // Default mode when /rp oracle omits --mode (default: "chat")
 }
 
 

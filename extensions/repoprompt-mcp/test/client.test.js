@@ -50,3 +50,22 @@ test("RpClient.close gracefully closes the MCP client after a successful connect
   assert.equal(transportCloseCalls, 1);
   assert.equal(client.status, "disconnected");
 });
+
+test("RpClient.callTool uses the configured default tool timeout", async () => {
+  const client = new RpClient();
+  let receivedOptions;
+
+  client.client = {
+    callTool: async (_request, _metadata, options) => {
+      receivedOptions = options;
+      return { content: [{ type: "text", text: "ok" }], isError: false };
+    },
+  };
+  client.setToolCallTimeoutMs(1234);
+
+  const result = await client.callTool("context_builder");
+
+  assert.deepEqual(receivedOptions, { timeout: 1234 });
+  assert.equal(result.isError, false);
+  assert.deepEqual(result.content, [{ type: "text", text: "ok" }]);
+});

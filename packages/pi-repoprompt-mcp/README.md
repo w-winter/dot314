@@ -164,6 +164,7 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
 
   "confirmDeletes": true,
   "confirmEdits": false,
+  "toolCallTimeoutMs": 5400000,
 
   "readcacheReadFile": true,
   "autoSelectReadSlices": true,
@@ -185,6 +186,7 @@ Options:
 | `command` | auto-detect | MCP server command |
 | `args` | `[]` | MCP server args |
 | `env` | unset | Extra environment variables for the MCP server |
+| `toolCallTimeoutMs` | `5400000` | MCP tool call timeout in milliseconds for RepoPrompt tools like `context_builder` and `oracle_send` (90 minutes by default) |
 | `autoBindOnStart` | `true` | Auto-detect and bind on session start, then reconcile the branch-safe tab for the chosen window |
 | `persistBinding` | `true` | Persist window and tab bindings in Pi session history for branch-safe replay |
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |

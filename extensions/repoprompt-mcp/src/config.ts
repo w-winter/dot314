@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
-import { DIFF_VIEW_MODES, type DiffViewMode, type RpConfig } from "./types.js";
+import { DEFAULT_TOOL_CALL_TIMEOUT_MS, DIFF_VIEW_MODES, type DiffViewMode, type RpConfig } from "./types.js";
 
 // Default configuration
 const DEFAULT_CONFIG: RpConfig = {
@@ -12,6 +12,7 @@ const DEFAULT_CONFIG: RpConfig = {
   persistBinding: true,
   confirmDeletes: true,
   confirmEdits: false,
+  toolCallTimeoutMs: DEFAULT_TOOL_CALL_TIMEOUT_MS,
   collapsedMaxLines: 3,
   diffViewMode: "auto",
   diffSplitMinWidth: 120,
@@ -197,6 +198,12 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
     config = { ...config, ...overrides };
   }
 
+  config.toolCallTimeoutMs = clampNumber(
+    config.toolCallTimeoutMs,
+    1_000,
+    24 * 60 * 60 * 1000,
+    DEFAULT_TOOL_CALL_TIMEOUT_MS
+  );
   config.diffViewMode = toDiffViewMode(config.diffViewMode);
   config.diffSplitMinWidth = clampNumber(config.diffSplitMinWidth, 70, 240, DEFAULT_CONFIG.diffSplitMinWidth ?? 120);
 

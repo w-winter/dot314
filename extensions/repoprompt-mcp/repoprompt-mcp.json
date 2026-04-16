@@ -5,6 +5,7 @@
   "persistBinding": true,
   "confirmDeletes": true,
   "confirmEdits": false,
+  "toolCallTimeoutMs": 5400000,
   "collapsedMaxLines": 3,
   "diffViewMode": "auto",
   "diffSplitMinWidth": 120,
