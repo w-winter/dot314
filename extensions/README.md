@@ -159,6 +159,13 @@
 - ● [`iterm-tab-color.ts`](iterm-tab-color.ts)
   - Uses iTerm2 OSC tab-color sequences to color each Pi tab's background per two configurable states (`runningColor` and `notRunningColor`, for when the agent is running or not running respectively); gracefully no-ops if another terminal emulator is used
 
+- ● [`inline-shell.ts`](inline-shell.ts)
+  - Expands inline `!{command}` snippets in normal messages before submit
+  - Also routes leading `!command` / `!{command}` bash-mode execution through the resolved shell, so aliases from the active shell environment can work there too
+  - Uses the current shell when supported; for zsh it prefers `~/.pi/agent/shell/pi-inline.zsh`, otherwise falls back to interactive zsh and `.zshrc`; unsupported or non-zsh cases fall back to bash
+  - Sets `PI_INLINE_SHELL=1` in the spawned shell so shell startup can skip noisy prompt/plugin setup while still loading aliases/functions
+  - Example starter file: [`../shell/pi-inline.zsh.example`](../shell/pi-inline.zsh.example)
+
 - ◐ [`editor-enhancements/`](editor-enhancements/) ([README](./editor-enhancements/README.md))
   - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
   - Configurable via two sibling files in the extension folder:
@@ -266,7 +273,6 @@
   - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
   - This version adds workspace auto-renaming: on `session_start` and `agent_end`, syncs the cmux workspace name to the Pi session name using `CMUX_WORKSPACE_ID` so concurrent cmux workspaces do not cross-rename (only when the workspace has exactly 1 pane and 1 surface)
 
-- ○ [`inline-bash.ts`](inline-bash.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`interactive-shell.ts`](interactive-shell.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`preset.ts`](preset.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`status-line.ts`](status-line.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))

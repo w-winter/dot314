@@ -138,7 +138,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ◐ | `agentic-compaction/` |
 | ○ | `code-actions/` |
 | ◐ | `extension-stats.ts` |
-| ○ | `inline-bash.ts` |
+| ● | `inline-shell.ts` |
 | ○ | `interactive-shell.ts` |
 | ○ | `pi-prompt-template-model/` |
 | ○ | `preset.ts` |

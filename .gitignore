@@ -81,3 +81,6 @@ extensions/agentic-compactions/compactions/
 
 # .pi folders
 **/.pi/
+
+# Shell aliases used by extensions/inline-shell.ts
+shell/pi-inline.zsh

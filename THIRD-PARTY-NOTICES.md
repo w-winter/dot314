@@ -19,7 +19,6 @@ text. This file provides a consolidated overview.
   - `extensions/plan-mode.ts` (◐ modified)
   - `extensions/tools/` (◐ modified)
   - `extensions/sandbox/` (◐ modified)
-  - `extensions/inline-bash.ts` (○ unmodified)
   - `extensions/interactive-shell.ts` (○ unmodified)
   - `extensions/preset.ts` (○ unmodified)
   - `extensions/titlebar-spinner.ts` (○ unmodified)

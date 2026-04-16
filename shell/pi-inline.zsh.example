@@ -1,0 +1,23 @@
+# Canonical aliases/functions for Pi inline-shell and your interactive zsh
+#
+# Copy this file to:
+#   ~/.pi/agent/shell/pi-inline.zsh
+#
+# Then source that canonical file near the top of ~/.zshrc:
+#   source ~/.pi/agent/shell/pi-inline.zsh
+#
+# Keep this file quiet. Do not print output from it.
+#
+# Optional: after sourcing this file in ~/.zshrc, you can skip noisy prompt/plugin
+# setup when inline-shell spawns a subprocess:
+#
+#   if [[ -n "${PI_INLINE_SHELL:-}" ]]; then
+#     return
+#   fi
+#
+# Example aliases/functions:
+# alias gs='git status --short'
+# alias gl='git log --oneline --decorate -20'
+# function repo-root() {
+#   git rev-parse --show-toplevel
+# }

@@ -1,7 +1,6 @@
 The following single-file extensions in this directory are from or derived from
 pi-mono examples (https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions):
 
-  - inline-bash.ts
   - interactive-shell.ts
   - preset.ts
   - status-line.ts
