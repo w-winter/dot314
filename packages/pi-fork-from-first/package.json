@@ -1,6 +1,6 @@
 {
   "name": "pi-fork-from-first",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Fork the current Pi session from its first user message and switch into the new fork immediately, with sensible defaults in relation to pi-rewind-hook",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session", "fork"],
   "license": "MIT",
