@@ -166,6 +166,14 @@
   - Sets `PI_INLINE_SHELL=1` in the spawned shell so shell startup can skip noisy prompt/plugin setup while still loading aliases/functions
   - Example starter file: [`../shell/pi-inline.zsh.example`](../shell/pi-inline.zsh.example)
 
+- ● [`subagent-bridge/`](subagent-bridge/) ([README](./subagent-bridge/README.md))
+  - Gives subagents spawned or resumed in the current orchestrator short, stable handles usable with `subagent_resume` and `intercom` in place of `.jsonl` paths or session UUIDs; requires `pi-interactive-subagents` and `pi-intercom`
+  - `subagent_resume({ sessionPath: "idle-worker" })` — handle is rewritten to the child's real session file path before upstream validation
+  - `intercom({ to: "@idle-worker", ... })` (parent side) — handle is rewritten to the child's current intercom target, so the orchestrator can steer a running child with the same vocabulary used for resume
+  - `intercom({ to: "@parent", ... })` (child side) — rewritten to the current orchestrator's intercom target; lighter alternative to `caller_ping` for clarification questions since the child keeps running while it waits for a reply
+  - Handles derive from the display name with deterministic collision suffixing (`-2`, `-3`, ...) and are parent-local; the list is regenerated each turn from what this session has actually launched or resumed (not from agent definitions on disk)
+  - Minimal factual `before_agent_start` hint surfaces only the affordances actually available; sidecar state lives at `<sessionDir>/subagent-bridge/<parentSessionId>/registry.json` (parent) and `<childSessionFile>.subagent-bridge.json` (child)
+
 - ◐ [`editor-enhancements/`](editor-enhancements/) ([README](./editor-enhancements/README.md))
   - Composite editor extension that makes multiple `setEditorComponent()`-based UX tweaks simultaneously compatible
   - Configurable via two sibling files in the extension folder:
