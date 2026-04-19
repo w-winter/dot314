@@ -166,6 +166,9 @@
   - Sets `PI_INLINE_SHELL=1` in the spawned shell so shell startup can skip noisy prompt/plugin setup while still loading aliases/functions
   - Example starter file: [`../shell/pi-inline.zsh.example`](../shell/pi-inline.zsh.example)
 
+- ● [`skill-templates/`](skill-templates/) ([README](./skill-templates/README.md))
+  - Adds `SKILL.template.md` — Nunjucks-templated skill files rendered at invocation time from the user's positional arguments, named options, and flags; supports conditional sections, `{% include %}` partials, and a `{% skill %}` tag for composing content from other skills; output uses the same `<skill ...>` envelope as core `SKILL.md`
+
 - ● [`subagent-bridge/`](subagent-bridge/) ([README](./subagent-bridge/README.md))
   - Gives subagents spawned or resumed in the current orchestrator short, stable handles usable with `subagent_resume` and `intercom` in place of `.jsonl` paths or session UUIDs; requires `pi-interactive-subagents` and `pi-intercom`
   - `subagent_resume({ sessionPath: "idle-worker" })` — handle is rewritten to the child's real session file path before upstream validation

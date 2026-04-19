@@ -145,6 +145,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ● | `repoprompt-cli/` |
 | ◐ | `rewind/` — archived; use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
 | ○ | `skill-palette/` |
+| ● | `skill-templates/` |
 | ● | `subagent-bridge/` |
 | ○ | `titlebar-spinner.ts` |
 | ○ | `todos.ts` |

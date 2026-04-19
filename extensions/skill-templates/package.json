@@ -1,0 +1,27 @@
+{
+  "name": "pi-skill-templates",
+  "version": "0.1.0",
+  "description": "Pi extension that renders SKILL.template.md files for explicit skill invocations",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "ignore": "^7.0.5",
+    "nunjucks": "^3.2.4"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.65.0",
+    "@types/nunjucks": "^3.2.6"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
