@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-import subagentBridgeExtension from "../index.ts";
+import subagentBridgeExtension, { __test__ } from "../index.ts";
 import {
   CHILD_PARENT_HINT,
   SUBAGENT_BRIDGE_HINT_MARKER,
@@ -38,6 +38,7 @@ type Harness = {
 };
 
 const tempDirs: string[] = [];
+const originalAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
 
 function createTempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "subagent-bridge-"));
@@ -81,6 +82,8 @@ function createHarness(options: {
   sessionFile?: string;
   sessionName?: string;
   toolNames?: string[];
+  bridgeConfig?: { autoReportToParentOnAgentEnd: boolean };
+  sendParentReport?: (input: any) => Promise<void> | void;
 }): Harness {
   const handlers = new Map<string, Handler[]>();
   const state: HarnessState = {
@@ -108,10 +111,14 @@ function createHarness(options: {
     },
   } as unknown as ExtensionAPI;
 
-  subagentBridgeExtension(pi);
+  subagentBridgeExtension(pi, {
+    ...(options.bridgeConfig ? { config: options.bridgeConfig } : {}),
+    ...(options.sendParentReport ? { sendParentReport: options.sendParentReport } : {}),
+  });
 
   const ctx = () => ({
     cwd: state.sessionDir,
+    model: { id: "claude-sonnet-4" },
     sessionManager: {
       getSessionId: () => state.sessionId,
       getSessionDir: () => state.sessionDir,
@@ -146,6 +153,12 @@ function createRegistry(sessionId: string, parentTarget: string, entries: Parent
 afterEach(() => {
   while (tempDirs.length > 0) {
     rmSync(tempDirs.pop() as string, { recursive: true, force: true });
+  }
+
+  if (originalAutoExit === undefined) {
+    delete process.env.PI_SUBAGENT_AUTO_EXIT;
+  } else {
+    process.env.PI_SUBAGENT_AUTO_EXIT = originalAutoExit;
   }
 });
 
@@ -367,7 +380,9 @@ test("parent intercom calls to @handle rewrite to the child target", async () =>
   const dir = createTempDir();
   const sessionId = "session-parent-handle-intercom";
   const parentFile = writeSessionFile(dir, "parent.jsonl", sessionId, { sessionName: "Parent Session" });
-  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-handle-intercom", { sessionName: "Idle Worker Session" });
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-handle-intercom", {
+    sessionName: "Idle Worker Session",
+  });
 
   saveParentRegistry(
     getParentRegistryPath(dir, sessionId),
@@ -646,4 +661,859 @@ test("child link fallback derives @parent from the exact stored parent session f
 
   const childLinkRaw = JSON.parse(readFileSync(getChildLinkPath(childFile), "utf8")) as ChildLink;
   assert.equal(childLinkRaw.parent.target, "");
+});
+
+test("findParentLocalHandleForChild reads the parent registry entry for the live child", () => {
+  const dir = createTempDir();
+  const parentSessionId = "session-parent-handle-lookup";
+  const parentFile = writeSessionFile(dir, "parent.jsonl", parentSessionId, { sessionName: "Parent Session" });
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-handle-lookup");
+
+  saveParentRegistry(
+    getParentRegistryPath(dir, parentSessionId),
+    createRegistry(parentSessionId, "Parent Session", [
+      {
+        handle: "idle-worker",
+        sessionFile: childFile,
+        displayName: "Idle Worker",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        lastAttachedAt: "2026-04-16T00:00:00.000Z",
+      },
+    ]),
+  );
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Idle Worker",
+    parent: {
+      sessionId: parentSessionId,
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+      sessionFile: parentFile,
+    },
+  });
+
+  assert.equal(__test__.findParentLocalHandleForChild(childFile), "idle-worker");
+});
+
+test("buildRelayedParentReportMessage includes relay-reply guidance and a concrete live-child reply command when a handle is known", () => {
+  const dir = createTempDir();
+  const parentSessionId = "session-parent-relay-message";
+  const parentFile = writeSessionFile(dir, "parent.jsonl", parentSessionId, { sessionName: "Parent Session" });
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-relay-message");
+
+  saveParentRegistry(
+    getParentRegistryPath(dir, parentSessionId),
+    createRegistry(parentSessionId, "Parent Session", [
+      {
+        handle: "idle-worker",
+        sessionFile: childFile,
+        displayName: "Idle Worker",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        lastAttachedAt: "2026-04-16T00:00:00.000Z",
+      },
+    ]),
+  );
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Idle Worker",
+    parent: {
+      sessionId: parentSessionId,
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+      sessionFile: parentFile,
+    },
+  });
+
+  const message = __test__.buildRelayedParentReportMessage({
+    senderName: "Idle Worker",
+    cwd: dir,
+    model: "claude-sonnet-4",
+    startedAt: Date.now(),
+    to: "Parent Session",
+    message: "Finished the task.",
+    childSessionFile: childFile,
+  });
+
+  assert.match(message, /Relayed final message from Idle Worker\./);
+  assert.match(message, /Replying to this relay message within 10 minutes will be forwarded into the live child session\./);
+  assert.match(message, /intercom\(\{ action: "send", to: "@idle-worker", message: "\.\.\." \}\)/);
+  assert.match(message, /Finished the task\./);
+});
+
+test("buildForwardedReplyMessage preserves parent text and attachments", () => {
+  const message = __test__.buildForwardedReplyMessage(
+    { id: "parent-id", name: "Parent Session" },
+    {
+      id: "reply-id",
+      timestamp: Date.now(),
+      replyTo: "relay-id",
+      content: {
+        text: "Please keep digging.",
+        attachments: [{ type: "snippet", name: "note.ts", content: "const x = 1;", language: "ts" }],
+      },
+    },
+  );
+
+  assert.match(message, /Forwarded reply from Parent Session via subagent-bridge relay:/);
+  assert.match(message, /Please keep digging\./);
+  assert.match(message, /📎 note\.ts/);
+  assert.match(message, /~~~ts/);
+});
+
+test("isRelayReplyFromParent matches stable parent session id and ignores display-name changes", () => {
+  assert.equal(
+    __test__.isRelayReplyFromParent(
+      { id: "parent-id", name: "Renamed Parent" },
+      { id: "reply-id", timestamp: Date.now(), replyTo: "relay-id", content: { text: "Reply" } },
+      "parent-id",
+      "relay-id",
+    ),
+    true,
+  );
+  assert.equal(
+    __test__.isRelayReplyFromParent(
+      { id: "someone-else", name: "Parent Session" },
+      { id: "reply-id", timestamp: Date.now(), replyTo: "relay-id", content: { text: "Reply" } },
+      "parent-id",
+      "relay-id",
+    ),
+    false,
+  );
+  assert.equal(
+    __test__.isRelayReplyFromParent(
+      { id: "parent-id", name: "Parent Session" },
+      { id: "reply-id", timestamp: Date.now(), replyTo: "different-id", content: { text: "Reply" } },
+      "parent-id",
+      "relay-id",
+    ),
+    false,
+  );
+});
+
+
+test("hasSessionBindingChanged detects when the child process moves to a different session", () => {
+  const state = {
+    currentSessionId: "session-child-a",
+    currentSessionFile: "/tmp/child-a.jsonl",
+  } as any;
+
+  assert.equal(
+    __test__.hasSessionBindingChanged(state, {
+      sessionManager: {
+        getSessionId: () => "session-child-a",
+        getSessionFile: () => "/tmp/child-a.jsonl",
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    __test__.hasSessionBindingChanged(state, {
+      sessionManager: {
+        getSessionId: () => "session-child-b",
+        getSessionFile: () => "/tmp/child-b.jsonl",
+      },
+    }),
+    true,
+  );
+});
+
+
+test("isRelayBoundToCurrentSession rejects forwarding after the child session changes", () => {
+  const state = {
+    currentSessionId: "session-child-b",
+    currentSessionFile: "/tmp/child-b.jsonl",
+  } as any;
+
+  assert.equal(__test__.isRelayBoundToCurrentSession(state, "session-child-a", "/tmp/child-a.jsonl"), false);
+  assert.equal(__test__.isRelayBoundToCurrentSession(state, "session-child-b", "/tmp/child-b.jsonl"), true);
+});
+
+test("lastAssistantTurnRepliesToUser detects when the final assistant turn immediately follows a user turn", () => {
+  assert.equal(
+    __test__.lastAssistantTurnRepliesToUser([
+      { role: "user", content: [{ type: "text", text: "What happened?" }] },
+      { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" },
+    ]),
+    true,
+  );
+  assert.equal(
+    __test__.lastAssistantTurnRepliesToUser([
+      { role: "assistant", content: [{ type: "text", text: "Working." }], stopReason: "stop" },
+      { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" },
+    ]),
+    false,
+  );
+});
+
+test("agent_end auto-reports the final assistant text to the parent when the child stayed alive", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-auto-report", { sessionName: "Child Session" });
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child Session",
+    parent: {
+      sessionId: "session-parent-auto-report",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-auto-report",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sessionName: "Child Session",
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_start");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Finished the implementation and verified the new tests." }],
+      },
+    ],
+  });
+
+  assert.deepEqual(reports, [
+    {
+      senderName: "Child Session",
+      cwd: dir,
+      model: "claude-sonnet-4",
+      startedAt: reports[0]?.startedAt,
+      to: "Parent Session",
+      parentSessionId: "session-parent-auto-report",
+      message: "Finished the implementation and verified the new tests.",
+      childSessionId: "session-child-auto-report",
+      childSessionFile: childFile,
+    },
+  ]);
+  assert.equal(typeof reports[0]?.startedAt, "number");
+});
+
+test("agent_end does not auto-report when the final assistant turn already messages @parent", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-no-duplicate");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-no-duplicate",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-no-duplicate",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Done." },
+          {
+            type: "toolCall",
+            name: "intercom",
+            arguments: { action: "send", to: "@parent", message: "Done." },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report when intercom arguments are stringified json for @parent", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-stringified-intercom");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-stringified-intercom",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-stringified-intercom",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Done." },
+          {
+            type: "toolCall",
+            name: "intercom",
+            arguments: JSON.stringify({ action: "send", to: "@parent", message: "Done." }),
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report when the final assistant turn intercoms the parent session id", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-parent-id-target");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-id-target",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-parent-id-target",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Done." },
+          {
+            type: "toolCall",
+            name: "intercom",
+            arguments: { action: "send", to: "session-parent-id-target", message: "Done." },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report when the final assistant turn is replying directly to a user", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-user-reply");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-user-reply",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-user-reply",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Can you summarize what changed?" }],
+      },
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "I updated the relay logic and tests." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end still auto-reports when the final assistant turn intercoms someone else", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-other-target");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-other-target",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-other-target",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Wrapped up the task." },
+          {
+            type: "toolCall",
+            name: "intercom",
+            arguments: { action: "send", to: "@other-child", message: "FYI" },
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].message, "Wrapped up the task.");
+});
+
+test("agent_end does not auto-report when the final assistant turn calls subagent_done", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-done");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-done",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-done",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "tool_use",
+        content: [
+          { type: "text", text: "All set." },
+          { type: "toolCall", name: "subagent_done", arguments: {} },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report when the final assistant turn calls subagent_done after a user turn", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-done-after-user");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-done-after-user",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-done-after-user",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Please wrap up when you're done" }],
+      },
+      {
+        role: "assistant",
+        stopReason: "tool_use",
+        content: [
+          { type: "text", text: "All set." },
+          { type: "toolCall", name: "subagent_done", arguments: {} },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report when the final assistant turn calls caller_ping", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-caller-ping");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-caller-ping",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-caller-ping",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "tool_use",
+        content: [
+          { type: "text", text: "Need help." },
+          { type: "toolCall", name: "caller_ping", arguments: { message: "Need help." } },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report after user takeover", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-takeover");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-takeover",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-takeover",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_start");
+  await harness.emit("input", { type: "input", source: "interactive", text: "Need one more tweak" });
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Finished." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end still auto-reports after non-interactive input sources", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-noninteractive-input");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-noninteractive-input",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-noninteractive-input",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_start");
+  await harness.emit("input", { type: "input", source: "rpc", text: "Follow-up automation" });
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Finished." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].message, "Finished.");
+});
+
+test("interactive input between runs does not suppress the next run's fallback report", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-two-runs");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-two-runs",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-two-runs",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_start");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "First run done." }],
+      },
+    ],
+  });
+
+  await harness.emit("input", { type: "input", source: "interactive", text: "Do one more thing" });
+
+  await harness.emit("agent_start");
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Second run done." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 2);
+  assert.equal(reports[0].message, "First run done.");
+  assert.equal(reports[1].message, "Second run done.");
+});
+
+test("agent_end does not auto-report aborted runs", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-aborted");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-aborted",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-aborted",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "aborted",
+        content: [{ type: "text", text: "Partial draft." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end does not auto-report when auto-exit mode is enabled", async () => {
+  process.env.PI_SUBAGENT_AUTO_EXIT = "1";
+
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-auto-exit");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-auto-exit",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-auto-exit",
+    sessionDir: dir,
+    sessionFile: childFile,
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Finished." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
+});
+
+test("agent_end respects config opt-out", async () => {
+  const dir = createTempDir();
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-config-opt-out");
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Child",
+    parent: {
+      sessionId: "session-parent-config-opt-out",
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+    },
+  });
+
+  const reports: any[] = [];
+  const harness = createHarness({
+    sessionId: "session-child-config-opt-out",
+    sessionDir: dir,
+    sessionFile: childFile,
+    bridgeConfig: { autoReportToParentOnAgentEnd: false },
+    sendParentReport: async (input) => {
+      reports.push(input);
+    },
+  });
+  await harness.emit("session_start");
+
+  await harness.emit("agent_end", {
+    type: "agent_end",
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "Finished." }],
+      },
+    ],
+  });
+
+  assert.equal(reports.length, 0);
 });

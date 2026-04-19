@@ -8,7 +8,7 @@ const DEFAULT_PARENT_HINT_MAX_LENGTH = 200;
 
 export const SUBAGENT_BRIDGE_HINT_MARKER = "# Subagent bridge (extension hint)";
 export const CHILD_PARENT_HINT =
-  'intercom({ action: "send"|"ask", to: "@parent", ... }) reaches the orchestrating parent of this session.';
+  'intercom({ action: "send"|"ask", to: "@parent", ... }) reaches the orchestrating parent of this session. If you finish without calling subagent_done, send your final summary to @parent in that last turn.';
 
 export interface ParentRegistryEntry {
   handle: string;

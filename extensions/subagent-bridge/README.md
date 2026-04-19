@@ -33,6 +33,29 @@ intercom({ action: "ask",  to: "@parent", message: "Should I include draft PRs?"
 
 Unlike `caller_ping`, this does not shut the child down, so the child can ask a question and keep working while it waits for an answer.
 
+### Automatic final-report fallback
+
+If a child session reaches `agent_end` and its **last assistant turn** was not immediately replying to a user message and did not itself call `intercom({ action: "send"|"ask", to: "@parent", ... })`, `subagent_done`, or `caller_ping`, `subagent-bridge` relays that last assistant text to `@parent` automatically.
+
+This is a safety net for cases where a subagent clearly finished but, for some reason or another, did not report back to the orchestrator/parent.
+
+Replies to the relayed intercom message are kept valid for up to 10 minutes while the same child session remains active: `subagent-bridge` keeps the relay session alive and forwards those replies back into that child session. If the child switches to a different session or reloads into a different session file, the relay is invalidated rather than forwarding into the wrong place. When the parent-local child handle is known, the relayed message also includes an explicit `intercom({ ... to: "@<handle>" ... })` command for replying to the still-live child directly.
+
+It is suppressed when:
+- the child is in `auto-exit` mode (`PI_SUBAGENT_AUTO_EXIT=1`)
+- the final assistant turn was immediately preceded by a user message
+- the run was aborted
+- the user took over interactively before the run ended
+- there is no resolved `@parent` binding
+
+Disable it in `config.json` if you want purely explicit reporting:
+
+```json
+{
+  "autoReportToParentOnAgentEnd": false
+}
+```
+
 ## State files
 
 - `<sessionDir>/subagent-bridge/<parentSessionId>/registry.json` — handle map for one orchestrator session

@@ -1,7 +1,12 @@
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
+import type { IntercomClient } from "../pi-intercom/broker/client.ts";
+import type { Attachment as IntercomAttachment, Message as IntercomMessage, SessionInfo } from "../pi-intercom/types.ts";
+
+import { loadConfig, type SubagentBridgeConfig } from "./config.ts";
 import {
   SUBAGENT_BRIDGE_HINT_MARKER,
   buildHint,
@@ -24,9 +29,15 @@ interface RuntimeState {
   currentSessionId?: string;
   currentSessionFile?: string;
   currentSessionDir?: string;
+  currentCwd?: string;
+  currentModel: string;
+  sessionStartedAt?: number;
   registryPath?: string;
   registry: ParentRegistry | null;
   pendingResumeRollbacks: Map<string, PreviousChildLinkSnapshot>;
+  relayDisconnectors: Set<() => Promise<void>>;
+  agentStarted: boolean;
+  userTookOver: boolean;
 }
 
 interface PreviousChildLinkSnapshot {
@@ -61,8 +72,42 @@ interface IntercomInput extends Record<string, unknown> {
   to?: string;
 }
 
+interface AssistantToolCall {
+  name: string;
+  arguments?: unknown;
+}
+
+interface AssistantTurn {
+  role: "assistant";
+  content: unknown[];
+  stopReason?: unknown;
+}
+
+interface AutoReportDecision {
+  finalMessage: string;
+  parentTarget: string;
+}
+
+interface ParentReportInput {
+  senderName: string;
+  cwd: string;
+  model: string;
+  startedAt: number;
+  to: string;
+  parentSessionId?: string;
+  message: string;
+  childSessionId?: string;
+  childSessionFile?: string;
+}
+
+interface BridgeOverrides {
+  config?: SubagentBridgeConfig;
+  sendParentReport?: (input: ParentReportInput) => Promise<void>;
+}
+
 const DEFAULT_RESUME_NAME = "Resume";
 const DEFAULT_DISPLAY_NAME = "subagent";
+const RELAY_REPLY_WINDOW_MS = 10 * 60 * 1000;
 
 function isCustomToolCall<TInput extends Record<string, unknown>>(
   toolName: string,
@@ -71,36 +116,83 @@ function isCustomToolCall<TInput extends Record<string, unknown>>(
   return event.toolName === toolName;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function createRuntimeState(): RuntimeState {
   return {
+    currentModel: "unknown",
     registry: null,
     pendingResumeRollbacks: new Map(),
+    relayDisconnectors: new Set(),
+    agentStarted: false,
+    userTookOver: false,
   };
+}
+
+async function disconnectRelayClients(state: RuntimeState): Promise<void> {
+  const disconnectors = [...state.relayDisconnectors];
+  state.relayDisconnectors.clear();
+  await Promise.all(disconnectors.map((disconnect) => disconnect().catch(() => {
+    // Ignore relay cleanup failures during shutdown
+  })));
 }
 
 function resetRuntimeState(state: RuntimeState): void {
   state.currentSessionId = undefined;
   state.currentSessionFile = undefined;
   state.currentSessionDir = undefined;
+  state.currentCwd = undefined;
+  state.currentModel = "unknown";
+  state.sessionStartedAt = undefined;
   state.registryPath = undefined;
   state.registry = null;
   state.pendingResumeRollbacks.clear();
+  state.relayDisconnectors.clear();
+  state.agentStarted = false;
+  state.userTookOver = false;
+}
+
+function hasSessionBindingChanged(
+  state: RuntimeState,
+  ctx: {
+    sessionManager: { getSessionId(): string; getSessionFile?(): string | undefined };
+  },
+): boolean {
+  const nextSessionId = ctx.sessionManager.getSessionId();
+  const nextSessionFile = ctx.sessionManager.getSessionFile?.() ?? process.env.PI_SUBAGENT_SESSION ?? undefined;
+
+  if (!state.currentSessionId && !state.currentSessionFile) {
+    return false;
+  }
+
+  return state.currentSessionId !== nextSessionId || state.currentSessionFile !== nextSessionFile;
 }
 
 function refreshRuntimeState(
   state: RuntimeState,
-  ctx: { sessionManager: { getSessionId(): string; getSessionDir(): string; getSessionFile?(): string | undefined } },
+  ctx: {
+    cwd?: string;
+    model?: { id?: string };
+    sessionManager: { getSessionId(): string; getSessionDir(): string; getSessionFile?(): string | undefined };
+  },
 ): void {
   state.currentSessionId = ctx.sessionManager.getSessionId();
   state.currentSessionDir = ctx.sessionManager.getSessionDir();
   state.currentSessionFile = ctx.sessionManager.getSessionFile?.() ?? process.env.PI_SUBAGENT_SESSION ?? undefined;
+  state.currentCwd = ctx.cwd ?? state.currentCwd ?? state.currentSessionDir;
+  if (typeof ctx.model?.id === "string" && ctx.model.id.trim()) {
+    state.currentModel = ctx.model.id;
+  }
+  state.sessionStartedAt ??= Date.now();
   state.registryPath = getParentRegistryPath(state.currentSessionDir, state.currentSessionId);
 
   const loadedRegistry = loadParentRegistry(state.registryPath);
   state.registry = loadedRegistry?.parentSessionId === state.currentSessionId ? loadedRegistry : null;
 }
 
-function getCurrentParentTarget(pi: ExtensionAPI, state: RuntimeState): string | undefined {
+function getCurrentSessionTarget(pi: ExtensionAPI, state: RuntimeState): string | undefined {
   if (!state.currentSessionId) return undefined;
   return deriveIntercomTarget(state.currentSessionId, pi.getSessionName());
 }
@@ -109,7 +201,7 @@ function ensureRegistry(pi: ExtensionAPI, state: RuntimeState): ParentRegistry |
   if (!state.currentSessionId || !state.registryPath) return null;
   if (state.registry) return state.registry;
 
-  const parentTarget = getCurrentParentTarget(pi, state);
+  const parentTarget = getCurrentSessionTarget(pi, state);
   if (!parentTarget) return null;
 
   state.registry = {
@@ -147,7 +239,7 @@ function createCurrentChildLink(
 ): ChildLink | null {
   if (!state.currentSessionId) return null;
 
-  const parentTarget = getCurrentParentTarget(pi, state);
+  const parentTarget = getCurrentSessionTarget(pi, state);
   if (!parentTarget) return null;
 
   return {
@@ -182,7 +274,7 @@ function upsertRegistryEntry(
   const registry = ensureRegistry(pi, state);
   if (!registry) return;
 
-  const parentTarget = getCurrentParentTarget(pi, state);
+  const parentTarget = getCurrentSessionTarget(pi, state);
   if (!parentTarget) return;
 
   const existingEntry = registry.entries.find((entry) => entry.sessionFile === childSessionFile);
@@ -209,7 +301,10 @@ function resolveResumeDisplayName(
   existingChildLink: ChildLink | null,
   fallbackName: unknown,
 ): string {
-  return existingEntry?.displayName ?? existingChildLink?.displayName ?? normalizeResumeDisplayName(fallbackName) ?? DEFAULT_DISPLAY_NAME;
+  return existingEntry?.displayName
+    ?? existingChildLink?.displayName
+    ?? normalizeResumeDisplayName(fallbackName)
+    ?? DEFAULT_DISPLAY_NAME;
 }
 
 function resolveLaunchDisplayName(existingEntry: ParentRegistryEntry | undefined, fallbackName: unknown): string {
@@ -267,7 +362,7 @@ function resolveChildTargetForHandle(state: RuntimeState, handle: string): { tar
 function syncOwnedChildLinks(pi: ExtensionAPI, state: RuntimeState): void {
   if (!state.currentSessionId || !state.registry) return;
 
-  const currentTarget = getCurrentParentTarget(pi, state);
+  const currentTarget = getCurrentSessionTarget(pi, state);
   if (!currentTarget || state.registry.parentTarget === currentTarget) return;
 
   for (const entry of state.registry.entries) {
@@ -289,11 +384,343 @@ function syncOwnedChildLinks(pi: ExtensionAPI, state: RuntimeState): void {
   saveRegistryIfAvailable(state);
 }
 
-export default function subagentBridgeExtension(pi: ExtensionAPI) {
-  const state = createRuntimeState();
+function findLastAssistantTurnEntry(
+  messages: unknown[] | undefined,
+): { index: number; message: AssistantTurn } | null {
+  if (!Array.isArray(messages)) return null;
 
-  pi.on("session_start", (_event, ctx) => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = messages[index];
+    if (!isRecord(candidate)) continue;
+    if (candidate.role !== "assistant") continue;
+    if (!Array.isArray(candidate.content)) continue;
+
+    return {
+      index,
+      message: {
+        role: "assistant",
+        content: candidate.content,
+        stopReason: candidate.stopReason,
+      },
+    };
+  }
+
+  return null;
+}
+
+function findLastAssistantTurn(messages: unknown[] | undefined): AssistantTurn | null {
+  return findLastAssistantTurnEntry(messages)?.message ?? null;
+}
+
+function lastAssistantTurnRepliesToUser(messages: unknown[] | undefined): boolean {
+  const lastAssistantTurn = findLastAssistantTurnEntry(messages);
+  if (!lastAssistantTurn || !Array.isArray(messages) || lastAssistantTurn.index === 0) {
+    return false;
+  }
+
+  const previousMessage = messages[lastAssistantTurn.index - 1];
+  return isRecord(previousMessage) && previousMessage.role === "user";
+}
+
+function extractAssistantTextContent(message: AssistantTurn): string | null {
+  const texts = message.content
+    .filter(
+      (block): block is { type: "text"; text: string } =>
+        isRecord(block)
+        && block.type === "text"
+        && typeof block.text === "string"
+        && block.text.trim() !== "",
+    )
+    .map((block) => block.text);
+
+  if (texts.length === 0) {
+    return null;
+  }
+
+  const joined = texts.join("\n").trim();
+  return joined || null;
+}
+
+function getAssistantToolCalls(message: AssistantTurn): AssistantToolCall[] {
+  return message.content
+    .filter(
+      (block): block is { type: "toolCall"; name: string; arguments?: unknown } =>
+        isRecord(block) && block.type === "toolCall" && typeof block.name === "string",
+    )
+    .map((block) => ({ name: block.name, arguments: block.arguments }));
+}
+
+function parseToolArguments(rawValue: unknown): Record<string, unknown> | null {
+  if (isRecord(rawValue)) {
+    return rawValue;
+  }
+
+  if (typeof rawValue !== "string") {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function finalAssistantTurnReportedToParent(
+  message: AssistantTurn,
+  parentTarget: string,
+  parentSessionId?: string,
+): boolean {
+  const normalizedParentTarget = parentTarget.trim().toLowerCase();
+  const normalizedParentSessionId = parentSessionId?.trim().toLowerCase();
+
+  return getAssistantToolCalls(message).some((toolCall) => {
+    if (toolCall.name === "subagent_done" || toolCall.name === "caller_ping") {
+      return true;
+    }
+
+    if (toolCall.name !== "intercom") {
+      return false;
+    }
+
+    const args = parseToolArguments(toolCall.arguments);
+    const action = typeof args?.action === "string" ? args.action.trim().toLowerCase() : "";
+    if (action !== "send" && action !== "ask") {
+      return false;
+    }
+
+    const rawTarget = typeof args?.to === "string" ? args.to.trim() : "";
+    if (!rawTarget) {
+      return false;
+    }
+
+    const normalizedTarget = rawTarget.toLowerCase();
+    return normalizedTarget === "@parent"
+      || normalizedTarget === normalizedParentTarget
+      || (normalizedParentSessionId !== undefined && normalizedTarget === normalizedParentSessionId);
+  });
+}
+
+function shouldAutoReportOnAgentEnd(params: {
+  autoReportEnabled: boolean;
+  autoExit: boolean;
+  userTookOver: boolean;
+  parentTarget?: string;
+  parentSessionId?: string;
+  messages: unknown[] | undefined;
+}): AutoReportDecision | null {
+  if (!params.autoReportEnabled || params.autoExit || params.userTookOver || !params.parentTarget) {
+    return null;
+  }
+
+  const lastAssistantTurn = findLastAssistantTurn(params.messages);
+  if (!lastAssistantTurn) {
+    return null;
+  }
+
+  if (finalAssistantTurnReportedToParent(lastAssistantTurn, params.parentTarget, params.parentSessionId)) {
+    return null;
+  }
+
+  if (lastAssistantTurnRepliesToUser(params.messages) || lastAssistantTurn.stopReason === "aborted") {
+    return null;
+  }
+
+  const finalMessage = extractAssistantTextContent(lastAssistantTurn);
+  if (!finalMessage) {
+    return null;
+  }
+
+  return {
+    finalMessage,
+    parentTarget: params.parentTarget,
+  };
+}
+
+function findParentLocalHandleForChild(childSessionFile: string | undefined): string | null {
+  if (!childSessionFile) {
+    return null;
+  }
+
+  const childLink = loadChildLink(childSessionFile);
+  if (!childLink?.parent.sessionFile) {
+    return null;
+  }
+
+  const parentRegistry = loadParentRegistry(
+    getParentRegistryPath(dirname(childLink.parent.sessionFile), childLink.parent.sessionId),
+  );
+  return parentRegistry?.entries.find((entry) => entry.sessionFile === childSessionFile)?.handle ?? null;
+}
+
+function formatRelayedReplyAttachment(attachment: IntercomAttachment): string {
+  return attachment.language
+    ? `\n\n---\n📎 ${attachment.name}\n~~~${attachment.language}\n${attachment.content}\n~~~`
+    : `\n\n---\n📎 ${attachment.name}\n${attachment.content}`;
+}
+
+function buildForwardedReplyMessage(from: SessionInfo, message: IntercomMessage): string {
+  const sender = from.name?.trim() || from.id;
+  const attachmentText = message.content.attachments?.map(formatRelayedReplyAttachment).join("") ?? "";
+  return `Forwarded reply from ${sender} via subagent-bridge relay:\n\n${message.content.text}${attachmentText}`;
+}
+
+function isRelayReplyFromParent(
+  from: SessionInfo,
+  message: IntercomMessage,
+  parentSessionId: string,
+  relayMessageId: string,
+): boolean {
+  return message.replyTo === relayMessageId && from.id === parentSessionId;
+}
+
+function buildRelayedParentReportMessage(input: ParentReportInput): string {
+  const replyHandle = findParentLocalHandleForChild(input.childSessionFile);
+  const directReplyLine = replyHandle
+    ? `Or message the live child directly with intercom({ action: "send", to: "@${replyHandle}", message: "..." })`
+    : `If you prefer not to use the relay reply hint, message the live child session name shown above directly.`;
+
+  return [
+    `Relayed final message from ${input.senderName}.`,
+    `Replying to this relay message within 10 minutes will be forwarded into the live child session.`,
+    directReplyLine,
+    "",
+    input.message,
+  ].join("\n");
+}
+
+function isRelayBoundToCurrentSession(
+  state: RuntimeState,
+  childSessionId: string | undefined,
+  childSessionFile: string | undefined,
+): boolean {
+  return state.currentSessionId === childSessionId && state.currentSessionFile === childSessionFile;
+}
+
+function startRelayReplyForwarder(params: {
+  pi: ExtensionAPI;
+  state: RuntimeState;
+  client: IntercomClient;
+  parentSessionId: string;
+  relayMessageId: string;
+  childSessionId?: string;
+  childSessionFile?: string;
+}): void {
+  let disconnected = false;
+
+  const disconnect = async () => {
+    if (disconnected) {
+      return;
+    }
+    disconnected = true;
+    clearTimeout(timeout);
+    params.client.off("message", onMessage);
+    params.client.off("disconnected", onDisconnected);
+    params.state.relayDisconnectors.delete(disconnect);
+    await params.client.disconnect().catch(() => {
+      // Ignore relay disconnect cleanup failures
+    });
+  };
+
+  const onMessage = (from: SessionInfo, message: IntercomMessage) => {
+    if (!isRelayReplyFromParent(from, message, params.parentSessionId, params.relayMessageId)) {
+      return;
+    }
+    if (!isRelayBoundToCurrentSession(params.state, params.childSessionId, params.childSessionFile)) {
+      void disconnect();
+      return;
+    }
+
+    params.pi.sendUserMessage(buildForwardedReplyMessage(from, message), { deliverAs: "followUp" });
+  };
+
+  const onDisconnected = () => {
+    void disconnect();
+  };
+
+  const timeout = setTimeout(() => {
+    void disconnect();
+  }, RELAY_REPLY_WINDOW_MS);
+
+  params.client.on("message", onMessage);
+  params.client.on("disconnected", onDisconnected);
+  params.state.relayDisconnectors.add(disconnect);
+}
+
+async function defaultSendParentReport(pi: ExtensionAPI, state: RuntimeState, input: ParentReportInput): Promise<void> {
+  const [{ IntercomClient }, { spawnBrokerIfNeeded }] = await Promise.all([
+    import("../pi-intercom/broker/client.ts"),
+    import("../pi-intercom/broker/spawn.ts"),
+  ]);
+
+  await spawnBrokerIfNeeded();
+
+  const client = new IntercomClient();
+  client.on("error", () => {
+    // Ignore passive transport errors here; delivery success is checked explicitly below
+  });
+
+  await client.connect({
+    name: `${input.senderName} [relay]`,
+    cwd: input.cwd,
+    model: input.model,
+    pid: process.pid,
+    startedAt: input.startedAt,
+    lastActivity: Date.now(),
+  });
+
+  const result = await client.send(input.to, { text: buildRelayedParentReportMessage(input) });
+  if (!result.delivered) {
+    await client.disconnect().catch(() => {
+      // Ignore disconnect cleanup failures after failed delivery
+    });
+    throw new Error(result.reason ?? "Failed to deliver parent report");
+  }
+
+  if (!input.parentSessionId) {
+    await client.disconnect().catch(() => {
+      // Ignore disconnect cleanup failures when parent identity is unavailable
+    });
+    return;
+  }
+
+  startRelayReplyForwarder({
+    pi,
+    state,
+    client,
+    parentSessionId: input.parentSessionId,
+    relayMessageId: result.id,
+    childSessionId: input.childSessionId,
+    childSessionFile: input.childSessionFile,
+  });
+}
+
+export const __test__ = {
+  findLastAssistantTurn,
+  extractAssistantTextContent,
+  finalAssistantTurnReportedToParent,
+  shouldAutoReportOnAgentEnd,
+  findParentLocalHandleForChild,
+  buildRelayedParentReportMessage,
+  buildForwardedReplyMessage,
+  isRelayReplyFromParent,
+  hasSessionBindingChanged,
+  isRelayBoundToCurrentSession,
+  lastAssistantTurnRepliesToUser,
+};
+
+export default function subagentBridgeExtension(pi: ExtensionAPI, overrides: BridgeOverrides = {}) {
+  const state = createRuntimeState();
+  const config = overrides.config ?? loadConfig();
+  const sendParentReport = overrides.sendParentReport ?? ((input) => defaultSendParentReport(pi, state, input));
+  const autoExit = process.env.PI_SUBAGENT_AUTO_EXIT === "1";
+
+  pi.on("session_start", async (_event, ctx) => {
     try {
+      if (hasSessionBindingChanged(state, ctx)) {
+        await disconnectRelayClients(state);
+      }
       refreshRuntimeState(state, ctx);
       syncOwnedChildLinks(pi, state);
     } catch {
@@ -310,16 +737,77 @@ export default function subagentBridgeExtension(pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("model_select", (event) => {
+    state.currentModel = event.model.id;
+  });
+
+  pi.on("agent_start", () => {
+    state.agentStarted = true;
+    state.userTookOver = false;
+  });
+
+  pi.on("input", (event) => {
+    if (!state.agentStarted || event.source !== "interactive") {
+      return;
+    }
+    state.userTookOver = true;
+  });
+
+  pi.on("agent_end", async (event) => {
+    try {
+      const childSessionFile = resolveCurrentChildSessionFile(state);
+      const resolvedParent = childSessionFile ? resolveParentTargetForChild(childSessionFile) : {};
+      const childLink = childSessionFile ? loadChildLink(childSessionFile) : null;
+      const report = shouldAutoReportOnAgentEnd({
+        autoReportEnabled: config.autoReportToParentOnAgentEnd,
+        autoExit,
+        userTookOver: state.userTookOver,
+        parentTarget: resolvedParent.target,
+        parentSessionId: childLink?.parent.sessionId,
+        messages: event.messages,
+      });
+      if (!report) {
+        return;
+      }
+
+      const senderName = getCurrentSessionTarget(pi, state);
+      if (!senderName) {
+        return;
+      }
+
+      await sendParentReport({
+        senderName,
+        cwd: state.currentCwd ?? state.currentSessionDir ?? process.cwd(),
+        model: state.currentModel,
+        startedAt: state.sessionStartedAt ?? Date.now(),
+        to: report.parentTarget,
+        parentSessionId: childLink?.parent.sessionId,
+        message: report.finalMessage,
+        childSessionId: state.currentSessionId,
+        childSessionFile,
+      });
+    } catch {
+      // Passive bridge failures must never break child session completion
+    } finally {
+      state.agentStarted = false;
+      state.userTookOver = false;
+    }
+  });
+
+  pi.on("session_shutdown", async () => {
+    await disconnectRelayClients(state);
     resetRuntimeState(state);
   });
 
   pi.on("before_agent_start", (event) => {
     const allToolNames = new Set(pi.getAllTools().map((tool) => tool.name));
     const childSessionFile = resolveCurrentChildSessionFile(state);
-    const childParentAvailable = allToolNames.has("intercom") && !!childSessionFile && !!resolveParentTargetForChild(childSessionFile).target;
+    const childParentAvailable =
+      allToolNames.has("intercom") && !!childSessionFile && !!resolveParentTargetForChild(childSessionFile).target;
     const hintBlock = buildHint({
-      parentEntries: allToolNames.has("subagent_resume") || allToolNames.has("intercom") ? state.registry?.entries ?? [] : [],
+      parentEntries: allToolNames.has("subagent_resume") || allToolNames.has("intercom")
+        ? state.registry?.entries ?? []
+        : [],
       parentSupportsHandleResume: allToolNames.has("subagent_resume"),
       parentSupportsHandleIntercom: allToolNames.has("intercom"),
       childParentAvailable,
