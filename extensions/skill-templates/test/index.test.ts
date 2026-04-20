@@ -133,27 +133,6 @@ test("alias command refresh uses injected home and agent dirs", async () => {
   harness.cleanup();
 });
 
-test("before_agent_start appends visible template skill metadata", async () => {
-  const harness = createHarness();
-  const visibleDir = join(harness.cwd, ".pi", "skills", "review");
-  const hiddenDir = join(harness.cwd, ".pi", "skills", "internal");
-  writeTextFile(join(visibleDir, "SKILL.template.md"), "---\ndescription: review\n---\nBody");
-  writeTextFile(
-    join(hiddenDir, "SKILL.template.md"),
-    "---\ndescription: internal\ndisable-model-invocation: true\n---\nBody",
-  );
-
-  await harness.emit("session_start");
-  const result = await harness.emitBeforeAgentStart();
-  const systemPrompt = (result as { systemPrompt: string }).systemPrompt;
-
-  assert.ok(systemPrompt.includes("Template-backed skill invocations:"));
-  assert.ok(systemPrompt.includes("<name>review</name>"));
-  assert.ok(!systemPrompt.includes("<name>internal</name>"));
-
-  harness.cleanup();
-});
-
 test("session_start only shows the shadow notice for an actual same-name sibling override", async () => {
   const mismatchedHarness = createHarness();
   const mismatchedDir = join(mismatchedHarness.cwd, ".pi", "skills", "code-review");
@@ -178,16 +157,25 @@ test("session_start only shows the shadow notice for an actual same-name sibling
   matchingHarness.cleanup();
 });
 
-test("resources_discover marks a catalog refresh pending and the next before_agent_start refreshes it", async () => {
+test("resources_discover marks a catalog refresh pending and the next input refreshes it", async () => {
   const harness = createHarness();
   const skillDir = join(harness.cwd, ".pi", "skills", "review");
 
   await harness.emit("resources_discover");
   writeTextFile(join(skillDir, "SKILL.template.md"), "---\ndescription: review\n---\nBody");
 
-  const result = await harness.emitBeforeAgentStart();
-  const systemPrompt = (result as { systemPrompt: string }).systemPrompt;
+  const result = await harness.emitInput({ text: "/skill:review" });
 
-  assert.ok(systemPrompt.includes("<name>review</name>"));
+  assert.deepEqual(result, {
+    action: "transform",
+    text: [
+      `<skill name="review" location="${canonicalizePath(join(skillDir, "SKILL.template.md"))}">`,
+      `References are relative to ${canonicalizePath(skillDir)}.`,
+      "",
+      "Body",
+      "</skill>",
+    ].join("\n"),
+    images: undefined,
+  });
   harness.cleanup();
 });

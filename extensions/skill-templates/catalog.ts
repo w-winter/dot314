@@ -478,7 +478,6 @@ function loadTemplateSkill(
         description,
         filePath,
         baseDir,
-        disableModelInvocation: frontmatter["disable-model-invocation"] === true,
         hasFallbackSkill: existsSync(join(baseDir, FALLBACK_SKILL_FILE)),
       },
       diagnostics,

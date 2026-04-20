@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import type {
-  BeforeAgentStartEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -24,7 +23,6 @@ export interface Harness {
   commands: Map<string, CommandHandler>;
   sentUserMessages: Array<{ content: unknown; options?: { deliverAs?: "steer" | "followUp" } }>;
   emitInput(event: Partial<InputEvent>): Promise<unknown>;
-  emitBeforeAgentStart(event?: Partial<BeforeAgentStartEvent>): Promise<unknown>;
   emit(eventName: string, event?: Record<string, unknown>): Promise<unknown>;
   invokeCommand(name: string, args?: string, overrides?: Partial<ExtensionCommandContext>): Promise<void>;
   cleanup(): void;
@@ -181,14 +179,6 @@ export function createHarness(options?: {
         type: "input",
         text: "",
         source: "interactive",
-        ...event,
-      });
-    },
-    emitBeforeAgentStart(event: Partial<BeforeAgentStartEvent> = {}) {
-      return this.emit("before_agent_start", {
-        type: "before_agent_start",
-        systemPrompt: "SYSTEM",
-        messages: [],
         ...event,
       });
     },

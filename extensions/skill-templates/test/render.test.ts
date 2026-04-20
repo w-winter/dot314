@@ -32,7 +32,6 @@ function createTemplateSkill(skillDir: string, content: string): TemplateSkill {
     description: "template",
     filePath,
     baseDir: skillDir,
-    disableModelInvocation: false,
     hasFallbackSkill: false,
   };
 }
@@ -127,7 +126,6 @@ test("buildSkillInvocationText omits trailing raw args section when no args are 
     description: "review",
     filePath: "/tmp/review/SKILL.template.md",
     baseDir: "/tmp/review",
-    disableModelInvocation: false,
     hasFallbackSkill: false,
   };
 

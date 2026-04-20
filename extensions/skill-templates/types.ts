@@ -21,7 +21,6 @@ export interface TemplateSkill {
   description: string;
   filePath: string;
   baseDir: string;
-  disableModelInvocation: boolean;
   hasFallbackSkill: boolean;
 }
 
@@ -51,7 +50,6 @@ export interface ExtensionState {
   catalog: TemplateCatalog;
   catalogInitialized: boolean;
   refreshPending: boolean;
-  promptAppend: string | undefined;
   shadowNoticeShown: boolean;
 }
 

@@ -1,5 +1,4 @@
 import type {
-  BeforeAgentStartEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -9,21 +8,12 @@ import type {
 
 import { buildTemplateCatalog } from "./catalog.ts";
 import { renderTemplateInvocation } from "./render.ts";
-import type { ExtensionState, TemplateCatalog, TemplateSkill } from "./types.ts";
+import type { ExtensionState, TemplateCatalog } from "./types.ts";
 
 interface SkillTemplatesExtensionOptions {
   initialCwd?: string;
   agentDir?: string;
   userHomeDir?: string;
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
 }
 
 function createEmptyCatalog(): TemplateCatalog {
@@ -41,7 +31,6 @@ function createInitialState(options?: SkillTemplatesExtensionOptions): Extension
     catalog: createEmptyCatalog(),
     catalogInitialized: false,
     refreshPending: false,
-    promptAppend: undefined,
     shadowNoticeShown: false,
   };
 }
@@ -63,31 +52,6 @@ function logDiagnostics(catalog: TemplateCatalog): void {
     const suffix = diagnostic.relatedPath ? ` (related: ${diagnostic.relatedPath})` : "";
     console.warn(`[pi-skill-templates] ${diagnostic.level}: ${diagnostic.message} [${diagnostic.path}]${suffix}`);
   }
-}
-
-function buildPromptAppend(skills: TemplateSkill[]): string | undefined {
-  const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
-  if (visibleSkills.length === 0) {
-    return undefined;
-  }
-
-  const lines = [
-    "Template-backed skill invocations:",
-    "- Explicit user `/skill:<name>` commands may be backed by SKILL.template.md files.",
-    "- When both SKILL.template.md and SKILL.md exist for the same skill name, the template-backed version wins for explicit user invocation.",
-    "<template_skill_commands>",
-  ];
-
-  for (const skill of visibleSkills) {
-    lines.push("  <skill>");
-    lines.push(`    <name>${escapeXml(skill.name)}</name>`);
-    lines.push(`    <description>${escapeXml(skill.description)}</description>`);
-    lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
-    lines.push("  </skill>");
-  }
-
-  lines.push("</template_skill_commands>");
-  return lines.join("\n");
 }
 
 function parseSkillInvocation(text: string): { skillName: string; rawArgs: string } | null {
@@ -169,7 +133,6 @@ function applyCatalog(
   state.catalog = catalog;
   state.catalogInitialized = true;
   state.refreshPending = false;
-  state.promptAppend = buildPromptAppend(catalog.orderedSkills);
   logDiagnostics(catalog);
   registerAliasCommands(state, pi, options);
 }
@@ -254,23 +217,6 @@ function handleTemplateSkillInput(
   }
 }
 
-function handleBeforeAgentStart(
-  state: ExtensionState,
-  pi: ExtensionAPI,
-  event: BeforeAgentStartEvent,
-  ctx: ExtensionContext,
-  options?: SkillTemplatesExtensionOptions,
-): { systemPrompt?: string } | undefined {
-  ensureCatalogCurrent(state, pi, ctx.cwd, options);
-  if (!state.promptAppend) {
-    return undefined;
-  }
-
-  return {
-    systemPrompt: `${event.systemPrompt}\n\n${state.promptAppend}`,
-  };
-}
-
 export default function skillTemplatesExtension(pi: ExtensionAPI, options?: SkillTemplatesExtensionOptions): void {
   const state = createInitialState(options);
   initializeFallbackCatalog(state, pi, options);
@@ -285,5 +231,4 @@ export default function skillTemplatesExtension(pi: ExtensionAPI, options?: Skil
   });
 
   pi.on("input", (event, ctx) => handleTemplateSkillInput(state, pi, event, ctx, options));
-  pi.on("before_agent_start", (event, ctx) => handleBeforeAgentStart(state, pi, event, ctx, options));
 }
