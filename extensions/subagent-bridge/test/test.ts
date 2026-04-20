@@ -663,83 +663,25 @@ test("child link fallback derives @parent from the exact stored parent session f
   assert.equal(childLinkRaw.parent.target, "");
 });
 
-test("findParentLocalHandleForChild reads the parent registry entry for the live child", () => {
-  const dir = createTempDir();
-  const parentSessionId = "session-parent-handle-lookup";
-  const parentFile = writeSessionFile(dir, "parent.jsonl", parentSessionId, { sessionName: "Parent Session" });
-  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-handle-lookup");
-
-  saveParentRegistry(
-    getParentRegistryPath(dir, parentSessionId),
-    createRegistry(parentSessionId, "Parent Session", [
-      {
-        handle: "idle-worker",
-        sessionFile: childFile,
-        displayName: "Idle Worker",
-        createdAt: "2026-04-16T00:00:00.000Z",
-        lastAttachedAt: "2026-04-16T00:00:00.000Z",
-      },
+test("lastAssistantTurnRepliesToUser detects when the final assistant turn immediately follows a user turn", () => {
+  assert.equal(
+    __test__.lastAssistantTurnRepliesToUser([
+      { role: "user", content: [{ type: "text", text: "What happened?" }] },
+      { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" },
     ]),
+    true,
   );
-  saveChildLink(childFile, {
-    version: 1,
-    childSessionFile: childFile,
-    displayName: "Idle Worker",
-    parent: {
-      sessionId: parentSessionId,
-      target: "Parent Session",
-      attachedAt: "2026-04-16T00:00:00.000Z",
-      sessionFile: parentFile,
-    },
-  });
-
-  assert.equal(__test__.findParentLocalHandleForChild(childFile), "idle-worker");
+  assert.equal(
+    __test__.lastAssistantTurnRepliesToUser([
+      { role: "assistant", content: [{ type: "text", text: "Working." }], stopReason: "stop" },
+      { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" },
+    ]),
+    false,
+  );
 });
 
-test("buildRelayedParentReportMessage includes relay-reply guidance and a concrete live-child reply command when a handle is known", () => {
-  const dir = createTempDir();
-  const parentSessionId = "session-parent-relay-message";
-  const parentFile = writeSessionFile(dir, "parent.jsonl", parentSessionId, { sessionName: "Parent Session" });
-  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-relay-message");
-
-  saveParentRegistry(
-    getParentRegistryPath(dir, parentSessionId),
-    createRegistry(parentSessionId, "Parent Session", [
-      {
-        handle: "idle-worker",
-        sessionFile: childFile,
-        displayName: "Idle Worker",
-        createdAt: "2026-04-16T00:00:00.000Z",
-        lastAttachedAt: "2026-04-16T00:00:00.000Z",
-      },
-    ]),
-  );
-  saveChildLink(childFile, {
-    version: 1,
-    childSessionFile: childFile,
-    displayName: "Idle Worker",
-    parent: {
-      sessionId: parentSessionId,
-      target: "Parent Session",
-      attachedAt: "2026-04-16T00:00:00.000Z",
-      sessionFile: parentFile,
-    },
-  });
-
-  const message = __test__.buildRelayedParentReportMessage({
-    senderName: "Idle Worker",
-    cwd: dir,
-    model: "claude-sonnet-4",
-    startedAt: Date.now(),
-    to: "Parent Session",
-    message: "Finished the task.",
-    childSessionFile: childFile,
-  });
-
-  assert.match(message, /Relayed final message from Idle Worker\./);
-  assert.match(message, /Replying to this relay message within 10 minutes will be forwarded into the live child session\./);
-  assert.match(message, /intercom\(\{ action: "send", to: "@idle-worker", message: "\.\.\." \}\)/);
-  assert.match(message, /Finished the task\./);
+test("buildParentReportTransportName marks fallback messages as forwarded", () => {
+  assert.equal(__test__.buildParentReportTransportName("Idle Worker"), "Idle Worker via subagent-bridge");
 });
 
 test("buildForwardedReplyMessage preserves parent text and attachments", () => {
@@ -792,7 +734,6 @@ test("isRelayReplyFromParent matches stable parent session id and ignores displa
   );
 });
 
-
 test("hasSessionBindingChanged detects when the child process moves to a different session", () => {
   const state = {
     currentSessionId: "session-child-a",
@@ -819,7 +760,6 @@ test("hasSessionBindingChanged detects when the child process moves to a differe
   );
 });
 
-
 test("isRelayBoundToCurrentSession rejects forwarding after the child session changes", () => {
   const state = {
     currentSessionId: "session-child-b",
@@ -830,34 +770,68 @@ test("isRelayBoundToCurrentSession rejects forwarding after the child session ch
   assert.equal(__test__.isRelayBoundToCurrentSession(state, "session-child-b", "/tmp/child-b.jsonl"), true);
 });
 
-test("lastAssistantTurnRepliesToUser detects when the final assistant turn immediately follows a user turn", () => {
-  assert.equal(
-    __test__.lastAssistantTurnRepliesToUser([
-      { role: "user", content: [{ type: "text", text: "What happened?" }] },
-      { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" },
+test("buildParentReportMessage appends a separated direct reply hint when the child handle is known", () => {
+  const dir = createTempDir();
+  const parentSessionId = "session-parent-report-message";
+  const parentFile = writeSessionFile(dir, "parent.jsonl", parentSessionId, { sessionName: "Parent Session" });
+  const childFile = writeSessionFile(dir, "child.jsonl", "session-child-report-message");
+
+  saveParentRegistry(
+    getParentRegistryPath(dir, parentSessionId),
+    createRegistry(parentSessionId, "Parent Session", [
+      {
+        handle: "idle-worker",
+        sessionFile: childFile,
+        displayName: "Idle Worker",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        lastAttachedAt: "2026-04-16T00:00:00.000Z",
+      },
     ]),
-    true,
   );
+  saveChildLink(childFile, {
+    version: 1,
+    childSessionFile: childFile,
+    displayName: "Idle Worker",
+    parent: {
+      sessionId: parentSessionId,
+      target: "Parent Session",
+      attachedAt: "2026-04-16T00:00:00.000Z",
+      sessionFile: parentFile,
+    },
+  });
+
   assert.equal(
-    __test__.lastAssistantTurnRepliesToUser([
-      { role: "assistant", content: [{ type: "text", text: "Working." }], stopReason: "stop" },
-      { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" },
-    ]),
-    false,
+    __test__.buildParentReportMessage("Finished the task.", childFile),
+    "Finished the task.\n\n---\nTo reply, message `@idle-worker` over intercom.",
   );
 });
 
 test("agent_end auto-reports the final assistant text to the parent when the child stayed alive", async () => {
   const dir = createTempDir();
+  const parentSessionId = "session-parent-auto-report";
+  const parentFile = writeSessionFile(dir, "parent.jsonl", parentSessionId, { sessionName: "Parent Session" });
   const childFile = writeSessionFile(dir, "child.jsonl", "session-child-auto-report", { sessionName: "Child Session" });
+  saveParentRegistry(
+    getParentRegistryPath(dir, parentSessionId),
+    createRegistry(parentSessionId, "Parent Session", [
+      {
+        handle: "child-session",
+        sessionFile: childFile,
+        displayName: "Child Session",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        lastAttachedAt: "2026-04-16T00:00:00.000Z",
+      },
+    ]),
+  );
   saveChildLink(childFile, {
     version: 1,
     childSessionFile: childFile,
     displayName: "Child Session",
     parent: {
-      sessionId: "session-parent-auto-report",
+      sessionId: parentSessionId,
       target: "Parent Session",
       attachedAt: "2026-04-16T00:00:00.000Z",
+      sessionFile: parentFile,
     },
   });
 
@@ -888,12 +862,13 @@ test("agent_end auto-reports the final assistant text to the parent when the chi
   assert.deepEqual(reports, [
     {
       senderName: "Child Session",
+      transportName: "Child Session via subagent-bridge",
       cwd: dir,
       model: "claude-sonnet-4",
       startedAt: reports[0]?.startedAt,
       to: "Parent Session",
       parentSessionId: "session-parent-auto-report",
-      message: "Finished the implementation and verified the new tests.",
+      message: "Finished the implementation and verified the new tests.\n\n---\nTo reply, message `@child-session` over intercom.",
       childSessionId: "session-child-auto-report",
       childSessionFile: childFile,
     },

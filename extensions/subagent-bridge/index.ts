@@ -90,6 +90,7 @@ interface AutoReportDecision {
 
 interface ParentReportInput {
   senderName: string;
+  transportName: string;
   cwd: string;
   model: string;
   startedAt: number;
@@ -554,6 +555,19 @@ function findParentLocalHandleForChild(childSessionFile: string | undefined): st
   return parentRegistry?.entries.find((entry) => entry.sessionFile === childSessionFile)?.handle ?? null;
 }
 
+function buildParentReportMessage(finalMessage: string, childSessionFile: string | undefined): string {
+  const handle = findParentLocalHandleForChild(childSessionFile);
+  if (!handle) {
+    return finalMessage;
+  }
+
+  return `${finalMessage}\n\n---\nTo reply, message \`@${handle}\` over intercom.`;
+}
+
+function buildParentReportTransportName(senderName: string): string {
+  return `${senderName} via subagent-bridge`;
+}
+
 function formatRelayedReplyAttachment(attachment: IntercomAttachment): string {
   return attachment.language
     ? `\n\n---\n📎 ${attachment.name}\n~~~${attachment.language}\n${attachment.content}\n~~~`
@@ -573,21 +587,6 @@ function isRelayReplyFromParent(
   relayMessageId: string,
 ): boolean {
   return message.replyTo === relayMessageId && from.id === parentSessionId;
-}
-
-function buildRelayedParentReportMessage(input: ParentReportInput): string {
-  const replyHandle = findParentLocalHandleForChild(input.childSessionFile);
-  const directReplyLine = replyHandle
-    ? `Or message the live child directly with intercom({ action: "send", to: "@${replyHandle}", message: "..." })`
-    : `If you prefer not to use the relay reply hint, message the live child session name shown above directly.`;
-
-  return [
-    `Relayed final message from ${input.senderName}.`,
-    `Replying to this relay message within 10 minutes will be forwarded into the live child session.`,
-    directReplyLine,
-    "",
-    input.message,
-  ].join("\n");
 }
 
 function isRelayBoundToCurrentSession(
@@ -662,7 +661,7 @@ async function defaultSendParentReport(pi: ExtensionAPI, state: RuntimeState, in
   });
 
   await client.connect({
-    name: `${input.senderName} [relay]`,
+    name: input.transportName,
     cwd: input.cwd,
     model: input.model,
     pid: process.pid,
@@ -670,7 +669,7 @@ async function defaultSendParentReport(pi: ExtensionAPI, state: RuntimeState, in
     lastActivity: Date.now(),
   });
 
-  const result = await client.send(input.to, { text: buildRelayedParentReportMessage(input) });
+  const result = await client.send(input.to, { text: input.message });
   if (!result.delivered) {
     await client.disconnect().catch(() => {
       // Ignore disconnect cleanup failures after failed delivery
@@ -701,13 +700,14 @@ export const __test__ = {
   extractAssistantTextContent,
   finalAssistantTurnReportedToParent,
   shouldAutoReportOnAgentEnd,
+  lastAssistantTurnRepliesToUser,
   findParentLocalHandleForChild,
-  buildRelayedParentReportMessage,
+  buildParentReportMessage,
+  buildParentReportTransportName,
   buildForwardedReplyMessage,
   isRelayReplyFromParent,
   hasSessionBindingChanged,
   isRelayBoundToCurrentSession,
-  lastAssistantTurnRepliesToUser,
 };
 
 export default function subagentBridgeExtension(pi: ExtensionAPI, overrides: BridgeOverrides = {}) {
@@ -777,12 +777,13 @@ export default function subagentBridgeExtension(pi: ExtensionAPI, overrides: Bri
 
       await sendParentReport({
         senderName,
+        transportName: buildParentReportTransportName(senderName),
         cwd: state.currentCwd ?? state.currentSessionDir ?? process.cwd(),
         model: state.currentModel,
         startedAt: state.sessionStartedAt ?? Date.now(),
         to: report.parentTarget,
         parentSessionId: childLink?.parent.sessionId,
-        message: report.finalMessage,
+        message: buildParentReportMessage(report.finalMessage, childSessionFile),
         childSessionId: state.currentSessionId,
         childSessionFile,
       });

@@ -35,11 +35,11 @@ Unlike `caller_ping`, this does not shut the child down, so the child can ask a 
 
 ### Automatic final-report fallback
 
-If a child session reaches `agent_end` and its **last assistant turn** was not immediately replying to a user message and did not itself call `intercom({ action: "send"|"ask", to: "@parent", ... })`, `subagent_done`, or `caller_ping`, `subagent-bridge` relays that last assistant text to `@parent` automatically.
+If a child session reaches `agent_end` and its **last assistant turn** was not immediately replying to a user message and did not itself call `intercom({ action: "send"|"ask", to: "@parent", ... })`, `subagent_done`, or `caller_ping`, `subagent-bridge` sends that last assistant text to `@parent` automatically.
 
-This is a safety net for cases where a subagent clearly finished but, for some reason or another, did not report back to the orchestrator/parent.
+This is a safety net for cases where a subagent clearly finished but, for some reason or another, did not report back to the orchestrator/parent. The forwarded message is sent under a `... via subagent-bridge` sender name so it does not pretend to be the live child session, and when the child handle is known it appends a short separated footer telling the orchestrator how to reply via that child's normal `@handle` intercom path.
 
-Replies to the relayed intercom message are kept valid for up to 10 minutes while the same child session remains active: `subagent-bridge` keeps the relay session alive and forwards those replies back into that child session. If the child switches to a different session or reloads into a different session file, the relay is invalidated rather than forwarding into the wrong place. When the parent-local child handle is known, the relayed message also includes an explicit `intercom({ ... to: "@<handle>" ... })` command for replying to the still-live child directly.
+Replying directly to the forwarded intercom message also works for up to 10 minutes while the same child session remains active; `subagent-bridge` keeps that forwarding relay alive briefly so the intercom reply hint is not a dead end.
 
 It is suppressed when:
 - the child is in `auto-exit` mode (`PI_SUBAGENT_AUTO_EXIT=1`)
