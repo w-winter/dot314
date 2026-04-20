@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-templates",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that renders SKILL.template.md files for explicit skill invocations",
   "license": "MIT",
   "type": "module",
