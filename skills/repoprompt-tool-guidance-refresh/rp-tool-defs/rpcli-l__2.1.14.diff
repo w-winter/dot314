@@ -1,0 +1,135 @@
+1c1
+< Available Tools (17):
+---
+> Available Tools (18):
+10c10
+< - `list_agents`: Returns all agents with their models, capabilities, and stable `model_id` identifiers. Use `model_id` from the response to start runs via `agent_run`.
+---
+> - `list_agents`: Returns all agents with their models, capabilities, and stable `model_id` identifiers. Use `model_id` from the response to start runs via `agent_run`. Pass `roles_only=true` to get just the role→model mapping (useful for orchestrators deciding between steering and spawning).
+47,49d46
+<   name (string)
+<     [list_sessions] Session name filter.
+< 
+60a58,62
+>   roles_only (boolean)
+>     [list_agents] When true, return only the role→model mapping
+>     (task_labels) and omit the full agent/model catalog. Default
+>     false.
+> 
+126c128,129
+<     [start, steer] Instruction text.
+---
+>     [start, steer] Instruction text. If sharing an exported plan,
+>     include the path/instruction directly in this text.
+133,138d135
+<   oracle_export_path (string)
+<     [start, steer] Path returned by ask_oracle/oracle_send when
+<     export_response=true. agent_run prepends a short instruction
+<     telling the destination agent to read this exported Oracle
+<     response.
+< 
+173a171,206
+> 
+> 
+> app_settings
+> ----------------------------------------------------------------------
+> Read/update allowlisted RepoPrompt app-wide preferences. Settings outside the allowlist are not exposed.
+> 
+> **Operations**: `list` (catalog), `get` (read), `set` (write one key), `options` (candidate values for keys with `options_available: true`).
+> 
+> **Selectors**: `get` accepts exactly one of `key`, `keys`, or `group`. `set` and `options` take one `key`.
+> 
+> **Groups**: `ui` · `prompt_packaging` · `models` · `context_builder` · `mcp` · `code_maps` · `file_system`
+> 
+> **Examples**:
+> - `{"op":"list","group":"ui"}`
+> - `{"op":"get","keys":["ui.appearance_mode","mcp.auto_start"]}`
+> - `{"op":"get","group":"file_system"}`
+> - `{"op":"set","key":"models.planning_model","value":null}`
+> - `{"op":"set","key":"file_system.respect_gitignore","value":false}`
+> - `{"op":"set","key":"file_system.global_ignore_defaults","value":"**/node_modules/\n"}`
+> - `{"op":"options","key":"models.planning_model","agent":"codexExec"}`
+> 
+> Invalid or out-of-range values are rejected with no partial apply. Model-raw settings accept custom identifiers beyond what `options` returns.
+> 
+> Parameters:
+> 
+>   op (string, required): list | get | set | options
+>     Operation.
+> 
+>   agent (string)
+>     Filter options by CLI backend.
+> 
+>   detailed (boolean)
+>     Include descriptions and model metadata.
+> 
+>   group (string): ui | prompt_packaging | models | context_builder | mcp | code_maps | file_system
+>     Settings group.
+174a208,209
+>   key (string)
+>     Allowlisted setting key (required for set/options).
+175a211,225
+>   keys (array<string>)
+>     Multiple keys (get only).
+> 
+>   limit (integer)
+>     Maximum options returned (1–200).
+> 
+>   value (anyOf(boolean, integer, number, string, null))
+>     Accepts one of:
+>       - boolean
+>       - integer
+>       - number
+>       - string
+>       - null
+> 
+> 
+314c364
+< **Exporting**: Pass `export_response: true` (requires a `response_type` that generates a response) to write the result to a file and get back `oracle_export_path`.
+---
+> **Exporting**: Pass `export_response: true` (requires a `response_type` that generates a response) to write the result to a file and get back `oracle_export_path` plus `oracle_export_instruction`. To hand the export to a child agent, include `oracle_export_path` inside the `message` (or `messages`) you send on your next delegation call; your system prompt names the specific delegation tool available to you.
+326,327c376,380
+<     `oracle_export_path` in the result. Requires a response_type that
+<     generates a response.
+---
+>     `oracle_export_path` plus `oracle_export_instruction`. Requires a
+>     response_type that generates a response. Include
+>     `oracle_export_path` inside the `message` you send on your next
+>     delegation call; the specific delegation tool is named by your
+>     system prompt.
+344a398,399
+> **Always use absolute paths** for every `path` / `new_path` argument.
+> 
+348c403
+< - `delete`: Remove file. **Requires absolute path** (prevents ambiguous deletions).
+---
+> - `delete`: Remove file.
+352,355c407,408
+< - Multi-root: Use absolute path or "RootName/relative/path"
+< - Single-root: Relative paths work directly
+< - **Unambiguous relative paths**: Relative paths without a root alias are allowed if they resolve to exactly one loaded root (e.g., "src/utils/file.swift" works if only one root contains "src/utils/"); otherwise an error requests disambiguation
+< - Missing parent directories are created automatically
+---
+> - Absolute paths only for `path` and `new_path`.
+> - Missing parent directories are created automatically.
+358,359c411,412
+< - Create: `{"action":"create","path":"src/new.swift","content":"// code"}`
+< - Overwrite: `{"action":"create","path":"src/file.swift","content":"// new","if_exists":"overwrite"}`
+---
+> - Create: `{"action":"create","path":"/Users/me/project/src/new.swift","content":"// code"}`
+> - Overwrite: `{"action":"create","path":"/Users/me/project/src/file.swift","content":"// new","if_exists":"overwrite"}`
+361c414
+< - Move: `{"action":"move","path":"old.swift","new_path":"renamed.swift"}`
+---
+> - Move: `{"action":"move","path":"/Users/me/project/old.swift","new_path":"/Users/me/project/renamed.swift"}`
+855c908
+< Pass `export_response: true` to write the response to a shareable file and get back `oracle_export_path`.
+---
+> Pass `export_response: true` to write the response to a shareable file and get back shareable `oracle_export_path` / `oracle_export_instruction` values. To hand the export to a child agent, include `oracle_export_path` inside the `message` (or `messages`) you send on your next delegation call; your system prompt names the specific delegation tool available to you.
+869c922,925
+<     `oracle_export_path` in the result.
+---
+>     `oracle_export_path` plus `oracle_export_instruction`. Include
+>     `oracle_export_path` inside the `message` you send on your next
+>     delegation call; the specific delegation tool is named by your
+>     system prompt.

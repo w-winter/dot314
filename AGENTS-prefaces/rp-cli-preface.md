@@ -37,7 +37,7 @@ Integration layers:
 3. `rp_bind(windowId, contextId)`
 4. Then use `tree/search/read/select/context/structure/...`
 
-`windows` is now the preferred bootstrap because it reports the active tab/context directly. Use `tabs list` only when you need more detail for a specific window.
+`windows` is the preferred bootstrap because it reports the active tab/context directly. Use `tabs list` only when you need more detail for a specific window.
 
 **Mandatory routing check:** Do not infer availability of any repo of interest from workspace/window titles; workspaces may have more roots available than the title implies. Before any repo-scoped work, confirm the target repo/root is (or isn’t) present by checking workspace roots (e.g. `tree`). If it’s not confirmed, pause and resolve routing (bind the right window/tab or open/create the repo workspace).
 
@@ -91,7 +91,8 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 | Code editing (preferred) | `rp-cli -w <id> -t <context_id> -c apply_edits -j '{...}'` | JSON args required; reliable edits (multiline, multi-edit, rewrite) |
 | Code editing (fallback) | pi native `edit` | use when direct rp-cli call mode isn't available |
 | File create/move/delete | rp_exec `file create/move/delete` | workspace-aware |
-| File creation with content | `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` | JSON args required; create files with explicit content |
+| File creation with content | `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` | JSON args required; `path` / `new_path` must be absolute |
+| App settings | `rp-cli -w <id> -t <context_id> -c app_settings -j '{...}'` | query/update allowlisted RepoPrompt app preferences |
 
 ---
 
@@ -103,6 +104,7 @@ If a relative path could match multiple loaded roots, use `RootName:rel/path`.
 Notes:
 - `search`/`file_search path="..."` is an alias for `search`/`file_search filter.paths=["..."]`
 - `search`/`file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
+- `file_actions` in call mode is stricter than most RP tools: `path` / `new_path` must be absolute
 - `structure`/`get_code_structure` line numbers match `read`/`read_file` and refresh after edits
 
 ---
@@ -157,9 +159,16 @@ If you can't invoke rp-cli call mode (for example, your harness only exposes `rp
 
 Use rp_exec `file create/move/delete` for workspace-aware file ops.
 
-If you need to create a file with full content in one step, call `file_actions` with JSON via rp-cli call mode:
-`rp-cli -w <id> -t <context_id> -c file_actions -j '{"action":"create","path":"...","content":"..."}'`
+If you need to create a file with full content in one step, call `file_actions` with JSON via rp-cli call mode. `file_actions` requires absolute `path` / `new_path` values:
+`rp-cli -w <id> -t <context_id> -c file_actions -j '{"action":"create","path":"/abs/path/to/file.ts","content":"..."}'`
 `rp-cli -w <id> -t <context_id> -c file_actions -j @create-file.json`
+
+### App settings
+
+Use `app_settings` in call mode for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`.
+
+Example:
+`rp-cli -w <id> -t <context_id> -c app_settings -j '{"op":"options","key":"models.planning_model","agent":"codexExec"}'`
 
 ---
 
@@ -242,11 +251,14 @@ Shell-level patterns:
 Machine-readable schemas:
 - All tools as JSON: `rp-cli --tools-schema`
 - Group-filtered JSON: `rp-cli --tools-schema=explore`
+- `app_settings` schema only: `rp-cli --tools-schema=settings`
 - Same via exec mode: `rp-cli -e 'tools --schema'`
+- `app_settings` schema via exec mode: `rp-cli -e 'tools settings --schema'`
 
 Common calls:
 - `rp-cli -w <id> -t <context_id> -c apply_edits -j '{...}'` — complex edits (multi-edit, multiline, rewrite)
-- `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` — creating files with complex content
+- `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` — creating files with complex content; use absolute `path` / `new_path`
+- `rp-cli -w <id> -t <context_id> -c app_settings -j '{"op":"list","group":"ui"}'` — inspect allowlisted app preferences
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"files"}'` — token-efficient git operations
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"patches"}'` — inline patch hunks (truncated)
 - `rp-cli -w <id> -t <context_id> -c git -j '{"op":"diff","detail":"full"}'` — untruncated patch output

@@ -71,14 +71,15 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Snapshot/export | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` or `workspace_context op="export"` | canonical context render/export tool |
 | Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
-| File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
-| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | current selection is the input context; exporting returns `oracle_export_path` |
+| File ops | `file_actions action="create\|move\|delete" path="..."` | absolute paths only for `path` / `new_path` |
+| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | current selection is the input context; exporting returns `oracle_export_path` + `oracle_export_instruction` |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
 | Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use `working_dirs` when you want RepoPrompt to route to a workspace by roots (exact match first, repo_paths superset fallback) |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
-| Agent/session management | `agent_manage op="list_agents\|list_sessions\|extract_handoff\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state and export agent handoff transcript; `list_sessions` uses MCP-facing states and `list_workflows` includes `orchestrate` |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|extract_handoff\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows" [roles_only=true]` | inspect durable session/workflow state and export agent handoff transcript; `list_agents` also supports role→model mapping via `roles_only=true` |
+| App settings | `app_settings op="list\|get\|set\|options" [group="..."] [key="..."]` | read/update allowlisted RepoPrompt app-wide preferences |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | detail levels: `summary\|files\|patches\|full`; worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
 ---
@@ -91,6 +92,7 @@ If a relative path could match multiple loaded roots, use `RootName:rel/path`.
 Notes:
 - `file_search path="..."` is an alias for `file_search filter.paths=["..."]`
 - `file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
+- `file_actions` is stricter than most RP tools: `path` / `new_path` must be absolute
 - `get_code_structure` line numbers match `read_file` and refresh after edits
 
 ## Routing
@@ -116,6 +118,7 @@ RepoPrompt only operates within workspace root folders.
 
 - Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`
 - Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, and export handoff transcript
+- Use `agent_manage op="list_agents" roles_only=true` when you only need the role→model mapping for delegation decisions
 - Use `agent_manage op="extract_handoff"` to pull into your context a handoff transcript of the subagent's context. It exports a `<forked_session ...>` payload; set `output_path` to write a file, or omit it for inline XML.
 - Session state uses MCP-facing values such as `running`, `waiting_for_input`, `completed`, and `failed`; `waiting_for_input` means reply with `agent_run op="respond"`
 - `agent_manage op="list_workflows"` includes `orchestrate` for planning, decomposition, and sub-agent dispatch
@@ -171,13 +174,19 @@ Describe **what** you need, not **where** to look. Mention what you know and wha
 
 Use returned `chat_id` with `oracle_send new_chat=false chat_id="..."` for followup.
 
-When you need a shareable handoff artifact, `context_builder` and `oracle_send` can export generated responses with `export_response=true`, returning `oracle_export_path`.
+When you need a shareable handoff artifact, `context_builder` and `oracle_send` can export generated responses with `export_response=true`, returning `oracle_export_path` plus `oracle_export_instruction`. To hand an export to a child agent, include `oracle_export_path` in your next delegation message.
 
 If invoked during an Agent Mode run, `context_builder` reuses the current agent tab instead of creating a new tab.
 
 `<discovery_agent-guidelines>` is optional and should be treated as starting hints only. The agent may explore beyond those hints.
 
 Token-costly—invoke explicitly when user requests or during planning phases, not automatically.
+
+## App Settings
+
+`app_settings op="list|get|set|options" ...`
+
+Use this for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`. Current groups: `ui`, `prompt_packaging`, `models`, `context_builder`, `mcp`, `code_maps`, `file_system`.
 
 ---
 

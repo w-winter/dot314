@@ -1,0 +1,24 @@
+28a29
+>               builder "..." --response-type plan --export       → plan file
+53a55,56
+>       builder "add logout feature" --response-type plan --export
+>                                                    Generate plan and return oracle_export_path
+99a103,110
+>     app_settings - Read/update allowlisted app-wide RepoPrompt preferences
+>       app_settings op=list [group=<g>]             Catalog with current values
+>       app_settings op=get key=<k>|group=<g>        Read one key or a whole group
+>       app_settings op=set key=<k> value=<v>        Write; use JSON for fractions/null
+>       app_settings op=options key=<k> [agent=<a>]  Candidate values for keys that advertise options_available
+>       Operations: list, get, set, options
+>       Groups: ui, prompt_packaging, editing, models, context_builder, mcp, code_maps
+> 
+153a165
+>       agent_run op=start message="Read the plan at prompt-exports/oracle-plan.md with read_file first. Implement item 1."
+200a213
+>     --tools-schema=settings  Print app_settings schema only
+226a240
+>     rp-cli -d app_settings        App-wide preferences operations
+236a251
+>     rp-cli --tools-schema=settings        Only app_settings
+238a254
+>     rp-cli -e 'tools settings --schema'   app_settings schema via exec mode
