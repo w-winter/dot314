@@ -1,0 +1,40 @@
+10c10
+< - `list_agents`: Returns all agents with their models, capabilities, and stable `model_id` identifiers. Use `model_id` from the response to start runs via `agent_run`. Pass `roles_only=true` to get just the role→model mapping (useful for orchestrators deciding between steering and spawning).
+---
+> - `list_agents`: Returns top-level `task_labels` as the authoritative role-label→model mapping (explore, engineer, pair, design), plus `agents[].models[]` with explicit compound `model_id` targets for callers that want to pin a specific agent/model/effort. Use `task_labels` entries for role-based routing; use `agents[].models[].model_id` for exact selections. Pass `roles_only=true` to return only `task_labels` and omit the explicit per-agent target catalog.
+44,45c44,47
+<     [create_session, resume_session] Task label (explore, engineer,
+<     pair, design) or specific model_id from list_agents.
+---
+>     [create_session, resume_session] Role label from list_agents
+>     task_labels (explore, engineer, pair, design — resolved via global
+>     role defaults), or an explicit compound model_id from list_agents
+>     agents[].models[].model_id.
+59,61c61,63
+<     [list_agents] When true, return only the role→model mapping
+<     (task_labels) and omit the full agent/model catalog. Default
+<     false.
+---
+>     [list_agents] When true, return only the authoritative role-label
+>     mapping (task_labels) and omit the explicit per-agent target
+>     catalog. Default false.
+85c87
+< **Role labels** — pass as `model_id` to auto-select the best agent+model:
+---
+> **Role labels** — pass as `model_id` to select via the global role-default mapping:
+90a93,94
+> Role labels resolve through the effective global role-default mapping; see the top-level `task_labels` array from `agent_manage.list_agents` for the authoritative label→model mapping. To pin an exact agent+model+effort target, pass a specific compound `model_id` from `agents[].models[].model_id` in the same response.
+> 
+93c97
+< - `start`: Launch an agent run in a **new** session/tab. Do NOT pass `session_id` — use `steer` to continue an existing session. Pass `model_id` with a role label or a specific ID from `agent_manage.list_agents`. Returns a `session_id` — save it for all follow-up calls. Waits up to `timeout` seconds (default 300). Pass `detach: true` to return immediately.
+---
+> - `start`: Launch an agent run in a **new** session/tab. Do NOT pass `session_id` — use `steer` to continue an existing session. Pass `model_id` with a role label (resolved via the global role-default mapping in `agent_manage.list_agents` `task_labels`) or an explicit compound `model_id` from `agents[].models[].model_id`. Returns a `session_id` — save it for all follow-up calls. Waits up to `timeout` seconds (default 300). Pass `detach: true` to return immediately.
+132,134c136,139
+<     [start] Role label (explore, engineer, pair, design) to auto-pick
+<     the best agent+model, or a specific model_id from
+<     agent_manage.list_agents.
+---
+>     [start] Role label from agent_manage.list_agents task_labels
+>     (explore, engineer, pair, design — resolved via global role
+>     defaults), or an explicit compound model_id from
+>     agents[].models[].model_id to pin an exact target.
