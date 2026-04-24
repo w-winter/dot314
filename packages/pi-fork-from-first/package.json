@@ -1,6 +1,6 @@
 {
   "name": "pi-fork-from-first",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Fork the current Pi session from its first user message and switch into the new fork immediately, with sensible defaults in relation to pi-rewind-hook",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session", "fork"],
   "license": "MIT",
@@ -17,7 +17,7 @@
     "extensions": ["extensions/fork-from-first.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.51.0"
+    "@mariozechner/pi-coding-agent": ">=0.69.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
