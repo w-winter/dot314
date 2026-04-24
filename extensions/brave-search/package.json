@@ -9,6 +9,6 @@
     "turndown-plugin-gfm": "^1.0.2"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.51.0"
+    "@mariozechner/pi-coding-agent": "^0.69.0"
   }
 }

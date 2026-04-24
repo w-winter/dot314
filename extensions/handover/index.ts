@@ -788,16 +788,23 @@ export default function (pi: ExtensionAPI) {
         });
 
         try {
-            const newSessionResult = await ctx.newSession({ parentSession: previousSessionFile });
+            const newSessionResult = await ctx.newSession({
+                parentSession: previousSessionFile,
+                withSession: async (replacementCtx) => {
+                    if (!replacementCtx.hasUI) {
+                        return;
+                    }
+
+                    replacementCtx.ui.setEditorText(finalDraft);
+                    if (config.autoSubmitSeconds <= 0) {
+                        replacementCtx.ui.notify("Draft ready in editor (auto-submit disabled)", "info");
+                    }
+                },
+            });
             if (newSessionResult.cancelled) {
                 await clearPendingHandoverDraft(previousSessionFile);
                 ctx.ui.notify("Child session creation cancelled", "warning");
                 return;
-            }
-
-            ctx.ui.setEditorText(finalDraft);
-            if (config.autoSubmitSeconds <= 0) {
-                ctx.ui.notify("Draft ready in editor (auto-submit disabled)", "info");
             }
         } catch (error) {
             await clearPendingHandoverDraft(previousSessionFile);

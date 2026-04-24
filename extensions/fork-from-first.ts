@@ -181,6 +181,14 @@ export default function (pi: ExtensionAPI) {
 
           seedChildRewindStateFromParent(previousSessionFile, sessionManager);
         },
+        withSession: async (replacementCtx) => {
+          if (!replacementCtx.hasUI) {
+            return;
+          }
+
+          replacementCtx.ui.setEditorText(selectedText);
+          replacementCtx.ui.notify("Forked from first message and switched to new session", "info");
+        },
       });
 
       if (result.cancelled) {
@@ -190,10 +198,6 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (ctx.hasUI) {
-        ctx.ui.setEditorText(selectedText);
-        ctx.ui.notify("Forked from first message and switched to new session", "info");
-      }
     },
   });
 }

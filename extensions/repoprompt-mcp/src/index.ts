@@ -18,7 +18,7 @@ import type {
   Theme,
 } from "@mariozechner/pi-coding-agent";
 import { Text, matchesKey, visibleWidth } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 import type {
   RpToolParams,

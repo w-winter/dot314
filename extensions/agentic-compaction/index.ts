@@ -9,7 +9,7 @@
 import { complete, type Message, type UserMessage, type AssistantMessage, type ToolResultMessage, type Tool, type Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { convertToLlm } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { Bash } from "just-bash";
 import * as fs from "fs";
 import * as path from "path";
