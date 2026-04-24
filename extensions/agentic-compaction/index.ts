@@ -402,6 +402,7 @@ export default function (pi: ExtensionAPI) {
         // Try each model in order until one works
         let model: Model<any> | null = null;
         let apiKey: string | undefined;
+        let headers: Record<string, string> | undefined;
         let selectedThinkingLevel: ThinkingLevel = CONFIG.thinkingLevel;
 
         for (const cfg of CONFIG.compactionModels) {
@@ -416,26 +417,38 @@ export default function (pi: ExtensionAPI) {
                 continue;
             }
 
-            const key = await ctx.modelRegistry.getApiKey(registryModel);
-            if (!key) {
-                debugLog(`No API key for ${cfg.provider}/${cfg.id}`);
+            if (!ctx.modelRegistry.hasConfiguredAuth(registryModel)) {
+                debugLog(`No configured auth for ${cfg.provider}/${cfg.id}`);
+                continue;
+            }
+
+            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(registryModel);
+            if (!auth.ok || (!auth.apiKey && !auth.headers)) {
+                debugLog(`No request auth for ${cfg.provider}/${cfg.id}${auth.ok ? "" : `: ${auth.error}`}`);
                 continue;
             }
 
             model = registryModel;
-            apiKey = key;
+            apiKey = auth.apiKey;
+            headers = auth.headers;
             selectedThinkingLevel = cfg.thinkingLevel ?? CONFIG.thinkingLevel;
             break;
         }
 
         // Fall back to session model
-        if (!model) {
-            model = ctx.model;
-            apiKey = await ctx.modelRegistry.getApiKey(model);
-            selectedThinkingLevel = CONFIG.thinkingLevel;
+        if (!model && ctx.model) {
+            const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+            if (auth.ok && (auth.apiKey || auth.headers)) {
+                model = ctx.model;
+                apiKey = auth.apiKey;
+                headers = auth.headers;
+                selectedThinkingLevel = CONFIG.thinkingLevel;
+            } else {
+                debugLog(`No request auth for session model ${ctx.model.provider}/${ctx.model.id}${auth.ok ? "" : `: ${auth.error}`}`);
+            }
         }
 
-        if (!model || !apiKey) {
+        if (!model) {
             ctx.ui.notify("No model available for compaction", "warning");
             return;
         }
@@ -615,7 +628,7 @@ What remains to be done`;
             while (true) {
                 if (signal.aborted) return;
 
-                const completeOptions: any = { apiKey, signal };
+                const completeOptions: any = { apiKey, headers, signal };
                 if (selectedThinkingLevel !== "off") {
                     completeOptions.reasoning = selectedThinkingLevel;
                 }
