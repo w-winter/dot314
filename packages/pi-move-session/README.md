@@ -34,6 +34,8 @@ From the dot314 git bundle (filtered install):
 
 Supports `~` expansion (e.g. `/move-session ~/code/my-project`).
 
+Use `/move-session $main-worktree` from a Git linked worktree to move the session back to the repository's main worktree.
+
 If your current `/tree` selection is not the session file's default branch tip, the extension warns before proceeding because that selection is not preserved yet.
 
 ## How it works

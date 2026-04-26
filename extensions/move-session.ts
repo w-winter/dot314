@@ -29,7 +29,12 @@ import {
     unlinkSync,
 } from "node:fs";
 
-import { normalizeTargetCwd } from "./_shared/normalize-target-cwd";
+import {
+    getMainWorktreeRootFromWorktreeList,
+    isMainWorktreeTarget,
+    MAIN_WORKTREE_TOKEN,
+    normalizeTargetCwd,
+} from "./_shared/normalize-target-cwd";
 
 const TRASH_TIMEOUT_MS = 5000;
 const HEADER_READ_MAX = 8192;
@@ -98,7 +103,7 @@ function clearParentSession(sessionFile: string): void {
 
         const copyBuffer = Buffer.alloc(COPY_CHUNK_SIZE);
         let position = originalHeaderBytes;
-        while (true) {
+        for (;;) {
             const readCount = readSync(fd, copyBuffer, 0, COPY_CHUNK_SIZE, position);
             if (readCount === 0) break;
             writeSync(writeFd, copyBuffer, 0, readCount);
@@ -129,6 +134,20 @@ function clearParentSession(sessionFile: string): void {
 }
 
 export default function (pi: ExtensionAPI) {
+    const resolveTargetCwd = async (rawTargetCwd: string, cwd: string): Promise<string> => {
+        if (!isMainWorktreeTarget(rawTargetCwd)) {
+            return normalizeTargetCwd(rawTargetCwd, process.env, cwd);
+        }
+
+        const result = await pi.exec("git", ["worktree", "list", "--porcelain"], { cwd, timeout: 5000 });
+        if (result.code !== 0) {
+            const stderr = result.stderr.trim();
+            throw new Error(stderr || `git worktree list --porcelain failed with code ${result.code}`);
+        }
+
+        return getMainWorktreeRootFromWorktreeList(result.stdout);
+    };
+
     const trashFileBestEffort = async (filePath: string) => {
         try {
             const { code } = await pi.exec("trash", [filePath], { timeout: TRASH_TIMEOUT_MS });
@@ -145,6 +164,18 @@ export default function (pi: ExtensionAPI) {
 
     pi.registerCommand("move-session", {
         description: "Move session to another directory and relaunch pi there",
+        getArgumentCompletions: (argumentPrefix: string) => {
+            const trimmedPrefix = argumentPrefix.trimStart();
+            if (!MAIN_WORKTREE_TOKEN.startsWith(trimmedPrefix)) {
+                return null;
+            }
+
+            return [{
+                value: MAIN_WORKTREE_TOKEN,
+                label: MAIN_WORKTREE_TOKEN,
+                description: "Move session to this repository's main git worktree",
+            }];
+        },
         handler: async (args, ctx) => {
             await ctx.waitForIdle();
 
@@ -156,7 +187,7 @@ export default function (pi: ExtensionAPI) {
 
             let targetCwd: string;
             try {
-                targetCwd = normalizeTargetCwd(rawTargetCwd);
+                targetCwd = await resolveTargetCwd(rawTargetCwd, ctx.cwd);
             } catch (error: any) {
                 ctx.ui.notify(error?.message ?? String(error), "error");
                 return;
@@ -188,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 
             const branchSelectionWarning = getBranchSelectionWarning(
                 sourceSessionFile,
-                (ctx.sessionManager.getLeafId?.() as string | null) ?? null,
+                ctx.sessionManager.getLeafId() as string | null,
                 "/move-session",
                 "moving",
             );
@@ -223,7 +254,7 @@ export default function (pi: ExtensionAPI) {
                 process.stdout.write("\x1b[?25h");    // Show cursor
                 process.stdout.write("\r\n");         // Ensure child starts on a clean line
 
-                if (process.stdin.isTTY && process.stdin.setRawMode) {
+                if (process.stdin.isTTY) {
                     process.stdin.setRawMode(false);
                 }
 

@@ -95,10 +95,11 @@
   - If `rewind/` is installed, it requests rewind's conversation-only fork mode ("keep current files") for that fork
 
 - ● [`move-session.ts`](move-session.ts)
-  - `/session-move <targetCwd>` moves the *current session* to a different working directory, intended for when you started pi in one folder but come to find that you need it in another after building up valuable context
+  - `/move-session <targetCwd>` moves the *current session* to a different working directory, intended for when you started pi in one folder but come to find that you need it in another after building up valuable context
+  - `/move-session $main-worktree` moves the session to the repository's main Git worktree, useful when retiring a linked worktree after preserving a valuable session
   - Forks the session JSONL into the target cwd bucket (`SessionManager.forkFrom(...)`), clears the fork header's `parentSession` pointer, then relaunches `pi --session <fork>` with `cwd=<targetCwd>` so the footer + built-in tools resolve relative paths against the new directory
   - Uses `trash` to delete the old session file (best-effort); if `trash` isn't available, it leaves the old file in place
-  - Supports `~` expansion (e.g. `/session-move ~/code/my-project`)
+  - Supports `~` expansion (e.g. `/move-session ~/code/my-project`)
 
 - ● [`roam/`](roam/) ([README](./roam/README.md))
   - `/roam [window-name]` post-hoc moves the current live Pi session into a dedicated tmux server (`tmux -L pi`) for remote continuation (e.g. Termius over Tailscale) -- convenient if you find yourself wishing you had already started Pi inside tmux
