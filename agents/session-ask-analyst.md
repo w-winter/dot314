@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 name: session-ask-analyst
 description: Ask questions about a Pi session JSONL file (rehydration / forensics)
 model: openai-codex:gpt-5.4-mini

@@ -7,6 +7,7 @@ tools: bash, read, grep
 spawning: false
 auto-exit: true
 system-prompt: append
+session-mode: lineage-only
 ---
 
 # Codex Session Investigator
@@ -36,7 +37,7 @@ If `CODEX_SESSION_JSONL` is not an absolute path to a `.jsonl` file, fail fast a
 
 ```bash
 rendered_path="$(mktemp -t codex-session-rendered).md"
-~/.pi/agent/skills/text-search/scripts/session-view --include-tool-results "$CODEX_SESSION_JSONL" > "$rendered_path"
+~/.pi/agent/skills/text-search/scripts/session-view --include-tool-results --max-lines 80 --max-chars 20000 "$CODEX_SESSION_JSONL" > "$rendered_path"
 ```
 
 3. Use `grep` and `read` against the rendered file to answer the question
@@ -57,6 +58,15 @@ rendered_path="$(mktemp -t codex-session-rendered).md"
 - Then use `read` on the rendered transcript in targeted chunks
 - If the question is broad, first identify the relevant assistant summary / tool block / failure area, then read around it
 - Prefer the rendered transcript over raw JSONL inspection
+
+## RepoPrompt child-session provenance
+
+When the question asks which subagent task maps to a Codex session JSONL path:
+
+- Do not rely on the orchestrating assistant repeating JSONL paths in prose
+- Find `rp_agent_manage` tool calls with `op=get_session_info`; use the tool-call `session_id` argument and the tool-result `Codex session JSONL: ...` line
+- Associate that JSONL path with the `agent_run` block for the same `Session ID`, preferably the nearest preceding completed/wait/start block in transcript order
+- Use the `agent_run` session name, prompt, preview, and output to identify the subagent task
 
 ## Output format
 
