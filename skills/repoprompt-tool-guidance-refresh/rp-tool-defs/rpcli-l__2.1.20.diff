@@ -1,0 +1,28 @@
+12c12
+< - `get_log`: Read transcript for a session. Returns transcript XML.
+---
+> - `get_log`: Read faithful transcript XML for a session, preserving visible assistant/tool order without handoff compaction or narration pruning. Use `offset`/`limit` to page by turns.
+91c91
+< - `design` — Architecture, design discussions, and creative problem solving
+---
+> - `design` — Architecture, design discussions, creative problem solving; writes a markdown review document (saved under `docs/reviews/`, `docs/designs/`, or `docs/analysis/`) as its primary deliverable for review/analysis tasks
+186c186
+< **Groups**: `ui` · `prompt_packaging` · `models` · `context_builder` · `mcp` · `code_maps` · `file_system`
+---
+> **Groups**: `ui` · `prompt_packaging` · `models` · `context_builder` · `mcp` · `code_maps` · `file_system` · `agent_mode`
+190c190
+< - `{"op":"get","keys":["ui.appearance_mode","mcp.auto_start"]}`
+---
+> - `{"op":"get","keys":["ui.appearance_mode","ui.show_tooltips"]}`
+210c210
+<   group (string): ui | prompt_packaging | models | context_builder | mcp | code_maps | file_system
+---
+>   group (string): ui | prompt_packaging | models | context_builder | mcp | code_maps | file_system | agent_mode
+408c408
+< - `delete`: Remove file.
+---
+> - `delete`: Move file or folder to the macOS Trash. Recoverable from Finder Trash until emptied.
+418c418
+< - Delete: `{"action":"delete","path":"/Users/me/project/old.swift"}`
+---
+> - Delete: `{"action":"delete","path":"/Users/me/project/old.swift"}` moves the item to Trash.

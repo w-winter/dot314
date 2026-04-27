@@ -78,7 +78,7 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
-| Agent/session management | `agent_manage op="list_agents\|list_sessions\|extract_handoff\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows" [roles_only=true]` | inspect durable session/workflow state and export agent handoff transcript; `roles_only=true` with `list_agents` returns just the role labels (explore, engineer, pair, design) and their default models |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows" [roles_only=true]` | inspect durable session/workflow state; `roles_only=true` with `list_agents` returns just the role labels (explore, engineer, pair, design) and their default models |
 | App settings | `app_settings op="list\|get\|set\|options" [group="..."] [key="..."]` | read/update allowlisted RepoPrompt app-wide preferences |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | detail levels: `summary\|files\|patches\|full`; worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
@@ -117,9 +117,9 @@ RepoPrompt only operates within workspace root folders.
 `agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab subagent session, not just make one-off MCP file/chat calls.
 
 - Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`
-- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, and export handoff transcript
-- Use `agent_manage op="list_agents" roles_only=true` when you only need which model each role label (explore, engineer, pair, design) resolves to
-- Use `agent_manage op="extract_handoff"` to pull into your context a handoff transcript of the subagent's context. It exports a `<forked_session ...>` payload; set `output_path` to write a file, or omit it for inline XML.
+- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, read transcripts
+- Use `agent_manage op="list_agents" roles_only=true` when you only need which model each role label (explore, engineer, pair, design) resolves to; `design` produces markdown docs under `docs/`
+- Use `agent_manage op="get_log" session_id="..."` to read session transcript XML; supports `offset`/`limit` paging
 - Session state uses MCP-facing values such as `running`, `waiting_for_input`, `completed`, and `failed`; `waiting_for_input` means reply with `agent_run op="respond"`
 - `agent_manage op="list_workflows"` includes `orchestrate` for planning, decomposition, and sub-agent dispatch
 - `agent_run op="wait"` / `op="poll"` accept either `session_id` or `session_ids`; multi-wait wakes on the first interesting session
@@ -186,7 +186,7 @@ Token-costly—invoke explicitly when user requests or during planning phases, n
 
 `app_settings op="list|get|set|options" ...`
 
-Use this for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`. Current groups: `ui`, `prompt_packaging`, `models`, `context_builder`, `mcp`, `code_maps`, `file_system`.
+Use this for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`. Current groups: `ui`, `prompt_packaging`, `models`, `context_builder`, `mcp`, `code_maps`, `file_system`, `agent_mode`.
 
 ---
 

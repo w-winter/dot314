@@ -100,3 +100,10 @@ Ignore changes that only affect:
 - Internal implementation details not exposed via tools
 
 The diffs are the source of truth. If a changelog item has no corresponding signature in the diffs, it's not relevant to this refresh.
+
+# Token Economy
+
+The preface files are included in every session's system prompt. Keep them tight:
+- Do not document OS-level implementation details (e.g., how delete works under the hood) unless agents need to reason about it
+- When two ops overlap significantly (e.g., `extract_handoff` and `get_log` both read session transcripts), pick one canonical op for the preface and omit the other. Skills and prompts can expand on the omitted op when a specific workflow needs it
+- Behavioral notes about agent roles (e.g., what `design` produces) should be ≤10 tokens — just enough to route correctly
