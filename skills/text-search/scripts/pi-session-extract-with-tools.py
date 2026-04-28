@@ -2,13 +2,15 @@
 """
 pi-session-diagnostic.py
 
-Diagnostic view of Pi agent sessions - shows tool calls, edits, errors.
-For investigating what actually happened, not just the conversation flow.
+Readable view of Pi agent sessions, with optional full tool calls and bounded tool results.
+For investigating conversation flow first, then exact tool details when requested.
 
 Output format:
   USER: message
   ASSISTANT: assistant text
-    [tool_name] key_args
+  ASSISTANT:
+    [tool_name]
+      {full_args_json}
   TOOL [name]: ✓/✗ truncated_output
 
 Usage:
@@ -86,64 +88,12 @@ def _truncate(text: str, max_lines: int = MAX_OUTPUT_LINES, max_chars: int = MAX
     return text
 
 
-def _format_tool_call(name: str, args: Dict[str, Any]) -> str:
-    """Format tool call with key arguments only"""
-    key_parts = []
-    
-    # Common argument patterns across tools
-    if "path" in args:
-        key_parts.append(args["path"])
-    elif "file_path" in args:
-        key_parts.append(args["file_path"])
-    
-    if "command" in args:
-        cmd = args["command"]
-        # Truncate long commands
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
-        key_parts.append(f"`{cmd}`")
-    elif "cmd" in args:
-        cmd = args["cmd"]
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
-        key_parts.append(f"`{cmd}`")
-    
-    # Edit-specific: show search/replace
-    if "oldText" in args and "newText" in args:
-        old = args["oldText"][:40] + "..." if len(args["oldText"]) > 40 else args["oldText"]
-        new = args["newText"][:40] + "..." if len(args["newText"]) > 40 else args["newText"]
-        old = old.replace("\n", "\\n")
-        new = new.replace("\n", "\\n")
-        key_parts.append(f'"{old}" → "{new}"')
-    elif "search" in args and "replace" in args:
-        old = args["search"][:40] + "..." if len(args["search"]) > 40 else args["search"]
-        new = args["replace"][:40] + "..." if len(args["replace"]) > 40 else args["replace"]
-        old = old.replace("\n", "\\n")
-        new = new.replace("\n", "\\n")
-        key_parts.append(f'"{old}" → "{new}"')
-    
-    # Pattern/query for search tools
-    if "pattern" in args:
-        key_parts.append(f'pattern="{args["pattern"]}"')
-    if "query" in args:
-        key_parts.append(f'"{args["query"]}"')
-    
-    # Content for write (truncated)
-    if "content" in args and name.lower() in ("write", "file_actions", "create"):
-        content = args["content"]
-        if len(content) > 60:
-            content = content[:57] + "..."
-        content = content.replace("\n", "\\n")
-        key_parts.append(f'content="{content}"')
-    
-    if key_parts:
-        return f"[{name}] {' '.join(key_parts)}"
-    else:
-        # Fallback: show first few args
-        arg_str = json.dumps(args, ensure_ascii=False)
-        if len(arg_str) > 60:
-            arg_str = arg_str[:57] + "..."
-        return f"[{name}] {arg_str}"
+def _format_tool_call(name: str, args: Dict[str, Any]) -> List[str]:
+    """Format tool call with full, stable JSON arguments"""
+    arg_str = json.dumps(args, ensure_ascii=False, indent=2, sort_keys=True)
+    if "\n" not in arg_str:
+        return [f"[{name}] {arg_str}"]
+    return [f"[{name}]", *[f"  {line}" for line in arg_str.splitlines()]]
 
 
 def _format_tool_result(
@@ -173,6 +123,7 @@ def _format_tool_result(
 def process_session(
     records: Iterable[Dict[str, Any]],
     *,
+    include_tool_calls: bool,
     include_tool_results: bool,
     max_lines: int,
     max_chars: int,
@@ -226,10 +177,11 @@ def process_session(
                                 args = {}
                         
                         formatted = _format_tool_call(tool_name, args)
-                        tool_parts.append(f"  {formatted}")
+                        if include_tool_calls:
+                            tool_parts.extend(f"  {line}" for line in formatted)
                         
                         if tool_id:
-                            pending_tools[tool_id] = (tool_name, formatted)
+                            pending_tools[tool_id] = (tool_name, "\n".join(formatted))
             
             # Build assistant output
             if text_parts or tool_parts:
@@ -294,7 +246,7 @@ def _find_latest_jsonl(root: Path) -> Optional[Path]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
-        description="Diagnostic view of Pi sessions - shows tool calls, edits, errors"
+        description="Readable view of Pi sessions, with optional full tool calls and bounded tool results"
     )
     p.add_argument(
         "jsonl",
@@ -306,6 +258,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--latest",
         action="store_true",
         help="Process the newest session under default root"
+    )
+    p.add_argument(
+        "--include-tool-calls",
+        action="store_true",
+        help="Include assistant tool invocations with full arguments (default: omitted)"
     )
     p.add_argument(
         "--include-tool-results",
@@ -355,6 +312,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     
     output = process_session(
         records,
+        include_tool_calls=args.include_tool_calls,
         include_tool_results=args.include_tool_results,
         max_lines=args.max_lines,
         max_chars=args.max_chars,

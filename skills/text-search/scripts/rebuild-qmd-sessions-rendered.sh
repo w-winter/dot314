@@ -218,6 +218,7 @@ for source_path, rel in all_sessions:
             f'relative_session: {relative_path}\n'
             f'session_format: {session_format or "auto"}\n'
             'rendered_by: session-view\n'
+            'include_tool_calls: false\n'
             'include_tool_results: false\n'
             f'render_part_index: {index}\n'
             f'render_part_count: {len(parts)}\n'

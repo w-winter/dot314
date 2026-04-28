@@ -124,7 +124,7 @@ qmd search -c sessions --files 'apply_edits' -n 5
 qmd get "qmd://sessions/path/to/session-transcript.md" --full
 ```
 
-Each session transcript includes `original_session` metadata in frontmatter. When exact tool outputs, commands, SQL, or ad-hoc code matter, recover them from the original session JSONL with `session_ask` or `session-view --include-tool-results`.
+Each session transcript includes `original_session` metadata in frontmatter. When exact commands, SQL, edits, or ad-hoc code matter, recover them from the original session JSONL with `session_ask` or `session-view --include-tool-calls`. Add `--include-tool-results` only when tool outputs are evidence.
 
 ## If qmd is missing
 
@@ -147,7 +147,7 @@ The `sessions` collection is a corpus of agent session transcripts generated fro
 Use this three-step process:
 1. **Discover** candidate sessions with qmd or `analyze-sessions.sh`
 2. **Inspect** the session transcript with `qmd get`
-3. **Recover exact raw-session details only when needed** via `original_session` + `session_ask` or `session-view --include-tool-results`
+3. **Recover exact raw-session details only when needed** via `original_session` + `session_ask` or `session-view --include-tool-calls`
 
 Do **not** try to understand a session from raw JSONL snippets alone.
 
@@ -168,8 +168,8 @@ If exact raw-session details matter:
 # 1. Read the transcript and note its `original_session` frontmatter
 qmd get "qmd://sessions/path/to/session-transcript.md" --full
 
-# 2. Recover exact details from the original session
-session-view --include-tool-results /absolute/path/to/original/session.jsonl
+# 2. Recover exact tool-call details from the original session
+session-view --include-tool-calls /absolute/path/to/original/session.jsonl
 ```
 
 Or use `session_ask` against that `original_session` path when you want targeted recovery without reading the whole session.
@@ -242,11 +242,14 @@ It also accepts RepoPrompt `AgentSession-*.json` files when you want the compres
 For Codex sessions, `session-view` strips the leading injected AGENTS/environment preamble through `</environment_context>` before rendering the transcript.
 
 ```bash
-# Default: omit tool result/output blocks
+# Default: prose-only; omit tool calls and tool result/output blocks
 session-view /absolute/path/to/original/session.jsonl
 
-# Opt-in: include tool result/output blocks
-session-view --include-tool-results /absolute/path/to/original/session.jsonl
+# Opt-in: include assistant tool invocations with full arguments
+session-view --include-tool-calls /absolute/path/to/original/session.jsonl
+
+# Escalate only when tool outputs are evidence
+session-view --include-tool-calls --include-tool-results /absolute/path/to/original/session.jsonl
 
 # RepoPrompt AgentSession JSON
 session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessions/AgentSession-ABC123.json
@@ -255,26 +258,35 @@ session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessi
 You can also inspect the latest local session directly:
 
 ```bash
-# Default: omit tool result/output blocks
+# Default: prose-only; omit tool calls and tool result/output blocks
 session-view --latest pi
 session-view --latest codex
 session-view --latest claude
 session-view --latest rp
 
-# Opt-in: include tool result/output blocks
-session-view --include-tool-results --latest pi
+# Opt-in: include full tool-call arguments
+session-view --include-tool-calls --latest pi
 ```
 
-Rendered output looks like this (tool calls are shown; tool results are omitted by default):
+Default rendered output looks like this:
 
 ```text
 USER: message
 
 ASSISTANT: response text
-  [tool_name] key_args
 ```
 
-If you opt-in to tool results with `--include-tool-results`, you'll also see:
+With `--include-tool-calls`, assistant tool invocations are rendered with full JSON arguments:
+
+```text
+ASSISTANT:
+  [tool_name]
+    {
+      "path": "file.txt"
+    }
+```
+
+If you opt in to tool results with `--include-tool-results`, you'll also see bounded output blocks:
 
 ```text
 TOOL [name]: ✓ truncated_output
@@ -291,8 +303,8 @@ qmd search -c sessions --files 'git rebase' -n 20
 # 2. Inspect the transcript
 qmd get "qmd://sessions/path/to/session-transcript.md" --full
 
-# 3. If exact details matter, recover them from original_session
-session-view --include-tool-results /absolute/path/to/original/session.jsonl
+# 3. If exact details matter, recover full tool calls from original_session
+session-view --include-tool-calls /absolute/path/to/original/session.jsonl
 ```
 
 ### Escalate when lexical search is weak

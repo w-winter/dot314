@@ -33,6 +33,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("file", nargs="?", help="Path to AgentSession-*.json, or '-' for stdin")
     parser.add_argument("--latest", action="store_true", help="Render the most recent local AgentSession JSON")
     parser.add_argument(
+        "--include-tool-calls",
+        action="store_true",
+        help="Include tool execution summaries from the compressed RepoPrompt transcript",
+    )
+    parser.add_argument(
         "--include-tool-results",
         action="store_true",
         help="Include parsed tool result detail blocks when available",
@@ -266,6 +271,7 @@ def _format_tool_summary(
 def render_session(
     session: dict[str, Any],
     *,
+    include_tool_calls: bool,
     include_tool_results: bool,
     max_lines: int,
     max_chars: int,
@@ -310,6 +316,8 @@ def render_session(
 
                 tool_execution = activity.get("toolExecution")
                 if isinstance(tool_execution, dict):
+                    if not include_tool_calls and not include_tool_results:
+                        continue
                     if _should_batch_tool_summary(tool_execution, include_tool_results=include_tool_results):
                         pending_tool_batch.append(tool_execution)
                     else:
@@ -350,6 +358,7 @@ def main() -> int:
         session, source_label = _load_session(args.file, args.latest)
         rendered = render_session(
             session,
+            include_tool_calls=args.include_tool_calls,
             include_tool_results=args.include_tool_results,
             max_lines=max(1, args.max_lines),
             max_chars=max(50, args.max_chars),

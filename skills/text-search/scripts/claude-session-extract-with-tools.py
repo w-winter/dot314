@@ -2,13 +2,15 @@
 """
 claude-session-diagnostic.py
 
-Diagnostic view of Claude Code sessions - shows tool calls, edits, errors.
-For investigating what actually happened, not just the conversation flow.
+Readable view of Claude Code sessions, with optional full tool calls and bounded tool results.
+For investigating conversation flow first, then exact tool details when requested.
 
 Output format:
   USER: message
   ASSISTANT: assistant text
-    [tool_name] key_args
+  ASSISTANT:
+    [tool_name]
+      {full_args_json}
   TOOL [name]: ✓/✗ truncated_output
 
 Usage:
@@ -105,50 +107,12 @@ def _clean_xml_content(content: str) -> str:
     return content.strip()
 
 
-def _format_tool_call(name: str, tool_input: Dict[str, Any]) -> str:
-    """Format tool call with key arguments"""
-    key_parts = []
-    
-    # File operations
-    if "file_path" in tool_input:
-        key_parts.append(tool_input["file_path"])
-    elif "path" in tool_input:
-        key_parts.append(tool_input["path"])
-    
-    # Commands
-    if "command" in tool_input:
-        cmd = str(tool_input["command"])
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
-        key_parts.append(f"`{cmd}`")
-    
-    # Edit patterns
-    for old_key, new_key in [("old_str", "new_str"), ("search", "replace"), ("oldText", "newText")]:
-        if old_key in tool_input and new_key in tool_input:
-            old = str(tool_input[old_key])[:40]
-            new = str(tool_input[new_key])[:40]
-            if len(tool_input[old_key]) > 40:
-                old += "..."
-            if len(tool_input[new_key]) > 40:
-                new += "..."
-            old = old.replace("\n", "\\n")
-            new = new.replace("\n", "\\n")
-            key_parts.append(f'"{old}" → "{new}"')
-            break
-    
-    # Pattern/query
-    if "pattern" in tool_input:
-        key_parts.append(f'pattern="{tool_input["pattern"]}"')
-    if "regex" in tool_input:
-        key_parts.append(f'regex="{tool_input["regex"]}"')
-    
-    if key_parts:
-        return f"[{name}] {' '.join(key_parts)}"
-    else:
-        arg_str = json.dumps(tool_input, ensure_ascii=False)
-        if len(arg_str) > 60:
-            arg_str = arg_str[:57] + "..."
-        return f"[{name}] {arg_str}"
+def _format_tool_call(name: str, tool_input: Dict[str, Any]) -> List[str]:
+    """Format tool call with full, stable JSON arguments"""
+    arg_str = json.dumps(tool_input, ensure_ascii=False, indent=2, sort_keys=True)
+    if "\n" not in arg_str:
+        return [f"[{name}] {arg_str}"]
+    return [f"[{name}]", *[f"  {line}" for line in arg_str.splitlines()]]
 
 
 def _format_tool_result(
@@ -177,6 +141,7 @@ def _format_tool_result(
 def process_session(
     records: Iterable[Dict[str, Any]],
     *,
+    include_tool_calls: bool,
     include_tool_results: bool,
     max_lines: int,
     max_chars: int,
@@ -215,7 +180,7 @@ def process_session(
             if isinstance(content, str):
                 if '<command-name>' in content:
                     cmd_match = re.search(r'<command-name>([^<]+)</command-name>', content)
-                    if cmd_match:
+                    if include_tool_calls and cmd_match:
                         output.append(f"USER: [cmd] {cmd_match.group(1)}")
                 elif '<local-command-stdout>' in content:
                     if include_tool_results:
@@ -242,7 +207,7 @@ def process_session(
                             # Check for XML command patterns
                             if '<command-name>' in text:
                                 cmd_match = re.search(r'<command-name>([^<]+)</command-name>', text)
-                                if cmd_match:
+                                if include_tool_calls and cmd_match:
                                     text_parts.append(f"[cmd] {cmd_match.group(1)}")
                             elif '<local-command-stdout>' in text:
                                 if include_tool_results:
@@ -307,7 +272,8 @@ def process_session(
                             pending_tools[tool_use_id] = name
                         
                         formatted = _format_tool_call(name, tool_input if isinstance(tool_input, dict) else {})
-                        tool_parts.append(f"  {formatted}")
+                        if include_tool_calls:
+                            tool_parts.extend(f"  {line}" for line in formatted)
                     
                     # Skip thinking blocks entirely
             
@@ -356,7 +322,7 @@ def _find_latest_jsonl(root: Path) -> Optional[Path]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
-        description="Diagnostic view of Claude Code sessions - shows tool calls, edits, errors"
+        description="Readable view of Claude Code sessions, with optional full tool calls and bounded tool results"
     )
     p.add_argument(
         "jsonl",
@@ -368,6 +334,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--latest",
         action="store_true",
         help="Process the newest session under default root"
+    )
+    p.add_argument(
+        "--include-tool-calls",
+        action="store_true",
+        help="Include assistant tool invocations with full arguments (default: omitted)"
     )
     p.add_argument(
         "--include-tool-results",
@@ -417,6 +388,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     
     output = process_session(
         records,
+        include_tool_calls=args.include_tool_calls,
         include_tool_results=args.include_tool_results,
         max_lines=args.max_lines,
         max_chars=args.max_chars,

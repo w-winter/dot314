@@ -12,6 +12,7 @@
 #   cat session.jsonl | session-view - [pi|codex|claude]
 #
 # Options:
+#   --include-tool-calls     Include assistant tool invocations with full arguments (default: omitted)
 #   --include-tool-results   Include tool result/output blocks (default: omitted)
 #
 # Examples:
@@ -22,7 +23,8 @@
 #   session-view --latest pi
 #   session-view --latest rp
 #   qmd get sessions/file.jsonl --full | session-view - pi
-#   qmd get sessions/file.jsonl --full | session-view --include-tool-results - pi
+#   qmd get sessions/file.jsonl --full | session-view --include-tool-calls - pi
+#   qmd get sessions/file.jsonl --full | session-view --include-tool-calls --include-tool-results - pi
 
 set -e
 
@@ -52,6 +54,7 @@ Arguments:
 
 Options:
   --latest [format]          Process most recent session (default: pi)
+  --include-tool-calls       Include assistant tool invocations with full arguments (default: omitted)
   --include-tool-results     Include tool result/output blocks (default: omitted)
   --max-lines N              Max lines per tool output when included (default: 8)
   --max-chars N              Max chars per tool output when included (default: 500)
@@ -133,6 +136,10 @@ while [[ $# -gt 0 ]]; do
             else
                 shift
             fi
+            ;;
+        --include-tool-calls|--with-tool-calls)
+            extra_args+=("--include-tool-calls")
+            shift
             ;;
         --include-tool-results|--with-tool-results)
             extra_args+=("--include-tool-results")

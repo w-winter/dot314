@@ -37,7 +37,7 @@ If `CODEX_SESSION_JSONL` is not an absolute path to a `.jsonl` file, fail fast a
 
 ```bash
 rendered_path="$(mktemp -t codex-session-rendered).md"
-~/.pi/agent/skills/text-search/scripts/session-view --include-tool-results --max-lines 80 --max-chars 20000 "$CODEX_SESSION_JSONL" > "$rendered_path"
+~/.pi/agent/skills/text-search/scripts/session-view --include-tool-calls --include-tool-results --max-lines 80 --max-chars 20000 "$CODEX_SESSION_JSONL" > "$rendered_path"
 ```
 
 3. Use `grep` and `read` against the rendered file to answer the question
