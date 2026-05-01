@@ -88,7 +88,7 @@ function normalizeAbsolutePath(value: string): string {
 	const normalized = normalizePathSeparators(value.trim());
 	const windowsMatch = normalized.match(/^([A-Za-z]:)(?:\/(.*))?$/);
 	if (windowsMatch) {
-		const segments = normalizeSegments(windowsMatch[2] ?? "");
+		const segments = normalizeSegments(windowsMatch[2]);
 		return segments ? `${windowsMatch[1]}/${segments}` : `${windowsMatch[1]}/`;
 	}
 
@@ -126,7 +126,7 @@ function parseRootPrefixedPath(value: string): ParsedRootPrefixedPath | null {
 		return null;
 	}
 
-	const relativePath = normalizeRelativePath(match[2] ?? "");
+	const relativePath = normalizeRelativePath(match[2]);
 	if (!relativePath) {
 		return null;
 	}
@@ -350,7 +350,7 @@ function findRepoRootForDisplay(absolutePath: string, currentRoot: string | null
 		// fall through with the original path-derived candidate
 	}
 
-	while (true) {
+	for (;;) {
 		if (fs.existsSync(path.join(candidate, ".git"))) {
 			return candidate;
 		}
@@ -379,7 +379,7 @@ function displayPathForTrackedPath(
 
 	const repoRoot = findRepoRootForDisplay(resolvedPath, currentRoot?.absolutePath ?? null);
 	if (!repoRoot || !isWithinPath(resolvedPath, repoRoot)) {
-		return fallbackDisplayPath(canonicalPath) || resolvedPath;
+		return fallbackDisplayPath(canonicalPath);
 	}
 
 	const relativePath = resolvedPath.slice(repoRoot.length + 1);
@@ -492,6 +492,15 @@ function tokenizeShellCommand(cmd: string): string[] {
 			continue;
 		}
 
+		if (char === "\r" || char === "\n") {
+			flush();
+			tokens.push(";");
+			if (char === "\r" && next === "\n") {
+				index += 1;
+			}
+			continue;
+		}
+
 		if (/\s/.test(char)) {
 			flush();
 			continue;
@@ -587,8 +596,62 @@ function extractShellOperands(tokens: string[]): string[] {
 	return operands;
 }
 
+function extractHeadTailReadOperands(tokens: string[]): string[] {
+	const operands: string[] = [];
+	let allowFlags = true;
+	let skipNextOptionValue = false;
+
+	for (const token of tokens) {
+		if (skipNextOptionValue) {
+			skipNextOptionValue = false;
+			continue;
+		}
+
+		if (allowFlags && token === "--") {
+			allowFlags = false;
+			continue;
+		}
+
+		if (allowFlags && (token === "-n" || token === "-c" || token === "--lines" || token === "--bytes")) {
+			skipNextOptionValue = true;
+			continue;
+		}
+
+		if (
+			allowFlags
+			&& (token.startsWith("-") || /^[+]\d+[bcflkm]?$/.test(token))
+		) {
+			continue;
+		}
+
+		operands.push(token);
+	}
+
+	return operands;
+}
+
 function isIgnoredRedirectTarget(value: string): boolean {
 	return value === "/dev/null" || value === "/dev/stderr" || value === "/dev/stdout";
+}
+
+function isLiteralShellPathOperand(value: string): boolean {
+	return !/[`$]/.test(value) && !value.startsWith("<(") && !value.startsWith(">(");
+}
+
+function pushShellTouch(
+	actions: FileTrackingAction[],
+	pathValue: string,
+	operation: FileTouchOperation,
+): void {
+	if (isLiteralShellPathOperand(pathValue)) {
+		actions.push({ kind: "touch", path: pathValue, operation });
+	}
+}
+
+function pushShellMove(actions: FileTrackingAction[], from: string, to: string): void {
+	if (isLiteralShellPathOperand(from) && isLiteralShellPathOperand(to)) {
+		actions.push({ kind: "move", from, to });
+	}
 }
 
 function extractRedirectWriteTargets(tokens: string[], actions: FileTrackingAction[]): void {
@@ -597,7 +660,7 @@ function extractRedirectWriteTargets(tokens: string[], actions: FileTrackingActi
 
 		if (token === ">" || token === ">>") {
 			if (i + 1 < tokens.length && !isIgnoredRedirectTarget(tokens[i + 1])) {
-				actions.push({ kind: "touch", path: tokens[i + 1], operation: "write" });
+				pushShellTouch(actions, tokens[i + 1], "write");
 			}
 			i += 1;
 			continue;
@@ -606,7 +669,7 @@ function extractRedirectWriteTargets(tokens: string[], actions: FileTrackingActi
 		if (token.startsWith(">>") && token.length > 2) {
 			const target = token.slice(2);
 			if (!isIgnoredRedirectTarget(target)) {
-				actions.push({ kind: "touch", path: target, operation: "write" });
+				pushShellTouch(actions, target, "write");
 			}
 			continue;
 		}
@@ -614,7 +677,7 @@ function extractRedirectWriteTargets(tokens: string[], actions: FileTrackingActi
 		if (token.startsWith(">") && token.length > 1) {
 			const target = token.slice(1);
 			if (!isIgnoredRedirectTarget(target)) {
-				actions.push({ kind: "touch", path: target, operation: "write" });
+				pushShellTouch(actions, target, "write");
 			}
 			continue;
 		}
@@ -668,7 +731,7 @@ function stripHeredocBodies(cmd: string): string {
 
 		const match = line.match(/<<-?\s*(?:['"]([\w]+)['"]|([\w]+))/);
 		if (match) {
-			terminator = match[1] ?? match[2];
+			terminator = match.at(1) ?? match.at(2) ?? null;
 		}
 
 		if (justClosedHeredoc) {
@@ -696,14 +759,14 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 		if (command[0] === "git" && command[1] === "mv") {
 			const operands = extractShellOperands(command.slice(2));
 			if (operands.length === 2) {
-				actions.push({ kind: "move", from: operands[0], to: operands[1] });
+				pushShellMove(actions, operands[0], operands[1]);
 			}
 			continue;
 		}
 
 		if (command[0] === "git" && command[1] === "rm") {
 			for (const operand of extractShellOperands(command.slice(2))) {
-				actions.push({ kind: "touch", path: operand, operation: "delete" });
+				pushShellTouch(actions, operand, "delete");
 			}
 			continue;
 		}
@@ -711,14 +774,14 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 		if (command[0] === "mv") {
 			const operands = extractShellOperands(command.slice(1));
 			if (operands.length === 2) {
-				actions.push({ kind: "move", from: operands[0], to: operands[1] });
+				pushShellMove(actions, operands[0], operands[1]);
 			}
 			continue;
 		}
 
 		if (command[0] === "rm" || command[0] === "trash" || command[0] === "trash-put" || command[0] === "unlink") {
 			for (const operand of extractShellOperands(command.slice(1))) {
-				actions.push({ kind: "touch", path: operand, operation: "delete" });
+				pushShellTouch(actions, operand, "delete");
 			}
 			continue;
 		}
@@ -730,7 +793,7 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 				const fileOperands = hasExplicitExpr ? operands : operands.slice(1);
 				for (const operand of fileOperands) {
 					if (!looksLikeSedExpression(operand)) {
-						actions.push({ kind: "touch", path: operand, operation: "edit" });
+						pushShellTouch(actions, operand, "edit");
 					}
 				}
 			}
@@ -740,21 +803,21 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 		if (command[0] === "cp" || command[0] === "rsync") {
 			const operands = extractShellOperands(command.slice(1));
 			if (operands.length >= 2) {
-				actions.push({ kind: "touch", path: operands[operands.length - 1], operation: "write" });
+				pushShellTouch(actions, operands[operands.length - 1], "write");
 			}
 			continue;
 		}
 
 		if (command[0] === "tee") {
 			for (const operand of extractShellOperands(command.slice(1))) {
-				actions.push({ kind: "touch", path: operand, operation: "write" });
+				pushShellTouch(actions, operand, "write");
 			}
 			continue;
 		}
 
 		if (command[0] === "touch") {
 			for (const operand of extractShellOperands(command.slice(1))) {
-				actions.push({ kind: "touch", path: operand, operation: "write" });
+				pushShellTouch(actions, operand, "write");
 			}
 			continue;
 		}
@@ -762,7 +825,7 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 		if (command[0] === "patch") {
 			const operands = extractShellOperands(command.slice(1));
 			if (operands.length >= 1) {
-				actions.push({ kind: "touch", path: operands[0], operation: "edit" });
+				pushShellTouch(actions, operands[0], "edit");
 			}
 			continue;
 		}
@@ -770,7 +833,7 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 		if (command[0] === "curl") {
 			for (let i = 1; i < command.length; i++) {
 				if ((command[i] === "-o" || command[i] === "--output") && i + 1 < command.length) {
-					actions.push({ kind: "touch", path: command[i + 1], operation: "write" });
+					pushShellTouch(actions, command[i + 1], "write");
 					break;
 				}
 			}
@@ -780,16 +843,23 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 		if (command[0] === "wget") {
 			for (let i = 1; i < command.length; i++) {
 				if ((command[i] === "-O" || command[i] === "--output-document") && i + 1 < command.length) {
-					actions.push({ kind: "touch", path: command[i + 1], operation: "write" });
+					pushShellTouch(actions, command[i + 1], "write");
 					break;
 				}
 			}
 			continue;
 		}
 
-		if (command[0] === "cat" || command[0] === "head" || command[0] === "tail") {
+		if (command[0] === "cat") {
 			for (const operand of extractShellOperands(command.slice(1))) {
-				actions.push({ kind: "touch", path: operand, operation: "read" });
+				pushShellTouch(actions, operand, "read");
+			}
+			continue;
+		}
+
+		if (command[0] === "head" || command[0] === "tail") {
+			for (const operand of extractHeadTailReadOperands(command.slice(1))) {
+				pushShellTouch(actions, operand, "read");
 			}
 			continue;
 		}
@@ -988,7 +1058,7 @@ export function collectFilesTouched(
 		}
 
 		for (const block of msg.content) {
-			if (!block || typeof block !== "object" || (block as { type?: unknown }).type !== "toolCall") {
+			if (typeof block !== "object" || (block as { type?: unknown }).type !== "toolCall") {
 				continue;
 			}
 

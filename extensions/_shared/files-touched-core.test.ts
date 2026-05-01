@@ -465,18 +465,75 @@ test("collectFilesTouched tracks cat, head, and tail as read", async () => {
 			toolResult("2", 2, "const bar = 'original';"),
 			toolCall("3", "bash", { command: "tail -5 src/header.txt" }),
 			toolResult("3", 3, "line one"),
+			toolCall("4", "bash", { command: "tail -n 80 src/log.txt" }),
+			toolResult("4", 4, "log line"),
 		] as SessionEntry[];
 
 		const files = collectFilesTouched(entries, harness.cwd);
 		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
 
-		assert.equal(files.length, 3);
+		assert.equal(files.length, 4);
 		assert.ok(byDisplay.has("src/config.ts"));
 		assert.ok(byDisplay.has("src/utils.ts"));
 		assert.ok(byDisplay.has("src/header.txt"));
+		assert.ok(byDisplay.has("src/log.txt"));
+		assert.ok(!byDisplay.has("80"));
 		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])], ["read"]);
 		assert.deepEqual([...(byDisplay.get("src/utils.ts")?.operations ?? [])], ["read"]);
 		assert.deepEqual([...(byDisplay.get("src/header.txt")?.operations ?? [])], ["read"]);
+		assert.deepEqual([...(byDisplay.get("src/log.txt")?.operations ?? [])], ["read"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched treats shell newlines as command separators", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", {
+				command: [
+					"HOOK=src/hook-events.ndjson",
+					"if [ -f \"$HOOK\" ]; then",
+					"  grep -nE 'EVENT|turn_end' \"$HOOK\" | tail -n 80",
+					"else",
+					"  echo \"missing $HOOK\"",
+					"fi",
+				].join("\n"),
+			}),
+			toolResult("1", 1, "ok"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((f) => [f.displayPath, f]));
+
+		assert.equal(files.length, 0);
+		assert.ok(!byDisplay.has("80"));
+		assert.ok(!byDisplay.has("else"));
+		assert.ok(!byDisplay.has("echo"));
+		assert.ok(!byDisplay.has("missing $HOOK"));
+		assert.ok(!byDisplay.has("fi"));
+		assert.ok(!byDisplay.has("$HOOK"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched ignores shell variable path operands", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "bash", {
+				command: "tmp=src/generated.txt && echo content > $tmp && cat $tmp && cp src/template.ts src/$name.ts",
+			}),
+			toolResult("1", 1, "content"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 0);
 	} finally {
 		await harness.cleanup();
 	}
