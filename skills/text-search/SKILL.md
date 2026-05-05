@@ -174,6 +174,36 @@ session-view --include-tool-calls /absolute/path/to/original/session.jsonl
 
 Or use `session_ask` against that `original_session` path when you want targeted recovery without reading the whole session.
 
+### If `original_session` is missing or stale
+
+A session transcript's `original_session` frontmatter may point to a materialized indexing path rather than the live Pi session JSONL. If that path does not exist, use `relative_session` plus Pi's configured session directory.
+
+For Pi sessions:
+
+- `relative_session: pi/<session-path>.jsonl`
+- live path: `<PI session dir>/<session-path>.jsonl`
+
+Resolve the Pi session dir using Pi's documented precedence:
+
+1. `--session-dir` if known from the command/session context
+2. `PI_CODING_AGENT_SESSION_DIR` if set
+3. `sessionDir` in Pi settings
+4. default: `~/.pi/agent/sessions`
+
+Example:
+
+```text
+relative_session: pi/--Users-ww-project--/session-id.jsonl
+```
+
+with the default session dir maps to:
+
+```text
+~/.pi/agent/sessions/--Users-ww-project--/session-id.jsonl
+```
+
+If the effective session dir cannot be determined, try the default path first, then ask the user for their Pi session directory rather than assuming the qmd `original_session` path is still valid.
+
 Filtering transcript output is fine:
 
 ```bash
