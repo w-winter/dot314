@@ -947,7 +947,8 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     return (
       (lower.includes("window") && lower.includes("not found")) ||
       (lower.includes("tab") && lower.includes("not found")) ||
-      (lower.includes("context") && lower.includes("not found"))
+      (lower.includes("context") && lower.includes("not found")) ||
+      lower.includes("does not host context_id")
     );
   }
 

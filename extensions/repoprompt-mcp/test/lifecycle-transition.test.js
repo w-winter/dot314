@@ -923,7 +923,7 @@ test("missing old binding/window remove failure is ignored, but desired replay s
     failNextAddCount: 0,
     failNextAddAsResultCount: 0,
     failNextRemoveIgnorableResultCount: 0,
-    ignorableRemoveErrorText: "RepoPrompt tab \"TAB-OLD\" not found in window 5",
+    ignorableRemoveErrorText: "Invalid params: Window 5 does not host context_id 'TAB-OLD'. Available windows: 1, 2, 3",
     createdTabId: "TAB-NEW",
     tabsByWindow: new Map([
       [5, [{ id: "TAB-OLD", name: "Old", active: true, bound: false, files: 1 }]],
