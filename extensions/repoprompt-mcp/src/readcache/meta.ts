@@ -1,6 +1,6 @@
 // readcache/meta.ts - validation + extraction from session entries
 
-import type { SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import { RP_READCACHE_CUSTOM_TYPE, RP_READCACHE_META_VERSION, SCOPE_FULL } from "./constants.js";
 import type {

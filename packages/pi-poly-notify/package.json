@@ -1,6 +1,6 @@
 {
   "name": "pi-poly-notify",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Highly configurable desktop/sound/Pushover notifications when Pi agent turn finishes and took longer than a definable threshold",
   "keywords": [
     "pi-package",
@@ -23,8 +23,8 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

@@ -9,9 +9,9 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	SessionEntry,
-} from "@mariozechner/pi-coding-agent"
-import { SessionManager } from "@mariozechner/pi-coding-agent"
-import { Key, matchesKey } from "@mariozechner/pi-tui"
+} from "@earendil-works/pi-coding-agent"
+import { SessionManager } from "@earendil-works/pi-coding-agent"
+import { Key, matchesKey } from "@earendil-works/pi-tui"
 
 const TERMINAL_FLAG = "branch-out-terminal"
 const STATUS_KEY = "branch-out-terminal"

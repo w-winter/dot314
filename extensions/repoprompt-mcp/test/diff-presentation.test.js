@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { buildDiffSummaryText, resolveDiffPresentationMode } from "../dist/diff-presentation.js";
 

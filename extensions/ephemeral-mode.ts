@@ -9,7 +9,7 @@
  *   Alt+E      - Toggle ephemeral mode (shortcut)
  */
 
-import { SessionManager, type ExtensionAPI, type SessionEntry } from "@mariozechner/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { existsSync, unlinkSync } from "node:fs";
 
 export default function (pi: ExtensionAPI) {

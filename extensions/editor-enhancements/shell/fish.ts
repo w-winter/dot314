@@ -8,7 +8,7 @@
  * returns null for "user hasn't configured completions".
  */
 
-import type { AutocompleteItem } from "@mariozechner/pi-tui";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { spawnSync } from "node:child_process";
 import type { CompletionResult, ShellCompletionProvider } from "./types.js";
 

@@ -11,8 +11,8 @@ import type {
     ExtensionCommandContext,
     ExtensionContext,
     SessionEntry,
-} from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 
 import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-touched-core.ts";
 

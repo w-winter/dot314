@@ -1,6 +1,6 @@
 {
   "name": "pi-agentic-compaction",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Pi extension for intelligent conversation compaction using a virtual filesystem and LLM exploration",
   "type": "module",
   "keywords": [
@@ -21,11 +21,11 @@
     "just-bash": "^1.5.4"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.69.0"
+    "@earendil-works/pi-coding-agent": "^0.74.0"
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": ">=0.69.0",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
     "typebox": "*"
   }
 }

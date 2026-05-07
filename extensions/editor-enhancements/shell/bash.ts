@@ -7,7 +7,7 @@
  * Philosophy: Only provide completions if the user has bash-completion available.
  */
 
-import type { AutocompleteItem } from "@mariozechner/pi-tui";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";

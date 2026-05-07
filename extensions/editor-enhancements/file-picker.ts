@@ -17,8 +17,8 @@
  * Based on codemap extension by @kcosr
  */
 
-import type { ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-import { Input, matchesKey, visibleWidth, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { Input, matchesKey, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";

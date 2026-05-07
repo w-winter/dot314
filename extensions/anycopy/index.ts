@@ -14,17 +14,17 @@
  *   Esc       - close
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	copyToClipboard,
 	getLanguageFromPath,
 	getMarkdownTheme,
 	highlightCode,
 	TreeSelectorComponent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
-import { getKeybindings, Markdown, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
-import type { Focusable } from "@mariozechner/pi-tui";
+import { getKeybindings, Markdown, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Focusable } from "@earendil-works/pi-tui";
 
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";

@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
   InputEvent,
   InputEventResult,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { buildTemplateCatalog } from "./catalog.ts";
 import { renderTemplateInvocation } from "./render.ts";

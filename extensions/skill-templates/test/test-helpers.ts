@@ -7,7 +7,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   InputEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import skillTemplatesExtension from "../index.ts";
 

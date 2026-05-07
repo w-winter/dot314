@@ -40,8 +40,8 @@
  *   7. Parent becomes inert, forwarding exit code
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";

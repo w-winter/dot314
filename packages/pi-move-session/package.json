@@ -1,6 +1,6 @@
 {
   "name": "pi-move-session",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Move a live Pi session to another working directory, including back to a repository's main worktree",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session"],
   "license": "MIT",
@@ -17,7 +17,7 @@
     "extensions": ["extensions/move-session.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.51.0"
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
-import type { SessionInfo } from "@mariozechner/pi-coding-agent";
+import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "bun:test";
 
 import type { PiSpawnDeps } from "../../../extensions/_shared/pi-spawn.ts";

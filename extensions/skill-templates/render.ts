@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { stripFrontmatter } from "@mariozechner/pi-coding-agent";
+import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import nunjucks from "nunjucks";
 
 import { parseInvocationArgs } from "./args.ts";

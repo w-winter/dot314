@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { extractSnippets, extractText } from "./snippets";
 import type { Snippet } from "./snippets";
 import { pickAction, pickSnippet } from "./ui";

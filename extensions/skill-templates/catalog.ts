@@ -2,8 +2,8 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import type { SlashCommandInfo } from "@mariozechner/pi-coding-agent";
-import { parseFrontmatter } from "@mariozechner/pi-coding-agent";
+import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import ignore from "ignore";
 
 import {

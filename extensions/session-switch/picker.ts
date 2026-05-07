@@ -1,8 +1,8 @@
-import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@mariozechner/pi-coding-agent";
-import { getMarkdownTheme, SessionManager, SessionSelectorComponent } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, SessionManager, SessionSelectorComponent } from "@earendil-works/pi-coding-agent";
 
-import type { Focusable } from "@mariozechner/pi-tui";
-import { Markdown, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import type { Focusable } from "@earendil-works/pi-tui";
+import { Markdown, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 export type SessionPickerDismissReason = "cancel" | "exit";
 

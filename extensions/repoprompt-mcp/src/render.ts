@@ -1,7 +1,7 @@
 // render.ts - Syntax highlighting and diff rendering for RepoPrompt output
 
-import { highlightCode, type Theme } from "@mariozechner/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { highlightCode, type Theme } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 
 import {
   renderAdaptiveDiffBlockLines,

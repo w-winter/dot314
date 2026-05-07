@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { completeSimple, type Api, type AssistantMessage, type Message, type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Api, type AssistantMessage, type Message, type Model } from "@earendil-works/pi-ai";
 import {
     convertToLlm,
     findTurnStartIndex,
@@ -12,7 +12,7 @@ import {
     type SessionBeforeTreeEvent,
     type SessionBeforeTreeResult,
     type SessionEntry,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-touched-core.ts";
 

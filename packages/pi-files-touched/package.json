@@ -1,6 +1,6 @@
 {
   "name": "pi-files-touched",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Deterministic file-activity tracking for Pi sessions, covering native tools, RepoPrompt, and bash commands.  Includes /files-touched picker and a shared core for compaction/handover extensions",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "files", "tracking", "compaction"],
   "license": "MIT",
@@ -17,8 +17,8 @@
     "extensions": ["extensions/files-touched.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": ">=0.51.0",
-    "@mariozechner/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": "*"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

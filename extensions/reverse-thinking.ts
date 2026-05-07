@@ -1,5 +1,5 @@
-import { supportsXhigh } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { supportsXhigh } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const LEVELS = ["off", "minimal", "low", "medium", "high"] as const;
 const LEVELS_XHIGH = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
