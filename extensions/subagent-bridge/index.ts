@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { IntercomClient } from "../pi-intercom/broker/client.ts";
 import type { Attachment as IntercomAttachment, Message as IntercomMessage, SessionInfo } from "../pi-intercom/types.ts";

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, test } from "node:test";
 
-import type { SlashCommandInfo } from "@mariozechner/pi-coding-agent";
+import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 
 import { buildTemplateCatalog } from "../catalog.ts";
 

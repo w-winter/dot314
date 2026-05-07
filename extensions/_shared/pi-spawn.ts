@@ -12,7 +12,7 @@ export function resolvePiPackageRoot(): string | undefined {
 		while (dir !== path.dirname(dir)) {
 			try {
 				const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf-8"));
-				if (pkg.name === "@mariozechner/pi-coding-agent") return dir;
+				if (pkg.name === "@earendil-works/pi-coding-agent") return dir;
 			} catch {}
 			dir = path.dirname(dir);
 		}
@@ -67,7 +67,7 @@ export function resolveWindowsPiCliScript(deps: PiSpawnDeps = {}): string | unde
 		const resolvePackageJson = deps.resolvePackageJson ?? (() => {
 			const root = deps.piPackageRoot ?? resolvePiPackageRoot();
 			if (root) return path.join(root, "package.json");
-			return require.resolve("@mariozechner/pi-coding-agent/package.json");
+			return require.resolve("@earendil-works/pi-coding-agent/package.json");
 		});
 		const packageJsonPath = resolvePackageJson();
 		const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {

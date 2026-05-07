@@ -10,7 +10,7 @@
  * Disable other extensions that also call setEditorComponent (shell-completions/, file-picker.ts, raw-paste.ts)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadConfig } from "./config.js";
 import { EnhancedEditor } from "./enhanced-editor.js";

@@ -20,7 +20,7 @@
  */
 
 import { resolve, sep } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 let parseBash: ((input: string) => any) | null = null;
 let justBashLoadPromise: Promise<void> | null = null;
@@ -305,7 +305,7 @@ function analyzeBashScript(command: string): BashAnalysis {
 
 // Allow reading Pi's own node_modules when installed via Homebrew
 const ALLOWED_NODE_MODULES_PREFIXES = [
-    resolve("/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent"),
+    resolve("/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent"),
 ];
 
 const SHELL_EXECUTABLES = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);

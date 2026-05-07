@@ -16,8 +16,8 @@ import type {
   ExtensionContext,
   ToolRenderResultOptions,
   Theme,
-} from "@mariozechner/pi-coding-agent";
-import { Text, matchesKey, visibleWidth } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Text, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import type {

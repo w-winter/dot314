@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
   DEFAULT_EXCLUDED_PATH_PATTERNS,

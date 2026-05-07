@@ -1,6 +1,6 @@
 {
   "name": "repoprompt-mcp",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "RepoPrompt MCP integration for Pi",
   "type": "module",
   "main": "dist/index.js",
@@ -16,14 +16,14 @@
     "diff": "^7.0.0"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.69.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.15.21",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "pi": {
     "extensions": ["./src/index.ts"]

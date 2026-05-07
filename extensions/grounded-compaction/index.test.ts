@@ -4,8 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { Api, AssistantMessage, Model } from "@mariozechner/pi-ai";
-import type { SessionBeforeCompactEvent, SessionBeforeTreeEvent, SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { SessionBeforeCompactEvent, SessionBeforeTreeEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import {
     DEFAULT_COMPACTION_PROMPT_CONTRACT,

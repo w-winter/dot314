@@ -6,9 +6,9 @@
  * explore it with jq, grep, etc. without writing to disk.
  */
 
-import { complete, type Message, type UserMessage, type AssistantMessage, type ToolResultMessage, type Tool, type Model } from "@mariozechner/pi-ai";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { convertToLlm } from "@mariozechner/pi-coding-agent";
+import { complete, type Message, type UserMessage, type AssistantMessage, type ToolResultMessage, type Tool, type Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Bash } from "just-bash";
 import * as fs from "fs";
@@ -407,7 +407,7 @@ export default function (pi: ExtensionAPI) {
 
         for (const cfg of CONFIG.compactionModels) {
             // IMPORTANT: providers/models can be registered by extensions at runtime (e.g. claude-agent-sdk)
-            // so `getModel(provider, id)` from @mariozechner/pi-ai is insufficient here
+            // so `getModel(provider, id)` from @earendil-works/pi-ai is insufficient here
             const registryModel = ctx.modelRegistry
                 .getAll()
                 .find((m) => m.provider === cfg.provider && m.id === cfg.id);

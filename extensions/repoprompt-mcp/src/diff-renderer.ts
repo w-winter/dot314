@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 
-import { highlightCode, type Theme } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import { highlightCode, type Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 
 import {

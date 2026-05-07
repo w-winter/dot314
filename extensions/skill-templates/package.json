@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-templates",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi extension that renders SKILL.template.md files for explicit skill invocations",
   "license": "MIT",
   "type": "module",
@@ -13,10 +13,10 @@
     "nunjucks": "^3.2.4"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.65.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
     "@types/nunjucks": "^3.2.6"
   },
   "pi": {

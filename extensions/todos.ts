@@ -15,8 +15,8 @@ import {
 	type ExtensionContext,
 	type KeybindingsManager,
 	type Theme,
-} from "@mariozechner/pi-coding-agent";
-import { StringEnum } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -37,7 +37,7 @@ import {
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 const TODO_DIR_NAME = ".pi/todos";
 const TODO_PATH_ENV = "PI_ISSUE_PATH";

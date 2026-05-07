@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { getPiSpawnCommand, type PiSpawnDeps } from "../_shared/pi-spawn.ts";
 import type { SessionPickerResult } from "./picker.ts";

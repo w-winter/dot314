@@ -8,7 +8,7 @@
  * No-op when CMUX_SOCKET_PATH is not set (i.e. not running inside cmux).
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const CMUX_SOCKET = process.env.CMUX_SOCKET_PATH;
 // Track the workspace that spawned this Pi process; `cmux current-workspace`

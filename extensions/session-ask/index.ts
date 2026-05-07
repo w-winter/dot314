@@ -6,12 +6,12 @@
  *
  */
 
-import { complete, type AssistantMessage, type Message, type Model, type Tool, type ToolResultMessage } from "@mariozechner/pi-ai";
+import { complete, type AssistantMessage, type Message, type Model, type Tool, type ToolResultMessage } from "@earendil-works/pi-ai";
 import {
     BorderedLoader,
     parseFrontmatter as parseYamlFrontmatter,
     type ExtensionAPI,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import { homedir } from "node:os";

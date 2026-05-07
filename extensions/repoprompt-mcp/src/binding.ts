@@ -8,7 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { BindingEntryData, RpBinding, RpConfig, RpTab, RpWindow } from "./types.js";
 import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "./types.js";

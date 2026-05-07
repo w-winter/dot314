@@ -1,11 +1,11 @@
-import { CustomEditor, type ExtensionUIContext, type KeybindingsManager } from "@mariozechner/pi-coding-agent";
+import { CustomEditor, type ExtensionUIContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import {
     type AutocompleteItem,
     type AutocompleteProvider,
     type AutocompleteSuggestions,
     type EditorTheme,
     type TUI,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import * as Clipboard from "@mariozechner/clipboard";
 
 import { openFilePicker } from "./file-picker.js";

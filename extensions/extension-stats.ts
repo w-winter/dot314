@@ -13,9 +13,9 @@
  * - ↑/↓: page active table
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { BorderedLoader } from "@mariozechner/pi-coding-agent";
-import { Key, matchesKey, type Component, type TUI, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { createReadStream, type Dirent } from "node:fs";
 import fs from "node:fs/promises";

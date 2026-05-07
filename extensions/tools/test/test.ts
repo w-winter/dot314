@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
-import type { ExtensionAPI, ToolInfo } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent";
 
 type EventHandler = (event: unknown, ctx: TestContext) => Promise<void> | void;
 

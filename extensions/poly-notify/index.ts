@@ -41,8 +41,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Key, type KeyId } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Key, type KeyId } from "@earendil-works/pi-tui";
 
 // =============================================================================
 // Configuration

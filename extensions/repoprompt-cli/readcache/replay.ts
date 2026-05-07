@@ -1,6 +1,6 @@
 // readcache/replay.ts - replay-aware trust reconstruction for rp_exec(read_file)
 
-import type { ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import { SCOPE_FULL } from "./constants.js";
 import { extractInvalidationFromSessionEntry, extractReadMetaFromSessionEntry } from "./meta.js";

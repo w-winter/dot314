@@ -22,8 +22,8 @@
  * 3. Or start in plan mode with --plan
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Key } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Key } from "@earendil-works/pi-tui";
 
 let parseBash: ((input: string) => any) | null = null;
 let justBashLoadPromise: Promise<void> | null = null;

@@ -1,4 +1,4 @@
-import type { SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export const ANYCOPY_FOLD_STATE_CUSTOM_TYPE = "anycopy-fold-state";
 const FOLD_STATE_SCHEMA_VERSION = 1;

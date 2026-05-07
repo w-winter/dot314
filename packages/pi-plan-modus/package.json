@@ -1,6 +1,6 @@
 {
   "name": "pi-plan-modus",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Read-only plan mode with RepoPrompt-aware write blocking; restricts tools, bash commands, and RepoPrompt operations (MCP + CLI) to read-only access",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "plan-mode", "read-only", "repoprompt"],
   "license": "MIT",
@@ -20,8 +20,8 @@
     "just-bash": "^2.10.0"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.65.0",
-    "@mariozechner/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@earendil-works/pi-tui": "*"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
