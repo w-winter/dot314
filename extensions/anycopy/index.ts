@@ -113,12 +113,7 @@ const getAgentDir = (): string => process.env.PI_CODING_AGENT_DIR || join(homedi
 
 const readJsonFile = <T>(path: string): T | undefined => {
 	if (!existsSync(path)) return undefined;
-
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as T;
-	} catch {
-		return undefined;
-	}
+	return JSON.parse(readFileSync(path, "utf8")) as T;
 };
 
 const loadBranchSummarySkipPrompt = (cwd: string): boolean => {
@@ -133,7 +128,8 @@ const loadBranchSummarySkipPrompt = (cwd: string): boolean => {
 
 const loadConfig = (): anycopyRuntimeConfig => {
 	const configPath = join(getExtensionDir(), "config.json");
-	if (!existsSync(configPath)) {
+	const parsed = readJsonFile<anycopyConfig>(configPath);
+	if (!parsed) {
 		return {
 			keys: { ...DEFAULT_KEYS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
@@ -141,43 +137,23 @@ const loadConfig = (): anycopyRuntimeConfig => {
 		};
 	}
 
-	try {
-		const raw = readFileSync(configPath, "utf8");
-		const parsed = JSON.parse(raw) as anycopyConfig;
-		const keys = parsed.keys ?? {};
-		const treeFilterModeRaw = parsed.treeFilterMode;
-		const validTreeFilterModes: TreeFilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
-		const treeFilterMode =
-			typeof treeFilterModeRaw === "string" && validTreeFilterModes.includes(treeFilterModeRaw as TreeFilterMode)
-				? (treeFilterModeRaw as TreeFilterMode)
-				: DEFAULT_TREE_FILTER_MODE;
-		const persistFoldState =
-			typeof parsed.persistFoldState === "boolean" ? parsed.persistFoldState : DEFAULT_PERSIST_FOLD_STATE;
-
-		return {
-			keys: {
-				toggleSelect: typeof keys.toggleSelect === "string" ? keys.toggleSelect : DEFAULT_KEYS.toggleSelect,
-				copy: typeof keys.copy === "string" ? keys.copy : DEFAULT_KEYS.copy,
-				clear: typeof keys.clear === "string" ? keys.clear : DEFAULT_KEYS.clear,
-				toggleLabelTimestamps:
-					typeof keys.toggleLabelTimestamps === "string"
-						? keys.toggleLabelTimestamps
-						: DEFAULT_KEYS.toggleLabelTimestamps,
-				scrollDown: typeof keys.scrollDown === "string" ? keys.scrollDown : DEFAULT_KEYS.scrollDown,
-				scrollUp: typeof keys.scrollUp === "string" ? keys.scrollUp : DEFAULT_KEYS.scrollUp,
-				pageDown: typeof keys.pageDown === "string" ? keys.pageDown : DEFAULT_KEYS.pageDown,
-				pageUp: typeof keys.pageUp === "string" ? keys.pageUp : DEFAULT_KEYS.pageUp,
-			},
-			treeFilterMode,
-			persistFoldState,
-		};
-	} catch {
-		return {
-			keys: { ...DEFAULT_KEYS },
-			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
-			persistFoldState: DEFAULT_PERSIST_FOLD_STATE,
-		};
+	const keys: anycopyKeyConfig = { ...DEFAULT_KEYS };
+	if (parsed.keys) {
+		for (const key of Object.keys(DEFAULT_KEYS) as Array<keyof anycopyKeyConfig>) {
+			const value = parsed.keys[key];
+			if (typeof value === "string") keys[key] = value;
+		}
 	}
+
+	const validTreeFilterModes: TreeFilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
+	const treeFilterMode =
+		typeof parsed.treeFilterMode === "string" && validTreeFilterModes.includes(parsed.treeFilterMode as TreeFilterMode)
+			? (parsed.treeFilterMode as TreeFilterMode)
+			: DEFAULT_TREE_FILTER_MODE;
+	const persistFoldState =
+		typeof parsed.persistFoldState === "boolean" ? parsed.persistFoldState : DEFAULT_PERSIST_FOLD_STATE;
+
+	return { keys, treeFilterMode, persistFoldState };
 };
 
 const formatKeyHint = (key: string): string => {
@@ -459,12 +435,8 @@ class anycopyOverlay implements Focusable {
 		this.selector.focused = value;
 	}
 
-	getTreeList(): anycopyTreeList {
-		return this.selector.getTreeList();
-	}
-
 	private getTreeListInternals(): anycopyTreeListInternals {
-		return getTreeListInternals(this.getTreeList());
+		return getTreeListInternals(this.selector.getTreeList());
 	}
 
 	handleInput(data: string): void {
