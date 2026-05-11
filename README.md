@@ -100,6 +100,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | | Extension | npm | Description |
 |---|---|---|---|
 | ● | `anycopy/` | [`pi-anycopy`](https://www.npmjs.com/package/pi-anycopy) | `/tree` with live syntax-highlighted preview + copy |
+| ● | `assistant-provenance/` | [`pi-assistant-provenance`](https://www.npmjs.com/package/pi-assistant-provenance) | Gives models awareness of mid-session model switches |
 | ◐ | `branch-out/` | [`pi-branch-out`](https://www.npmjs.com/package/pi-branch-out) | Fork session into split pane or new tab with layout policies and optional model/message queuing |
 | ● | `brave-search/` | [`pi-brave-search`](https://www.npmjs.com/package/pi-brave-search) | Web search + content extraction. 🔄 Consider [pi-web-access](https://github.com/nicobailon/pi-web-access) for general-purpose search |
 | ◐ | `cmux/` | | cmux sidebar integration + workspace auto-renaming; no-op outside cmux |

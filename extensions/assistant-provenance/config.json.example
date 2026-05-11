@@ -1,0 +1,10 @@
+{
+  "silentModelGroups": [
+    ["*/claude-*"],
+    ["*/gpt-5*"],
+    ["*/gemini-*"],
+    ["*/kimi-*"],
+    ["*/glm-*"],
+    ["*/deepseek-*"]
+  ]
+}

@@ -6,6 +6,11 @@
 | ◐ | forked & modified |
 | ○ | republished unmodified |
 
+- ● [`assistant-provenance/`](assistant-provenance/) ([README](./assistant-provenance/README.md))
+  - Gives models awareness of mid-session model switches by injecting compact handoff notes into the provider context at transition boundaries
+  - Handoff notes are token-efficient, do not invalidate cache, are not redundantly rendered in the TUI, and are not persisted to session files
+  - Configurable `silentModelGroups` suppress transitions within the same model family (e.g. claude-opus → claude-sonnet)
+
 - ● [`grounded-compaction/`](grounded-compaction/) ([README](./grounded-compaction/README.md))
   - Replaces Pi's compaction summarizer with configurable model presets, user-editable prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, and bash-derived file operations; also augments branch summarization during `/tree` with the same files-touched grounding and optional prompt customization
   - Uses the shared collector from [`_shared/files-touched-core.ts`](_shared/files-touched-core.ts); see [Pi compaction docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) for background

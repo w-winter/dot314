@@ -1,0 +1,35 @@
+{
+  "name": "pi-assistant-provenance",
+  "version": "0.1.0",
+  "description": "Gives models awareness of mid-session model switches in Pi",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "model-handoff", "provenance", "multi-model", "context"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-assistant-provenance"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314#readme",
+  "pi": {
+    "extensions": ["extensions/assistant-provenance/index.ts"],
+    "image": "https://raw.githubusercontent.com/w-winter/dot314/main/assets/assistant-provenance-demo.gif"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/assistant-provenance/index.ts", "to": "extensions/assistant-provenance/index.ts" },
+      { "from": "../../extensions/assistant-provenance/README.md", "to": "extensions/assistant-provenance/README.md" },
+      { "from": "../../extensions/assistant-provenance/config.json.example", "to": "extensions/assistant-provenance/config.json.example" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}
