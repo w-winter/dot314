@@ -141,7 +141,6 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ◐ | `extension-stats.ts` |
 | ● | `inline-shell.ts` |
 | ○ | `interactive-shell.ts` |
-| ○ | `pi-prompt-template-model/` |
 | ○ | `preset.ts` |
 | ● | `repoprompt-cli/` |
 | ◐ | `rewind/` — archived; use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
@@ -168,6 +167,7 @@ These other extensions have also improved my QoL in Pi, so I recommend checking 
 | [pi-intercom](https://github.com/nicobailon/pi-intercom) (nicobailon) | Direct 1:1 messaging between Pi sessions; augments subagents nicely | `pi install npm:pi-interview` |
 | [pi-interview](https://github.com/nicobailon/pi-interview-tool) (nicobailon) | Interactive form-based input gathering with native window support | `pi install npm:pi-interview` |
 | [pi-nvim](https://github.com/aliou/pi-harness/tree/main/integrations/neovim) (aliou) | Bidirectional Neovim integration: `nvim_context` tool, LSP diagnostics at turn end, file reload after edits, visible-splits injection | Neovim plugin; see [setup instructions](https://github.com/aliou/pi-harness/tree/main/integrations/neovim#installation) |
+| [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model) (nicobailon) | Adds `model`, `skill`, and `thinking` frontmatter to pi prompt templates and chained prompt template execution | `pi install npm:pi-prompt-template-model` |
 | [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer) (MasuRii) | Read-tool-kit context optimization for token efficiency | `pi install npm:pi-rtk-optimizer` |
 | [pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker) (Graffioh) | Quick screenshot selection and attachment for prompts | `pi install npm:pi-screenshots-picker` |
 | [pi-token-burden](https://github.com/Whamp/pi-token-burden) (Whamp) | Token usage breakdown and context burden analysis | `pi install npm:pi-token-burden` |

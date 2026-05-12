@@ -75,13 +75,6 @@ text. This file provides a consolidated overview.
 - **Used in:**
   - `extensions/session-switch/` (◐ modified — mirrors native /resume layout with an extension-driven startup relaunch workaround)
 
-### nicobailon/pi-prompt-template-model
-- **URL:** https://github.com/nicobailon/pi-prompt-template-model
-- **License:** MIT
-- **Copyright:** © 2026 Nico Bailon
-- **Used in:**
-  - `extensions/pi-prompt-template-model/` (○ unmodified)
-
 ### nicobailon/pi-skill-palette
 - **URL:** https://github.com/nicobailon/pi-skill-palette
 - **License:** MIT (declared in package.json)
