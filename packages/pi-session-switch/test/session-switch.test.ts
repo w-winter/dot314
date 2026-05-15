@@ -7,7 +7,12 @@ import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "bun:test";
 
 import type { PiSpawnDeps } from "../../../extensions/_shared/pi-spawn.ts";
-import { buildPreviewLines, clampPreviewScrollFromBottom } from "../../../extensions/session-switch/picker.ts";
+import {
+	buildPreviewLines,
+	buildSessionPreviewHelpLine,
+	clampPreviewScrollFromBottom,
+	formatSessionModifiedTimestamp,
+} from "../../../extensions/session-switch/picker.ts";
 import { resolveCommandPickerAction } from "../../../extensions/session-switch/index.ts";
 import {
 	buildStartupRelaunchArgs,
@@ -77,6 +82,38 @@ describe("buildPreviewLines", () => {
 	test("falls back to firstMessage when allMessagesText is absent", () => {
 		const session = { firstMessage: "hello\nworld   " } as SessionInfo;
 		expect(buildPreviewLines(session)).toEqual(["hello", "world"]);
+	});
+});
+
+describe("formatSessionModifiedTimestamp", () => {
+	test("formats modified time with zero-padded local date and time fields", () => {
+		const modified = new Date(2024, 0, 2, 3, 4, 5);
+
+		expect(formatSessionModifiedTimestamp(modified)).toBe("2024-01-02 03:04:05");
+	});
+});
+
+describe("buildSessionPreviewHelpLine", () => {
+	const timestamp = "2024-01-02 03:04:05";
+
+	test("right-aligns the timestamp when the help text fits", () => {
+		expect(buildSessionPreviewHelpLine("help", timestamp, 26)).toBe("help  2024-01-02 03:04:05");
+	});
+
+	test("truncates help text before the timestamp", () => {
+		const line = buildSessionPreviewHelpLine("scroll preview help", timestamp, timestamp.length + 3);
+
+		expect(line).toHaveLength(timestamp.length + 3);
+		expect(line.endsWith(timestamp)).toBe(true);
+		expect(line.includes("scroll preview help")).toBe(false);
+	});
+
+	test("shows only the full timestamp when width exactly fits it", () => {
+		expect(buildSessionPreviewHelpLine("help", timestamp, timestamp.length)).toBe(timestamp);
+	});
+
+	test("truncates help text when no timestamp is available", () => {
+		expect(buildSessionPreviewHelpLine("scroll preview help", undefined, 6)).toBe("scroll");
 	});
 });
 

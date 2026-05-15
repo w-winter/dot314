@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@earendil-work
 import { getMarkdownTheme, SessionManager, SessionSelectorComponent } from "@earendil-works/pi-coding-agent";
 
 import type { Focusable } from "@earendil-works/pi-tui";
-import { Markdown, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Markdown, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export type SessionPickerDismissReason = "cancel" | "exit";
 
@@ -26,6 +26,47 @@ const PREVIEW_SCROLL_UP = "shift+up";
 const PREVIEW_SCROLL_DOWN = "shift+down";
 const PREVIEW_PAGE_UP = "shift+pageup";
 const PREVIEW_PAGE_DOWN = "shift+pagedown";
+const SESSION_PREVIEW_HELP_TEXT = "  Shift+Up/Down: scroll • Shift+PageUp/PageDown: page";
+
+type SessionModified = NonNullable<SessionInfo["modified"]>;
+
+const padTimestampPart = (value: number): string => String(value).padStart(2, "0");
+
+export const formatSessionModifiedTimestamp = (modified: SessionModified): string => {
+	const dateText = [
+		modified.getFullYear(),
+		padTimestampPart(modified.getMonth() + 1),
+		padTimestampPart(modified.getDate()),
+	].join("-");
+	const timeText = [modified.getHours(), modified.getMinutes(), modified.getSeconds()].map(padTimestampPart).join(":");
+	return `${dateText} ${timeText}`;
+};
+
+export const buildSessionPreviewHelpLine = (
+	helpText: string,
+	timestampText: string | undefined,
+	width: number,
+): string => {
+	if (width <= 0) {
+		return "";
+	}
+	if (!timestampText) {
+		return truncateToWidth(helpText, width);
+	}
+
+	const timestampWidth = visibleWidth(timestampText);
+	if (timestampWidth === width) {
+		return timestampText;
+	}
+	if (timestampWidth > width) {
+		return truncateToWidth(timestampText, width);
+	}
+
+	const availableHelpWidth = width - timestampWidth - 1;
+	const truncatedHelpText = truncateToWidth(helpText, availableHelpWidth);
+	const paddingWidth = width - visibleWidth(truncatedHelpText) - timestampWidth;
+	return `${truncatedHelpText}${" ".repeat(paddingWidth)}${timestampText}`;
+};
 
 export const clampPreviewScrollFromBottom = (scrollFromBottom: number, totalLines: number, height: number): number => {
 	const maxOffset = Math.max(0, totalLines - height);
@@ -189,8 +230,11 @@ class ResumeOverlay implements Focusable {
 		}
 
 		const separator = truncateToWidth(this.theme.fg("dim", "─".repeat(width)), width);
-		const helpLine = truncateToWidth(
-			this.theme.fg("dim", "  Shift+Up/Down: scroll • Shift+PageUp/PageDown: page"),
+		const selectedSession = selectedPath ? this.sessionByPath.get(selectedPath) : undefined;
+		const selectedTimestamp = selectedSession ? formatSessionModifiedTimestamp(selectedSession.modified) : undefined;
+		const helpLine = buildSessionPreviewHelpLine(
+			this.theme.fg("dim", SESSION_PREVIEW_HELP_TEXT),
+			selectedTimestamp ? this.theme.fg("muted", selectedTimestamp) : undefined,
 			width,
 		);
 

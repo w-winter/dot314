@@ -258,7 +258,7 @@
   - This version adds a thinking-level picker and fixes text-overflow crashes (CJK-safe wrapping)
 
 - ◐ [`session-switch/`](session-switch/) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
-  - Session switching via `/switch-session`, or the same picker after interactive startup via `pi --switch-session`, with a live preview of the highlighted session below the picker
+  - Session switching via `/switch-session`, or the same picker after interactive startup via `pi --switch-session`, with a live preview of the highlighted session and its latest message time below the picker
   - `pi --switch-session` is an extension-driven relaunch workaround, not native pre-start `--resume`, so it does not provide native missing-cwd recovery or the normal in-process session-switch lifecycle / shutdown-hook cleanup semantics
   - `Shift+Up`/`Down` scroll preview by line, `Shift+PageUp`/`PageDown` page preview
   - Mirrors the native `/resume` picker's layout, behaviors, and keybindings
