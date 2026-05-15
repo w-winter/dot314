@@ -76,9 +76,9 @@
 </p>
 
 - ● [`anycopy/`](anycopy/) ([README](./anycopy/README.md))
-  - `/anycopy` mirrors all behaviors of Pi's native `/tree` while adding a live, syntax-highlighted preview of each node's content and the ability to copy any node(s) to the clipboard
+  - `/anycopy` mirrors all behaviors of Pi's native `/tree` while adding a live, syntax-highlighted preview of each node's content, the ability to copy any node(s) to the clipboard, and optional node creation timestamps
   - `Enter` navigates to focused node (same semantics as `/tree`, including the summary chooser and `branchSummary.skipPrompt` support)
-  - `Space` select/unselect for copy, `Shift+C` copy (selected or focused), `Shift+X` clear selection, `Shift+L` label node
+  - `Space` select/unselect for copy, `Shift+C` copy (selected or focused), `Shift+X` clear selection, `Shift+L` label node last updated timestamp, `Shift+Ctrl+T` node creation timestamps
   - `Shift+Up`/`Down` scroll preview by line, `Shift+PageUp`/`PageDown` page preview
   - Single-node copies use just the node's content; role prefixes are only added when copying 2+ nodes
   - Multi-selected nodes are auto-sorted chronologically (by tree position)

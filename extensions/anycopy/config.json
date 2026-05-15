@@ -6,6 +6,7 @@
     "copy": "shift+c",
     "clear": "shift+x",
     "toggleLabelTimestamps": "shift+t",
+    "toggleEntryTimestamps": "shift+ctrl+t",
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
     "pageUp": "shift+pageup",

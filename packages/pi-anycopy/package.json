@@ -1,6 +1,6 @@
 {
   "name": "pi-anycopy",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pi's /tree with a live syntax-highlighted preview, ability to copy any node(s) to the clipboard, and persistence of folded branches",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
@@ -30,6 +30,7 @@
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
       { "from": "../../extensions/anycopy/enter-navigation.ts", "to": "extensions/anycopy/enter-navigation.ts" },
       { "from": "../../extensions/anycopy/fold-state.ts", "to": "extensions/anycopy/fold-state.ts" },
+      { "from": "../../extensions/anycopy/timestamps.ts", "to": "extensions/anycopy/timestamps.ts" },
       { "from": "../../extensions/anycopy/config.json", "to": "extensions/anycopy/config.json" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ],

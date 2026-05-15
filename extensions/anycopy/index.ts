@@ -9,6 +9,7 @@
  *   Shift+X   - clear selection
  *   Shift+L   - label node
  *   Shift+T   - toggle label timestamps for labeled nodes
+ *   Shift+Ctrl+T - toggle entry-created timestamps for visible tree rows
  *   Shift+↑/↓ - scroll preview
  *   Shift+PageUp/PageDown - page preview
  *   Esc       - close
@@ -23,7 +24,7 @@ import {
 	TreeSelectorComponent,
 } from "@earendil-works/pi-coding-agent";
 
-import { getKeybindings, Markdown, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, Markdown, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Focusable } from "@earendil-works/pi-tui";
 
 import { existsSync, readFileSync } from "fs";
@@ -32,6 +33,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
+import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
 import {
 	ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
 	createFoldStateEntryData,
@@ -63,6 +65,7 @@ type anycopyKeyConfig = {
 	copy: string;
 	clear: string;
 	toggleLabelTimestamps: string;
+	toggleEntryTimestamps: string;
 	scrollDown: string;
 	scrollUp: string;
 	pageDown: string;
@@ -94,6 +97,7 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 	copy: "shift+c",
 	clear: "shift+x",
 	toggleLabelTimestamps: "shift+t",
+	toggleEntryTimestamps: "shift+ctrl+t",
 	scrollDown: "shift+down",
 	scrollUp: "shift+up",
 	pageDown: "shift+pagedown",
@@ -401,6 +405,7 @@ const buildClipboardText = (nodes: SessionTreeNode[]): string => {
 
 class anycopyOverlay implements Focusable {
 	private selectedNodeIds = new Set<string>();
+	private showEntryTimestamps = false;
 	private flashMessage: string | null = null;
 	private flashTimer: ReturnType<typeof setTimeout> | null = null;
 	private _focused = false;
@@ -461,6 +466,11 @@ class anycopyOverlay implements Focusable {
 		if (matchesKey(data, this.keys.toggleLabelTimestamps)) {
 			const treeList = this.getTreeListInternals();
 			treeList.showLabelTimestamps = !treeList.showLabelTimestamps;
+			this.requestRender();
+			return;
+		}
+		if (matchesKey(data, this.keys.toggleEntryTimestamps)) {
+			this.showEntryTimestamps = !this.showEntryTimestamps;
 			this.requestRender();
 			return;
 		}
@@ -560,6 +570,10 @@ class anycopyOverlay implements Focusable {
 		return this.selectedNodeIds.has(id);
 	}
 
+	shouldShowEntryTimestamps(): boolean {
+		return this.showEntryTimestamps;
+	}
+
 	copySelectedOrFocusedNode(): void {
 		const focused = this.getFocusedNode();
 		const ids =
@@ -626,7 +640,7 @@ class anycopyOverlay implements Focusable {
 			` • ${formatKeyHint(this.keys.toggleSelect)}: select` +
 			` • ${formatKeyHint(this.keys.copy)}: copy` +
 			` • ${formatKeyHint(this.keys.clear)}: clear` +
-			` • ${formatKeyHint(this.keys.toggleLabelTimestamps)}: label time` +
+			` • ${formatKeyHint(this.keys.toggleEntryTimestamps)}: entry time` +
 			` • Esc: close`;
 		return truncateToWidth(this.theme.fg("dim", hint), width);
 	}
@@ -881,15 +895,35 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 					Math.min(treeListInternals.selectedIndex - Math.floor(maxVisible / 2), filtered.length - maxVisible),
 				);
 				const treeRowCount = Math.max(0, lines.length - 1);
+				const nowMs = Date.now();
+				const appendEntryTimestamp = (lineWithMarker: string, entry: SessionEntry): string => {
+					if (!overlay.shouldShowEntryTimestamps()) return truncateToWidth(lineWithMarker, width);
+
+					const timestampMs = getEntryTimestampMs(entry);
+					if (timestampMs === null) return truncateToWidth(lineWithMarker, width);
+
+					const timestamp = formatCompactTimestamp(timestampMs, nowMs);
+					const timestampWidth = visibleWidth(timestamp);
+					const contentWidth = Math.max(0, width - timestampWidth - 1);
+					const truncatedContent = truncateToWidth(lineWithMarker, contentWidth);
+					const padding = Math.max(1, width - visibleWidth(truncatedContent) - timestampWidth);
+
+					return truncateToWidth(
+						truncatedContent + " ".repeat(padding) + theme.fg("muted", timestamp),
+						width,
+					);
+				};
 
 				return lines.map((line: string, i: number) => {
 					if (i >= treeRowCount) return truncateToWidth(`  ${line}`, width);
 
-					const nodeId = filtered[startIdx + i]?.node.entry.id;
-					if (typeof nodeId !== "string") return truncateToWidth(`  ${line}`, width);
+					const entry = filtered[startIdx + i]?.node.entry;
+					if (typeof entry?.id !== "string") return truncateToWidth(`  ${line}`, width);
 
-					const marker = overlay.isSelectedNode(nodeId) ? theme.fg("success", "✓ ") : theme.fg("dim", "○ ");
-					return truncateToWidth(marker + line, width);
+					const marker = overlay.isSelectedNode(entry.id)
+						? theme.fg("success", "✓ ")
+						: theme.fg("dim", "○ ");
+					return appendEntryTimestamp(marker + line, entry);
 				});
 			};
 
