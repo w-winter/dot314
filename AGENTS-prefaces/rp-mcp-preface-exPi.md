@@ -116,7 +116,7 @@ RepoPrompt only operates within workspace root folders.
 
 `agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab subagent session, not just make one-off MCP file/chat calls.
 
-- Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`
+- Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`; `start` defaults to `pair` when `model_id` is omitted
 - Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, read transcripts
 - Use `agent_manage op="list_agents" roles_only=true` when you only need which model each role label (explore, engineer, pair, design) resolves to; `design` produces markdown docs under `docs/`
 - Use `agent_manage op="get_log" session_id="..."` to read session transcript XML; supports `offset`/`limit` paging
