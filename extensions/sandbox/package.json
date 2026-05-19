@@ -17,6 +17,6 @@
 		"@anthropic-ai/sandbox-runtime": "^0.0.26"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "^0.74.0"
+		"@earendil-works/pi-coding-agent": "^0.75.1"
 	}
 }
