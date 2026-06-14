@@ -253,7 +253,7 @@ If the RepoPrompt CE MCP server stops responding (for example, if the RepoPrompt
 
 If RepoPrompt is not running when Pi starts, the extension auto-pauses itself after a quick connection timeout.  While paused, the `rp` tool returns a short error directing the agent to use native tools.  Run `/rp reconnect` once RepoPrompt is open to resume, and the agent will be notified that `rp` is available again.
 
-If `autoLaunchApp` is enabled, the extension will try to open the RepoPrompt CE app automatically before pausing.  The app path is inferred from the `command` config (e.g. `/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp` → `/Applications/Repo Prompt.app`), or you can set `appPath` explicitly.  After launching, the extension waits a few seconds and retries the connection once; if that also fails, it auto-pauses as usual.
+If `autoLaunchApp` is enabled, the extension will try to open the RepoPrompt CE app automatically before pausing.  The app path is inferred from the `command` config (e.g. `/Applications/RepoPrompt CE.app/Contents/MacOS/repoprompt-mcp` → `/Applications/Repo Prompt CE.app`), or you can set `appPath` explicitly.  After launching, the extension waits a few seconds and retries the connection once; if that also fails, it auto-pauses as usual.
 
 ### "No matching window found"
 - Your `cwd` may not match any RepoPrompt CE workspace root

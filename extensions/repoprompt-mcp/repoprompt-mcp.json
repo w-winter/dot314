@@ -1,5 +1,5 @@
 {
-  "command": "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp",
+  "command": "/Applications/RepoPrompt CE.app/Contents/MacOS/repoprompt-mcp",
   "args": [],
   "autoBindOnStart": true,
   "persistBinding": true,
