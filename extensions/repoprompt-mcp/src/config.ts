@@ -1,4 +1,4 @@
-// config.ts - Configuration loading for RepoPrompt MCP extension
+// config.ts - Configuration loading for RepoPrompt CE MCP extension
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -18,10 +18,10 @@ const DEFAULT_CONFIG: RpConfig = {
   diffSplitMinWidth: 120,
   suppressHostDisconnectedLog: true,
 
-  // Off by default: preserves RepoPrompt's default read_file behavior unless explicitly enabled
+  // Off by default: preserves RepoPrompt CE's default read_file behavior unless explicitly enabled
   readcacheReadFile: false,
 
-  // On by default: mirrors RepoPrompt Agent Mode behavior (reads automatically curate selection)
+  // On by default: mirrors RepoPrompt CE Agent Mode behavior (reads automatically curate selection)
   autoSelectReadSlices: true,
 
   // /rp oracle uses this mode when --mode is not provided
@@ -43,14 +43,14 @@ const CONFIG_LOCATIONS = [
   () => path.join(os.homedir(), ".config", "mcp", "mcp.json"),
 ];
 
-// Common RepoPrompt MCP server commands
+// Common RepoPrompt CE MCP server commands
 const REPOPROMPT_SERVER_CANDIDATES = [
   // Direct command
   { command: "rp-mcp-server", args: [] },
   // Via npx
   { command: "npx", args: ["rp-mcp-server"] },
-  // Via RepoPrompt CLI
-  { command: "rp-cli", args: ["mcp-server"] },
+  // Via RepoPrompt CE CLI
+  { command: "rpce-cli", args: ["mcp-server"] },
 ];
 
 interface McpServerEntry {
@@ -85,7 +85,7 @@ function findRepoPromptInMcpConfig(): McpServerEntry | null {
 
     if (!config?.mcpServers) continue;
 
-    // Look for RepoPrompt server (case-insensitive)
+    // Look for RepoPrompt CE server (case-insensitive)
     for (const [name, entry] of Object.entries(config.mcpServers)) {
       if (name.toLowerCase().includes("repoprompt") || name.toLowerCase() === "rp") {
         return entry;
@@ -213,7 +213,7 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
 const FILTERED_STDERR_SUBSTRINGS = [
   // Clean disconnect / shutdown
   "BootstrapSocketProxy: Bridge task failed: hostDisconnected",
-  // RepoPrompt app closed while Pi stays running
+  // RepoPrompt CE app closed while Pi stays running
   "BootstrapSocketProxy: Bridge task failed: connectionReset",
   "Bootstrap connection lost",
   "Retrying in",
@@ -232,7 +232,7 @@ function maybeWrapServerCommand(
     return server;
   }
 
-  // This noisy line is emitted by the macOS RepoPrompt MCP binary on clean disconnect
+  // This noisy line is emitted by the macOS RepoPrompt CE MCP binary on clean disconnect
   // It is written to stderr, not MCP stdout, so it's safe to filter
   if (process.platform !== "darwin") {
     return server;
@@ -259,7 +259,7 @@ function maybeWrapServerCommand(
 
 /**
  * Infer the .app bundle path from an MCP server command that lives inside a .app bundle.
- * e.g. "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp" → "/Applications/Repo Prompt.app"
+ * e.g. "/Applications/RepoPrompt CE.app/Contents/MacOS/repoprompt-mcp" → "/Applications/RepoPrompt CE.app"
  */
 export function inferAppPath(config: RpConfig): string | null {
   if (config.appPath) {
@@ -276,7 +276,7 @@ export function inferAppPath(config: RpConfig): string | null {
  * Get the server command and args, or return null if not found
  *
  * We avoid throwing on startup because a missing server is a common first-run condition
- * (users may not have installed RepoPrompt / rp-mcp-server yet). Instead we surface this
+ * (users may not have installed RepoPrompt CE/ rp-mcp-server yet). Instead we surface this
  * as a non-fatal warning and only error when a user actually tries to use rp features
  */
 export function getServerCommand(config: RpConfig): { command: string; args: string[] } | null {

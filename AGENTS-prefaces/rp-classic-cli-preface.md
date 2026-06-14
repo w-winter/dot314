@@ -1,4 +1,4 @@
-> **⚠ This AGENTS.md preface is for the deprecated `repoprompt-cli` extension.**  Consider instead to use [`repoprompt-mcp`](../extensions/repoprompt-mcp/) and its recommended AGENTS.md [preface](rp-mcp-preface.md) instead.
+> **⚠ This AGENTS.md preface is for the deprecated RepoPrompt Classic Edition `repoprompt-cli` extension.**  Consider instead to use [`repoprompt-mcp`](../extensions/repoprompt-mcp/) and its recommended AGENTS.md [preface](rp-mcp-preface.md) instead.
 
 ---
 
@@ -6,19 +6,19 @@
 
 The following instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.
 
-RepoPrompt (via `rp_exec`) is the default for repo-scoped work because it materially improves context quality and reduces routing mistakes.
+RepoPrompt Classic Edition (via `rp_exec`) is the default for repo-scoped work because it materially improves context quality and reduces routing mistakes.
 
 Backticked snippets in this doc are either an `rp_exec.cmd` string (what goes after `rp-cli -e`) or a full `rp-cli ...` shell command (explicitly prefixed with `rp-cli`). Pi native tools are explicitly labeled.
 
 ## Note on native tool disablement (rp-tools-lock)
 
-Native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available. If a native tool call is blocked, use the RepoPrompt equivalents (`rp_exec` / `rp-cli`). Disable with `/rp-tools-lock off` only if you explicitly need the native tools.
+Native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt Classic Edition is available. If a native tool call is blocked, use the RepoPrompt Classic Edition equivalents (`rp_exec` / `rp-cli`). Disable with `/rp-tools-lock off` only if you explicitly need the native tools.
 
 ---
 
 ## Mental Model
 
-RepoPrompt (macOS app) organizes state as:
+RepoPrompt Classic Edition (macOS app) organizes state as:
 - **Workspaces** → one or more root folders
 - **Windows** → each shows one workspace
 - **Compose tabs / contexts** → each tab has a prompt + file selection (selection is what Oracle/review sees)
@@ -51,7 +51,7 @@ If output looks wrong (0 matches / wrong files / empty results), check routing f
 
 Do not use bash for: `ls`, `find`, `grep`, `cat`, `wc`, `tree`, or similar file exploration.
 
-Prefer `rp_exec` / `rp-cli` for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available.
+Prefer `rp_exec` / `rp-cli` for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt Classic Edition is available.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Prefer `workspace switch <name> --new-window`.
 
@@ -92,7 +92,7 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 | Code editing (fallback) | pi native `edit` | use when direct rp-cli call mode isn't available |
 | File create/move/delete | rp_exec `file create/move/delete` | workspace-aware |
 | File creation with content | `rp-cli -w <id> -t <context_id> -c file_actions -j '{...}'` | JSON args required; `path` / `new_path` must be absolute |
-| App settings | `rp-cli -w <id> -t <context_id> -c app_settings -j '{...}'` | query/update allowlisted RepoPrompt app preferences |
+| App settings | `rp-cli -w <id> -t <context_id> -c app_settings -j '{...}'` | query/update allowlisted RepoPrompt Classic Edition app preferences |
 
 ---
 
@@ -103,7 +103,7 @@ If a relative path could match multiple loaded roots, use `RootName:rel/path`.
 
 Notes:
 - `search`/`file_search path="..."` is an alias for `search`/`file_search filter.paths=["..."]`
-- `search`/`file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
+- `search`/`file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt Classic Edition"`)
 - `file_actions` in call mode is stricter than most RP tools: `path` / `new_path` must be absolute
 - `structure`/`get_code_structure` line numbers match `read`/`read_file` and refresh after edits
 
@@ -116,7 +116,7 @@ Notes:
 - Tail read via negative start: `read path/to/file -20` (last 20 lines)
 
 ### Edge case: files containing ``` fences
-RepoPrompt output is fenced; rare collision if the file itself contains ``` lines. Workaround: use `rawJson=true` and call `read_file` directly: `read_file path=path/to/file start_line=1 limit=160`
+RepoPrompt Classic Edition output is fenced; rare collision if the file itself contains ``` lines. Workaround: use `rawJson=true` and call `read_file` directly: `read_file path=path/to/file start_line=1 limit=160`
 
 ### Readcache
 
@@ -165,7 +165,7 @@ If you need to create a file with full content in one step, call `file_actions` 
 
 ### App settings
 
-Use `app_settings` in call mode for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`.
+Use `app_settings` in call mode for allowlisted app-wide RepoPrompt Classic Edition preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`.
 
 Example:
 `rp-cli -w <id> -t <context_id> -c app_settings -j '{"op":"options","key":"models.planning_model","agent":"codexExec"}'`
@@ -181,7 +181,7 @@ If results look wrong:
 3. `tabs list` if needed, then bind to the correct context
 4. Don't "fix" confusion by switching workspaces in-place
 
-RepoPrompt only operates within workspace root folders. If the repo isn't in any workspace:
+RepoPrompt Classic Edition only operates within workspace root folders. If the repo isn't in any workspace:
 
 ```
 workspace create Temp --folder-path /abs/path --new-window
@@ -236,7 +236,7 @@ For applying code changes, pi native `edit` is an acceptable fallback when rp-cl
 3) Apply changes iteratively (see **Editing** section) and re-run `context` after meaningful changes
 
 ### [SECOND OPINION] (complex / risky changes)
-Use RepoPrompt Oracle as a reviewer (not an executor):
+Use RepoPrompt Classic Edition Oracle as a reviewer (not an executor):
 `plan "Review my approach for … and call out risks"`
 
 ---

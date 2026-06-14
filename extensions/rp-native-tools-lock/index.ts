@@ -1,11 +1,11 @@
 /**
  * RP Native Tools Lock
  *
- * Disables Pi's native repo-file tools (read/write/edit/ls/find/grep) when RepoPrompt tools are available.
+ * Disables Pi's native repo-file tools (read/write/edit/ls/find/grep) when RepoPrompt CE tools are available.
  *
  * Why:
  * - Some models will "reach" for the native tools because they appear first / are more familiar
- * - If RepoPrompt is available, we want to force repo-scoped work through rp (MCP) or rp_exec (CLI)
+ * - If RepoPrompt CE is available, we want to force repo-scoped work through rp (MCP) or rp_exec (CLI)
  *
  * Modes (user-facing):
  * - off     : no enforcement
@@ -15,7 +15,7 @@
  *
  * Advanced modes (set via config file):
  * - rp-mcp  : enforce when the `rp` tool exists
- * - rp-cli  : enforce when the `rp_exec` tool exists
+ * - rpce-cli  : enforce when the `rp_exec` tool exists
  *
  * Hotkeys:
  * - Alt+L: toggle lock mode (off ↔ auto)
@@ -33,7 +33,7 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, type KeyId } from "@earendil-works/pi-tui";
 
-type Mode = "off" | "auto" | "rp-mcp" | "rp-cli";
+type Mode = "off" | "auto" | "rp-mcp" | "rpce-cli";
 
 interface LockState {
 	mode: Mode;
@@ -44,7 +44,7 @@ const CONFIG_PATH = join(homedir(), ".pi", "agent", "extensions", "rp-native-too
 
 const REQUIRED_TOOL_BY_MODE: Record<Exclude<Mode, "off" | "auto">, string> = {
 	"rp-mcp": "rp",
-	"rp-cli": "rp_exec",
+	"rpce-cli": "rp_exec",
 };
 
 const NATIVE_FILE_TOOLS = ["read", "write", "edit", "ls", "find", "grep"];
@@ -62,7 +62,14 @@ function normalizeMode(raw: string | undefined): Mode | undefined {
 	if (value === "off" || value === "disabled" || value === "none") return "off";
 	if (value === "auto" || value === "aut" || value === "automatic") return "auto";
 	if (value === "rp-mcp" || value === "mcp" || value === "rp") return "rp-mcp";
-	if (value === "rp-cli" || value === "cli" || value === "rp_exec" || value === "rp-exec") return "rp-cli";
+	if (
+    value === "rpce-cli" ||
+    value === "rpce-cli" ||
+    value === "cli" ||
+    value === "rp_exec" ||
+    value === "rp-exec"
+  )
+    return "rpce-cli";
 
 	return undefined;
 }
@@ -122,9 +129,9 @@ function computeEffectiveMode(
 
 	if (requestedMode === "auto") {
 		// In auto mode, respect the user's tool configuration.
-		// We only prefer a RepoPrompt entrypoint if the user has enabled it.
+		// We only prefer a RepoPrompt CE entrypoint if the user has enabled it.
 		if (activeToolNames.has("rp")) return { effectiveMode: "rp-mcp", requiredTool: "rp" };
-		if (activeToolNames.has("rp_exec")) return { effectiveMode: "rp-cli", requiredTool: "rp_exec" };
+		if (activeToolNames.has("rp_exec")) return { effectiveMode: "rpce-cli", requiredTool: "rp_exec" };
 		return { effectiveMode: "off", requiredTool: undefined };
 	}
 
@@ -136,7 +143,7 @@ function computeEffectiveMode(
 }
 
 function buildStatusText(effectiveMode: EffectiveMode): string | undefined {
-	if (effectiveMode === "rp-mcp" || effectiveMode === "rp-cli") {
+	if (effectiveMode === "rp-mcp" || effectiveMode === "rpce-cli") {
 		return "RP 🔒";
 	}
 	return undefined;
@@ -173,7 +180,7 @@ function enforceMode(
 	const blocked = new Set(NATIVE_FILE_TOOLS.filter((t) => allToolNames.has(t)));
 	const next = active.filter((t) => !blocked.has(t));
 
-	// Ensure the required RepoPrompt tool stays available
+	// Ensure the required RepoPrompt CE tool stays available
 	if (!next.includes(requiredTool)) next.push(requiredTool);
 
 
@@ -261,7 +268,7 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 
 	pi.registerCommand("rp-tools-lock", {
 		description:
-			"RepoPrompt-first tooling: off | auto (disables read/write/edit/ls/find/grep). Advanced modes are available via config file.",
+			"RepoPrompt CE-first tooling: off | auto (disables read/write/edit/ls/find/grep). Advanced modes are available via config file.",
 		handler: async (args, ctx) => {
 			const raw = args?.trim();
 
@@ -274,7 +281,7 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 					return;
 				}
 
-				const choice = await ctx.ui.select("RepoPrompt tool policy", ALLOWED_MODES);
+				const choice = await ctx.ui.select("RepoPrompt CE tool policy", ALLOWED_MODES);
 				if (!choice) return;
 				state = { mode: choice as Mode };
 			} else {
@@ -282,7 +289,7 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 				if (!mode || !ALLOWED_MODES.includes(mode)) {
 					const message =
 						`Usage: /rp-tools-lock <off|auto> (got: ${raw})\n` +
-						"Advanced modes (rp-mcp/rp-cli) can be set via: " +
+						"Advanced modes (rp-mcp/rpce-cli) can be set via: " +
 						"~/.pi/agent/extensions/rp-native-tools-lock/rp-native-tools-lock.json";
 
 					if (ctx.hasUI) {
@@ -337,7 +344,7 @@ export default function rpNativeToolsLock(pi: ExtensionAPI): void {
 			block: true,
 			reason:
 				`rp-tools-lock (${state.mode}${suffix}): native tool "${event.toolName}" is disabled. ` +
-				`Use RepoPrompt instead (tool: ${requiredTool}). ` +
+				`Use RepoPrompt CE instead (tool: ${requiredTool}). ` +
 				`You can disable this lock with /rp-tools-lock off.`,
 		};
 	});

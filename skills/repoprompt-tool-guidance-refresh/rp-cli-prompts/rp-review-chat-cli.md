@@ -1,32 +1,32 @@
 ---
-description: RepoPrompt diff review
+description: RepoPrompt CE diff review
 ---
 
-# Send RepoPrompt Chat in Review Mode (rp-cli)
+# Send RepoPrompt CE Chat in Review Mode (rpce-cli)
 
 Request: $ARGUMENTS
 
-Goal: send a RepoPrompt review chat using rp-cli (`mode="review"`) to review diffs, in a fast and token-efficient way, while optionally adding extra context files (even if unchanged) and passing user notes verbatim.
+Goal: send a RepoPrompt CE review chat using rpce-cli (`mode="review"`) to review diffs, in a fast and token-efficient way, while optionally adding extra context files (even if unchanged) and passing user notes verbatim.
 
-RepoPrompt `mode="review"`: analyzes code changes using git diffs of the selected files; it only sees the current selection/context.
+RepoPrompt CE `mode="review"`: analyzes code changes using git diffs of the selected files; it only sees the current selection/context.
 
 CRITICAL: Be swift and token-efficient
 - Do NOT run `git diff` to read diff contents
 - Do NOT paste any diff text into the chat message
 - Do NOT “line-by-line” review diff output in your own scratchpad
-- Rely on RepoPrompt review mode (with diffs enabled) to supply diffs for the selected files automatically
+- Rely on RepoPrompt CE review mode (with diffs enabled) to supply diffs for the selected files automatically
 
-## Using rp-cli
+## Using rpce-cli
 
-Run RepoPrompt CLI commands like this:
+Run RepoPrompt CE CLI commands like this:
 
 ```bash
-rp-cli -e '<command>'
+rpce-cli -e '<command>'
 ```
 
 ### Important: use `rp_exec` if your harness is Pi:
 
-In the Pi coding agent harness, use `rp_exec` and treat snippets as the cmd string (drop the `rp-cli -e` prefix); only use `rp-cli -e` in a shell fallback.
+In the Pi coding agent harness, use `rp_exec` and treat snippets as the cmd string (drop the `rpce-cli -e` prefix); only use `rpce-cli -e` in a shell fallback.
 
 ---
 
@@ -51,18 +51,18 @@ Prefer explicit user intent if present:
 - Also include any additional file paths mentioned in $ARGUMENTS that the user likely wants as guidance/context, even if unchanged.
 - Context files should be added to selection but should NOT change the diff scope; they’re for the reviewer to read alongside the diffs.
 
-## 4) Build RepoPrompt selection (must be resolvable)
+## 4) Build RepoPrompt CE selection (must be resolvable)
 - `selected_paths` = unique(review files ∪ context files), but include only paths that exist in the working tree.
 - If a referenced path doesn’t exist, mention it in the message and continue (do not block).
 
 Selection (CLI):
 ```bash
-rp-cli -e 'select set <selected_paths...>'
+rpce-cli -e 'select set <selected_paths...>'
 ```
 
 ## 5) Send the review chat (no diff pasted)
 ```bash
-rp-cli -e 'review "Review the diffs for the selected files, and if there is a selected file that does not have diffs, use it as context for interpreting the diffs.
+rpce-cli -e 'review "Review the diffs for the selected files, and if there is a selected file that does not have diffs, use it as context for interpreting the diffs.
 
 Additional user notes (if any): <additional notes provided by user, if provided in $ARGUMENTS>"'
 ```

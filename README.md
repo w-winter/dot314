@@ -1,6 +1,6 @@
 # .π
 
-Extensions, skills, prompts, and themes for the [Pi coding agent](https://github.com/badlogic/pi-mono).  Several of the extensions and prompts are designed to facilitate integration of Pi and [RepoPrompt](https://repoprompt.com/docs#s=overview).
+Extensions, skills, prompts, and themes for the [Pi coding agent](https://github.com/badlogic/pi-mono).  Several of the extensions and prompts are designed to facilitate integration of Pi and [RepoPrompt CE](https://repoprompt.com/docs#s=overview). Older commits in the repository have files for RepoPrompt Classic Edition, which is no longer supported.
 
 This collection is tailored to my workflow and preferences.  I may introduce breaking changes without notice.  While most of the extensions are original or modified, some that were authored by others are republished here unmodified, and those may lag well behind their upstream versions.  Extensions published as [Pi packages](#install-individual-extensions-from-npm) receive my active maintenance.
 
@@ -107,7 +107,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `command-center/` | [`pi-command-center`](https://www.npmjs.com/package/pi-command-center) | `/command` palette widget |
 | ◐ | `editor-enhancements/` | | File picker, shell completions, raw paste, double-esc and slash command remapping |
 | ● | `ephemeral-mode.ts` | [`pi-ephemeral`](https://www.npmjs.com/package/pi-ephemeral) | Delete session on exit |
-| ◐ | `files-touched.ts` | | Files read/modified/ widget with path normalization and tracking coverage of Pi-native tools, RepoPrompt, and bash |
+| ◐ | `files-touched.ts` | | Files read/modified/ widget with path normalization and tracking coverage of Pi-native tools, RepoPrompt CE, and bash |
 | ● | `fork-from-first.ts` | [`pi-fork-from-first`](https://www.npmjs.com/package/pi-fork-from-first) | Quickly fork session from first message to establish parent-child lineage in a blank new session |
 | ● | `grounded-compaction/` | [`pi-grounded-compaction`](https://www.npmjs.com/package/pi-grounded-compaction) | Compaction summarizer with model presets, custom prompts, and files-touched tracking |
 | ◐ | `handover/` | | Handover draft with files-touched → fork-from-first → prefill editor |
@@ -117,10 +117,10 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `model-sysprompt-appendix/` | [`pi-model-sysprompt-appendix`](https://www.npmjs.com/package/pi-model-sysprompt-appendix) | Per-model system prompt additions |
 | ● | `move-session.ts` | [`pi-move-session`](https://www.npmjs.com/package/pi-move-session) | Move current active session to a new cwd |
 | ◐ | `oracle.ts` | | Second opinion from alternate model |
-| ◐ | `plan-mode.ts` | [`pi-plan-modus`](https://www.npmjs.com/package/pi-plan-modus) | Read-only planning sandbox with RepoPrompt support |
+| ◐ | `plan-mode.ts` | [`pi-plan-modus`](https://www.npmjs.com/package/pi-plan-modus) | Read-only planning sandbox with RepoPrompt CE support |
 | ● | `poly-notify/` | [`pi-poly-notify`](https://www.npmjs.com/package/pi-poly-notify) | Desktop / sound / Pushover notifications |
 | ● | `protect-paths.ts` | | Directory protection, brew prevention, command gates. 🔄 Pair with [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` + AST gates |
-| ● | `repoprompt-mcp/` | [`pi-repoprompt-mcp`](https://www.npmjs.com/package/pi-repoprompt-mcp) | RepoPrompt MCP proxy with adaptive diff rendering, collapsed outputs, read-cache, and branch-safe binding |
+| ● | `repoprompt-mcp/` | [`pi-repoprompt-mcp`](https://www.npmjs.com/package/pi-repoprompt-mcp) | RepoPrompt CE MCP proxy with adaptive diff rendering, collapsed outputs, read-cache, and branch-safe binding |
 | ● | `reverse-thinking.ts` | | Backward thinking-level cycling on `shift+alt+tab` |
 | ● | `roam/` | [`pi-roam`](https://www.npmjs.com/package/pi-roam) | Post-hoc tmux handoff for remote continuation of sessions |
 | ● | `rp-native-tools-lock/` | [`pi-repoprompt-tools-lock`](https://www.npmjs.com/package/pi-repoprompt-tools-lock) | Prefer RP tools over Pi native tools |
@@ -212,7 +212,7 @@ See [prompts/README.md](prompts/README.md) for full descriptions.
 | ● | `rp-plan.md` |
 | ● | `rp-review-chat.md` |
 
-**AGENTS.md prefaces for reliable RepoPrompt tool usage** — see [AGENTS-prefaces/README.md](AGENTS-prefaces/README.md)
+**AGENTS.md prefaces for reliable RepoPrompt CE tool usage** — see [AGENTS-prefaces/README.md](AGENTS-prefaces/README.md)
 
 | | Preface |
 |---|---|

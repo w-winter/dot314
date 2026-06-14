@@ -1,10 +1,10 @@
 # Plan Modus for Pi (`pi-plan-modus`)
 
-Read-only exploration sandbox for Pi with RepoPrompt-aware write blocking. When enabled, plan mode removes Pi-native write tools from the active Pi tool list and blocks write-capable bash and RepoPrompt operations while leaving other available tools alone.
+Read-only exploration sandbox for Pi with RepoPrompt CE-aware write blocking. When enabled, plan mode removes Pi-native write tools from the active Pi tool list and blocks write-capable bash and RepoPrompt CE operations while leaving other available tools alone.
 
 Designed to be compatible with the [pi-repoprompt-mcp](https://www.npmjs.com/package/pi-repoprompt-mcp) and [pi-repoprompt-cli](https://www.npmjs.com/package/pi-repoprompt-cli) extensions. When any of these are active, plan mode blocks their write-capable operations (`apply_edits`, `file_actions`, file create/delete/move) while keeping read operations available.
 
-Based on the [plan-mode example](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions/plan-mode) from pi-mono, with additions for RepoPrompt integration and bash AST analysis.
+Based on the [plan-mode example](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions/plan-mode) from pi-mono, with additions for RepoPrompt CE integration and bash AST analysis.
 
 ## Install
 
@@ -42,8 +42,8 @@ From the dot314 git bundle (filtered install):
 |---|---|
 | Native tools | `edit`, `write` |
 | Bash | Destructive commands (rm, mv, cp, mkdir, git commit, ...), write redirects (`>`, `>>`), editors (vim, nano, code) |
-| RepoPrompt MCP (`rp`) | `apply_edits`, `file_actions` |
-| RepoPrompt CLI (`rp_exec`, `rp-cli`) | `edit`, `file create/delete/move`, interactive REPL (`-i`) |
+| RepoPrompt CE MCP (`rp`) | `apply_edits`, `file_actions` |
+| RepoPrompt CE CLI (`rp_exec`, `rpce-cli`) | `edit`, `file create/delete/move`, interactive REPL (`-i`) |
 
 Read-only operations remain available across all layers: `read_file`, `get_file_tree`, `file_search`, `get_code_structure`, `git status/log/diff/show`, etc.
 

@@ -3,15 +3,15 @@
  *
  * Provides a Claude Code-style "plan mode" read-only sandbox for safe code exploration.
  * When enabled, Pi-native write tools are removed from the active Pi tool list and
- * write-capable bash/RepoPrompt operations are blocked.
+ * write-capable bash/RepoPrompt CE operations are blocked.
  *
  * Features:
  * - /plan command (and Ctrl+Alt/Option+P shortcut) to toggle plan mode
  * - --plan flag to start in plan mode
  * - Removes Pi-native write tools (`edit`, `write`) from the active Pi tool list while enabled
  * - Blocks destructive bash commands while plan mode is enabled (including redirects)
- * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e, rp_exec, or rp (repoprompt-mcp)
- * - Blocks rp-cli interactive REPL (-i/--interactive) to prevent bypassing the sandbox
+ * - Blocks RepoPrompt CE write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e, rp_exec, or rp (repoprompt-mcp)
+ * - Blocks rpce-cli (previously rp-cli in Repo Prompt Classic Edition) interactive REPL (-i/--interactive) to prevent bypassing the sandbox
  * - Adds plan-mode instructions via the system prompt only while plan mode is enabled
  * - Shows a "plan" indicator in the status line when active
  * - Persists plan mode state only when toggled (and once at startup if --plan is used)
@@ -352,59 +352,60 @@ const DESTRUCTIVE_PATTERNS = [
 
 // Read-only commands that are always safe
 const SAFE_COMMANDS = [
-	/^\s*cat\b/,
-	/^\s*head\b/,
-	/^\s*tail\b/,
-	/^\s*less\b/,
-	/^\s*more\b/,
-	/^\s*grep\b/,
-	/^\s*find\b/,
-	/^\s*ls\b/,
-	/^\s*pwd\b/,
-	/^\s*echo\b/,
-	/^\s*printf\b/,
-	/^\s*wc\b/,
-	/^\s*sort\b/,
-	/^\s*uniq\b/,
-	/^\s*diff\b/,
-	/^\s*file\b/,
-	/^\s*stat\b/,
-	/^\s*du\b/,
-	/^\s*df\b/,
-	/^\s*tree\b/,
-	/^\s*which\b/,
-	/^\s*whereis\b/,
-	/^\s*type\b/,
-	/^\s*env\b/,
-	/^\s*printenv\b/,
-	/^\s*uname\b/,
-	/^\s*whoami\b/,
-	/^\s*id\b/,
-	/^\s*date\b/,
-	/^\s*cal\b/,
-	/^\s*uptime\b/,
-	/^\s*ps\b/,
-	/^\s*top\b/,
-	/^\s*htop\b/,
-	/^\s*free\b/,
-	/^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
-	/^\s*git\s+ls-/i,
-	/^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
-	/^\s*yarn\s+(list|info|why|audit)/i,
-	/^\s*node\s+--version/i,
-	/^\s*python\s+--version/i,
-	/^\s*curl\s/i,
-	/^\s*wget\s+-O\s*-/i,
-	/^\s*jq\b/,
-	/^\s*sed\s+-n/i,
-	/^\s*awk\b/,
-	/^\s*rg\b/,
-	/^\s*fd\b/,
-	/^\s*bat\b/,
-	/^\s*exa\b/,
-	/^\s*rp-cli\b/,
-	/^\s*rp_exec\b/,
-	/^\s*rp_bind\b/,
+  /^\s*cat\b/,
+  /^\s*head\b/,
+  /^\s*tail\b/,
+  /^\s*less\b/,
+  /^\s*more\b/,
+  /^\s*grep\b/,
+  /^\s*find\b/,
+  /^\s*ls\b/,
+  /^\s*pwd\b/,
+  /^\s*echo\b/,
+  /^\s*printf\b/,
+  /^\s*wc\b/,
+  /^\s*sort\b/,
+  /^\s*uniq\b/,
+  /^\s*diff\b/,
+  /^\s*file\b/,
+  /^\s*stat\b/,
+  /^\s*du\b/,
+  /^\s*df\b/,
+  /^\s*tree\b/,
+  /^\s*which\b/,
+  /^\s*whereis\b/,
+  /^\s*type\b/,
+  /^\s*env\b/,
+  /^\s*printenv\b/,
+  /^\s*uname\b/,
+  /^\s*whoami\b/,
+  /^\s*id\b/,
+  /^\s*date\b/,
+  /^\s*cal\b/,
+  /^\s*uptime\b/,
+  /^\s*ps\b/,
+  /^\s*top\b/,
+  /^\s*htop\b/,
+  /^\s*free\b/,
+  /^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
+  /^\s*git\s+ls-/i,
+  /^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
+  /^\s*yarn\s+(list|info|why|audit)/i,
+  /^\s*node\s+--version/i,
+  /^\s*python\s+--version/i,
+  /^\s*curl\s/i,
+  /^\s*wget\s+-O\s*-/i,
+  /^\s*jq\b/,
+  /^\s*sed\s+-n/i,
+  /^\s*awk\b/,
+  /^\s*rg\b/,
+  /^\s*fd\b/,
+  /^\s*bat\b/,
+  /^\s*exa\b/,
+  /^\s*rp-cli\b/,
+  /^\s*rpce-cli\b/,
+  /^\s*rp_exec\b/,
+  /^\s*rp_bind\b/,
 ];
 
 const REPROMPT_WRITE_PATTERNS = [
@@ -415,10 +416,10 @@ const REPROMPT_WRITE_PATTERNS = [
 ];
 
 const RP_CLI_INTERACTIVE_PATTERN =
-	/(^|\s)rp-cli\b.*(?:\s)(?:-i|--interactive)(?:\s|$)/i;
+	/(^|\s)rpce-cli\b.*(?:\s)(?:-i|--interactive)(?:\s|$)/i;
 
 const RP_CLI_EXEC_WRITE_PATTERN =
-	/(^|\s)rp-cli\b.*(?:\s)(?:-e|--exec)(?:\s*)[\s\S]*\b(edit|file_actions|file\s+(create|delete|move)|call\s+(apply-edits|file_actions))\b/i;
+	/(^|\s)rpce-cli\b.*(?:\s)(?:-e|--exec)(?:\s*)[\s\S]*\b(edit|file_actions|file\s+(create|delete|move)|call\s+(apply-edits|file_actions))\b/i;
 
 function isRepoPromptWriteCommand(command: string): boolean {
 	return REPROMPT_WRITE_PATTERNS.some((pattern) => pattern.test(command));
@@ -435,7 +436,7 @@ function isRepoPromptMcpWriteRequest(input: unknown): boolean {
 		return false;
 	}
 
-	// `rp` (repoprompt-mcp) proxies RepoPrompt MCP tools. Treat these as write-capable.
+	// `rp` (repoprompt-mcp) proxies RepoPrompt CE MCP tools. Treat these as write-capable.
 	// Be tolerant of tool name prefixing, e.g. RepoPrompt_apply_edits
 	const normalizedCall = call.trim();
 	return /(^|_)(apply[-_]edits)$/.test(normalizedCall) || /(^|_)(file_actions)$/.test(normalizedCall);
@@ -444,7 +445,7 @@ function isRepoPromptMcpWriteRequest(input: unknown): boolean {
 const AST_READ_ONLY_COMMANDS = new Set([
 	"cat", "head", "tail", "less", "more", "grep", "find", "ls", "pwd", "echo", "printf", "wc", "sort", "uniq",
 	"diff", "file", "stat", "du", "df", "tree", "which", "whereis", "type", "env", "printenv", "uname", "whoami",
-	"id", "date", "cal", "uptime", "ps", "top", "htop", "free", "jq", "awk", "rg", "fd", "bat", "exa", "rp-cli",
+	"id", "date", "cal", "uptime", "ps", "top", "htop", "free", "jq", "awk", "rg", "fd", "bat", "exa", "rpce-cli", "rp-cli",
 	"rp_exec", "rp_bind", "curl",
 ]);
 
@@ -516,12 +517,12 @@ function isInvocationReadOnly(invocation: { effectiveCommandName: string; effect
 }
 
 function isSafeCommand(command: string): boolean {
-	// Prevent using rp-cli via bash to enter interactive REPL while in plan mode
+	// Prevent using rpce-cli via bash to enter interactive REPL while in plan mode
 	if (RP_CLI_INTERACTIVE_PATTERN.test(command)) {
 		return false;
 	}
 
-	// Prevent using rp-cli via bash to perform edits/file actions while in plan mode
+	// Prevent using rpce-cli via bash to perform edits/file actions while in plan mode
 	if (RP_CLI_EXEC_WRITE_PATTERN.test(command)) {
 		return false;
 	}
@@ -593,7 +594,7 @@ export default function planModeExtension(pi: ExtensionAPI) {
 			persistPlanModeState();
 
 			if (ctx.hasUI) {
-				ctx.ui.notify("Plan mode enabled. Pi write tools disabled; bash and RepoPrompt writes are blocked.");
+				ctx.ui.notify("Plan mode enabled. Pi write tools disabled; bash and RepoPrompt CE writes are blocked.");
 			}
 
 			updateStatus(ctx);
@@ -628,7 +629,7 @@ export default function planModeExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// Block write operations in plan mode (bash + RepoPrompt + native file tools as a backstop)
+	// Block write operations in plan mode (bash + RepoPrompt CE + native file tools as a backstop)
 	pi.on("tool_call", async (event, ctx) => {
 		if (!planModeEnabled) return;
 
@@ -653,25 +654,29 @@ export default function planModeExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		if (event.toolName === "rp_exec" || event.toolName === "rp-cli") {
-			const input = event.input as { cmd?: unknown; command?: unknown };
-			const command = (input.cmd ?? input.command) as string | undefined;
-			if (typeof command !== "string") return;
+		if (
+      event.toolName === "rp_exec" ||
+      event.toolName === "rpce-cli" ||
+      event.toolName === "rp-cli"
+    ) {
+      const input = event.input as { cmd?: unknown; command?: unknown };
+      const command = (input.cmd ?? input.command) as string | undefined;
+      if (typeof command !== "string") return;
 
-			if (isRepoPromptWriteCommand(command)) {
-				return {
-					block: true,
-					reason: `Plan mode: RepoPrompt write command blocked. Use /plan to disable plan mode first.\nCommand: ${command}`,
-				};
-			}
-		}
+      if (isRepoPromptWriteCommand(command)) {
+        return {
+          block: true,
+          reason: `Plan mode: RepoPrompt CE write command blocked. Use /plan to disable plan mode first.\nCommand: ${command}`,
+        };
+      }
+    }
 
 		if (event.toolName === "rp") {
 			if (isRepoPromptMcpWriteRequest(event.input)) {
 				const call = (event.input as { call?: unknown } | undefined)?.call;
 				return {
 					block: true,
-					reason: `Plan mode: RepoPrompt write tool blocked. Use /plan to disable plan mode first.\nTool: rp(call=${String(call)})`,
+					reason: `Plan mode: RepoPrompt CE write tool blocked. Use /plan to disable plan mode first.\nTool: rp(call=${String(call)})`,
 				};
 			}
 		}

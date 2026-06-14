@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tracks rp-cli changes across versions
+# Tracks rpce-cli changes across versions
 # Usage: ./track-rp-version.sh [--pre | --post | --check | --force]
 
 set -euo pipefail
@@ -9,24 +9,24 @@ SCRIPT_DIR="$(dirname "$0")"
 OUTPUT_DIR="${SCRIPT_DIR}/../rp-tool-defs"
 mkdir -p "$OUTPUT_DIR"
 
-# Parse version from `rp-cli -v` output like "rp-cli (repoprompt-mcp) 1.6.0"
+# Parse version from `rpce-cli -v` output like "rpce-cli (repoprompt-mcp) 1.6.0"
 get_version() {
-    rp-cli -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+    rpce-cli -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
 CURRENT_VERSION=$(get_version)
 BASELINE_FILE="${OUTPUT_DIR}/.baseline_version"
 
 if [ -z "$CURRENT_VERSION" ]; then
-    echo "ERROR: Could not detect rp-cli version. Is rp-cli installed?" >&2
+    echo "ERROR: Could not detect rpce-cli version. Is rpce-cli installed?" >&2
     exit 1
 fi
 
 snapshot() {
     local v="$1"
     echo "Capturing snapshot for v${v}..."
-    rp-cli --help > "${OUTPUT_DIR}/rpcli-help__${v}.txt"
-    rp-cli -l > "${OUTPUT_DIR}/rpcli-l__${v}.txt"
+    rpce-cli --help > "${OUTPUT_DIR}/rpcli-help__${v}.txt"
+    rpce-cli -l > "${OUTPUT_DIR}/rpcli-l__${v}.txt"
     echo "$v" > "$BASELINE_FILE"
 }
 
@@ -91,7 +91,7 @@ case "${1:---check}" in
             if [ "$baseline" = "$CURRENT_VERSION" ]; then
                 echo "✓ Baseline already captured at v${CURRENT_VERSION}"
                 echo ""
-                echo "Ready to upgrade. After updating RepoPrompt, run:"
+                echo "Ready to upgrade. After updating RepoPrompt CE, run:"
                 echo "  ./track-rp-version.sh --post"
                 exit 0
             else
@@ -103,7 +103,7 @@ case "${1:---check}" in
         echo ""
         echo "✓ Baseline captured at v${CURRENT_VERSION}"
         echo ""
-        echo "Ready to upgrade. After updating RepoPrompt, run:"
+        echo "Ready to upgrade. After updating RepoPrompt CE, run:"
         echo "  ./track-rp-version.sh --post"
         ;;
 
@@ -117,7 +117,7 @@ case "${1:---check}" in
 
         baseline=$(cat "$BASELINE_FILE")
         if [ "$baseline" = "$CURRENT_VERSION" ]; then
-            echo "Version unchanged ($CURRENT_VERSION). Did you upgrade RepoPrompt?"
+            echo "Version unchanged ($CURRENT_VERSION). Did you upgrade RepoPrompt CE?"
             exit 1
         fi
 
@@ -147,15 +147,15 @@ case "${1:---check}" in
         echo "Usage: $0 [--pre | --post | --check | --force | --version]"
         echo ""
         echo "Commands:"
-        echo "  --pre, -p     Capture baseline before upgrading RepoPrompt"
+        echo "  --pre, -p     Capture baseline before upgrading RepoPrompt CE"
         echo "  --post, -o    Capture new version after upgrade, generate diffs"
         echo "  --check, -c   Show current vs baseline version (default)"
         echo "  --force, -f   Force re-capture current version (no diff)"
-        echo "  --version, -v Print current rp-cli version"
+        echo "  --version, -v Print current rpce-cli version"
         echo ""
         echo "Workflow:"
         echo "  1. ./track-rp-version.sh --pre    # Before upgrading"
-        echo "  2. (Update RepoPrompt)"
+        echo "  2. (Update RepoPrompt CE)"
         echo "  3. ./track-rp-version.sh --post   # After upgrading"
         ;;
 esac

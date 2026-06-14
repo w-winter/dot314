@@ -3,14 +3,14 @@
 ## New or locally modified
 
 - ● [`repoprompt-tool-guidance-refresh/`](repoprompt-tool-guidance-refresh/)
-  - Two-phase workflow for updating RepoPrompt tool guidance across version upgrades:
-    1. Invoke **before** upgrading → captures baseline (`rp-cli -l`, `rp-cli --help`)
+  - Two-phase workflow for updating RepoPrompt CE tool guidance across version upgrades:
+    1. Invoke **before** upgrading → captures baseline (`rpce-cli -l`, `rpce-cli --help`)
     2. Invoke **after** upgrading → detects changes, generates diffs, updates docs
   - Contents:
     - [`SKILL.md`](repoprompt-tool-guidance-refresh/SKILL.md)
-    - [`scripts/track-rp-version.sh`](repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh) — version detection and diff generation of RepoPrompt MCP tool definitions and of the RepoPrompt CLI
+    - [`scripts/track-rp-version.sh`](repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh) — version detection and diff generation of RepoPrompt CE MCP tool definitions and of the RepoPrompt CE CLI
     - [`rp-tool-defs/`](repoprompt-tool-guidance-refresh/rp-tool-defs/) — captured snapshots and diffs
-    - [`rp-cli-prompts/`](repoprompt-tool-guidance-refresh/rp-cli-prompts/) — CLI-specific prompts maintained by this skill
+    - [`rp-cli-prompts/`](repoprompt-tool-guidance-refresh/rpce-cli-prompts/) — RepoPrompt CE CLI-specific prompts maintained by this skill
 
 - ◐ [`text-search/`](text-search/)
   - Search indexed text corpora (sessions, docs, logs) using qmd. Use instead of grep.

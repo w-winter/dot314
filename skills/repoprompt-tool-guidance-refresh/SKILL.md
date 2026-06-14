@@ -1,7 +1,7 @@
 ---
 disable-model-invocation: true
 name: repoprompt-tool-guidance-refresh
-description: Update RepoPrompt tool guidance based on MCP/CLI changes across versions. Two-phase workflow - invoke BEFORE upgrading (--pre), then AFTER upgrading (--post). Uses `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh` to detect and diff changes (outputs to `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`).
+description: Update RepoPrompt CE tool guidance based on MCP/CLI changes across versions. Two-phase workflow - invoke BEFORE upgrading (--pre), then AFTER upgrading (--post). Uses `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh` to detect and diff changes (outputs to `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`).
 ---
 
 # Workflow
@@ -13,7 +13,7 @@ This skill has two invocation modes depending on where you are in the upgrade cy
 - Script: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh`
 - Output directory: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
 
-## Phase A — Pre-Upgrade (invoke BEFORE updating RepoPrompt)
+## Phase A — Pre-Upgrade (invoke BEFORE updating RepoPrompt CE)
 
 1. Run the version tracking script:
    ```bash
@@ -25,14 +25,14 @@ This skill has two invocation modes depending on where you are in the upgrade cy
    - `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
 
    Files created/updated:
-   - `.baseline_version` — the baseline `rp-cli` version
-   - `rpcli-help__{VERSION}.txt` — output of `rp-cli --help`
-   - `rpcli-l__{VERSION}.txt` — output of `rp-cli -l`
+   - `.baseline_version` — the baseline `rpce-cli` version
+   - `rpcli-help__{VERSION}.txt` — output of `rpce-cli --help`
+   - `rpcli-l__{VERSION}.txt` — output of `rpce-cli -l`
 
 3. **Stop here.** Tell the user:
-   > ✓ Baseline captured at v{VERSION}. Go update RepoPrompt, then re-invoke this skill.
+   > ✓ Baseline captured at v{VERSION}. Go update RepoPrompt CE, then re-invoke this skill.
 
-## Phase B — Post-Upgrade (invoke AFTER updating RepoPrompt)
+## Phase B — Post-Upgrade (invoke AFTER updating RepoPrompt CE)
 
 1. Run the version tracking script:
    ```bash
@@ -45,8 +45,8 @@ This skill has two invocation modes depending on where you are in the upgrade cy
 
    Files created/updated:
    - `rpcli-help__{NEW_VERSION}.txt` / `rpcli-l__{NEW_VERSION}.txt` — new snapshots
-   - `rpcli-help__{NEW_VERSION}.diff` — changes in `rp-cli --help`
-   - `rpcli-l__{NEW_VERSION}.diff` — changes in `rp-cli -l` (MCP tool definitions)
+   - `rpcli-help__{NEW_VERSION}.diff` — changes in `rpce-cli --help`
+   - `rpcli-l__{NEW_VERSION}.diff` — changes in `rpce-cli -l` (MCP tool definitions)
 
 3. If no changes detected in the diffs, tell the user and stop:
    > ✓ No MCP/CLI tool changes detected. Documentation is current.
@@ -95,7 +95,7 @@ Only update documentation for changes that affect levers you directly use:
 - Changed parameters, modes, or behaviors
 
 Ignore changes that only affect:
-- RepoPrompt desktop app UI (without MCP/CLI changes)
+- RepoPrompt CE desktop app UI (without MCP/CLI changes)
 - Integrations with other apps/harnesses (without MCP/CLI changes)
 - Internal implementation details not exposed via tools
 

@@ -242,7 +242,7 @@ function hasPipeOutsideQuotes(script: string): boolean {
  *
  * Registers two Pi tools:
  * - `rp_bind`: binds a RepoPrompt window + compose tab (routing)
- * - `rp_exec`: runs `rp-cli -e <cmd>` against that binding (quiet defaults, output truncation)
+ * - `rp_exec`: runs `rpce-cli -e <cmd>` against that binding (quiet defaults, output truncation)
  *
  * Safety goals:
  * - Prevent "unbound" rp_exec calls from operating on an unintended window/workspace
@@ -272,15 +272,15 @@ interface RpCliWindow {
 }
 
 const BindParams = Type.Object({
-  windowId: Type.Number({ description: "RepoPrompt window id (from `rp-cli -e windows`)" }),
-  tab: Type.String({ description: "RepoPrompt compose tab name or UUID" }),
+  windowId: Type.Number({ description: "RepoPrompt CE window id (from `rpce-cli -e windows`)" }),
+  tab: Type.String({ description: "RepoPrompt CE compose tab name or UUID" }),
 });
 
 const ExecParams = Type.Object({
-  cmd: Type.String({ description: "rp-cli exec string (e.g. `tree`, `select set src/ && context`)" }),
-  rawJson: Type.Optional(Type.Boolean({ description: "Pass --raw-json to rp-cli" })),
-  quiet: Type.Optional(Type.Boolean({ description: "Pass -q/--quiet to rp-cli (default: true)" })),
-  failFast: Type.Optional(Type.Boolean({ description: "Pass --fail-fast to rp-cli (default: true)" })),
+  cmd: Type.String({ description: "rpce-cli exec string (e.g. `tree`, `select set src/ && context`)" }),
+  rawJson: Type.Optional(Type.Boolean({ description: "Pass --raw-json to rpce-cli" })),
+  quiet: Type.Optional(Type.Boolean({ description: "Pass -q/--quiet to rpce-cli (default: true)" })),
+  failFast: Type.Optional(Type.Boolean({ description: "Pass --fail-fast to rpce-cli (default: true)" })),
   timeoutMs: Type.Optional(Type.Number({ description: "Timeout in ms (default: 15 minutes)" })),
   maxOutputChars: Type.Optional(Type.Number({ description: "Truncate output to this many chars (default: 12000)" })),
   windowId: Type.Optional(Type.Number({ description: "Override bound window id for this call" })),
@@ -680,7 +680,7 @@ function parseReadFileRequest(cmd: string): ParsedReadFileRequest | null {
       continue;
     }
 
-    // key=value pairs (rp-cli supports key=value and also dash->underscore)
+    // key=value pairs (rpce-cli supports key=value and also dash->underscore)
     const eqIdx = arg.indexOf("=");
     if (eqIdx > 0) {
       const key = normalizeKey(arg.slice(0, eqIdx));
@@ -777,7 +777,7 @@ function parseReadFileRequest(cmd: string): ParsedReadFileRequest | null {
 
   let cmdToRun = [commandNameRaw, ...filteredArgs].filter(Boolean).join(" ");
 
-  // Canonicalize into rp-cli's documented read shorthand syntax so that equivalent forms behave consistently
+  // Canonicalize into rpce-cli's documented read shorthand syntax so that equivalent forms behave consistently
   // (especially for bypass_cache=true tests)
   const safePathForRewrite = /^\S+$/.test(inputPath);
   if (!sawUnknownArg && safePathForRewrite) {
@@ -1668,7 +1668,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     try {
-      const result = await pi.exec("rp-cli", ["--raw-json", "-q", "-e", "windows"], { timeout: 10_000 });
+      const result = await pi.exec("rpce-cli", ["--raw-json", "-q", "-e", "windows"], { timeout: 10_000 });
 
       if ((result.code ?? 0) !== 0) {
         return windowsCache?.windows ?? [];
@@ -2100,7 +2100,7 @@ export default function (pi: ExtensionAPI) {
 
     args.push("-e", cmd);
 
-    const result = await pi.exec("rp-cli", args, { timeout });
+    const result = await pi.exec("rpce-cli", args, { timeout });
 
     const stdout = result.stdout ?? "";
     const stderr = result.stderr ?? "";
@@ -2108,7 +2108,7 @@ export default function (pi: ExtensionAPI) {
     const output = [stdout, stderr].filter(Boolean).join("\n").trim();
 
     if (exitCode !== 0) {
-      throw new Error(output || `rp-cli exited with status ${exitCode}`);
+      throw new Error(output || `rpce-cli exited with status ${exitCode}`);
     }
 
     return { stdout, stderr, exitCode, output };
@@ -2894,7 +2894,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "rp_exec",
     label: "RepoPrompt Exec",
-    description: "Run rp-cli in the bound RepoPrompt window/tab, with quiet defaults and output truncation",
+    description: "Run rpce-cli in the bound RepoPrompt CE window/tab, with quiet defaults and output truncation",
     parameters: ExecParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -2985,10 +2985,10 @@ export default function (pi: ExtensionAPI) {
       if (windowId === undefined || tab === undefined) {
         onUpdate({
           status:
-            "Running rp-cli without a bound window/tab (non-deterministic). Bind first with rp_bind(windowId, tab)",
+            "Running rpce-cli without a bound window/tab (non-deterministic). Bind first with rp_bind(windowId, tab)",
         });
       } else {
-        onUpdate({ status: `Running rp-cli in window ${windowId}, tab "${tab}"…` });
+        onUpdate({ status: `Running rpce-cli in window ${windowId}, tab "${tab}"…` });
       }
 
       let stdout = "";
@@ -2997,7 +2997,7 @@ export default function (pi: ExtensionAPI) {
       let execError: string | undefined;
 
       try {
-        const result = await pi.exec("rp-cli", rpArgs, { signal, timeout: timeoutMs });
+        const result = await pi.exec("rpce-cli", rpArgs, { signal, timeout: timeoutMs });
         stdout = result.stdout ?? "";
         stderr = result.stderr ?? "";
         exitCode = result.code ?? 0;
@@ -3007,7 +3007,7 @@ export default function (pi: ExtensionAPI) {
 
       const combinedOutput = [stdout, stderr].filter(Boolean).join("\n").trim();
 
-      let rawOutput = execError ? `rp-cli execution failed: ${execError}` : combinedOutput;
+      let rawOutput = execError ? `rpce-cli execution failed: ${execError}` : combinedOutput;
 
       let rpReadcache: RpReadcacheMetaV1 | null = null;
 
@@ -3082,19 +3082,19 @@ export default function (pi: ExtensionAPI) {
 
       let outputForUser = rawOutput;
       if (editNoop) {
-        const rpCliOutput = rawOutput.length > 0 ? `\n--- rp-cli output ---\n${rawOutput}` : "";
+        const rpCliOutput = rawOutput.length > 0 ? `\n--- rpce-cli output ---\n${rawOutput}` : "";
 
         if (shouldFailNoopEdit) {
           outputForUser =
             "RepoPrompt edit made no changes (0 edits applied). This usually means the search string was not found.\n" +
             "If this was expected, rerun with failOnNoopEdits=false. Otherwise, verify the search text or rerun with rawJson=true / quiet=false.\n" +
-            "Tip: for tricky edits with multiline content, use rp-cli directly: rp-cli -c apply_edits -j '{...}'" +
+            "Tip: for tricky edits with multiline content, use rpce-cli directly: rpce-cli -c apply_edits -j '{...}'" +
             rpCliOutput;
         } else {
           outputForUser =
             "RepoPrompt edit made no changes (0 edits applied).\n" +
             "RepoPrompt may report this as an error (e.g. 'search block not found'), but failOnNoopEdits=false is treating it as non-fatal.\n" +
-            "Tip: for tricky edits with multiline content, use rp-cli directly: rp-cli -c apply_edits -j '{...}'" +
+            "Tip: for tricky edits with multiline content, use rpce-cli directly: rpce-cli -c apply_edits -j '{...}'" +
             rpCliOutput;
         }
       }

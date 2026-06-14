@@ -1,8 +1,14 @@
 {
   "name": "pi-repoprompt-cli",
-  "version": "0.3.2",
-  "description": "Integrates RepoPrompt with Pi via RepoPrompt's `rp-cli` executable",
-  "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt"],
+  "version": "0.4.0",
+  "description": "Integrates RepoPrompt CE with Pi via RepoPrompt CE's `rpce-cli` executable",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "repoprompt",
+    "repoprompt-ce"
+],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,7 +20,9 @@
   },
   "homepage": "https://github.com/w-winter/dot314#readme",
   "pi": {
-    "extensions": ["extensions/repoprompt-cli/index.ts"]
+    "extensions": [
+      "extensions/repoprompt-cli/index.ts"
+    ]
   },
   "dependencies": {
     "diff": "^7.0.0",
@@ -28,7 +36,12 @@
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
   },
-  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "files": [
+    "extensions/**",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "dot314Prepack": {
     "copy": [
       {
@@ -59,7 +72,10 @@
         "from": "../../extensions/repoprompt-cli/readcache",
         "to": "extensions/repoprompt-cli/readcache"
       },
-      { "from": "../../LICENSE", "to": "LICENSE" }
+      {
+        "from": "../../LICENSE",
+        "to": "LICENSE"
+      }
     ]
   }
 }

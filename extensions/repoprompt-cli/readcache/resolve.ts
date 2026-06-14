@@ -1,4 +1,4 @@
-// readcache/resolve.ts - resolve rp-cli read_file paths to local absolute paths
+// readcache/resolve.ts - resolve rpce-cli read_file paths to local absolute paths
 
 import { access } from "node:fs/promises";
 import * as path from "node:path";
@@ -32,7 +32,7 @@ function normalizeRootLine(line: string): string | null {
 
     // Expand home
     if (trimmed.startsWith("~")) {
-        // We intentionally don't expand here; rp-cli roots should be absolute already
+        // We intentionally don't expand here; rpce-cli roots should be absolute already
         return null;
     }
 
@@ -72,11 +72,11 @@ async function fetchWindowRootsViaCli(pi: ExtensionAPI, windowId: number, tab?: 
         args.push("-t", tab);
     }
 
-    // Use rp-cli exec mode to call the underlying MCP tool. This reliably returns one absolute root per line.
-    // (Using `tree type=roots` is NOT supported by rp-cli and can return an error string instead of roots.)
+    // Use rpce-cli exec mode to call the underlying MCP tool. This reliably returns one absolute root per line.
+    // (Using `tree type=roots` is NOT supported by rpce-cli and can return an error string instead of roots.)
     args.push("-q", "-e", 'call get_file_tree {"type":"roots"}');
 
-    const result = await pi.exec("rp-cli", args, { timeout: 10_000 });
+    const result = await pi.exec("rpce-cli", args, { timeout: 10_000 });
     const stdout = result.stdout ?? "";
     const stderr = result.stderr ?? "";
     const output = [stdout, stderr].filter(Boolean).join("\n");

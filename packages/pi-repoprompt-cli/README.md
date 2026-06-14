@@ -1,16 +1,16 @@
-# RepoPrompt CLI bridge for Pi (`pi-repoprompt-cli`)
+# RepoPrompt CE CLI bridge for Pi (`pi-repoprompt-cli`)
 
 > **⚠ Deprecated and not supported for Pi versions >0.64.0.**  Consider instead using [`pi-repoprompt-mcp`](https://www.npmjs.com/package/pi-repoprompt-mcp), which offers everything this extension has and several more reliability and QoL features, with none of the extra token overheads MCP tools typically entail.
 
-I recommend exploring the RepoPrompt CLI more from the angle of an agent skill for writing scripts that invoke rp-cli, while using repoprompt-mcp for Pi-RepoPrompt integration.
+I recommend exploring the RepoPrompt CE CLI more from the angle of an agent skill for writing scripts that invoke rpce-cli, while using repoprompt-mcp for Pi-RepoPrompt integration.
 
 ---
 
-Integrates RepoPrompt with Pi via RepoPrompt's `rp-cli` executable.
+Integrates RepoPrompt with Pi via RepoPrompt CE's `rpce-cli` executable.
 
 Provides two tools:
-- `rp_bind` — bind a RepoPrompt window + compose tab (routing)
-- `rp_exec` — run `rp-cli -e <cmd>` against that binding (quiet defaults + output truncation)
+- `rp_bind` — bind a RepoPrompt CE window + compose tab (routing)
+- `rp_exec` — run `rpce-cli -e <cmd>` against that binding (quiet defaults + output truncation)
 
 Optional:
 - Diff blocks in `rp_exec` output use `delta` when installed (honoring the user's global git/delta color config), with graceful fallback otherwise
@@ -51,7 +51,7 @@ Add to `~/.pi/agent/settings.json` (or replace an existing unfiltered `git:githu
 
 ## Requirements
 
-- `rp-cli` must be installed and available on `PATH`
+- `rpce-cli` must be installed and available on `PATH`
 
 ## Configuration
 
@@ -71,11 +71,11 @@ Create `~/.pi/agent/extensions/repoprompt-cli/config.json`:
 
 ## Quick start
 
-1) Find your RepoPrompt window + tab (from a terminal):
+1) Find your RepoPrompt CE window + tab (from a terminal):
 
 ```bash
-rp-cli -e windows
-rp-cli -e "workspace tabs"
+rpce-cli -e windows
+rpce-cli -e "workspace tabs"
 ```
 
 2) Bind inside Pi:
@@ -84,7 +84,7 @@ rp-cli -e "workspace tabs"
 /rpbind 3 Compose
 ```
 
-3) Instruct the agent to use RepoPrompt via the `rp_exec` tool, for example:
+3) Instruct the agent to use RepoPrompt CE via the `rp_exec` tool, for example:
 
 ```text
 Use rp_exec with cmd: "get_file_tree type=files max_depth=4".

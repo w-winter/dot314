@@ -1,4 +1,4 @@
-// readcache/constants.ts - constants for read_file caching via rp-cli
+// readcache/constants.ts - constants for read_file caching via rpce-cli
 
 export const RP_READCACHE_META_VERSION = 1 as const;
 export const RP_READCACHE_CUSTOM_TYPE = "repoprompt-cli-readcache" as const;

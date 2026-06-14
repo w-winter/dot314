@@ -156,7 +156,7 @@ export function restoreBinding(ctx: ExtensionContext, config: RpConfig): RpBindi
 }
 
 /**
- * Parse window list response from RepoPrompt
+ * Parse window list response from RepoPrompt CE
  */
 export function parseWindowList(text: string): RpWindow[] {
   const windows: RpWindow[] = [];
@@ -399,12 +399,12 @@ async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
 
     // Prefer pi.exec when available, since Pi often runs with a richer PATH than this Node process
     if (pi) {
-      const result = await pi.exec("rp-cli", ["-e", "windows"], { timeout: 5000 });
+      const result = await pi.exec("rpce-cli", ["-e", "windows"], { timeout: 5000 });
       stdout = result.stdout ?? "";
       stderr = result.stderr ?? "";
     } else {
       const result = await execFileAsync(
-        "rp-cli",
+        "rpce-cli",
         ["-e", "windows"],
         { timeout: 5000, maxBuffer: 1024 * 1024 }
       );
@@ -419,7 +419,7 @@ async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
       return windows;
     }
 
-    // RepoPrompt CLI reports single-window mode when multiple windows aren't available
+    // RepoPrompt CE CLI reports single-window mode when multiple windows aren't available
     if (output.toLowerCase().includes("single-window mode")) {
       return [{ id: 1, workspace: "single-window", roots: [] }];
     }
@@ -432,8 +432,8 @@ async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
     // Node's execFile throws { code: "ENOENT" }, while pi.exec may throw an Error with an ENOENT-ish message
     if (error.code === "ENOENT" || message.includes("ENOENT") || message.toLowerCase().includes("not found")) {
       throw new Error(
-        "rp-cli not found in PATH (required for window listing/binding). " +
-          "Install rp-cli or ensure Pi inherits your shell PATH."
+        "rpce-cli not found in PATH (required for window listing/binding). " +
+          "Install rpce-cli within RepoPrompt CE MCP Settings or ensure Pi inherits your shell PATH."
       );
     }
 
@@ -442,12 +442,12 @@ async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
 }
 
 /**
- * Fetch list of RepoPrompt windows (without roots)
+ * Fetch list of RepoPrompt CE windows (without roots)
  */
 export async function fetchWindows(pi?: ExtensionAPI): Promise<RpWindow[]> {
   const client = getRpClient();
   if (!client.isConnected) {
-    throw new Error("Not connected to RepoPrompt");
+    throw new Error("Not connected to RepoPrompt CE");
   }
 
   const windowsFromMcp = await fetchWindowsViaMcp(client);
@@ -665,7 +665,7 @@ export async function findRecoveryWindowBySelectionPaths(
 export async function fetchWindowRoots(windowId: number): Promise<string[]> {
   const client = getRpClient();
   if (!client.isConnected) {
-    throw new Error("Not connected to RepoPrompt");
+    throw new Error("Not connected to RepoPrompt CE");
   }
 
   const getFileTreeToolName = resolveToolName(client.tools, "get_file_tree");
@@ -1103,7 +1103,7 @@ export async function fetchWindowTabs(
   client: ReturnType<typeof getRpClient> = getRpClient()
 ): Promise<RpTab[]> {
   if (!client.isConnected) {
-    throw new Error("Not connected to RepoPrompt");
+    throw new Error("Not connected to RepoPrompt CE");
   }
 
   const bindContextToolName = resolveToolName(client.tools, "bind_context");
@@ -1146,7 +1146,7 @@ async function selectTab(
 
   if (result.isError) {
     const text = extractTextContent(result.content);
-    throw new Error(text || `Failed to bind RepoPrompt tab ${tabId}`);
+    throw new Error(text || `Failed to bind RepoPrompt CE tab ${tabId}`);
   }
 }
 
@@ -1156,7 +1156,7 @@ async function createBoundTab(
 ): Promise<RpTab> {
   const manageWorkspacesToolName = resolveToolName(client.tools, "manage_workspaces");
   if (!manageWorkspacesToolName) {
-    throw new Error("RepoPrompt manage_workspaces tool not available");
+    throw new Error("RepoPrompt CE manage_workspaces tool not available");
   }
 
   const tabsBeforeCreate = await fetchWindowTabs(windowId, client);
@@ -1170,7 +1170,7 @@ async function createBoundTab(
 
   if (result.isError) {
     const text = extractTextContent(result.content);
-    throw new Error(text || "Failed to create RepoPrompt tab");
+    throw new Error(text || "Failed to create RepoPrompt CE tab");
   }
 
   const createdTabs = parseTabsFromJson(extractJsonContent(result.content)) ?? parseTabList(extractTextContent(result.content));
@@ -1182,7 +1182,7 @@ async function createBoundTab(
     const newTabs = tabsAfterCreate.filter((tab) => !previousIds.has(tab.id));
 
     if (newTabs.length !== 1) {
-      throw new Error("RepoPrompt did not report the created tab unambiguously");
+      throw new Error("RepoPrompt CE did not report the created tab unambiguously");
     }
 
     createdTab = newTabs[0];
@@ -1204,13 +1204,13 @@ export async function bindToTab(
   const window = windows.find((w) => w.id === windowId);
 
   if (!window && windows.length > 0) {
-    throw new Error(`RepoPrompt window ${windowId} not found`);
+    throw new Error(`RepoPrompt CE window ${windowId} not found`);
   }
 
   const tabs = await fetchWindowTabs(windowId, client);
   const liveTab = findLiveTab(tabs, tabReference);
   if (!liveTab) {
-    throw new Error(`RepoPrompt tab ${JSON.stringify(tabReference)} not found in window ${windowId}`);
+    throw new Error(`RepoPrompt CE tab ${JSON.stringify(tabReference)} not found in window ${windowId}`);
   }
 
   if (liveTab.isBound !== true) {
@@ -1238,7 +1238,7 @@ export async function createAndBindTab(
   const window = windows.find((w) => w.id === windowId);
 
   if (!window && windows.length > 0) {
-    throw new Error(`RepoPrompt window ${windowId} not found`);
+    throw new Error(`RepoPrompt CE window ${windowId} not found`);
   }
 
   const createdTab = await createBoundTab(windowId, client);
@@ -1508,7 +1508,7 @@ export async function bindToWindow(
   const window = windows.find((w) => w.id === windowId);
 
   if (!window && windows.length > 0) {
-    throw new Error(`RepoPrompt window ${windowId} not found`);
+    throw new Error(`RepoPrompt CE window ${windowId} not found`);
   }
 
   const binding: RpBinding = {

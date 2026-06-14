@@ -1,16 +1,16 @@
 # Tool Protocol
 
-## Your Default Tools Are RepoPrompt (`rp`)
+## Your Default Tools Are RepoPrompt CE (`rp`)
 
 These instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.
 
-RepoPrompt MCP is the default for repo-scoped work. Use `rp`:
+RepoPrompt CE MCP is the default for repo-scoped work. Use `rp`:
 - **Bind**: `rp({ windows: true })` → `rp({ bind: { window: N } })`
 - **Call tools**: `rp({ call: "<tool>", args: { ... } })` (unless explicitly labeled as a Pi native tool)
 
 ### Mental Model
 
-RepoPrompt (macOS app) organizes state as:
+RepoPrompt CE (macOS app) organizes state as:
 - **Workspaces** → one or more root folders
 - **Windows** → each shows one workspace
 - **Tabs** → each tab has its own prompt + file selection; selections, slices, and codemaps are tab-scoped
@@ -22,7 +22,7 @@ MCP tools operate directly against this state, but in Pi you invoke them through
 
 ### Workspace Hygiene (Session Start Priority)
 
-When a task involves a repository that isn't loaded in any existing RepoPrompt window:
+When a task involves a repository that isn't loaded in any existing RepoPrompt CE window:
 
 1. **Do NOT** use `manage_workspaces action="add_folder"` to add unrelated repositories to an existing workspace
 2. **Instead**, either:
@@ -36,7 +36,7 @@ Rationale: Keep workspaces coherent; mixing unrelated repos clutters selection a
 
 Do not use bash for: `ls`, `find`, `grep`, `cat`, `wc`, `tree`, or similar file exploration.
 
-Prefer RepoPrompt MCP tools for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available.
+Prefer RepoPrompt CE MCP tools for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt CE is available.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Use `open_in_new_window=true`.
 
@@ -56,13 +56,13 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute paths only for `path` / `new_path` |
 | Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | uses the current tab/context; exporting returns `oracle_export_path` + `oracle_export_instruction` |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
-| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use `working_dirs` when you want RepoPrompt to route to a workspace by roots (exact match first, repo_paths superset fallback) |
+| Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use `working_dirs` when you want RepoPrompt CE to route to a workspace by roots (exact match first, repo_paths superset fallback) |
 | Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
 | Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows" [roles_only=true]` | inspect durable session/workflow state; `roles_only=true` with `list_agents` returns just the role labels (explore, engineer, pair, design) and their default models |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
-| App settings | `app_settings op="list\|get\|set\|options" [group="..."] [key="..."]` | read/update allowlisted RepoPrompt app-wide preferences |
+| App settings | `app_settings op="list\|get\|set\|options" [group="..."] [key="..."]` | read/update allowlisted RepoPrompt CE app-wide preferences |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
 ### Paths and roots
@@ -85,19 +85,19 @@ If results look wrong, assume routing first—not tool failure.
 3. Otherwise `rp({ bind: { window: N } })` — bind to the right window
 4. `bind_context op="list"` — inspect windows, active workspaces, tabs, `context_id`s, and current bindings when routing is ambiguous
 5. Prefer `bind_context op="bind" context_id="..."` — pin the specific compose tab you want after choosing it from `list`
-6. Use `bind_context op="bind" working_dirs="/abs/root"` when you want RepoPrompt to route to a workspace by roots without pinning a tab
+6. Use `bind_context op="bind" working_dirs="/abs/root"` when you want RepoPrompt CE to route to a workspace by roots without pinning a tab
 7. `get_file_tree` — confirm workspace roots
 
 Notes:
 - `bind_context op="bind" working_dirs="/abs/root[,/abs/root2]"` matches workspace roots, not descendant paths
-- Matching prefers an exact workspace `repo_paths` set; if none exists, RepoPrompt may fall back to a workspace whose roots are a strict superset
+- Matching prefers an exact workspace `repo_paths` set; if none exists, RepoPrompt CE may fall back to a workspace whose roots are a strict superset
 - `manage_workspaces action="list"` is the workspace inventory; `bind_context op="list"` is the routing view
 
-RepoPrompt only operates within workspace root folders.
+RepoPrompt CE only operates within workspace root folders.
 
 ### Agent Mode
 
-`agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab subagent session, not just make one-off MCP file/chat calls.
+`agent_run` + `agent_manage` are RepoPrompt CE's external control plane for Agent Mode: use them when you need to drive a long-running per-tab subagent session, not just make one-off MCP file/chat calls.
 
 - Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`; `start` defaults to `pair` when `model_id` is omitted
 - Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, read transcripts
@@ -130,7 +130,7 @@ Token-costly—invoke explicitly when user requests or during planning phases, n
 
 `app_settings op="list|get|set|options" ...`
 
-Use this for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`. Current groups: `ui`, `prompt_packaging`, `models`, `context_builder`, `mcp`, `code_maps`, `file_system`, `agent_mode`.
+Use this for allowlisted app-wide RepoPrompt CE preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`. Current groups: `ui`, `prompt_packaging`, `models`, `context_builder`, `mcp`, `code_maps`, `file_system`, `agent_mode`.
 
 ### Edit Discipline
 
