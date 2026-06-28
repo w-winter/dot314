@@ -43,7 +43,7 @@ From the dot314 git bundle (filtered install):
 | Native tools | `edit`, `write` |
 | Bash | Destructive commands (rm, mv, cp, mkdir, git commit, ...), write redirects (`>`, `>>`), editors (vim, nano, code) |
 | RepoPrompt MCP (`rp`) | `apply_edits`, `file_actions` |
-| RepoPrompt CLI (`rp_exec`, `rp-cli`) | `edit`, `file create/delete/move`, interactive REPL (`-i`) |
+| RepoPrompt CLI (`rp_exec`, `rp-cli`, `rpce-cli`) | `edit`, `file create/delete/move`, interactive REPL (`-i`) |
 
 Read-only operations remain available across all layers: `read_file`, `get_file_tree`, `file_search`, `get_code_structure`, `git status/log/diff/show`, etc.
 

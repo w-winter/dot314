@@ -90,8 +90,13 @@ test("session_start recovers selection into a different live workspace that cont
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
       JSON.stringify({
-        command: "fake-rp",
-        args: [],
+        activeApp: "ce",
+        apps: {
+          ce: {
+            command: "fake-rp",
+            args: [],
+          },
+        },
         suppressHostDisconnectedLog: false,
       })
     );
@@ -108,12 +113,13 @@ test("session_start recovers selection into a different live workspace that cont
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "old-chat-tree-workspace", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "old-chat-tree-workspace", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "old-chat-tree-workspace",
           tab: "TAB-OLD",
@@ -189,6 +195,11 @@ test("session_start recovers selection into a different live workspace that cont
       }
 
       if (name === "bind_context" && args.op === "bind") {
+        const tabs = tabsByWindow.get(args.window_id) ?? [];
+        for (const tab of tabs) {
+          tab.active = tab.id === args.context_id;
+          tab.bound = tab.id === args.context_id;
+        }
         return makeTextResult(`Bound context \`${args.context_id}\``);
       }
 
@@ -245,13 +256,14 @@ test("session_start recovers selection into a different live workspace that cont
 
     assert.equal(selectionAdds.length, 1);
     assert.equal(selectionAdds[0].args._windowID, 11);
-    assert.notEqual(selectionAdds[0].args._tabID, "TAB-OLD");
+    assert.equal(selectionAdds[0].args.context_id, "TAB-NEW");
     assert.deepEqual(selectionAdds[0].args.paths, ["chat-tree/src/App.tsx", "chat-tree/src/main.tsx"]);
 
     const bindingEntries = branchEntries.filter(
       (entry) => entry.type === "custom" && entry.customType === BINDING_ENTRY_TYPE
     );
     assert.deepEqual(bindingEntries.at(-1)?.data, {
+      app: "ce",
       windowId: 11,
       workspace: "curated-chat-tree",
       tab: "TAB-NEW",

@@ -4,6 +4,8 @@ This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools t
 
 The extension's window- and tab-related management features allow a workflow where new Pi sessions automatically attach to the required workspace and tab without clobbering your, or other agents', parallel usage of RepoPrompt.  Because it recovers the window, tab, and auto-selected read-files context when you rewind via `/tree` or restore a session, all the context the agent has built up (and automatically selected in the RepoPrompt app) by reading files and slices up to that point always remains available in the app for RP Chat (see `/rp oracle` below) or external "oracle" (e.g. GPT-x Pro) use cases.  Recovery is based on the required root(s) of the saved selection state, so it can reattach to any open workspace that already contains those roots rather than requiring the original workspace name; if multiple open workspaces satisfy that requirement and `cwd` does not disambiguate them, then you should re-bind with `/rp bind`.
 
+Both RepoPrompt Classic and RepoPrompt CE are supported because Classic's Compose UI affords visibility over and user-guided refinement of Context Builder's selections, while CE's architecture is substantially faster and better suited to parallel agents, implementation execution, and closed-loop planning/review.  You can switch targets mid-session with `/rp app` (e.g., curate context and obtain a plan in Classic, then execute the plan in CE).
+
 ## Installation
 
 From npm:
@@ -74,16 +76,17 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 
 ## Requirements
 
-- RepoPrompt MCP server configured and reachable (stdio transport)
-  - If the server is not configured/auto-detected, the extension will still load, but `rp(...)` will error until you configure it
-- `rp-cli` available in `PATH` is recommended (used as a fallback for window discovery)
+- RepoPrompt CE or RepoPrompt Classic with the bundled `repoprompt-mcp` server reachable over stdio
+  - CE is the default target; Classic is selectable with `/rp app classic`
+  - If the selected target is not configured/auto-detected, the extension will still load, but `rp(...)` will error until you configure it or switch targets
+- `rpce-cli` for RepoPrompt CE or `rp-cli` for RepoPrompt Classic available in `PATH` is recommended for window discovery fallback
 
 ### Compatibility notes
 
 This extension tries to be tolerant of **tool name prefixing** (e.g. `RepoPrompt_list_windows` vs `list_windows`), but it is still dependent on a small set of capabilities and their semantics remaining reasonably stable across RepoPrompt versions:
 
 - **Window discovery**: `list_windows`
-  - If `list_windows` is not exposed by the MCP server, the extension falls back to `rp-cli -e 'windows'`
+  - If `list_windows` is not exposed by the MCP server, the extension falls back to the selected target's CLI (`rpce-cli -e 'windows'` for CE, `rp-cli -e 'windows'` for Classic)
   - If neither is available, window listing/binding features will be limited
 - **Workspace root discovery (auto-bind by cwd)**: `get_file_tree` with `{ type: "roots" }` (scoped by `_windowID`)
   - If unavailable (or if parameters/semantics change), auto-binding may be disabled or less accurate
@@ -103,6 +106,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 </p>
 
 - `/rp windows` — list available RepoPrompt windows
+- `/rp app` — show a two-option selector for the active RepoPrompt target; `/rp app ce` and `/rp app classic` switch directly
 - `/rp bind` — interactive workflow for choosing the RepoPrompt window
 - `/rp bind <id> [tab]` — direct option if you already know the target window id (and optionally an exact tab name or tab id); when `[tab]` is omitted, the extension restores the branch's tab for that window or provisions a fresh background tab once
 - `/rp tab` — interactive tab picker for the current bound window, with `Create new tab` as the first option followed by existing tab names
@@ -119,7 +123,7 @@ Examples:
 // Status (connection + binding)
 rp({ })
 
-// List windows (best-effort; uses MCP tool if available, otherwise rp-cli)
+// List windows (best-effort; uses MCP tool if available, otherwise the selected app's CLI)
 rp({ windows: true })
 
 // Bind to a specific window (does not change RepoPrompt active window)
@@ -156,8 +160,17 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
 
 ```json
 {
-  "command": "rp-mcp-server",
-  "args": [],
+  "activeApp": "ce",
+  "apps": {
+    "ce": {
+      "appPath": "/Applications/RepoPrompt CE.app",
+      "autoLaunchApp": true
+    },
+    "classic": {
+      "appPath": "/Applications/Repo Prompt.app",
+      "autoLaunchApp": true
+    }
+  },
 
   "autoBindOnStart": true,
   "persistBinding": true,
@@ -177,15 +190,22 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
 }
 ```
 
+`autoLaunchApp` applies only when that target is selected. With `"activeApp": "ce"`, the extension launches CE; Classic is launchable only after switching to it with `/rp app classic`.
+
 `collapsedMaxLines` controls how many rendered lines of RepoPrompt tool output Pi shows before the result is expanded for the generic fallback path.  In addition, the extension now emits hand-authored one-line or two-line collapsed summaries for common non-mutating actions like `read_file`, `file_search`, `get_file_tree`, `get_code_structure`, `workspace_context`, `windows`, `bind`, and `status`; these are derived from Pi's own request metadata rather than RepoPrompt's returned prose.  Unknown or unsupported tools still fall back to the normal `collapsedMaxLines` behavior.  LOC-changing operations are the other exception: verbose RepoPrompt `apply_edits` and rendered `file_actions create/delete` results ignore `collapsedMaxLines` once normalized into `details.diff`, so the full rendered code changes remain visible.
 
 Options:
 
 | Option | Default | Description |
 |---|---:|---|
-| `command` | auto-detect | MCP server command |
-| `args` | `[]` | MCP server args |
-| `env` | unset | Extra environment variables for the MCP server |
+| `activeApp` | `"ce"` | Startup RepoPrompt target (`"ce"` or `"classic"`); `/rp app` changes the current session target |
+| `apps.ce` | CE defaults | RepoPrompt CE target definition |
+| `apps.classic` | Classic defaults | RepoPrompt Classic target definition |
+| `apps.<target>.command` | auto-detect | Explicit MCP server command for that target |
+| `apps.<target>.args` | `[]` | MCP server args for that target |
+| `apps.<target>.env` | unset | Extra environment variables for that target's MCP server |
+| `apps.<target>.appPath` | app default | App bundle path; the MCP binary is derived as `<appPath>/Contents/MacOS/repoprompt-mcp` |
+| `apps.<target>.autoLaunchApp` | `true` | Auto-launch this app only when this target is selected and the MCP server is unreachable at startup |
 | `toolCallTimeoutMs` | `5400000` | MCP tool call timeout in milliseconds for RepoPrompt tools like `context_builder` and `oracle_send` (90 minutes by default) |
 | `autoBindOnStart` | `true` | Auto-detect and bind on session start, then reconcile the branch-safe tab for the chosen window |
 | `persistBinding` | `true` | Persist window and tab bindings in Pi session history for branch-safe replay |
@@ -198,10 +218,8 @@ Options:
 | `diffViewMode` | `"auto"` | Diff layout for RepoPrompt `git` / `apply_edits` fenced diff output (`auto`, `split`, `unified`) |
 | `diffSplitMinWidth` | `120` | Minimum render width before `diffViewMode: "auto"` uses split diff layout |
 | `suppressHostDisconnectedLog` | `true` | Filter noisy stderr from macOS `repoprompt-mcp` (disconnect/retry bootstrap logs) |
-| `autoLaunchApp` | `false` | Auto-launch the RepoPrompt app when the MCP server is unreachable at startup |
-| `appPath` | inferred | Explicit path to `Repo Prompt.app`; if omitted, inferred from the `.app` ancestor of `command` |
 
-Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
+Command resolution for each app target checks `apps.<target>.command`, then app-specific MCP config entries (`repoprompt-ce` / `rpce` for CE, `repoprompt-classic` / `rpclassic` for Classic), then the target app bundle command, then the fixed target CLI (`rpce-cli` or `rp-cli`). Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 
 Note: when `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under
 `<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded,
@@ -215,16 +233,20 @@ but this is best-effort
 ## Troubleshooting
 
 ### "Not connected to RepoPrompt"
-- Ensure RepoPrompt is running
-- Verify the MCP server command in config
+- Check `/rp status` for the selected app target
+- Ensure the selected RepoPrompt app is running, or switch with `/rp app ce` / `/rp app classic`
+- Verify the selected target's `command` override or `appPath` in config; the fallback CLI name is fixed by the selected target
 - Run `/rp reconnect`
 
 ### Pi becomes unresponsive after closing/restarting RepoPrompt
 If the RepoPrompt MCP server stops responding (for example, if the RepoPrompt app is closed while Pi stays open), tool calls may time out. When that happens, the extension will drop the connection and you can recover with `/rp reconnect`.
 
-If RepoPrompt is not running when Pi starts, the extension auto-pauses itself after a quick connection timeout.  While paused, the `rp` tool returns a short error directing the agent to use native tools.  Run `/rp reconnect` once RepoPrompt is open to resume, and the agent will be notified that `rp` is available again.
+If the selected RepoPrompt app is not running when Pi starts, the extension auto-pauses itself after a quick connection timeout. While paused, the `rp` tool returns a short error directing the agent to `/rp app` or `/rp reconnect`. Run `/rp reconnect` once the selected app is open, or switch targets with `/rp app ce` / `/rp app classic`.
 
-If `autoLaunchApp` is enabled, the extension will try to open the RepoPrompt app automatically before pausing.  The app path is inferred from the `command` config (e.g. `/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp` → `/Applications/Repo Prompt.app`), or you can set `appPath` explicitly.  After launching, the extension waits a few seconds and retries the connection once; if that also fails, it auto-pauses as usual.
+If `apps.<target>.autoLaunchApp` is enabled, the extension will try to open that target's app bundle automatically before pausing. CE defaults to `/Applications/RepoPrompt CE.app`; Classic defaults to `/Applications/Repo Prompt.app`. After launching, the extension waits a few seconds and retries the connection once; if that also fails, it auto-pauses as usual.
+
+### Switching between CE and Classic
+Use `/rp app ce` or `/rp app classic` to switch the active target for the current Pi session. The switch resets the MCP connection and recovers extension-owned read selection through workspace root matching in the newly selected app; manual selections are not copied between apps. If no unique matching window exists, use `/rp bind` after switching.
 
 ### "No matching window found"
 - Your `cwd` may not match any RepoPrompt workspace root
@@ -232,9 +254,9 @@ If `autoLaunchApp` is enabled, the extension will try to open the RepoPrompt app
 - Use `/rp bind` to pick one
 
 ### Window listing doesn't work
-- If the MCP server does not expose a `list_windows` tool, this extension uses `rp-cli -e 'windows'`
-- Make sure `rp-cli` is installed and on your `PATH`
-- If RepoPrompt is in single-window mode, `rp-cli -e 'windows'` may report single-window mode
+- If the MCP server does not expose a `list_windows` tool, this extension uses `rpce-cli -e 'windows'` for CE or `rp-cli -e 'windows'` for Classic
+- Make sure the selected target's CLI is installed and on your `PATH`
+- If RepoPrompt is in single-window mode, the CLI may report single-window mode
 
 ### Delete operation blocked
 - Pass `allowDelete: true` on the `rp` call

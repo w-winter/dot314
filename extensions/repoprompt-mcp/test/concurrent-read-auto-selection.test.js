@@ -99,8 +99,13 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
       JSON.stringify({
-        command: "fake-rp",
-        args: [],
+        activeApp: "ce",
+        apps: {
+          ce: {
+            command: "fake-rp",
+            args: [],
+          },
+        },
         suppressHostDisconnectedLog: false,
       })
     );
@@ -122,12 +127,12 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 19, workspace: "chat-tree" },
+        data: { app: "ce", windowId: 19, workspace: "chat-tree" },
       },
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 19, tab: "TAB-1", workspace: "chat-tree" },
+        data: { app: "ce", windowId: 19, tab: "TAB-1", workspace: "chat-tree" },
       },
     ];
 
@@ -263,24 +268,27 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
     );
 
     assert.equal(autoSelectionEntries.length, 4);
-    assert.deepEqual(autoSelectionEntries.map((entry) => entry.data), [
-      {
-        windowId: 19,
-        tab: "TAB-1",
+      assert.deepEqual(autoSelectionEntries.map((entry) => entry.data), [
+        {
+          app: "ce",
+          windowId: 19,
+          tab: "TAB-1",
         workspace: "chat-tree",
         fullPaths: ["src/App.tsx"],
         slicePaths: [],
-      },
-      {
-        windowId: 19,
-        tab: "TAB-1",
+        },
+        {
+          app: "ce",
+          windowId: 19,
+          tab: "TAB-1",
         workspace: "chat-tree",
         fullPaths: ["src/App.tsx", "src/main.tsx"],
         slicePaths: [],
-      },
-      {
-        windowId: 19,
-        tab: "TAB-1",
+        },
+        {
+          app: "ce",
+          windowId: 19,
+          tab: "TAB-1",
         workspace: "chat-tree",
         fullPaths: [
           "src/App.tsx",
@@ -288,10 +296,11 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
           "src/main.tsx",
         ],
         slicePaths: [],
-      },
-      {
-        windowId: 19,
-        tab: "TAB-1",
+        },
+        {
+          app: "ce",
+          windowId: 19,
+          tab: "TAB-1",
         workspace: "chat-tree",
         fullPaths: [
           "src/App.tsx",

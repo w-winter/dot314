@@ -1,6 +1,15 @@
 {
-  "command": "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp",
-  "args": [],
+  "activeApp": "ce",
+  "apps": {
+    "ce": {
+      "appPath": "/Applications/RepoPrompt CE.app",
+      "autoLaunchApp": true
+    },
+    "classic": {
+      "appPath": "/Applications/Repo Prompt.app",
+      "autoLaunchApp": true
+    }
+  },
   "autoBindOnStart": true,
   "persistBinding": true,
   "confirmDeletes": true,
@@ -11,6 +20,5 @@
   "diffSplitMinWidth": 120,
   "readcacheReadFile": false,
   "autoSelectReadSlices": true,
-  "oracleDefaultMode": "chat",
-  "autoLaunchApp": true
+  "oracleDefaultMode": "chat"
 }

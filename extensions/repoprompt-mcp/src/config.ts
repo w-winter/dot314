@@ -4,10 +4,51 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
-import { DEFAULT_TOOL_CALL_TIMEOUT_MS, DIFF_VIEW_MODES, type DiffViewMode, type RpConfig } from "./types.js";
+import {
+  DEFAULT_TOOL_CALL_TIMEOUT_MS,
+  DIFF_VIEW_MODES,
+  RP_APP_IDS,
+  type DiffViewMode,
+  type RpAppId,
+  type RpAppTargetConfig,
+  type RpConfig,
+} from "./types.js";
+
+const CE_APP_PATH = "/Applications/RepoPrompt CE.app";
+const CLASSIC_APP_PATH = "/Applications/Repo Prompt.app";
+
+const APP_TARGETS: Record<RpAppId, { label: string; cliCommand: string; appPath: string; mcpConfigNames: string[] }> = {
+  ce: {
+    label: "RepoPrompt CE",
+    cliCommand: "rpce-cli",
+    appPath: CE_APP_PATH,
+    mcpConfigNames: ["repoprompt-ce", "rpce"],
+  },
+  classic: {
+    label: "RepoPrompt Classic",
+    cliCommand: "rp-cli",
+    appPath: CLASSIC_APP_PATH,
+    mcpConfigNames: ["repoprompt-classic", "rpclassic"],
+  },
+};
+
+const DEFAULT_APPS: Record<RpAppId, RpAppTargetConfig> = {
+  ce: {
+    args: [],
+    appPath: CE_APP_PATH,
+    autoLaunchApp: true,
+  },
+  classic: {
+    args: [],
+    appPath: CLASSIC_APP_PATH,
+    autoLaunchApp: true,
+  },
+};
 
 // Default configuration
 const DEFAULT_CONFIG: RpConfig = {
+  activeApp: "ce",
+  apps: DEFAULT_APPS,
   autoBindOnStart: true,
   persistBinding: true,
   confirmDeletes: true,
@@ -43,16 +84,6 @@ const CONFIG_LOCATIONS = [
   () => path.join(os.homedir(), ".config", "mcp", "mcp.json"),
 ];
 
-// Common RepoPrompt MCP server commands
-const REPOPROMPT_SERVER_CANDIDATES = [
-  // Direct command
-  { command: "rp-mcp-server", args: [] },
-  // Via npx
-  { command: "npx", args: ["rp-mcp-server"] },
-  // Via RepoPrompt CLI
-  { command: "rp-cli", args: ["mcp-server"] },
-];
-
 interface McpServerEntry {
   command?: string;
   args?: string[];
@@ -75,19 +106,75 @@ function tryReadJson<T>(filePath: string): T | null {
   }
 }
 
+function normalizeAppId(value: unknown): RpAppId {
+  if (RP_APP_IDS.includes(value as RpAppId)) {
+    return value as RpAppId;
+  }
+
+  throw new Error(`Invalid RepoPrompt app target: ${String(value)}`);
+}
+
+function normalizeArgs(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeTargetConfig(
+  app: RpAppId,
+  raw: Partial<RpAppTargetConfig> | undefined
+): RpAppTargetConfig {
+  const base = DEFAULT_APPS[app];
+  const source = raw ?? {};
+  const normalized: RpAppTargetConfig = {
+    ...base,
+    ...source,
+  };
+
+  normalized.args = normalizeArgs(source.args) ?? base.args ?? [];
+  normalized.env = normalizeStringRecord(source.env) ?? base.env;
+
+  return normalized;
+}
+
+function normalizeApps(raw: unknown): Record<RpAppId, RpAppTargetConfig> {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Partial<Record<RpAppId, Partial<RpAppTargetConfig>>>
+    : {};
+
+  return {
+    ce: normalizeTargetConfig("ce", source.ce),
+    classic: normalizeTargetConfig("classic", source.classic),
+  };
+}
+
 /**
  * Find RepoPrompt server config in MCP config files
  */
-function findRepoPromptInMcpConfig(): McpServerEntry | null {
+function findRepoPromptInMcpConfig(app: RpAppId): McpServerEntry | null {
+  const names = new Set(APP_TARGETS[app].mcpConfigNames.map((name) => name.toLowerCase()));
+
   for (const getPath of CONFIG_LOCATIONS) {
     const configPath = getPath();
     const config = tryReadJson<McpConfigFile>(configPath);
 
     if (!config?.mcpServers) continue;
 
-    // Look for RepoPrompt server (case-insensitive)
     for (const [name, entry] of Object.entries(config.mcpServers)) {
-      if (name.toLowerCase().includes("repoprompt") || name.toLowerCase() === "rp") {
+      if (names.has(name.toLowerCase())) {
         return entry;
       }
     }
@@ -101,10 +188,15 @@ function findRepoPromptInMcpConfig(): McpServerEntry | null {
  */
 function commandExists(command: string): boolean {
   try {
-    // Validate command is a simple identifier (no shell metacharacters)
+    if (command.includes("/")) {
+      return fs.existsSync(command);
+    }
+
+    // Validate command is a simple identifier/path (no shell metacharacters)
     if (!/^[\w./-]+$/.test(command)) {
       return false;
     }
+
     const whichCommand = process.platform === "win32" ? "where" : "which";
     execFileSync(whichCommand, [command], { stdio: "ignore" });
     return true;
@@ -113,12 +205,12 @@ function commandExists(command: string): boolean {
   }
 }
 
-/**
- * Find a working RepoPrompt MCP server command
- */
-function findRepoPromptServer(): { command: string; args: string[] } | null {
-  // First, check MCP config files
-  const configEntry = findRepoPromptInMcpConfig();
+function getAppBundleCommand(config: RpConfig, app: RpAppId): string {
+  return path.join(inferAppPath(config, app), "Contents", "MacOS", "repoprompt-mcp");
+}
+
+function findRepoPromptServer(config: RpConfig, app: RpAppId): { command: string; args: string[] } | null {
+  const configEntry = findRepoPromptInMcpConfig(app);
   if (configEntry?.command) {
     return {
       command: configEntry.command,
@@ -126,11 +218,20 @@ function findRepoPromptServer(): { command: string; args: string[] } | null {
     };
   }
 
-  // Fall back to known candidates
-  for (const candidate of REPOPROMPT_SERVER_CANDIDATES) {
-    if (commandExists(candidate.command)) {
-      return candidate;
-    }
+  const appBundleCommand = getAppBundleCommand(config, app);
+  if (commandExists(appBundleCommand)) {
+    return {
+      command: appBundleCommand,
+      args: [],
+    };
+  }
+
+  const cliCommand = getAppCliCommand(app);
+  if (commandExists(cliCommand)) {
+    return {
+      command: cliCommand,
+      args: [],
+    };
   }
 
   return null;
@@ -154,10 +255,14 @@ function toDiffViewMode(value: unknown): DiffViewMode {
  * Load extension configuration
  */
 export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
-  // Start with defaults
-  let config: RpConfig = { ...DEFAULT_CONFIG };
+  let config: RpConfig = {
+    ...DEFAULT_CONFIG,
+    apps: {
+      ce: { ...DEFAULT_APPS.ce },
+      classic: { ...DEFAULT_APPS.classic },
+    },
+  };
 
-  // Try to load from dedicated config file
   const preferredConfigPath = path.join(os.homedir(), ".pi", "agent", "extensions", "repoprompt-mcp.json");
   const folderStyleConfigPath = path.join(
     os.homedir(),
@@ -176,7 +281,12 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
 
   const fileConfig = tryReadJson<Partial<RpConfig>>(configPath);
   if (fileConfig) {
-    config = { ...config, ...fileConfig };
+    config = {
+      ...config,
+      ...fileConfig,
+      activeApp: fileConfig.activeApp === undefined ? config.activeApp : normalizeAppId(fileConfig.activeApp),
+      apps: normalizeApps(fileConfig.apps),
+    };
 
     const fileConfigAny = fileConfig as Record<string, unknown>;
     if (fileConfigAny.previewEdits !== undefined && fileConfigAny.confirmEdits === undefined) {
@@ -184,18 +294,13 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
     }
   }
 
-  // Find server command if not specified
-  if (!config.command) {
-    const server = findRepoPromptServer();
-    if (server) {
-      config.command = server.command;
-      config.args = server.args;
-    }
-  }
-
-  // Apply overrides
   if (overrides) {
-    config = { ...config, ...overrides };
+    config = {
+      ...config,
+      ...overrides,
+      activeApp: overrides.activeApp === undefined ? config.activeApp : normalizeAppId(overrides.activeApp),
+      apps: overrides.apps ? normalizeApps(overrides.apps) : config.apps,
+    };
   }
 
   config.toolCallTimeoutMs = clampNumber(
@@ -213,6 +318,7 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
 const FILTERED_STDERR_SUBSTRINGS = [
   // Clean disconnect / shutdown
   "BootstrapSocketProxy: Bridge task failed: hostDisconnected",
+  "terminal_reason=stdin_closed",
   // RepoPrompt app closed while Pi stays running
   "BootstrapSocketProxy: Bridge task failed: connectionReset",
   "Bootstrap connection lost",
@@ -257,35 +363,60 @@ function maybeWrapServerCommand(
   };
 }
 
+export function getActiveApp(config: RpConfig): RpAppId {
+  return config.activeApp;
+}
+
+export function getAppTargetConfig(config: RpConfig, app: RpAppId = getActiveApp(config)): RpAppTargetConfig {
+  return config.apps[app];
+}
+
+export function getAppLabel(config: RpConfig, app: RpAppId = getActiveApp(config)): string {
+  return APP_TARGETS[app].label;
+}
+
+export function getAppCliCommand(app: RpAppId): string {
+  return APP_TARGETS[app].cliCommand;
+}
+
 /**
  * Infer the .app bundle path from an MCP server command that lives inside a .app bundle.
  * e.g. "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp" → "/Applications/Repo Prompt.app"
  */
-export function inferAppPath(config: RpConfig): string | null {
-  if (config.appPath) {
-    return config.appPath;
+export function inferAppPath(config: RpConfig, app: RpAppId = getActiveApp(config)): string {
+  const appConfig = getAppTargetConfig(config, app);
+  if (appConfig.appPath) {
+    return appConfig.appPath;
   }
-  if (!config.command) {
-    return null;
+
+  const appMatch = appConfig.command?.match(/^(.+\.app)\//i);
+  if (appMatch) {
+    return appMatch[1];
   }
-  const appMatch = config.command.match(/^(.+\.app)\//i);
-  return appMatch ? appMatch[1] : null;
+
+  return APP_TARGETS[app].appPath;
 }
 
 /**
  * Get the server command and args, or return null if not found
  *
  * We avoid throwing on startup because a missing server is a common first-run condition
- * (users may not have installed RepoPrompt / rp-mcp-server yet). Instead we surface this
+ * (users may not have installed the selected RepoPrompt app or CLI yet). Instead we surface this
  * as a non-fatal warning and only error when a user actually tries to use rp features
  */
-export function getServerCommand(config: RpConfig): { command: string; args: string[] } | null {
-  if (config.command) {
+export function getServerCommand(
+  config: RpConfig,
+  app: RpAppId = getActiveApp(config)
+): { command: string; args: string[] } | null {
+  const appConfig = getAppTargetConfig(config, app);
+
+  if (appConfig.command) {
     return maybeWrapServerCommand(config, {
-      command: config.command,
-      args: config.args ?? [],
+      command: appConfig.command,
+      args: appConfig.args ?? [],
     });
   }
 
-  return null;
+  const discovered = findRepoPromptServer(config, app);
+  return discovered ? maybeWrapServerCommand(config, discovered) : null;
 }

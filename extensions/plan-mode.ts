@@ -10,8 +10,8 @@
  * - --plan flag to start in plan mode
  * - Removes Pi-native write tools (`edit`, `write`) from the active Pi tool list while enabled
  * - Blocks destructive bash commands while plan mode is enabled (including redirects)
- * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli -e, rp_exec, or rp (repoprompt-mcp)
- * - Blocks rp-cli interactive REPL (-i/--interactive) to prevent bypassing the sandbox
+ * - Blocks RepoPrompt write commands (edit/file/file_actions/apply-edits), even via bash rp-cli/rpce-cli -e, rp_exec, or rp (repoprompt-mcp)
+ * - Blocks rp-cli/rpce-cli interactive REPL (-i/--interactive) to prevent bypassing the sandbox
  * - Adds plan-mode instructions via the system prompt only while plan mode is enabled
  * - Shows a "plan" indicator in the status line when active
  * - Persists plan mode state only when toggled (and once at startup if --plan is used)
@@ -402,7 +402,7 @@ const SAFE_COMMANDS = [
 	/^\s*fd\b/,
 	/^\s*bat\b/,
 	/^\s*exa\b/,
-	/^\s*rp-cli\b/,
+	/^\s*rp(?:ce)?-cli\b/,
 	/^\s*rp_exec\b/,
 	/^\s*rp_bind\b/,
 ];
@@ -415,10 +415,10 @@ const REPROMPT_WRITE_PATTERNS = [
 ];
 
 const RP_CLI_INTERACTIVE_PATTERN =
-	/(^|\s)rp-cli\b.*(?:\s)(?:-i|--interactive)(?:\s|$)/i;
+	/(^|\s)rp(?:ce)?-cli\b.*(?:\s)(?:-i|--interactive)(?:\s|$)/i;
 
 const RP_CLI_EXEC_WRITE_PATTERN =
-	/(^|\s)rp-cli\b.*(?:\s)(?:-e|--exec)(?:\s*)[\s\S]*\b(edit|file_actions|file\s+(create|delete|move)|call\s+(apply-edits|file_actions))\b/i;
+	/(^|\s)rp(?:ce)?-cli\b.*(?:\s)(?:-e|--exec)(?:\s*)[\s\S]*\b(edit|file_actions|file\s+(create|delete|move)|call\s+(apply-edits|file_actions))\b/i;
 
 function isRepoPromptWriteCommand(command: string): boolean {
 	return REPROMPT_WRITE_PATTERNS.some((pattern) => pattern.test(command));
@@ -444,8 +444,8 @@ function isRepoPromptMcpWriteRequest(input: unknown): boolean {
 const AST_READ_ONLY_COMMANDS = new Set([
 	"cat", "head", "tail", "less", "more", "grep", "find", "ls", "pwd", "echo", "printf", "wc", "sort", "uniq",
 	"diff", "file", "stat", "du", "df", "tree", "which", "whereis", "type", "env", "printenv", "uname", "whoami",
-	"id", "date", "cal", "uptime", "ps", "top", "htop", "free", "jq", "awk", "rg", "fd", "bat", "exa", "rp-cli",
-	"rp_exec", "rp_bind", "curl",
+	"id", "date", "cal", "uptime", "ps", "top", "htop", "free", "jq", "awk", "rg", "fd", "bat", "exa",
+	"rp-cli", "rpce-cli", "rp_exec", "rp_bind", "curl",
 ]);
 
 const AST_BLOCKED_COMMANDS = new Set([
@@ -516,12 +516,12 @@ function isInvocationReadOnly(invocation: { effectiveCommandName: string; effect
 }
 
 function isSafeCommand(command: string): boolean {
-	// Prevent using rp-cli via bash to enter interactive REPL while in plan mode
+	// Prevent using RepoPrompt CLIs via bash to enter interactive REPL while in plan mode
 	if (RP_CLI_INTERACTIVE_PATTERN.test(command)) {
 		return false;
 	}
 
-	// Prevent using rp-cli via bash to perform edits/file actions while in plan mode
+	// Prevent using RepoPrompt CLIs via bash to perform edits/file actions while in plan mode
 	if (RP_CLI_EXEC_WRITE_PATTERN.test(command)) {
 		return false;
 	}

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -10,6 +10,8 @@ import {
   clearBinding,
   createAndBindTab,
   ensureBindingHasTab,
+  fetchWindows,
+  findRecoveryWindowBySelectionPaths,
   findMatchingWindow,
   parseRootList,
   parseTabList,
@@ -17,9 +19,22 @@ import {
   persistBinding,
   restoreBinding,
 } from "../dist/binding.js";
+import { getRpClient, resetRpClient } from "../dist/client.js";
 import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "../dist/types.js";
 
 const HOME = os.homedir();
+
+function makeTestConfig(overrides = {}) {
+  return {
+    activeApp: "ce",
+    apps: {
+      ce: {},
+      classic: {},
+    },
+    persistBinding: true,
+    ...overrides,
+  };
+}
 
 function makeMockSession(branchEntries = []) {
   const entries = [...branchEntries];
@@ -100,6 +115,10 @@ function getBindContextCalls(calls) {
 
 test.afterEach(() => {
   clearBinding();
+});
+
+test.afterEach(async () => {
+  await resetRpClient();
 });
 
 test("parseWindowList parses workspaces with suffixes and instances", () => {
@@ -230,6 +249,34 @@ test("findMatchingWindow returns null when cwd is outside all roots", () => {
   assert.equal(result.matches.length, 0);
 });
 
+test("findRecoveryWindowBySelectionPaths reports ambiguity when multiple windows contain required paths", async () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "rp-recovery-ambiguous-"));
+
+  try {
+    const rootA = path.join(tempDir, "workspace-a", "chat-tree");
+    const rootB = path.join(tempDir, "workspace-b", "chat-tree");
+    mkdirSync(path.join(rootA, "src"), { recursive: true });
+    mkdirSync(path.join(rootB, "src"), { recursive: true });
+    writeFileSync(path.join(rootA, "src", "App.tsx"), "export const app = 1\n");
+    writeFileSync(path.join(rootB, "src", "App.tsx"), "export const app = 1\n");
+
+    const result = await findRecoveryWindowBySelectionPaths(
+      [
+        { id: 1, workspace: "A", roots: [rootA] },
+        { id: 2, workspace: "B", roots: [rootB] },
+      ],
+      ["chat-tree/src/App.tsx"],
+      tempDir
+    );
+
+    assert.equal(result.window, null);
+    assert.equal(result.ambiguous, true);
+    assert.deepEqual(result.matches.map((window) => window.id), [1, 2]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("findMatchingWindow returns ambiguous when best match is tied across windows", () => {
   const dot314Root = path.join(HOME, "dot314");
 
@@ -308,7 +355,7 @@ test("parseTabList captures per-tab selected file counts from detail rows", () =
 
 test("bindToTab selects a live tab by name and persists its concrete id", async () => {
   const { pi, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   const calls = [];
   const client = {
@@ -333,13 +380,17 @@ test("bindToTab selects a live tab by name and persists its concrete id", async 
 
   assert.equal(binding.tab, "UUID-T1");
   assert.equal(binding.workspace, "pi-agent");
-  assert.equal(getBindContextCalls(calls)[0]?.args?.context_id, "UUID-T1");
+  assert.deepEqual(getBindContextCalls(calls)[0]?.args, {
+    op: "bind",
+    window_id: 5,
+    context_id: "UUID-T1",
+  });
   assert.equal(entries.at(-1)?.data?.tab, "UUID-T1");
 });
 
 test("createAndBindTab persists the created bound tab id", async () => {
   const { pi, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   let listTabsCount = 0;
   const client = {
@@ -374,7 +425,7 @@ test("createAndBindTab persists the created bound tab id", async () => {
 
 test("createAndBindTab prefers the created tab when list_tabs still reports the old bound tab", async () => {
   const { pi, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   const calls = [];
   const client = {
@@ -407,12 +458,16 @@ test("createAndBindTab prefers the created tab when list_tabs still reports the 
 
   assert.equal(binding.tab, "UUID-T14");
   assert.equal(entries.at(-1)?.data?.tab, "UUID-T14");
-  assert.equal(getBindContextCalls(calls)[0]?.args?.context_id, "UUID-T14");
+  assert.deepEqual(getBindContextCalls(calls)[0]?.args, {
+    op: "bind",
+    window_id: 5,
+    context_id: "UUID-T14",
+  });
 });
 
 test("createAndBindTab identifies the new tab from list_tabs delta when create_tab output is unparseable", async () => {
   const { pi, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   let listTabsCount = 0;
   const calls = [];
@@ -453,12 +508,16 @@ test("createAndBindTab identifies the new tab from list_tabs delta when create_t
 
   assert.equal(binding.tab, "UUID-T14");
   assert.equal(entries.at(-1)?.data?.tab, "UUID-T14");
-  assert.equal(getBindContextCalls(calls)[0]?.args?.context_id, "UUID-T14");
+  assert.deepEqual(getBindContextCalls(calls)[0]?.args, {
+    op: "bind",
+    window_id: 5,
+    context_id: "UUID-T14",
+  });
 });
 
 test("createAndBindTab fails closed when create_tab output is unparseable and no unique new tab appears", async () => {
   const { pi } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   const client = {
     isConnected: true,
@@ -493,6 +552,7 @@ test("restoreBinding falls back to the most recent auto-selection tab", () => {
       type: "custom",
       customType: AUTO_SELECTION_ENTRY_TYPE,
       data: {
+        app: "ce",
         windowId: 5,
         workspace: "pi-agent",
         tab: "TAB-AUTO",
@@ -502,9 +562,10 @@ test("restoreBinding falls back to the most recent auto-selection tab", () => {
     },
   ]);
 
-  const binding = restoreBinding(ctx, {});
+  const binding = restoreBinding(ctx, makeTestConfig());
 
   assert.deepEqual(binding, {
+    app: "ce",
     windowId: 5,
     workspace: "pi-agent",
     tab: "TAB-AUTO",
@@ -516,12 +577,13 @@ test("restoreBinding fills a missing binding tab from auto-selection history", (
     {
       type: "custom",
       customType: BINDING_ENTRY_TYPE,
-      data: { windowId: 5, workspace: "pi-agent" },
+      data: { app: "ce", windowId: 5, workspace: "pi-agent" },
     },
     {
       type: "custom",
       customType: AUTO_SELECTION_ENTRY_TYPE,
       data: {
+        app: "ce",
         windowId: 5,
         workspace: "pi-agent",
         tab: "TAB-AUTO",
@@ -531,9 +593,10 @@ test("restoreBinding fills a missing binding tab from auto-selection history", (
     },
   ]);
 
-  const binding = restoreBinding(ctx, {});
+  const binding = restoreBinding(ctx, makeTestConfig());
 
   assert.deepEqual(binding, {
+    app: "ce",
     windowId: 5,
     workspace: "pi-agent",
     tab: "TAB-AUTO",
@@ -541,9 +604,87 @@ test("restoreBinding fills a missing binding tab from auto-selection history", (
   });
 });
 
+test("restoreBinding ignores binding and auto-selection entries for other apps", () => {
+  const { ctx } = makeMockSession([
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "classic", windowId: 9, workspace: "classic-workspace", tab: "TAB-CLASSIC" },
+    },
+    {
+      type: "custom",
+      customType: AUTO_SELECTION_ENTRY_TYPE,
+      data: {
+        app: "classic",
+        windowId: 9,
+        workspace: "classic-workspace",
+        tab: "TAB-CLASSIC-AUTO",
+        fullPaths: ["src/Classic.ts"],
+        slicePaths: [],
+      },
+    },
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "ce-workspace" },
+    },
+    {
+      type: "custom",
+      customType: AUTO_SELECTION_ENTRY_TYPE,
+      data: {
+        app: "ce",
+        windowId: 5,
+        workspace: "ce-workspace",
+        tab: "TAB-CE-AUTO",
+        fullPaths: ["src/Ce.ts"],
+        slicePaths: [],
+      },
+    },
+  ]);
+
+  assert.deepEqual(restoreBinding(ctx, { activeApp: "ce" }), {
+    app: "ce",
+    windowId: 5,
+    workspace: "ce-workspace",
+    tab: "TAB-CE-AUTO",
+    autoDetected: false,
+  });
+  assert.deepEqual(restoreBinding(ctx, { activeApp: "classic" }), {
+    app: "classic",
+    windowId: 9,
+    workspace: "classic-workspace",
+    tab: "TAB-CLASSIC",
+    autoDetected: false,
+  });
+});
+
+test("fetchWindows CLI fallback uses the selected app default command", async () => {
+  const client = getRpClient();
+  client.client = {};
+  client.transport = {};
+  client._status = "connected";
+  client._tools = [];
+
+  const calls = [];
+  const pi = {
+    async exec(command, args) {
+      calls.push({ command, args });
+      return {
+        stdout: "- Window `7` • WS: ce-workspace • Roots: 1\n",
+        stderr: "",
+      };
+    },
+  };
+
+  const windows = await fetchWindows(pi, makeTestConfig());
+
+  assert.deepEqual(windows, [{ id: 7, workspace: "ce-workspace", roots: [], instance: undefined }]);
+  assert.deepEqual(calls, [{ command: "rpce-cli", args: ["-e", "windows"] }]);
+});
+
 test("ensureBindingHasTab reuses the most recent branch tab when it is explicitly blank and chat-free", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-1" }, config);
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
@@ -582,6 +723,7 @@ test("ensureBindingHasTab reuses the most recent auto-selection tab when it is e
       type: "custom",
       customType: AUTO_SELECTION_ENTRY_TYPE,
       data: {
+        app: "ce",
         windowId: 5,
         workspace: "pi-agent",
         tab: "TAB-AUTO",
@@ -590,7 +732,7 @@ test("ensureBindingHasTab reuses the most recent auto-selection tab when it is e
       },
     },
   ]);
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -624,7 +766,7 @@ test("ensureBindingHasTab reuses the most recent auto-selection tab when it is e
 
 test("ensureBindingHasTab skips tab creation during replay when createIfMissing is false", async () => {
   const { pi, ctx } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -656,7 +798,7 @@ test("ensureBindingHasTab skips tab creation during replay when createIfMissing 
 
 test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab for a window-only binding", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -702,7 +844,7 @@ test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab 
 
 test("ensureBindingHasTab creates a new tab when window-only binding finds no safe reusable tab", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "ABCDEF-0001" }, config);
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
@@ -761,7 +903,7 @@ test("ensureBindingHasTab creates a new tab when window-only binding finds no sa
 
 test("ensureBindingHasTab reuses the sole empty tab instead of creating a new tab", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -804,7 +946,7 @@ test("ensureBindingHasTab reuses the sole empty tab instead of creating a new ta
 
 test("ensureBindingHasTab reuses an already bound empty tab before creating a new tab", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -849,7 +991,7 @@ test("ensureBindingHasTab reuses an already bound empty tab before creating a ne
 
 test("ensureBindingHasTab reuses an existing empty tab when multiple blank tabs are available", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -894,7 +1036,7 @@ test("ensureBindingHasTab reuses an existing empty tab when multiple blank tabs 
 
 test("ensureBindingHasTab does not create a new tab during passive replay when the prior tab is stale and there is no recoverable state", async () => {
   const { pi, ctx } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
 
@@ -926,7 +1068,7 @@ test("ensureBindingHasTab does not create a new tab during passive replay when t
 
 test("ensureBindingHasTab reserves replay tab creation for true recovery", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
 
@@ -966,7 +1108,7 @@ test("ensureBindingHasTab reserves replay tab creation for true recovery", async
 
 test("ensureBindingHasTab provisions exactly one tab when the branch has none", async () => {
   const { pi, ctx, entries } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
 
@@ -1004,7 +1146,7 @@ test("ensureBindingHasTab provisions exactly one tab when the branch has none", 
 
 test("ensureBindingHasTab reprovisions when the stored tab is stale", async () => {
   const { pi, ctx } = makeMockSession();
-  const config = {};
+  const config = makeTestConfig();
 
   persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
 

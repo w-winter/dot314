@@ -6,6 +6,7 @@ import { recoverAutoSelectionStateForTabRecovery } from "../dist/index.js";
 test("recoverAutoSelectionStateForTabRecovery remaps prior selection onto a replacement tab", () => {
   const recovered = recoverAutoSelectionStateForTabRecovery(
     {
+      app: "ce",
       windowId: 5,
       workspace: "pi-agent",
       tab: "TAB-OLD",
@@ -17,11 +18,12 @@ test("recoverAutoSelectionStateForTabRecovery remaps prior selection onto a repl
         },
       ],
     },
-    { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" },
-    { windowId: 5, workspace: "pi-agent", tab: "TAB-NEW" }
+    { app: "ce", windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" },
+    { app: "ce", windowId: 5, workspace: "pi-agent", tab: "TAB-NEW" }
   );
 
   assert.deepEqual(recovered, {
+    app: "ce",
     windowId: 5,
     workspace: "pi-agent",
     tab: "TAB-NEW",
@@ -38,14 +40,15 @@ test("recoverAutoSelectionStateForTabRecovery remaps prior selection onto a repl
 test("recoverAutoSelectionStateForTabRecovery returns null when the tab did not change", () => {
   const recovered = recoverAutoSelectionStateForTabRecovery(
     {
+      app: "ce",
       windowId: 5,
       workspace: "pi-agent",
       tab: "TAB-OLD",
       fullPaths: ["extensions/repoprompt-mcp/src/tool-names.ts"],
       slicePaths: [],
     },
-    { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" },
-    { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }
+    { app: "ce", windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" },
+    { app: "ce", windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }
   );
 
   assert.equal(recovered, null);
@@ -54,14 +57,15 @@ test("recoverAutoSelectionStateForTabRecovery returns null when the tab did not 
 test("recoverAutoSelectionStateForTabRecovery returns null for empty prior state", () => {
   const recovered = recoverAutoSelectionStateForTabRecovery(
     {
+      app: "ce",
       windowId: 5,
       workspace: "pi-agent",
       tab: "TAB-OLD",
       fullPaths: [],
       slicePaths: [],
     },
-    { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" },
-    { windowId: 5, workspace: "pi-agent", tab: "TAB-NEW" }
+    { app: "ce", windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" },
+    { app: "ce", windowId: 5, workspace: "pi-agent", tab: "TAB-NEW" }
   );
 
   assert.equal(recovered, null);

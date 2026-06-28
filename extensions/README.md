@@ -31,6 +31,7 @@
 
 - ● [`repoprompt-mcp/`](repoprompt-mcp/) ([README](./repoprompt-mcp/README.md))
   - Pi-compatible, token-efficient proxy for the RepoPrompt MCP server with:
+    - Supports both RepoPrompt CE and Classic targets via `/rp app`
     - Window and tab binding that prevents user/agent or agent/agent clobbering: auto-detects by `cwd`, binds to a blank existing tab or provisions a new background tab if the active tab is dirty, optional persistence and restoration per session, interactive binding resolution in case of multiple windows containing the required root, and manual selection via `/rp bind` (windows) or `/rp tab` (tabs)
       - Bindings are branch-safe across navigation of the session DAG via `/tree` and `/fork`ed sessions; forked sessions inherit the parent node's window, tab, and auto-selected context snapshot at fork time and diverge independently from there
       - On rewind or session restore, the bound tab for that session tree node is deterministically restored, or a fresh background tab is provisioned if needed
@@ -251,7 +252,7 @@
   - No todo extraction or step execution prompting (planning stays on the user)
   - Removes Pi-native write tools from the active Pi tool list, blocks destructive shell commands, and blocks RepoPrompt write operations while leaving other available tools alone
   - Adds just-bash AST-backed bash command inspection (requires `just-bash` >= 2; regex fallback if parse fails)
-    - Covers `rp_exec`, `rp-cli -e ...`, and `rp` (repoprompt-mcp)
+    - Covers `rp_exec`, `rp-cli -e ...`, `rpce-cli -e ...`, and `rp` (repoprompt-mcp)
 
 - ◐ [`oracle.ts`](oracle.ts) (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
   - `/oracle` queries an alternate model for a second opinion, with optional file inclusion (`-f`) and injection into the current conversation

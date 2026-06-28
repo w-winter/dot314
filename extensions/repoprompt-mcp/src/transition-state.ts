@@ -1,8 +1,9 @@
-import type { AutoSelectionEntryData, RpBinding } from "./types.js";
+import type { AutoSelectionEntryData, RpAppId, RpBinding } from "./types.js";
 
 export type PendingTransitionRetryMode = "startup" | "transition";
 
 export interface PendingTransitionTargetIdentity {
+  app: RpAppId;
   sessionFile: string | null;
   sessionId: string;
 }
@@ -23,6 +24,7 @@ function cloneBinding(binding: RpBinding | null): RpBinding | null {
   }
 
   return {
+    app: binding.app,
     windowId: binding.windowId,
     tab: binding.tab,
     workspace: binding.workspace,
@@ -36,6 +38,7 @@ function cloneIdentity(identity: PendingTransitionTargetIdentity | null): Pendin
   }
 
   return {
+    app: identity.app,
     sessionFile: identity.sessionFile,
     sessionId: identity.sessionId,
   };
@@ -54,6 +57,7 @@ function cloneState(state: AutoSelectionEntryData | null): AutoSelectionEntryDat
   }
 
   return {
+    app: state.app,
     windowId: state.windowId,
     tab: state.tab,
     workspace: state.workspace,

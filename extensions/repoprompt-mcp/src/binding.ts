@@ -10,9 +10,10 @@ import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import type { BindingEntryData, RpBinding, RpConfig, RpTab, RpWindow } from "./types.js";
+import type { BindingEntryData, RpAppId, RpBinding, RpConfig, RpTab, RpWindow } from "./types.js";
 import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "./types.js";
 import { getRpClient } from "./client.js";
+import { getAppCliCommand } from "./config.js";
 import { extractJsonContent, extractTextContent } from "./mcp-json.js";
 import { resolveToolName } from "./tool-names.js";
 
@@ -20,6 +21,10 @@ const execFileAsync = promisify(execFile);
 
 // Current binding state
 let currentBinding: RpBinding | null = null;
+
+function activeAppFromConfig(config: RpConfig): RpAppId {
+  return config.activeApp;
+}
 
 /**
  * Get the current binding
@@ -32,8 +37,13 @@ export function clearBinding(): void {
   currentBinding = null;
 }
 
-function bindingFromEntryData(data: BindingEntryData, autoDetected = false): RpBinding {
+function bindingFromEntryData(data: BindingEntryData, app: RpAppId, autoDetected = false): RpBinding | null {
+  if (data.app !== app) {
+    return null;
+  }
+
   return {
+    app,
     windowId: data.windowId,
     tab: data.tab,
     workspace: data.workspace,
@@ -41,17 +51,18 @@ function bindingFromEntryData(data: BindingEntryData, autoDetected = false): RpB
   };
 }
 
-function bindingFromAutoSelectionEntryData(raw: unknown): RpBinding | null {
+function bindingFromAutoSelectionEntryData(raw: unknown, app: RpAppId): RpBinding | null {
   if (!raw || typeof raw !== "object") {
     return null;
   }
 
   const data = raw as Record<string, unknown>;
-  if (typeof data.windowId !== "number" || typeof data.tab !== "string" || !data.tab) {
+  if (data.app !== app || typeof data.windowId !== "number" || typeof data.tab !== "string" || !data.tab) {
     return null;
   }
 
   return {
+    app,
     windowId: data.windowId,
     tab: data.tab,
     workspace: typeof data.workspace === "string" ? data.workspace : undefined,
@@ -60,6 +71,7 @@ function bindingFromAutoSelectionEntryData(raw: unknown): RpBinding | null {
 
 function findMostRecentAutoSelectionBindingWithTab(
   entries: Array<{ type: string; customType?: string; data?: unknown }>,
+  app: RpAppId,
   windowId?: number,
   workspace?: string
 ): RpBinding | null {
@@ -69,7 +81,7 @@ function findMostRecentAutoSelectionBindingWithTab(
       continue;
     }
 
-    const binding = bindingFromAutoSelectionEntryData(entry.data);
+    const binding = bindingFromAutoSelectionEntryData(entry.data, app);
     if (!binding) {
       continue;
     }
@@ -92,16 +104,18 @@ function findMostRecentAutoSelectionBindingWithTab(
  * Persist the binding to session storage (survives session reload)
  */
 export function persistBinding(pi: ExtensionAPI, binding: RpBinding, config: RpConfig): void {
-  currentBinding = binding;
+  const app = activeAppFromConfig(config);
+  currentBinding = { ...binding, app };
 
   if (config.persistBinding === false) {
     return;
   }
 
   const data: BindingEntryData = {
-    windowId: binding.windowId,
-    tab: binding.tab,
-    workspace: binding.workspace,
+    app,
+    windowId: currentBinding.windowId,
+    tab: currentBinding.tab,
+    workspace: currentBinding.workspace,
   };
 
   pi.appendEntry(BINDING_ENTRY_TYPE, data);
@@ -111,8 +125,10 @@ export function persistBinding(pi: ExtensionAPI, binding: RpBinding, config: RpC
  * Restore binding from session history
  */
 export function restoreBinding(ctx: ExtensionContext, config: RpConfig): RpBinding | null {
+  const app = activeAppFromConfig(config);
+
   if (config.persistBinding === false) {
-    return currentBinding;
+    return currentBinding?.app === app ? currentBinding : null;
   }
 
   const entries = ctx.sessionManager.getBranch();
@@ -130,12 +146,15 @@ export function restoreBinding(ctx: ExtensionContext, config: RpConfig): RpBindi
       continue;
     }
 
-    restored = bindingFromEntryData(data);
-    break;
+    restored = bindingFromEntryData(data, app);
+    if (restored) {
+      break;
+    }
   }
 
   const autoSelectionBinding = findMostRecentAutoSelectionBindingWithTab(
     entries,
+    app,
     restored?.windowId,
     restored?.workspace
   );
@@ -392,19 +411,22 @@ async function fetchWindowsViaMcp(client: ReturnType<typeof getRpClient>): Promi
   return await fetchWindowsViaManageWorkspaces(client);
 }
 
-async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
+async function fetchWindowsViaCli(pi?: ExtensionAPI, config?: RpConfig): Promise<RpWindow[]> {
+  const app = config ? config.activeApp : "ce";
+  const cliCommand = getAppCliCommand(app);
+
   try {
     let stdout = "";
     let stderr = "";
 
     // Prefer pi.exec when available, since Pi often runs with a richer PATH than this Node process
     if (pi) {
-      const result = await pi.exec("rp-cli", ["-e", "windows"], { timeout: 5000 });
-      stdout = result.stdout ?? "";
-      stderr = result.stderr ?? "";
+      const result = await pi.exec(cliCommand, ["-e", "windows"], { timeout: 5000 });
+      stdout = result.stdout;
+      stderr = result.stderr;
     } else {
       const result = await execFileAsync(
-        "rp-cli",
+        cliCommand,
         ["-e", "windows"],
         { timeout: 5000, maxBuffer: 1024 * 1024 }
       );
@@ -427,13 +449,13 @@ async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
     return [];
   } catch (err) {
     const error = err as { code?: string; message?: string };
-    const message = error?.message ?? String(err);
+    const message = error.message ?? String(err);
 
     // Node's execFile throws { code: "ENOENT" }, while pi.exec may throw an Error with an ENOENT-ish message
     if (error.code === "ENOENT" || message.includes("ENOENT") || message.toLowerCase().includes("not found")) {
       throw new Error(
-        "rp-cli not found in PATH (required for window listing/binding). " +
-          "Install rp-cli or ensure Pi inherits your shell PATH."
+        `${cliCommand} not found in PATH (required for ${app} window listing/binding). ` +
+          `Install ${cliCommand} or ensure Pi inherits your shell PATH.`
       );
     }
 
@@ -444,7 +466,7 @@ async function fetchWindowsViaCli(pi?: ExtensionAPI): Promise<RpWindow[]> {
 /**
  * Fetch list of RepoPrompt windows (without roots)
  */
-export async function fetchWindows(pi?: ExtensionAPI): Promise<RpWindow[]> {
+export async function fetchWindows(pi?: ExtensionAPI, config?: RpConfig): Promise<RpWindow[]> {
   const client = getRpClient();
   if (!client.isConnected) {
     throw new Error("Not connected to RepoPrompt");
@@ -455,19 +477,20 @@ export async function fetchWindows(pi?: ExtensionAPI): Promise<RpWindow[]> {
     return windowsFromMcp;
   }
 
-  return await fetchWindowsViaCli(pi);
+  return await fetchWindowsViaCli(pi, config);
 }
 
 async function fetchWindowsForBinding(
   pi: ExtensionAPI,
-  client: ReturnType<typeof getRpClient>
+  client: ReturnType<typeof getRpClient>,
+  config: RpConfig
 ): Promise<RpWindow[]> {
   const windowsFromMcp = await fetchWindowsViaMcp(client);
   if (windowsFromMcp) {
     return windowsFromMcp;
   }
 
-  return await fetchWindowsViaCli(pi);
+  return await fetchWindowsViaCli(pi, config);
 }
 
 function normalizeRootLine(line: string): string | null {
@@ -714,24 +737,26 @@ const TAB_STATE_TOKENS = new Set(["active", "bound", "in-focus", "out-of-focus"]
 
 function stripTrailingTabStateAnnotations(name: string): string {
   let stripped = name.trim();
+  const annotationPattern = /\s*\[([^\]]+)\]\s*$/;
 
-  while (true) {
-    const match = stripped.match(/\s*\[([^\]]+)\]\s*$/);
-    if (!match) {
+  while (stripped.endsWith("]")) {
+    let tokens: string[] = [];
+    const next = stripped.replace(annotationPattern, (_annotation: string, tokenText: string) => {
+      tokens = tokenText
+        .split(",")
+        .map((token) => token.trim().toLowerCase())
+        .filter(Boolean);
+      return "";
+    });
+
+    if (next === stripped || tokens.length === 0 || tokens.some((token) => !TAB_STATE_TOKENS.has(token))) {
       return stripped;
     }
 
-    const tokens = match[1]
-      .split(",")
-      .map((token) => token.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (tokens.length === 0 || tokens.some((token) => !TAB_STATE_TOKENS.has(token))) {
-      return stripped;
-    }
-
-    stripped = stripped.slice(0, stripped.length - match[0].length).trimEnd();
+    stripped = next.trimEnd();
   }
+
+  return stripped;
 }
 
 function parseCountMaybe(value: unknown): number | undefined {
@@ -854,7 +879,7 @@ function parseTabLine(line: string): RpTab | null {
 
   const contextMatch = trimmed.match(/^[\u2022-]\s*(.+?)(?:\s+\[([^\]]+)\])?\s+—\s+context_id:\s*`([^`]+)`/i);
   if (contextMatch) {
-    const state = contextMatch[2] ?? "";
+    const state = contextMatch[2];
     return {
       id: contextMatch[3].trim(),
       name: stripTrailingTabStateAnnotations(contextMatch[1].trim()) || contextMatch[3].trim(),
@@ -968,7 +993,7 @@ function parseOracleSessionTabPrefixes(text: string): Set<string> {
   const prefixes = new Set<string>();
 
   for (const match of text.matchAll(/\btab=([A-F0-9-]{6,})(?:…|\b)/gi)) {
-    const prefix = match[1]?.trim().toUpperCase();
+    const prefix = match[1].trim().toUpperCase();
     if (prefix) {
       prefixes.add(prefix);
     }
@@ -1078,7 +1103,11 @@ function bindingWindowArgs(windowId: number): Record<string, unknown> {
   };
 }
 
-function findMostRecentBindingWithTabForWindow(ctx: ExtensionContext, windowId: number): RpBinding | null {
+function findMostRecentBindingWithTabForWindow(
+  ctx: ExtensionContext,
+  app: RpAppId,
+  windowId: number
+): RpBinding | null {
   const entries = ctx.sessionManager.getBranch();
 
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -1088,11 +1117,11 @@ function findMostRecentBindingWithTabForWindow(ctx: ExtensionContext, windowId: 
     }
 
     const data = entry.data as BindingEntryData | undefined;
-    if (data?.windowId !== windowId || typeof data.tab !== "string" || !data.tab) {
+    if (data?.app !== app || data.windowId !== windowId || typeof data.tab !== "string" || !data.tab) {
       continue;
     }
 
-    return bindingFromEntryData(data);
+    return bindingFromEntryData(data, app);
   }
 
   return null;
@@ -1141,6 +1170,7 @@ async function selectTab(
 
   const result = await client.callTool(bindContextToolName, {
     op: "bind",
+    window_id: windowId,
     context_id: tabId,
   });
 
@@ -1174,9 +1204,9 @@ async function createBoundTab(
   }
 
   const createdTabs = parseTabsFromJson(extractJsonContent(result.content)) ?? parseTabList(extractTextContent(result.content));
-  let createdTab = createdTabs[0] ?? null;
+  let createdTab = createdTabs.length > 0 ? createdTabs[0] : null;
 
-  if (!createdTab) {
+  if (createdTab === null) {
     const tabsAfterCreate = await fetchWindowTabs(windowId, client);
     const previousIds = new Set(tabsBeforeCreate.map((tab) => tab.id));
     const newTabs = tabsAfterCreate.filter((tab) => !previousIds.has(tab.id));
@@ -1200,7 +1230,8 @@ export async function bindToTab(
   config: RpConfig,
   client: ReturnType<typeof getRpClient> = getRpClient()
 ): Promise<RpBinding> {
-  const windows = await fetchWindowsForBinding(pi, client);
+  const app = activeAppFromConfig(config);
+  const windows = await fetchWindowsForBinding(pi, client, config);
   const window = windows.find((w) => w.id === windowId);
 
   if (!window && windows.length > 0) {
@@ -1218,6 +1249,7 @@ export async function bindToTab(
   }
 
   const binding: RpBinding = {
+    app,
     windowId,
     tab: liveTab.id,
     workspace: window?.workspace || undefined,
@@ -1234,7 +1266,8 @@ export async function createAndBindTab(
   config: RpConfig,
   client: ReturnType<typeof getRpClient> = getRpClient()
 ): Promise<RpBinding> {
-  const windows = await fetchWindowsForBinding(pi, client);
+  const app = activeAppFromConfig(config);
+  const windows = await fetchWindowsForBinding(pi, client, config);
   const window = windows.find((w) => w.id === windowId);
 
   if (!window && windows.length > 0) {
@@ -1243,6 +1276,7 @@ export async function createAndBindTab(
 
   const createdTab = await createBoundTab(windowId, client);
   const binding: RpBinding = {
+    app,
     windowId,
     tab: createdTab.id,
     workspace: window?.workspace || undefined,
@@ -1310,9 +1344,14 @@ export async function ensureBindingHasTab(
 
   const allowHistoricalTabReuse = recoverIfMissing || Boolean(binding.tab);
   if (allowHistoricalTabReuse) {
-    const branchTabBinding =
-      findMostRecentBindingWithTabForWindow(ctx, binding.windowId) ??
-      findMostRecentAutoSelectionBindingWithTab(ctx.sessionManager.getBranch(), binding.windowId, binding.workspace);
+      const branchTabBinding =
+        findMostRecentBindingWithTabForWindow(ctx, binding.app, binding.windowId) ??
+        findMostRecentAutoSelectionBindingWithTab(
+          ctx.sessionManager.getBranch(),
+          binding.app,
+          binding.windowId,
+          binding.workspace
+        );
     const branchTab = findLiveTab(liveTabs, branchTabBinding?.tab);
     if (branchTab) {
       return await adoptTab(branchTab, true);
@@ -1450,9 +1489,10 @@ export interface AutoDetectAndBindResult {
  * Returns the binding if successful, null if no match or multiple ambiguous matches
  */
 export async function autoDetectAndBind(pi: ExtensionAPI, config: RpConfig): Promise<AutoDetectAndBindResult> {
+  const app = activeAppFromConfig(config);
   const cwd = process.cwd();
 
-  const windows = await fetchWindows(pi);
+  const windows = await fetchWindows(pi, config);
 
   if (windows.length === 0) {
     return { binding: null, windows: [] };
@@ -1485,6 +1525,7 @@ export async function autoDetectAndBind(pi: ExtensionAPI, config: RpConfig): Pro
   }
 
   const binding: RpBinding = {
+    app,
     windowId: match.window.id,
     workspace: match.window.workspace,
     autoDetected: true,
@@ -1504,7 +1545,8 @@ export async function bindToWindow(
   tab: string | undefined,
   config: RpConfig
 ): Promise<RpBinding> {
-  const windows = await fetchWindows(pi);
+  const app = activeAppFromConfig(config);
+  const windows = await fetchWindows(pi, config);
   const window = windows.find((w) => w.id === windowId);
 
   if (!window && windows.length > 0) {
@@ -1512,6 +1554,7 @@ export async function bindToWindow(
   }
 
   const binding: RpBinding = {
+    app,
     windowId,
     tab,
     workspace: window?.workspace || undefined,

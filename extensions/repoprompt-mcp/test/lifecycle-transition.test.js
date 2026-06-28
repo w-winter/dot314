@@ -5,7 +5,7 @@ import path from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 
 import repopromptMcp from "../dist/index.js";
-import { clearBinding } from "../dist/binding.js";
+import { clearBinding, persistBinding } from "../dist/binding.js";
 import { RpClient, resetRpClient } from "../dist/client.js";
 import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "../dist/types.js";
 
@@ -43,6 +43,20 @@ function renderContexts(tabs) {
       return `- ${tab.name}${stateText} — context_id: \`${tab.id}\``;
     })
     .join("\n");
+}
+
+function makeTestConfig(overrides = {}) {
+  return {
+    activeApp: "ce",
+    apps: {
+      ce: {
+        command: "fake-rp",
+        args: [],
+      },
+    },
+    suppressHostDisconnectedLog: false,
+    ...overrides,
+  };
 }
 
 function createMockPi(entries, session = {}) {
@@ -138,7 +152,9 @@ function installMockRpClient(state) {
   const originalClose = RpClient.prototype.close;
   const originalCallTool = RpClient.prototype.callTool;
 
-  RpClient.prototype.connect = async function connect() {
+  RpClient.prototype.connect = async function connect(command, args, env) {
+    state.connects?.push({ command, args, env });
+
     if (state.failConnect === true) {
       this.client = null;
       this.transport = null;
@@ -178,6 +194,7 @@ function installMockRpClient(state) {
     }
 
     if (name === "bind_context" && args.op === "bind") {
+      state.boundContextId = args.context_id;
       for (const tabs of state.tabsByWindow.values()) {
         for (const tab of tabs) {
           tab.active = tab.id === args.context_id;
@@ -221,6 +238,26 @@ function installMockRpClient(state) {
 
     if (name === "manage_selection") {
       const tabId = args.context_id ?? args._tabID;
+
+      if (
+        state.enforceStickyContextBinding === true &&
+        tabId &&
+        state.boundContextId &&
+        tabId !== state.boundContextId
+      ) {
+        return {
+          isError: true,
+          content: [{
+            type: "text",
+            text: [
+              `Invalid params: Explicit tab context hint for manage_selection targets tab ${tabId},`,
+              `but this connection is already bound to tab ${state.boundContextId}.`,
+              "Clear or intentionally rebind the connection before targeting a different tab context.",
+            ].join(" "),
+          }],
+        };
+      }
+
       const selection = state.liveSelectionByTab.get(tabId) ?? new Set();
 
       if (args.op === "remove") {
@@ -331,7 +368,7 @@ async function setPendingTransitionSourceState(state, retryMode) {
   try {
     const module = await import("../dist/transition-state.js");
     if (typeof module.setPendingTransitionSelectionState === "function") {
-      module.setPendingTransitionSelectionState(state, retryMode);
+      module.setPendingTransitionSelectionState(state ? { app: "ce", ...state } : state, retryMode);
     }
   } catch {
     // transition-state does not exist before the migration lands
@@ -377,7 +414,7 @@ test("session_start(reason=resume) on a fresh runtime replays the previous live 
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -392,13 +429,14 @@ test("session_start(reason=resume) on a fresh runtime replays the previous live 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+          data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
-        data: {
-          windowId: 5,
+          data: {
+            app: "ce",
+            windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
           fullPaths: ["src/Old.tsx"],
@@ -411,13 +449,14 @@ test("session_start(reason=resume) on a fresh runtime replays the previous live 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
+          data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
-        data: {
-          windowId: 5,
+          data: {
+            app: "ce",
+            windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-NEW",
           fullPaths: ["src/New.tsx"],
@@ -495,7 +534,7 @@ test("reconnect preserves recovered selection after first replay fails post-bind
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -509,12 +548,13 @@ test("reconnect preserves recovered selection after first replay fails post-bind
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -528,12 +568,13 @@ test("reconnect preserves recovered selection after first replay fails post-bind
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -572,6 +613,7 @@ test("reconnect preserves recovered selection after first replay fails post-bind
       (entry) => entry.type === "custom" && entry.customType === AUTO_SELECTION_ENTRY_TYPE
     );
     assert.deepEqual(preReconnectAutoSelectionEntries.at(-1)?.data, {
+      app: "ce",
       windowId: 5,
       workspace: "chat-tree",
       tab: "TAB-OLD",
@@ -583,6 +625,7 @@ test("reconnect preserves recovered selection after first replay fails post-bind
       (entry) => entry.type === "custom" && entry.customType === BINDING_ENTRY_TYPE
     );
     assert.deepEqual(bindingEntriesAfterFailure.at(-1)?.data, {
+      app: "ce",
       windowId: 5,
       workspace: "chat-tree",
       tab: "TAB-NEW",
@@ -613,6 +656,7 @@ test("reconnect preserves recovered selection after first replay fails post-bind
       (entry) => entry.type === "custom" && entry.customType === AUTO_SELECTION_ENTRY_TYPE
     );
     assert.deepEqual(autoSelectionEntries.at(-1)?.data, {
+      app: "ce",
       windowId: 5,
       workspace: "chat-tree",
       tab: "TAB-NEW",
@@ -658,7 +702,7 @@ test("replay failure via MCP isError preserves pending transition state", async 
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -672,12 +716,13 @@ test("replay failure via MCP isError preserves pending transition state", async 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -691,12 +736,13 @@ test("replay failure via MCP isError preserves pending transition state", async 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -746,6 +792,7 @@ test("replay failure via MCP isError preserves pending transition state", async 
       (entry) => entry.type === "custom" && entry.customType === AUTO_SELECTION_ENTRY_TYPE
     );
     assert.deepEqual(preReconnectAutoSelectionEntries.at(-1)?.data, {
+      app: "ce",
       windowId: 5,
       workspace: "chat-tree",
       tab: "TAB-OLD",
@@ -757,6 +804,7 @@ test("replay failure via MCP isError preserves pending transition state", async 
       (entry) => entry.type === "custom" && entry.customType === BINDING_ENTRY_TYPE
     );
     assert.deepEqual(bindingEntriesAfterFailure.at(-1)?.data, {
+      app: "ce",
       windowId: 5,
       workspace: "chat-tree",
       tab: "TAB-NEW",
@@ -776,6 +824,7 @@ test("replay failure via MCP isError preserves pending transition state", async 
       (entry) => entry.type === "custom" && entry.customType === AUTO_SELECTION_ENTRY_TYPE
     );
     assert.deepEqual(autoSelectionEntries.at(-1)?.data, {
+      app: "ce",
       windowId: 5,
       workspace: "chat-tree",
       tab: "TAB-NEW",
@@ -825,7 +874,7 @@ test("cross-binding remove MCP isError aborts transition and preserves pending s
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -850,12 +899,13 @@ test("cross-binding remove MCP isError aborts transition and preserves pending s
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-NEW",
@@ -939,7 +989,7 @@ test("missing old binding/window remove failure is ignored, but desired replay s
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -954,12 +1004,13 @@ test("missing old binding/window remove failure is ignored, but desired replay s
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -973,12 +1024,13 @@ test("missing old binding/window remove failure is ignored, but desired replay s
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-NEW",
@@ -1065,7 +1117,7 @@ test("later unrelated transition does not reuse stale pending target", async () 
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -1081,12 +1133,13 @@ test("later unrelated transition does not reuse stale pending target", async () 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -1100,12 +1153,13 @@ test("later unrelated transition does not reuse stale pending target", async () 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-B" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-B" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-B",
@@ -1119,12 +1173,13 @@ test("later unrelated transition does not reuse stale pending target", async () 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-C" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-C" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-C",
@@ -1229,7 +1284,7 @@ test("session_start(reason=reload) refreshes stale same-session pending target",
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -1244,12 +1299,13 @@ test("session_start(reason=reload) refreshes stale same-session pending target",
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-CURRENT" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-CURRENT" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-CURRENT",
@@ -1322,7 +1378,7 @@ test("resume-mode session_start failure before sync preserves transition retry m
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -1336,7 +1392,7 @@ test("resume-mode session_start failure before sync preserves transition retry m
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree" },
       },
     ];
     const ctx = createContext(entries, repoRoot, true, {
@@ -1369,7 +1425,7 @@ test("resume-mode session_start failure before sync preserves transition retry m
     const bindingEntries = entries.filter(
       (entry) => entry.type === "custom" && entry.customType === BINDING_ENTRY_TYPE
     );
-    assert.deepEqual(bindingEntries.at(-1)?.data, { windowId: 5, workspace: "chat-tree" });
+    assert.deepEqual(bindingEntries.at(-1)?.data, { app: "ce", windowId: 5, workspace: "chat-tree" });
     assert.equal(await getPendingTransitionStateSnapshot(), null);
   } finally {
     restoreClient();
@@ -1404,7 +1460,7 @@ test("successful sync with autoSelectReadSlices disabled clears pending target s
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false, autoSelectReadSlices: false })
+      JSON.stringify(makeTestConfig({ autoSelectReadSlices: false }))
     );
 
     mkdirSync(repoRoot, { recursive: true });
@@ -1417,7 +1473,7 @@ test("successful sync with autoSelectReadSlices disabled clears pending target s
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-CURRENT" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-CURRENT" },
       },
     ];
     const ctx = createContext(entries, repoRoot, true, {
@@ -1467,7 +1523,7 @@ test("startup-mode pending target state retries in startup mode on reconnect", a
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(repoRoot, { recursive: true });
@@ -1480,7 +1536,7 @@ test("startup-mode pending target state retries in startup mode on reconnect", a
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree" },
       },
     ];
     const ctx = createContext(entries, repoRoot, true, {
@@ -1556,7 +1612,7 @@ test("/rp reconnect completes a deferred resume reconciliation after RepoPrompt 
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify(makeTestConfig())
     );
 
     mkdirSync(path.join(repoRoot, "src"), { recursive: true });
@@ -1571,12 +1627,13 @@ test("/rp reconnect completes a deferred resume reconciliation after RepoPrompt 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-OLD",
@@ -1590,12 +1647,13 @@ test("/rp reconnect completes a deferred resume reconciliation after RepoPrompt 
       {
         type: "custom",
         customType: BINDING_ENTRY_TYPE,
-        data: { windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
       },
       {
         type: "custom",
         customType: AUTO_SELECTION_ENTRY_TYPE,
         data: {
+          app: "ce",
           windowId: 5,
           workspace: "chat-tree",
           tab: "TAB-NEW",
@@ -1648,6 +1706,333 @@ test("/rp reconnect completes a deferred resume reconciliation after RepoPrompt 
         { op: "add", tab: "TAB-NEW", paths: ["src/New.tsx"] },
       ]
     );
+  } finally {
+    restoreClient();
+    process.env.HOME = originalHome;
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("session_tree rewind between live tabs adopts target tab without mutating source selection", async () => {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-tree-live-tab-home-"));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "rp-tree-live-tab-root-"));
+  const repoRoot = path.join(tempRoot, "chat-tree");
+  process.env.HOME = tempHome;
+
+  const state = {
+    failConnect: false,
+    calls: [],
+    connects: [],
+    failAddByTab: new Map(),
+    enforceStickyContextBinding: true,
+    boundContextId: "TAB-NEW",
+    tabsByWindow: new Map([
+      [5, [
+        { id: "TAB-OLD", name: "Old", active: false, bound: false, files: 1 },
+        { id: "TAB-NEW", name: "New", active: true, bound: true, files: 1 },
+      ]],
+    ]),
+    liveSelectionByTab: new Map([
+      ["TAB-OLD", new Set(["src/Old.tsx"])],
+      ["TAB-NEW", new Set(["src/New.tsx"])],
+    ]),
+  };
+  const restoreClient = installMockRpClient(state);
+
+  try {
+    const config = makeTestConfig();
+    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
+    writeFileSync(
+      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+      JSON.stringify(config)
+    );
+
+    mkdirSync(path.join(repoRoot, "src"), { recursive: true });
+    writeFileSync(path.join(repoRoot, "src", "Old.tsx"), "export const oldValue = 1\n");
+    writeFileSync(path.join(repoRoot, "src", "New.tsx"), "export const newValue = 2\n");
+
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+
+    const newEntries = [
+      {
+        type: "custom",
+        customType: BINDING_ENTRY_TYPE,
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-NEW" },
+      },
+      {
+        type: "custom",
+        customType: AUTO_SELECTION_ENTRY_TYPE,
+        data: {
+          app: "ce",
+          windowId: 5,
+          workspace: "chat-tree",
+          tab: "TAB-NEW",
+          fullPaths: ["src/New.tsx"],
+          slicePaths: [],
+        },
+      },
+    ];
+
+    const oldEntries = [
+      {
+        type: "custom",
+        customType: BINDING_ENTRY_TYPE,
+        data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+      },
+      {
+        type: "custom",
+        customType: AUTO_SELECTION_ENTRY_TYPE,
+        data: {
+          app: "ce",
+          windowId: 5,
+          workspace: "chat-tree",
+          tab: "TAB-OLD",
+          fullPaths: ["src/Old.tsx"],
+          slicePaths: [],
+        },
+      },
+    ];
+
+    const pi = createMockPi(newEntries);
+    repopromptMcp(pi);
+    await pi.emit("session_start", createContext(newEntries, repoRoot), { reason: "startup" });
+    await drainLifecycle();
+
+    state.calls = [];
+
+    await pi.emit("session_tree", createContext(oldEntries, repoRoot), {});
+
+    assert.deepEqual(sortedSelection(state, "TAB-OLD"), ["src/Old.tsx"]);
+    assert.deepEqual(sortedSelection(state, "TAB-NEW"), ["src/New.tsx"]);
+
+    const selectionCalls = state.calls.filter((call) => call.name === "manage_selection");
+    assert.deepEqual(
+      selectionCalls.map((call) => ({ op: call.args.op, tab: call.args.context_id, paths: call.args.paths ?? [] })),
+      [{ op: "add", tab: "TAB-OLD", paths: ["src/Old.tsx"] }]
+    );
+    assert.deepEqual(
+      state.calls.filter((call) => call.name === "bind_context" && call.args.op === "bind").at(-1)?.args,
+      { op: "bind", window_id: 5, context_id: "TAB-OLD" }
+    );
+  } finally {
+    restoreClient();
+    process.env.HOME = originalHome;
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("/rp tab new creates and binds an isolated tab without replaying prior selection", async () => {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-tab-new-home-"));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "rp-tab-new-root-"));
+  process.env.HOME = tempHome;
+
+  const state = {
+    failConnect: false,
+    calls: [],
+    connects: [],
+    failAddByTab: new Map(),
+    tabsByWindow: new Map([
+      [5, [
+        { id: "TAB-OLD", name: "Old", active: true, bound: true, files: 1 },
+      ]],
+    ]),
+    liveSelectionByTab: new Map([
+      ["TAB-OLD", new Set(["src/Old.tsx"])],
+      ["TAB-CREATED", new Set()],
+    ]),
+  };
+  const restoreClient = installMockRpClient(state);
+
+  try {
+    const config = makeTestConfig();
+    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
+    writeFileSync(
+      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+      JSON.stringify(config)
+    );
+
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+
+    const entries = [];
+    const pi = createMockPi(entries);
+    repopromptMcp(pi);
+    persistBinding(pi, { windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" }, config);
+
+    const notifications = [];
+    const ctx = createContext(entries, tempRoot, true);
+    ctx.ui.notify = (message, level) => {
+      notifications.push({ message, level });
+    };
+
+    const command = pi.getCommand("rp");
+    assert.ok(command, "rp command should be registered");
+
+    await command.handler("status", ctx);
+    state.calls.length = 0;
+    await setPendingTransitionSourceState({
+      windowId: 5,
+      workspace: "chat-tree",
+      tab: "TAB-OLD",
+      fullPaths: ["src/Old.tsx"],
+      slicePaths: [],
+    }, "transition");
+
+    await command.handler("tab new", ctx);
+
+    assert.deepEqual(state.calls.filter((call) => call.name === "manage_selection"), []);
+    assert.deepEqual(
+      state.calls.filter((call) => call.name === "bind_context" && call.args.op === "bind").at(-1)?.args,
+      { op: "bind", window_id: 5, context_id: "TAB-CREATED" }
+    );
+    assert.deepEqual(sortedSelection(state, "TAB-OLD"), ["src/Old.tsx"]);
+    assert.deepEqual(sortedSelection(state, "TAB-CREATED"), []);
+    assert.ok(entries.some((entry) => entry.customType === BINDING_ENTRY_TYPE && entry.data.tab === "TAB-CREATED"));
+    assert.ok(notifications.some((item) => item.message.includes("Bound to window 5")));
+  } finally {
+    restoreClient();
+    process.env.HOME = originalHome;
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("/rp app switches target, appends session state, and status reports the active app", async () => {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-app-switch-home-"));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "rp-app-switch-root-"));
+  process.env.HOME = tempHome;
+
+  const state = {
+    failConnect: false,
+    calls: [],
+    connects: [],
+    failAddByTab: new Map(),
+    tabsByWindow: new Map(),
+    liveSelectionByTab: new Map(),
+  };
+  const restoreClient = installMockRpClient(state);
+
+  try {
+    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
+    writeFileSync(
+      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+      JSON.stringify(makeTestConfig({
+        apps: {
+          ce: { command: "ce-mcp", args: [] },
+          classic: { command: "classic-mcp", args: ["--stdio"], env: { RP_APP: "classic" } },
+        },
+      }))
+    );
+
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+
+    const entries = [];
+    const pi = createMockPi(entries);
+    repopromptMcp(pi);
+
+    const notifications = [];
+    const ctx = createContext(entries, tempRoot, true);
+    ctx.ui.notify = (message, level) => {
+      notifications.push({ message, level });
+    };
+
+    const command = pi.getCommand("rp");
+    assert.ok(command, "rp command should be registered");
+
+    await command.handler("app classic", ctx);
+    await command.handler("status", ctx);
+
+    assert.deepEqual(state.connects.at(-1), {
+      command: "classic-mcp",
+      args: ["--stdio"],
+      env: { RP_APP: "classic" },
+    });
+    assert.ok(entries.some((entry) => entry.customType === "repoprompt-mcp-active-app" && entry.data.app === "classic"));
+    assert.ok(notifications.some((item) => item.message.includes("RepoPrompt Classic (classic) selected")));
+    assert.ok(notifications.some((item) => item.message.includes("App: RepoPrompt Classic (classic)")));
+  } finally {
+    restoreClient();
+    process.env.HOME = originalHome;
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("/rp app keeps failed target active and marks status paused", async () => {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-app-switch-fail-home-"));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "rp-app-switch-fail-root-"));
+  process.env.HOME = tempHome;
+
+  const state = {
+    failConnect: true,
+    calls: [],
+    connects: [],
+    failAddByTab: new Map(),
+    tabsByWindow: new Map(),
+    liveSelectionByTab: new Map(),
+  };
+  const restoreClient = installMockRpClient(state);
+
+  try {
+    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
+    writeFileSync(
+      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+      JSON.stringify(makeTestConfig({
+        apps: {
+          ce: { command: "ce-mcp", args: [] },
+          classic: { command: "classic-mcp", args: [] },
+        },
+      }))
+    );
+
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+
+    const entries = [];
+    const pi = createMockPi(entries);
+    repopromptMcp(pi);
+
+    const notifications = [];
+    const ctx = createContext(entries, tempRoot, true);
+    ctx.ui.notify = (message, level) => {
+      notifications.push({ message, level });
+    };
+
+    const command = pi.getCommand("rp");
+    assert.ok(command, "rp command should be registered");
+
+    await command.handler("app classic", ctx);
+    await command.handler("status", ctx);
+
+    assert.deepEqual(state.connects.at(-1), { command: "classic-mcp", args: [], env: undefined });
+    assert.ok(entries.some((entry) => entry.customType === "repoprompt-mcp-active-app" && entry.data.app === "classic"));
+    assert.ok(notifications.some((item) => item.level === "error" && item.message.includes("Failed to connect")));
+    assert.ok(notifications.some((item) => item.message.includes("App: RepoPrompt Classic (classic)")));
+    assert.ok(notifications.some((item) => item.message.includes("Extension: ⏸ paused")));
   } finally {
     restoreClient();
     process.env.HOME = originalHome;

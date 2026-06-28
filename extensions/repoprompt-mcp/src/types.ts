@@ -27,6 +27,7 @@ export interface RpTab {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface RpBinding {
+  app: RpAppId;
   windowId: number;
   tab?: string;
   workspace?: string;
@@ -97,11 +98,23 @@ export type DiffViewMode = (typeof DIFF_VIEW_MODES)[number];
 
 export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 90 * 60 * 1000;
 
-export interface RpConfig {
-  // Server connection
+export const RP_APP_IDS = ["ce", "classic"] as const;
+export type RpAppId = (typeof RP_APP_IDS)[number];
+
+export interface RpAppTargetConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  appPath?: string;
+  autoLaunchApp?: boolean;
+}
+
+export interface RpConfig {
+  // App target
+  activeApp: RpAppId;
+  apps: Record<RpAppId, RpAppTargetConfig>;
+
+  // Server connection
   toolCallTimeoutMs?: number;      // MCP tool call timeout in ms (default: 5_400_000 / 90 minutes)
 
   // Logging
@@ -126,10 +139,6 @@ export interface RpConfig {
   // Optional context UX: automatically update RepoPrompt selection based on read_file calls
   // (tracks read slices/full files so chat_send/"Oracle" has context without manual selection)
   autoSelectReadSlices?: boolean;  // When true, read_file calls add slices/full selection (default: true)
-
-  // App launch
-  autoLaunchApp?: boolean;         // Auto-launch RepoPrompt.app on connection failure (default: false)
-  appPath?: string;                // Explicit path to Repo Prompt.app (inferred from command if omitted)
 
   // /rp oracle behavior
   oracleDefaultMode?: "chat" | "plan" | "edit" | "review"; // Default mode when /rp oracle omits --mode (default: "chat")
@@ -175,8 +184,14 @@ export interface RpExtensionState {
 
 export const BINDING_ENTRY_TYPE = "repoprompt-mcp-binding";
 export const AUTO_SELECTION_ENTRY_TYPE = "repoprompt-mcp-auto-selection";
+export const ACTIVE_APP_ENTRY_TYPE = "repoprompt-mcp-active-app";
+
+export interface ActiveAppEntryData {
+  app: RpAppId;
+}
 
 export interface BindingEntryData {
+  app: RpAppId;
   windowId: number;
   tab?: string;
   workspace?: string;
@@ -193,6 +208,7 @@ export interface AutoSelectionEntrySliceData {
 }
 
 export interface AutoSelectionEntryData {
+  app: RpAppId;
   windowId: number;
   tab?: string;
   workspace?: string;

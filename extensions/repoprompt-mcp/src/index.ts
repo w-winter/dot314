@@ -32,9 +32,11 @@ import type {
   AutoSelectionEntryData,
   AutoSelectionEntrySliceData,
   AutoSelectionEntryRangeData,
+  ActiveAppEntryData,
+  RpAppId,
 } from "./types.js";
-import { AUTO_SELECTION_ENTRY_TYPE } from "./types.js";
-import { loadConfig, getServerCommand, inferAppPath } from "./config.js";
+import { ACTIVE_APP_ENTRY_TYPE, AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE, RP_APP_IDS } from "./types.js";
+import { getAppCliCommand, getAppLabel, getAppTargetConfig, getServerCommand, inferAppPath, loadConfig } from "./config.js";
 import { getRpClient, resetRpClient } from "./client.js";
 import {
   getBinding,
@@ -186,8 +188,13 @@ export function recoverAutoSelectionStateForTabRecovery(
     return null;
   }
 
+  if (previousState.app !== previousBinding.app || previousBinding.app !== nextBinding.app) {
+    return null;
+  }
+
   return {
     ...previousState,
+    app: nextBinding.app,
     windowId: nextBinding.windowId,
     tab: nextBinding.tab,
     workspace: nextBinding.workspace,
@@ -306,12 +313,12 @@ function normalizeAutoSelectionRangesForPlan(
 
   const merged: AutoSelectionEntryRangeData[] = [];
   for (const range of normalized) {
-    const last = merged[merged.length - 1];
-    if (!last) {
+    if (merged.length === 0) {
       merged.push(range);
       continue;
     }
 
+    const last = merged[merged.length - 1];
     if (range.start_line <= last.end_line + 1) {
       last.end_line = Math.max(last.end_line, range.end_line);
       continue;
@@ -345,7 +352,7 @@ function normalizeAutoSelectionStateForPlan(state: AutoSelectionEntryData): Auto
     }
 
     const existing = sliceMap.get(pathKey) ?? [];
-    existing.push(...normalizeAutoSelectionRangesForPlan(item.ranges ?? []));
+    existing.push(...normalizeAutoSelectionRangesForPlan(item.ranges));
     sliceMap.set(pathKey, existing);
   }
 
@@ -562,13 +569,89 @@ const RpToolSchema = Type.Object({
 
 export default function repopromptMcp(pi: ExtensionAPI) {
   let config: RpConfig = loadConfig();
+    let activeApp: RpAppId = config.activeApp;
+  let connectedApp: RpAppId | null = null;
   let initPromise: Promise<void> | null = null;
   let shutdownRequested = false;
   let extensionPaused = false;
 
+  function isRpAppId(value: unknown): value is RpAppId {
+    return RP_APP_IDS.includes(value as RpAppId);
+  }
+
+  function loadRuntimeConfig(): RpConfig {
+    config = loadConfig({ activeApp });
+      activeApp = config.activeApp;
+    return config;
+  }
+
+  function activeAppLabel(app: RpAppId = activeApp): string {
+    return getAppLabel(config, app);
+  }
+
+  function activeAppDisplay(app: RpAppId = activeApp): string {
+    return `${activeAppLabel(app)} (${app})`;
+  }
+
+  function findLatestSessionApp(ctx: ExtensionContext, fallback: RpAppId): RpAppId {
+    const entries = ctx.sessionManager.getBranch();
+
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type !== "custom") {
+        continue;
+      }
+
+      if (entry.customType === ACTIVE_APP_ENTRY_TYPE) {
+        const data = entry.data as ActiveAppEntryData | undefined;
+        if (isRpAppId(data?.app)) {
+          return data.app;
+        }
+      }
+
+      if (entry.customType === BINDING_ENTRY_TYPE || entry.customType === AUTO_SELECTION_ENTRY_TYPE) {
+        const data = entry.data as { app?: unknown } | undefined;
+        if (isRpAppId(data?.app)) {
+          return data.app;
+        }
+      }
+    }
+
+    return fallback;
+  }
+
+  function restoreRuntimeApp(ctx: ExtensionContext): void {
+    const loadedConfig = loadConfig();
+    activeApp = findLatestSessionApp(ctx, loadedConfig.activeApp);
+    config = loadConfig({ activeApp });
+  }
+
+  function persistActiveApp(app: RpAppId): void {
+    pi.appendEntry(ACTIVE_APP_ENTRY_TYPE, { app });
+  }
+
+  function markConnectedApp(app: RpAppId): void {
+    connectedApp = app;
+  }
+
+  async function resetConnectionForActiveAppChange(previousApp: RpAppId): Promise<void> {
+    if (previousApp === activeApp) {
+      return;
+    }
+
+    initPromise = null;
+    connectedApp = null;
+    clearBinding();
+    clearReadcacheCaches();
+    clearRootsCache();
+    resetAutoSelectionRuntimeState();
+    clearPendingTransitionSelectionState();
+    await resetRpClient();
+  }
+
   pi.on("before_agent_start", async () => {
     // Reload config so display knobs (collapsedMaxLines etc.) apply without requiring /reload
-    config = loadConfig();
+    config = loadRuntimeConfig();
     if (config.toolCallTimeoutMs !== undefined) {
       getRpClient().setToolCallTimeoutMs(config.toolCallTimeoutMs);
     }
@@ -586,6 +669,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     recoverClosedTab?: boolean;
     reuseSoleEmptyTab?: boolean;
     allowSyntheticSource?: boolean;
+    preserveSourceSelection?: boolean;
   };
 
   const STARTUP_AUTO_SELECTION_SYNC_OPTIONS: AutoSelectionSyncOptions = {
@@ -628,6 +712,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       return false;
     }
 
+    if (binding.app !== state.app) {
+      return false;
+    }
+
     if (binding.windowId === state.windowId) {
       return true;
     }
@@ -641,6 +729,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
   function makeEmptyAutoSelectionState(binding: RpBinding): AutoSelectionEntryData {
     return {
+      app: binding.app,
       windowId: binding.windowId,
       tab: binding.tab,
       workspace: binding.workspace,
@@ -666,12 +755,12 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
     const merged: AutoSelectionEntryRangeData[] = [];
     for (const range of normalized) {
-      const last = merged[merged.length - 1];
-      if (!last) {
+      if (merged.length === 0) {
         merged.push(range);
         continue;
       }
 
+      const last = merged[merged.length - 1];
       if (range.start_line <= last.end_line + 1) {
         last.end_line = Math.max(last.end_line, range.end_line);
         continue;
@@ -690,13 +779,13 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
     const sliceMap = new Map<string, AutoSelectionEntryRangeData[]>();
     for (const item of state.slicePaths) {
-      const pathKey = toPosixPath(String(item.path ?? "").trim());
+      const pathKey = toPosixPath(String(item.path).trim());
       if (!pathKey || fullSet.has(pathKey)) {
         continue;
       }
 
       const existing = sliceMap.get(pathKey) ?? [];
-      existing.push(...normalizeAutoSelectionRanges(item.ranges ?? []));
+      existing.push(...normalizeAutoSelectionRanges(item.ranges));
       sliceMap.set(pathKey, existing);
     }
 
@@ -709,6 +798,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       .sort((a, b) => a.path.localeCompare(b.path));
 
     return {
+      app: state.app,
       windowId: state.windowId,
       tab: state.tab,
       workspace: typeof state.workspace === "string" ? state.workspace : undefined,
@@ -741,6 +831,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     }
 
     const obj = value as Record<string, unknown>;
+
+    if (obj.app !== binding.app) {
+      return null;
+    }
 
     const windowId = typeof obj.windowId === "number" ? obj.windowId : undefined;
     const tab = typeof obj.tab === "string" ? obj.tab : undefined;
@@ -802,6 +896,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       .filter((item): item is AutoSelectionEntrySliceData => item !== null);
 
     return normalizeAutoSelectionState({
+      app: binding.app,
       windowId: binding.windowId,
       tab: binding.tab,
       workspace: binding.workspace ?? workspace,
@@ -901,8 +996,18 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     pi.appendEntry(AUTO_SELECTION_ENTRY_TYPE, normalized);
   }
 
+  function adoptAutoSelectionStateForBinding(ctx: ExtensionContext, binding: RpBinding): RpBinding {
+    clearPendingTransitionSelectionState();
+    const state = config.autoSelectReadSlices === true && binding.tab
+      ? getAutoSelectionStateFromBranch(ctx, binding)
+      : null;
+    commitLiveAutoSelectionState(state);
+    return binding;
+  }
+
   function getPendingTransitionTargetIdentity(ctx: ExtensionContext): PendingTransitionTargetIdentity {
     return {
+      app: activeApp,
       sessionFile: ctx.sessionManager.getSessionFile() ?? null,
       sessionId: ctx.sessionManager.getSessionId(),
     };
@@ -912,7 +1017,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     left: PendingTransitionTargetIdentity | null,
     right: PendingTransitionTargetIdentity | null
   ): boolean {
-    return left?.sessionFile === right?.sessionFile && left?.sessionId === right?.sessionId;
+    return left?.app === right?.app && left?.sessionFile === right?.sessionFile && left?.sessionId === right?.sessionId;
   }
 
   function seedPendingTransitionTargetForSessionStart(
@@ -1117,7 +1222,8 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
   async function reconcileAutoSelectionStates(
     currentState: AutoSelectionEntryData | null,
-    desiredState: AutoSelectionEntryData | null
+    desiredState: AutoSelectionEntryData | null,
+    options: { preserveSourceSelection?: boolean } = {}
   ): Promise<void> {
     if (autoSelectionStatesEqual(currentState, desiredState)) {
       return;
@@ -1135,6 +1241,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
     if (currentState && desiredState) {
       const sameBinding =
+        currentState.app === desiredState.app &&
         currentState.windowId === desiredState.windowId &&
         sameOptionalTab(currentState.tab, desiredState.tab);
 
@@ -1143,16 +1250,18 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         return;
       }
 
-      try {
-        await removeAutoSelectionPaths(
-          client,
-          manageSelectionToolName,
-          currentState,
-          autoSelectionManagedPaths(currentState)
-        );
-      } catch (error) {
-        if (!isIgnorableOldBindingRemovalError(error)) {
-          throw error;
+      if (options.preserveSourceSelection !== true) {
+        try {
+          await removeAutoSelectionPaths(
+            client,
+            manageSelectionToolName,
+            currentState,
+            autoSelectionManagedPaths(currentState)
+          );
+        } catch (error) {
+          if (!isIgnorableOldBindingRemovalError(error)) {
+            throw error;
+          }
         }
       }
 
@@ -1162,6 +1271,10 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     }
 
     if (currentState && !desiredState) {
+      if (options.preserveSourceSelection === true) {
+        return;
+      }
+
       try {
         await removeAutoSelectionPaths(
           client,
@@ -1205,7 +1318,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
     let windows: RpWindow[];
     try {
-      windows = await fetchWindows(pi);
+      windows = await fetchWindows(pi, config);
     } catch {
       return binding;
     }
@@ -1329,10 +1442,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         return liveBinding;
       }
 
-      const sourceState =
+      const candidateSourceState =
         pendingTransitionState?.sourceState ??
         activeAutoSelectionState ??
         (options.allowSyntheticSource === true ? desiredStateBeforeRecovery : null);
+      const sourceState = candidateSourceState?.app === activeApp ? candidateSourceState : null;
 
       let desiredState = liveBinding?.tab ? getAutoSelectionStateFromBranch(ctx, liveBinding) : null;
       let recoveredState = false;
@@ -1354,7 +1468,9 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         }
       }
 
-      await reconcileAutoSelectionStates(sourceState, desiredState);
+      await reconcileAutoSelectionStates(sourceState, desiredState, {
+        preserveSourceSelection: options.preserveSourceSelection,
+      });
 
       if (recoveredState && desiredState) {
         persistAutoSelectionState(desiredState);
@@ -1406,6 +1522,8 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     shutdownRequested = false;
     extensionPaused = false;
+    connectedApp = null;
+    restoreRuntimeApp(ctx);
     clearReadcacheCaches();
     clearRootsCache();
     resetAutoSelectionRuntimeState();
@@ -1428,7 +1546,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     seedPendingTransitionTargetForSessionStart(ctx, syncOptions);
 
     // Non-blocking initialization
-    const pendingInit = initializeExtension(pi, ctx, config);
+    const pendingInit = initializeExtension(pi, ctx, config, markConnectedApp);
     initPromise = pendingInit;
 
     pendingInit.then(async () => {
@@ -1447,27 +1565,30 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         return;
       }
       // If autoLaunchApp is enabled, try opening the app and retrying once
-      if (config.autoLaunchApp) {
-        const appPath = inferAppPath(config);
-        if (appPath) {
-          const launched = await tryLaunchApp(appPath);
-          if (launched && !shutdownRequested) {
-            try {
-              await resetRpClient();
-              clearRootsCache();
-              await initializeExtension(pi, ctx, config);
-              await syncAutoSelectionToCurrentBranch(ctx, syncOptions, "refresh");
-              return;
-            } catch {
-              // Fall through to pause
-            }
+      const targetConfig = getAppTargetConfig(config, activeApp);
+      if (targetConfig.autoLaunchApp) {
+        const appPath = inferAppPath(config, activeApp);
+        const launched = await tryLaunchApp(appPath);
+        if (launched) {
+          try {
+            await resetRpClient();
+            connectedApp = null;
+            clearRootsCache();
+            await initializeExtension(pi, ctx, config, markConnectedApp);
+            await syncAutoSelectionToCurrentBranch(ctx, syncOptions, "refresh");
+            return;
+          } catch {
+            // Fall through to pause
           }
         }
       }
 
       extensionPaused = true;
       if (ctx.hasUI) {
-        ctx.ui.notify("RepoPrompt unavailable — extension paused. Use /rp reconnect when ready.", "warning");
+        ctx.ui.notify(
+          `${activeAppLabel()} unavailable — extension paused. Use /rp reconnect or /rp app when ready.`,
+          "warning"
+        );
       }
     });
   });
@@ -1487,13 +1608,21 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     clearRootsCache();
     resetAutoSelectionRuntimeState();
     await resetRpClient();
+    connectedApp = null;
   });
 
   pi.on("session_tree", async (_event, ctx) => {
+    const previousApp = activeApp;
+    restoreRuntimeApp(ctx);
+    await resetConnectionForActiveAppChange(previousApp);
     clearReadcacheCaches();
     clearRootsCache();
     restoreBinding(ctx, config);
-    await syncAutoSelectionToCurrentBranch(ctx, TRANSITION_AUTO_SELECTION_SYNC_OPTIONS, "refresh");
+    await syncAutoSelectionToCurrentBranch(
+      ctx,
+      { ...TRANSITION_AUTO_SELECTION_SYNC_OPTIONS, preserveSourceSelection: true },
+      "refresh"
+    );
     if (ctx.hasUI) {
       ctx.ui.setStatus("rp", undefined);
     }
@@ -1504,26 +1633,39 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   // ───────────────────────────────────────────────────────────────────────────
 
   pi.registerCommand("rp", {
-    description: "RepoPrompt status and commands. Usage: /rp [status|windows|bind [id] [tab]|tab [new|name]|oracle|reconnect|readcache-status|readcache-refresh]",
+    description: "RepoPrompt status and commands. Usage: /rp [status|app [ce|classic]|windows|bind [id] [tab]|tab [new|name]|oracle|reconnect|readcache-status|readcache-refresh]",
     handler: async (args, ctx) => {
-      const parts = args?.trim().split(/\s+/) ?? [];
+      const trimmedArgs = args.trim();
+      const parts = trimmedArgs ? trimmedArgs.split(/\s+/) : [];
       const subcommand = parts[0]?.toLowerCase() ?? "status";
 
       // Allow status/reconnect while disconnected or paused
-      const alwaysAllowed = new Set(["reconnect", "status", "readcache-status", "readcache_status", "readcache-refresh", "readcache_refresh"]);
+      const alwaysAllowed = new Set([
+        "app",
+        "reconnect",
+        "status",
+        "readcache-status",
+        "readcache_status",
+        "readcache-refresh",
+        "readcache_refresh",
+      ]);
 
       if (extensionPaused && !alwaysAllowed.has(subcommand)) {
-        ctx.ui.notify("RepoPrompt extension is paused. Use /rp reconnect to resume.", "warning");
+        ctx.ui.notify("RepoPrompt extension is paused. Use /rp app or /rp reconnect to resume.", "warning");
         return;
       }
 
       if (!alwaysAllowed.has(subcommand)) {
-        await ensureConnected(ctx);
+        await ensureConnected(ctx, { syncAutoSelection: subcommand !== "tab" });
       }
 
       switch (subcommand) {
         case "status":
           await showStatus(ctx);
+          break;
+
+        case "app":
+          await handleAppCommand(parts.slice(1), ctx);
           break;
 
         case "readcache-status":
@@ -1553,7 +1695,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
             }
 
             try {
-              const windows = await fetchWindows(pi);
+              const windows = await fetchWindows(pi, config);
               if (windows.length === 0) {
                 ctx.ui.notify("No RepoPrompt windows found", "warning");
                 return;
@@ -1580,17 +1722,15 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           }
 
           try {
-            if (tab) {
-              await bindToTab(pi, windowId, tab, config);
-            } else {
-              await bindToWindow(pi, windowId, undefined, config);
-            }
+            let binding = tab
+              ? await bindToTab(pi, windowId, tab, config)
+              : await bindToWindow(pi, windowId, undefined, config);
 
-            const binding = await syncAutoSelectionToCurrentBranch(ctx);
+            binding = (await syncAutoSelectionToCurrentBranch(ctx)) ?? binding;
             const tabLabel = await resolveBindingTabLabel(binding);
             ctx.ui.notify(
-              `Bound to window ${binding?.windowId ?? windowId}` +
-              (binding?.workspace ? ` (${binding.workspace})` : "") +
+              `Bound to window ${binding.windowId}` +
+              (binding.workspace ? ` (${binding.workspace})` : "") +
               (tabLabel ? `, tab "${tabLabel}"` : ""),
               "info"
             );
@@ -1601,13 +1741,13 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         }
 
         case "tab": {
-          const rawArgs = args?.trim() ?? "";
+          const rawArgs = args.trim();
           const rest = rawArgs.replace(/^tab\b/i, "").trim();
           const argv = splitCommandLine(rest);
           const requested = argv.join(" ").trim();
 
           try {
-            const window = await resolveWindowForTabCommand(ctx, pi);
+            const window = await resolveWindowForTabCommand(ctx, pi, config);
             if (!window) {
               ctx.ui.notify("No RepoPrompt windows found", "warning");
               return;
@@ -1637,11 +1777,11 @@ export default function repopromptMcp(pi: ExtensionAPI) {
               binding = await bindToTab(pi, window.id, requested, config);
             }
 
-            binding = (await syncAutoSelectionToCurrentBranch(ctx)) ?? binding;
+            binding = adoptAutoSelectionStateForBinding(ctx, binding);
             const tabLabel = await resolveBindingTabLabel(binding);
             ctx.ui.notify(
-              `Bound to window ${binding?.windowId ?? window.id}` +
-              (binding?.workspace ? ` (${binding.workspace})` : "") +
+              `Bound to window ${binding.windowId}` +
+              (binding.workspace ? ` (${binding.workspace})` : "") +
               (tabLabel ? `, tab "${tabLabel}"` : ""),
               "info"
             );
@@ -1652,7 +1792,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         }
 
         case "oracle": {
-          const rawArgs = args?.trim() ?? "";
+          const rawArgs = args.trim();
           const rest = rawArgs.replace(/^oracle\b/i, "").trim();
 
           if (!rest) {
@@ -1699,7 +1839,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
               continue;
             }
 
-            messageParts.push(token ?? "");
+            messageParts.push(token);
           }
 
           const message = messageParts.join(" ").trim();
@@ -1759,18 +1899,21 @@ export default function repopromptMcp(pi: ExtensionAPI) {
         case "reconnect": {
           const wasPaused = extensionPaused;
           try {
+            config = loadRuntimeConfig();
             await resetRpClient();
+            connectedApp = null;
+            clearBinding();
             clearRootsCache();
             extensionPaused = false;
-            await initializeExtension(pi, ctx, config);
+            await initializeExtension(pi, ctx, config, markConnectedApp);
             await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
-            ctx.ui.notify("RepoPrompt reconnected", "info");
+            ctx.ui.notify(`${activeAppDisplay()} reconnected`, "info");
 
             if (wasPaused) {
               pi.sendMessage(
                 {
                   customType: "rp-availability",
-                  content: "RepoPrompt (`rp` tool) is now available.",
+                  content: `${activeAppDisplay()} (\`rp\` tool) is now available.`,
                   display: false,
                 },
                 { triggerTurn: false },
@@ -1787,6 +1930,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
           ctx.ui.notify(
             "RepoPrompt commands:\n" +
             "  /rp status                               - Show connection and binding status\n" +
+            "  /rp app [ce|classic]                     - Show or switch the active RepoPrompt app\n" +
             "  /rp windows                              - List available windows\n" +
             "  /rp bind                                 - Open the interactive picker and bind\n" +
             "  /rp bind <id> [tab]                      - Direct/advanced bind when you already know the ids\n" +
@@ -1827,8 +1971,8 @@ Mode priority: call > describe > search > windows > bind > status`,
     async execute(_toolCallId, params: RpToolParams, _signal, onUpdate, _ctx) {
       if (extensionPaused) {
         throw new Error(
-          "The rp tool is not currently available due to a connection issue. " +
-          "The user can run /rp reconnect when the RepoPrompt app is running."
+          `The rp tool is not currently available because ${activeAppDisplay()} is disconnected. ` +
+          "The user can run /rp app or /rp reconnect when the selected app is running."
         );
       }
 
@@ -2007,34 +2151,45 @@ Mode priority: call > describe > search > windows > bind > status`,
   // Helper Functions
   // ───────────────────────────────────────────────────────────────────────────
 
-  async function ensureConnected(ctx?: ExtensionContext): Promise<void> {
+  async function ensureConnected(
+    ctx?: ExtensionContext,
+    options: { syncAutoSelection?: boolean } = {}
+  ): Promise<void> {
     if (initPromise) {
       await initPromise;
     }
 
     // Reload config so connection/runtime knobs apply without requiring /reload
-    config = loadConfig();
+    config = loadRuntimeConfig();
 
     const client = getRpClient();
     if (config.toolCallTimeoutMs !== undefined) {
       client.setToolCallTimeoutMs(config.toolCallTimeoutMs);
     }
-    if (client.isConnected) {
+    if (client.isConnected && connectedApp === activeApp) {
       return;
+    }
+
+    if (client.isConnected && connectedApp !== activeApp) {
+      await resetRpClient();
+      connectedApp = null;
     }
 
     // Lazy reconnect: allow the user to install/configure RepoPrompt after Pi starts
     // and have `rp(...)` work without requiring a restart.
-    const server = getServerCommand(config);
+    const server = getServerCommand(config, activeApp);
     if (!server) {
       throw new Error(
-        "RepoPrompt MCP server not found. Install RepoPrompt / rp-mcp-server, or configure ~/.pi/agent/extensions/repoprompt-mcp.json (or ~/.pi/agent/mcp.json)"
+        `${activeAppDisplay()} MCP server not found. Install ${getAppCliCommand(activeApp)} ` +
+          "or configure ~/.pi/agent/extensions/repoprompt-mcp.json"
       );
     }
 
-    await client.connect(server.command, server.args, config.env, config.toolCallTimeoutMs);
+    const targetConfig = getAppTargetConfig(config, activeApp);
+    await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs);
+    connectedApp = activeApp;
 
-    if (ctx) {
+    if (ctx && options.syncAutoSelection !== false) {
       try {
         await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
       } catch {
@@ -2361,6 +2516,172 @@ Mode priority: call > describe > search > windows > bind > status`,
     return await resolveLiveBindingTabLabel(binding);
   }
 
+  function capturedAutoSelectionForAppSwitch(ctx: ExtensionContext): AutoSelectionEntryData | null {
+    const binding = getBinding();
+    const state = ownsLiveAutoSelection && activeAutoSelectionState
+      ? activeAutoSelectionState
+      : binding?.tab
+        ? getAutoSelectionStateFromBranch(ctx, binding)
+        : null;
+
+    if (!state) {
+      return null;
+    }
+
+    const normalized = normalizeAutoSelectionState(state);
+    return autoSelectionManagedPaths(normalized).length > 0 ? normalized : null;
+  }
+
+  async function promptForAppSelection(ctx: ExtensionContext): Promise<RpAppId | null> {
+    if (!ctx.hasUI) {
+      return null;
+    }
+
+    const choices = RP_APP_IDS.map((app) => {
+      const label = getAppLabel(config, app);
+      return app === activeApp ? `${label} (${app}) — current` : `${label} (${app})`;
+    });
+
+    const choice = await ctx.ui.select("RepoPrompt app", choices);
+    if (!choice) {
+      return null;
+    }
+
+    return choice.includes("(classic)") ? "classic" : "ce";
+  }
+
+  async function switchActiveApp(nextApp: RpAppId, ctx: ExtensionContext): Promise<void> {
+    if (nextApp === activeApp) {
+      ctx.ui.notify(`RepoPrompt app: ${activeAppDisplay()}`, "info");
+      return;
+    }
+
+    const sourceState = capturedAutoSelectionForAppSwitch(ctx);
+    const recoveryPaths = sourceState ? autoSelectionManagedPaths(sourceState) : [];
+
+    activeApp = nextApp;
+    config = loadRuntimeConfig();
+    persistActiveApp(nextApp);
+
+    initPromise = null;
+    clearBinding();
+    clearReadcacheCaches();
+    clearRootsCache();
+    resetAutoSelectionRuntimeState();
+    clearPendingTransitionSelectionState();
+    await resetRpClient();
+    connectedApp = null;
+
+    const server = getServerCommand(config, activeApp);
+    if (!server) {
+      extensionPaused = true;
+      ctx.ui.notify(
+        `${activeAppDisplay()} MCP server not found. Configure ~/.pi/agent/extensions/repoprompt-mcp.json ` +
+          `or install ${getAppCliCommand(activeApp)}.`,
+        "error"
+      );
+      return;
+    }
+
+    const targetConfig = getAppTargetConfig(config, activeApp);
+    const client = getRpClient();
+
+    try {
+      extensionPaused = false;
+      await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs);
+      connectedApp = activeApp;
+    } catch (err) {
+      extensionPaused = true;
+      ctx.ui.notify(
+        `Failed to connect to ${activeAppDisplay()}: ${err instanceof Error ? err.message : err}`,
+        "error"
+      );
+      return;
+    }
+
+    if (recoveryPaths.length === 0) {
+      ctx.ui.notify(`${activeAppDisplay()} selected. Not bound; use /rp bind to choose a window.`, "info");
+      return;
+    }
+
+    let windows: RpWindow[];
+    try {
+      windows = await fetchWindows(pi, config);
+    } catch (err) {
+      ctx.ui.notify(
+        `${activeAppDisplay()} selected, but window recovery failed: ${err instanceof Error ? err.message : err}. ` +
+          "Use /rp bind.",
+        "warning"
+      );
+      return;
+    }
+
+    const recovery = await findRecoveryWindowBySelectionPaths(windows, recoveryPaths, ctx.cwd);
+    if (!recovery.window) {
+      const reason = recovery.ambiguous
+        ? "multiple windows contain this session's required roots"
+        : "no open window contains this session's required roots";
+      ctx.ui.notify(`${activeAppDisplay()} selected, but ${reason}. Use /rp bind.`, "warning");
+      return;
+    }
+
+    try {
+      const initialBinding = await bindToWindow(pi, recovery.window.id, undefined, config);
+      const recoveredBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
+        reuseSoleEmptyTab: true,
+      }) ?? initialBinding;
+
+      if (sourceState && recoveredBinding.tab) {
+        const targetState = normalizeAutoSelectionState({
+          ...sourceState,
+          app: activeApp,
+          windowId: recoveredBinding.windowId,
+          tab: recoveredBinding.tab,
+          workspace: recoveredBinding.workspace,
+        });
+
+        await reconcileAutoSelectionStates(null, targetState);
+        persistAutoSelectionState(targetState);
+      }
+
+      const tabLabel = await resolveBindingTabLabel(recoveredBinding);
+      ctx.ui.notify(
+        `${activeAppDisplay()} selected and bound to window ${recoveredBinding.windowId}` +
+          (recoveredBinding.workspace ? ` (${recoveredBinding.workspace})` : "") +
+          (tabLabel ? `, tab "${tabLabel}"` : ""),
+        "info"
+      );
+    } catch (err) {
+      clearBinding();
+      ctx.ui.notify(
+        `${activeAppDisplay()} selected, but handover failed: ${err instanceof Error ? err.message : err}. ` +
+          "Use /rp bind.",
+        "warning"
+      );
+    }
+  }
+
+  async function handleAppCommand(argsParts: string[], ctx: ExtensionContext): Promise<void> {
+    const requested = argsParts[0]?.toLowerCase();
+
+    if (!requested) {
+      const selected = await promptForAppSelection(ctx);
+      if (!selected) {
+        ctx.ui.notify(`RepoPrompt app: ${activeAppDisplay()}`, "info");
+        return;
+      }
+      await switchActiveApp(selected, ctx);
+      return;
+    }
+
+    if (!isRpAppId(requested)) {
+      ctx.ui.notify("Usage: /rp app [ce|classic]", "error");
+      return;
+    }
+
+    await switchActiveApp(requested, ctx);
+  }
+
   async function showStatus(ctx: ExtensionContext): Promise<void> {
     const client = getRpClient();
     const binding = client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
@@ -2368,8 +2689,9 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     let msg = `RepoPrompt Status\n`;
     msg += `─────────────────\n`;
+    msg += `App: ${activeAppDisplay()}\n`;
     if (extensionPaused) {
-      msg += `Extension: ⏸ paused (use /rp reconnect to resume)\n`;
+      msg += `Extension: ⏸ paused (use /rp app or /rp reconnect to resume)\n`;
     }
     msg += `Connection: ${client.isConnected ? "✓ connected" : "✗ disconnected"}\n`;
     msg += `Tools: ${client.tools.length}\n`;
@@ -2445,8 +2767,8 @@ Mode priority: call > describe > search > windows > bind > status`,
         return;
       }
 
-      const start = parseInt(match[1] ?? "", 10);
-      const end = parseInt(match[2] ?? "", 10);
+      const start = parseInt(match[1], 10);
+      const end = parseInt(match[2], 10);
       if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end < start) {
         ctx.ui.notify("Invalid range. Use <start-end> like 1-120", "error");
         return;
@@ -2472,14 +2794,14 @@ Mode priority: call > describe > search > windows > bind > status`,
   }
 
   async function showWindows(ctx: ExtensionContext): Promise<void> {
-    const windows = await fetchWindows(pi);
+    const windows = await fetchWindows(pi, config);
 
     if (windows.length === 0) {
       ctx.ui.notify("No RepoPrompt windows found", "warning");
       return;
     }
 
-    let msg = `RepoPrompt Windows\n`;
+    let msg = `RepoPrompt Windows — ${activeAppDisplay()}\n`;
     msg += `──────────────────\n`;
 
     const binding = getBinding();
@@ -2503,16 +2825,17 @@ Mode priority: call > describe > search > windows > bind > status`,
     const binding = ctx && client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
     const tabLabel = await resolveBindingTabLabel(binding);
 
-    const server = getServerCommand(config);
+    const server = getServerCommand(config, activeApp);
 
     let text = `RepoPrompt: ${client.status}\n`;
+    text += `App: ${activeAppDisplay()}\n`;
     if (client.error) {
       text += `Error: ${client.error}\n`;
     }
     text += `Tools: ${client.tools.length}\n`;
     if (!server) {
       text += `Server: (not configured / not auto-detected)\n`;
-      text += `Hint: configure ~/.pi/agent/extensions/repoprompt-mcp.json or ~/.pi/agent/mcp.json\n`;
+      text += `Hint: configure ~/.pi/agent/extensions/repoprompt-mcp.json for ${activeAppDisplay()}\n`;
     }
 
     if (binding) {
@@ -2526,21 +2849,30 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text }],
-      details: { mode: "status", status: client.status, error: client.error, binding, tabLabel, toolsCount: client.tools.length },
+      details: {
+        mode: "status",
+        app: activeApp,
+        appLabel: activeAppLabel(),
+        status: client.status,
+        error: client.error,
+        binding,
+        tabLabel,
+        toolsCount: client.tools.length,
+      },
     };
   }
 
   async function executeListWindows() {
-    const windows = await fetchWindows(pi);
+    const windows = await fetchWindows(pi, config);
 
     if (windows.length === 0) {
       return {
-        content: [{ type: "text" as const, text: "No RepoPrompt windows found. Is RepoPrompt running?" }],
-        details: { mode: "windows", windows: [] },
+        content: [{ type: "text" as const, text: `No ${activeAppDisplay()} windows found. Is it running?` }],
+        details: { mode: "windows", app: activeApp, appLabel: activeAppLabel(), windows: [] },
       };
     }
 
-    let text = `## RepoPrompt Windows\n\n`;
+    let text = `## RepoPrompt Windows — ${activeAppDisplay()}\n\n`;
 
     const binding = getBinding();
     for (const w of windows) {
@@ -2553,7 +2885,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text }],
-      details: { mode: "windows", windows, count: windows.length },
+      details: { mode: "windows", app: activeApp, appLabel: activeAppLabel(), windows, count: windows.length },
     };
   }
 
@@ -2580,7 +2912,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text }],
-      details: { mode: "bind", binding, tabLabel },
+      details: { mode: "bind", app: activeApp, appLabel: activeAppLabel(), binding, tabLabel },
     };
   }
 
@@ -2921,11 +3253,12 @@ function formatTabSelectionLabel(tab: RpTab): string {
 
 async function resolveWindowForTabCommand(
   ctx: ExtensionContext,
-  pi: ExtensionAPI
+  pi: ExtensionAPI,
+  config: RpConfig
 ): Promise<RpWindow | null> {
   const binding = getBinding();
   if (binding) {
-    const windows = await fetchWindows(pi);
+    const windows = await fetchWindows(pi, config);
     return (
       windows.find((window) => window.id === binding.windowId) ?? {
         id: binding.windowId,
@@ -2939,7 +3272,7 @@ async function resolveWindowForTabCommand(
     throw new Error("Not bound to any RepoPrompt window. Use /rp bind <window_id> first");
   }
 
-  const windows = await fetchWindows(pi);
+  const windows = await fetchWindows(pi, config);
   if (windows.length === 0) {
     return null;
   }
@@ -3140,17 +3473,21 @@ async function tryLaunchApp(appPath: string): Promise<boolean> {
 async function initializeExtension(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  config: RpConfig
+  config: RpConfig,
+  onConnected?: (app: RpAppId) => void
 ): Promise<void> {
   // Try to restore binding from session
   restoreBinding(ctx, config);
 
   // Get server command
-  const server = getServerCommand(config);
+  const app = config.activeApp;
+  const targetConfig = getAppTargetConfig(config, app);
+  const server = getServerCommand(config, app);
   if (!server) {
     if (ctx.hasUI) {
       ctx.ui.notify(
-        "RepoPrompt MCP server not found. Install RepoPrompt / rp-mcp-server, or configure ~/.pi/agent/extensions/repoprompt-mcp.json (or ~/.pi/agent/mcp.json)",
+        `${getAppLabel(config, app)} MCP server not found. Install ${getAppCliCommand(app)} ` +
+          "or configure ~/.pi/agent/extensions/repoprompt-mcp.json",
         "warning"
       );
     }
@@ -3159,11 +3496,12 @@ async function initializeExtension(
 
   // Connect to RepoPrompt
   const client = getRpClient();
-  await client.connect(server.command, server.args, config.env, config.toolCallTimeoutMs);
+  await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs);
+  onConnected?.(app);
 
   // Notify connection
   if (ctx.hasUI) {
-    ctx.ui.notify(`RepoPrompt: connected (${client.tools.length} tools)`, "info");
+    ctx.ui.notify(`${getAppLabel(config, app)}: connected (${client.tools.length} tools)`, "info");
   }
 
   // Auto-detect and bind if enabled
@@ -3180,13 +3518,13 @@ async function initializeExtension(
           const activeBinding = reconciledBinding ?? binding;
           const tabLabel = await resolveLiveBindingTabLabel(activeBinding);
           ctx.ui.notify(
-            `RepoPrompt: auto-bound to window ${activeBinding.windowId}` +
+            `${getAppLabel(config, app)}: auto-bound to window ${activeBinding.windowId}` +
             ` (${activeBinding.workspace ?? "unknown"})` +
             (tabLabel ? `, tab "${tabLabel}"` : ""),
             "info"
           );
         }
-      } else if (ambiguity?.candidates?.length && ctx.hasUI) {
+      } else if (ambiguity && ambiguity.candidates.length > 0 && ctx.hasUI) {
         const selected = await promptForWindowSelection(ctx, ambiguity.candidates);
 
         if (selected) {
@@ -3196,7 +3534,7 @@ async function initializeExtension(
           });
           const tabLabel = await resolveLiveBindingTabLabel(reconciledBinding ?? chosenBinding);
           ctx.ui.notify(
-            `RepoPrompt: bound to window ${(reconciledBinding ?? chosenBinding).windowId}` +
+            `${getAppLabel(config, app)}: bound to window ${(reconciledBinding ?? chosenBinding).windowId}` +
             ` (${(reconciledBinding ?? chosenBinding).workspace ?? "unknown"})` +
             (tabLabel ? `, tab "${tabLabel}"` : ""),
             "info"
@@ -3207,13 +3545,15 @@ async function initializeExtension(
             .join(", ");
 
           ctx.ui.notify(
-            `RepoPrompt: multiple matching windows for cwd (${candidatesText}). Use /rp bind to choose from the interactive picker.`,
+            `${getAppLabel(config, app)}: multiple matching windows for cwd (${candidatesText}). ` +
+              "Use /rp bind to choose from the interactive picker.",
             "warning"
           );
         }
       } else if (windows.length > 0 && ctx.hasUI) {
         ctx.ui.notify(
-          `RepoPrompt: ${windows.length} window(s) available. Use /rp bind for the interactive picker or rp({ windows: true }) for the raw list`,
+          `${getAppLabel(config, app)}: ${windows.length} window(s) available. ` +
+            "Use /rp bind for the interactive picker or rp({ windows: true }) for the raw list",
           "info"
         );
       }

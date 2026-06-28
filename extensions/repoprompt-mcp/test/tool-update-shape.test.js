@@ -45,7 +45,16 @@ test("rp streamed partial updates always include a text content block", async ()
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
     writeFileSync(
       path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ command: "fake-rp", args: [], suppressHostDisconnectedLog: false })
+      JSON.stringify({
+        activeApp: "ce",
+        apps: {
+          ce: {
+            command: "fake-rp",
+            args: [],
+          },
+        },
+        suppressHostDisconnectedLog: false,
+      })
     );
 
     await resetRpClient();
