@@ -1,0 +1,20 @@
+--- skills/repoprompt-tool-guidance-refresh/rp-tool-defs/rpcli-help__2.1.20.txt	2026-04-27 17:06:31
++++ skills/repoprompt-tool-guidance-refresh/rp-tool-defs/rpcli-help__2.1.29.txt	2026-05-17 22:30:28
+@@ -66,6 +66,8 @@
+       plan "Design user system"                    New chat in plan mode
+       review "What changed?"                       Review git diff of selected files
+       ask_oracle message="Fix bug" mode=edit new_chat=true
++      ask_user {"questions":[{"id":"scope","question":"Scope?"}]}
++                                                   Ask structured clarifying questions
+ 
+     read_file (read, cat) - Read file contents
+       read src/main.swift                          Read entire file
+@@ -172,6 +174,8 @@
+                                                     Poll multiple snapshots
+       agent_run op=steer session_id="<uuid>" message="Also check logout"
+       agent_run op=respond session_id="<uuid>" interaction_id="<id>" response="accept"
++      agent_run op=respond session_id="<uuid>" interaction_id="<id>" answers={"scope":{"answers":["UI"]}}
++      agent_run op=respond session_id="<uuid>" interaction_id="<id>" skip=true
+       agent_run op=cancel session_id="<uuid>"      Cancel run
+       Operations: start, poll, wait, cancel, steer, respond
+       wait accepts optional timeout (seconds, fractional OK). Defaults

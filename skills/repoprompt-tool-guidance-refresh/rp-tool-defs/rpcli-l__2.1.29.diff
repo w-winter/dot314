@@ -1,0 +1,62 @@
+--- skills/repoprompt-tool-guidance-refresh/rp-tool-defs/rpcli-l__2.1.20.txt	2026-04-27 17:06:31
++++ skills/repoprompt-tool-guidance-refresh/rp-tool-defs/rpcli-l__2.1.29.txt	2026-05-17 22:30:28
+@@ -90,16 +90,16 @@
+ - `pair` — Interactive pair programming with highest-tier models
+ - `design` — Architecture, design discussions, creative problem solving; writes a markdown review document (saved under `docs/reviews/`, `docs/designs/`, or `docs/analysis/`) as its primary deliverable for review/analysis tasks
+ 
+-Role labels resolve through the effective global role-default mapping; see the top-level `task_labels` array from `agent_manage.list_agents` for the authoritative label→model mapping. To pin an exact agent+model+effort target, pass a specific compound `model_id` from `agents[].models[].model_id` in the same response.
++Role labels resolve through the effective global role-default mapping; see the top-level `task_labels` array from `agent_manage.list_agents` for the authoritative label→model mapping. If `model_id` is omitted on `start`, RepoPrompt uses the `pair` role. To pin an exact agent+model+effort target, pass a specific compound `model_id` from `agents[].models[].model_id` in the same response.
+ 
+ **Operations**: start | poll | wait | cancel | steer | respond
+ 
+-- `start`: Launch an agent run in a **new** session/tab. Do NOT pass `session_id` — use `steer` to continue an existing session. Pass `model_id` with a role label (resolved via the global role-default mapping in `agent_manage.list_agents` `task_labels`) or an explicit compound `model_id` from `agents[].models[].model_id`. Returns a `session_id` — save it for all follow-up calls. Waits up to `timeout` seconds (default 300). Pass `detach: true` to return immediately.
++- `start`: Launch an agent run in a **new** session/tab. Do NOT pass `session_id` — use `steer` to continue an existing session. Omit `model_id` to use the `pair` role, or pass `model_id` with a role label (resolved via the global role-default mapping in `agent_manage.list_agents` `task_labels`) or an explicit compound `model_id` from `agents[].models[].model_id`. Returns a `session_id` — save it for all follow-up calls. Waits up to `timeout` seconds (default 300). Pass `detach: true` to return immediately.
+ - `poll`: Return current snapshot immediately. Accepts `session_id` (single) or `session_ids` (array — returns all current snapshots).
+ - `wait`: Block until the run finishes or needs input. Default 300s. `timeout: 0` = poll. Accepts `session_id` (single) or `session_ids` (array — returns when first session reaches interesting state). Returns `interaction_id` when input is pending.
+ - `cancel`: Stop an active agent run. Only valid when the run is `running` or `waiting_for_input`. Requires `session_id`.
+ - `steer`: Continue an existing agent session by sending a follow-up instruction to the `session_id` returned by `start`. If the run is still active, the instruction is steered into that run; if the last run already finished, RepoPrompt starts the next run in the same session. Pass `wait: true` (or `timeout_seconds`) to block until the steered run finishes or needs input. Do NOT use `steer` when status is `waiting_for_input` — use `respond` instead.
+-- `respond`: Resolve a pending interaction (question, approval, etc). Requires `session_id` and `interaction_id` from the snapshot. The `interaction_id` is returned as a top-level field in poll/wait responses when input is pending.
++- `respond`: Resolve a pending interaction (question, approval, MCP elicitation, etc). Requires `session_id` and `interaction_id` from the snapshot. The `interaction_id` is returned as a top-level field in poll/wait responses when input is pending. For MCP elicitation, use `response` (`accept`, `decline`, or `cancel`) plus optional object `content` and `meta`.
+ 
+ **session_id lifecycle**: `start` creates a new session and returns `session_id` in the response. All subsequent operations on that run require passing the same `session_id` back. Do NOT invent session IDs — always use the value returned by `start`.
+ 
+@@ -120,6 +120,10 @@
+   answers (object)
+     [respond] Structured answers keyed by question ID.
+ 
++  content (object)
++    [respond] MCP elicitation content object to send with
++    action=accept.
++
+   detach (boolean)
+     [start] Return immediately instead of waiting. Default false.
+ 
+@@ -129,18 +133,24 @@
+     waiting_for_input.
+ 
+   message (string)
+-    [start, steer] Instruction text. If sharing an exported plan,
+-    include the path/instruction directly in this text.
++    [start, steer] Instruction text. Required for start and steer. If
++    sharing an exported plan, include the path/instruction directly in
++    this text.
+ 
++  meta (object)
++    [respond] Optional MCP elicitation _meta object.
++
+   model_id (string)
+     [start] Role label from agent_manage.list_agents task_labels
+     (explore, engineer, pair, design — resolved via global role
+     defaults), or an explicit compound model_id from
+-    agents[].models[].model_id to pin an exact target.
++    agents[].models[].model_id to pin an exact target. Defaults to
++    pair when omitted.
+ 
+   response (string)
+     [respond] Text answer or decision token (accept, decline, cancel,
+-    skip, etc).
++    skip, etc). For MCP elicitation use accept, decline, or cancel; a
++    non-action string is sent as content.response.
+ 
+   session_id (string)
+     [poll, wait, cancel, steer, respond] Session UUID returned by a

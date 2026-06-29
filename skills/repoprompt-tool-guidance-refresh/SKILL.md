@@ -1,52 +1,51 @@
 ---
 disable-model-invocation: true
 name: repoprompt-tool-guidance-refresh
-description: Update RepoPrompt tool guidance based on MCP/CLI changes across versions. Two-phase workflow - invoke BEFORE upgrading (--pre), then AFTER upgrading (--post). Uses `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh` to detect and diff changes (outputs to `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`).
+description: Refresh RepoPrompt tool guidance when the CLI/MCP surface changes. Tracks RepoPrompt CE (`rpce-cli`, the maintained target) across versions, and can diff the frozen Classic CLI (`rp-cli`) against CE. Uses `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh` to capture/diff `--help` and `-l` (tool definitions) under `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`.
 ---
 
 # Workflow
 
-This skill has two invocation modes depending on where you are in the upgrade cycle.
+RepoPrompt CE (`rpce-cli`) is the maintained target and the default for this skill. RepoPrompt Classic (`rp-cli`) is frozen — it no longer changes, so you only touch it for a one-shot cross-app comparison.
+
+Two comparison modes:
+- **Same CLI across versions** (the normal loop): older `rpce-cli` → newer `rpce-cli`, run as a pre/post pair around a CE upgrade.
+- **Across apps** (one-shot): Classic `rp-cli` vs CE `rpce-cli`, to understand where CE's tools/flags diverge from frozen Classic.
 
 **Canonical locations** (use these even if your working directory differs):
 - Skill directory: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/` (may be a symlink target)
 - Script: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh`
 - Output directory: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
 
-## Phase A — Pre-Upgrade (invoke BEFORE updating RepoPrompt)
+Snapshots are namespaced per CLI so Classic and CE never collide: CE writes `rpcecli-help__{VERSION}.txt` / `rpcecli-l__{VERSION}.txt` with baseline `.baseline_version__rpcecli`; Classic writes `rpcli-*` (frozen, last captured at v2.1.29).
+
+## Phase A — Pre-Upgrade (invoke BEFORE updating RepoPrompt CE)
 
 1. Run the version tracking script:
    ```bash
    ~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh --pre
    ```
-   (Equivalent if you `cd ~/.pi/agent/skills/repoprompt-tool-guidance-refresh`: `./scripts/track-rp-version.sh --pre`)
+   (Defaults to CE. Equivalent if you `cd` into the skill dir: `./scripts/track-rp-version.sh --pre`.)
 
-2. The script writes a baseline snapshot under:
-   - `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
-
-   Files created/updated:
-   - `.baseline_version` — the baseline `rp-cli` version
-   - `rpcli-help__{VERSION}.txt` — output of `rp-cli --help`
-   - `rpcli-l__{VERSION}.txt` — output of `rp-cli -l`
+2. The script writes a baseline snapshot under `rp-tool-defs/`:
+   - `.baseline_version__rpcecli` — the baseline `rpce-cli` version
+   - `rpcecli-help__{VERSION}.txt` — output of `rpce-cli --help`
+   - `rpcecli-l__{VERSION}.txt` — output of `rpce-cli -l`
 
 3. **Stop here.** Tell the user:
-   > ✓ Baseline captured at v{VERSION}. Go update RepoPrompt, then re-invoke this skill.
+   > ✓ Baseline captured at v{VERSION}. Go update RepoPrompt CE, then re-invoke this skill.
 
-## Phase B — Post-Upgrade (invoke AFTER updating RepoPrompt)
+## Phase B — Post-Upgrade (invoke AFTER updating RepoPrompt CE)
 
 1. Run the version tracking script:
    ```bash
    ~/.pi/agent/skills/repoprompt-tool-guidance-refresh/scripts/track-rp-version.sh --post
    ```
-   (Equivalent if you `cd ~/.pi/agent/skills/repoprompt-tool-guidance-refresh`: `./scripts/track-rp-version.sh --post`)
 
-2. On version change, the script captures a *new* snapshot and generates diffs under:
-   - `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-tool-defs/`
-
-   Files created/updated:
-   - `rpcli-help__{NEW_VERSION}.txt` / `rpcli-l__{NEW_VERSION}.txt` — new snapshots
-   - `rpcli-help__{NEW_VERSION}.diff` — changes in `rp-cli --help`
-   - `rpcli-l__{NEW_VERSION}.diff` — changes in `rp-cli -l` (MCP tool definitions)
+2. On version change, the script captures a *new* snapshot and generates diffs under `rp-tool-defs/`:
+   - `rpcecli-help__{NEW_VERSION}.txt` / `rpcecli-l__{NEW_VERSION}.txt` — new snapshots
+   - `rpcecli-help__{NEW_VERSION}.diff` — changes in `rpce-cli --help`
+   - `rpcecli-l__{NEW_VERSION}.diff` — changes in `rpce-cli -l` (MCP tool definitions)
 
 3. If no changes detected in the diffs, tell the user and stop:
    > ✓ No MCP/CLI tool changes detected. Documentation is current.
@@ -62,28 +61,48 @@ This skill has two invocation modes depending on where you are in the upgrade cy
    - Changed parameters or descriptions
    - New modes/options
 
-## Phase C — Update MCP Documentation
+## Phase C — Update MCP documentation (primary output)
 
-1. The MCP files live in two locations outside this skill folder:
+The `rp` MCP tool surface is what Pi agents actually use, and it is app-neutral, so CE tool/help changes flow here.
+
+1. The MCP files live outside this skill folder:
    - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-mcp-*.md`
    - **Prompts**: `agent/prompts/rp-*.md` (excluding `*-cli.md`)
 
 2. Using the diffs as reference, make surgical updates to bring these files into alignment with the new tool definitions.
 
-## Phase D — Update CLI Documentation
+## Phase D — Classic CLI documentation (only if a cross-app diff demands it)
 
-1. The CLI-related files:
-   - **AGENTS prefaces**: `agent/AGENTS-prefaces/rp-cli-preface.md`
-   - **Prompts**: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-cli-prompts/rp-*-cli.md`
-   - **Extension**: `agent/extensions/repoprompt-cli/`
+Classic `rp-cli` is frozen, so its CLI docs do not need routine updates. The Classic-CLI artifacts are:
+- **AGENTS preface**: `agent/AGENTS-prefaces/rp-cli-preface.md`
+- **Prompts**: `~/.pi/agent/skills/repoprompt-tool-guidance-refresh/rp-cli-prompts/rp-*-cli.md`
+- **Extension**: `agent/extensions/repoprompt-cli/` (deprecated)
 
-2. Using the diffs as reference, make surgical updates to the preface and prompts.
-
-3. Check whether `extensions/repoprompt-cli/` encodes assumptions invalidated by the changes. If so, patch minimally.
+Only touch these if a cross-app comparison (Phase F) shows the guidance relies on a Classic-only behavior that CE has changed or dropped.
 
 ## Phase E — Git
 
-Stage the changed files.
+Stage the changed files (new snapshots/diffs under `rp-tool-defs/`, plus any updated docs).
+
+## Phase F — Cross-app comparison (one-shot: Classic vs CE)
+
+Use this to understand how CE's CLI/tool surface diverges from frozen Classic — useful when migrating guidance or validating the `repoprompt-mcp` extension's compatibility assumptions.
+
+1. Ensure a current CE snapshot exists (capture one if needed):
+   ```bash
+   ./scripts/track-rp-version.sh --ce --force
+   ```
+   The frozen Classic baseline is already captured (`rpcli-*`, v2.1.29). To refresh it while Classic is still installed: `./scripts/track-rp-version.sh --classic --force`.
+
+2. Generate the cross-app diffs:
+   ```bash
+   ./scripts/track-rp-version.sh --compare-apps
+   ```
+   This writes, under `rp-tool-defs/`:
+   - `xapp-help__rpcli-{CLASSIC}__rpcecli-{CE}.diff` — `--help` differences
+   - `xapp-l__rpcli-{CLASSIC}__rpcecli-{CE}.diff` — tool-definition differences
+
+3. These diffs are large by design (different apps). Read them to spot CE tools, flags, or parameters that differ from Classic, then update Phase C (and only if necessary, Phase D).
 
 ---
 

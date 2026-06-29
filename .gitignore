@@ -73,8 +73,8 @@ prompts/rp-reminder.md
 prompts/rp-refactor.md
 prompts/rp-review.md
 
-# Version tracking ephemeral state
-skills/repoprompt-tool-guidance-refresh/rp-tool-defs/.baseline_version
+# Version tracking ephemeral state (per-CLI baseline pointers; snapshots/diffs are committed)
+skills/repoprompt-tool-guidance-refresh/rp-tool-defs/.baseline_version*
 
 # Outputs from extensions
 extensions/brave-search/.clips/
