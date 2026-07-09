@@ -1,11 +1,20 @@
 ---
 name: surf
 description: Control Chrome browser via CLI for testing, automation, and debugging. Use when the user needs browser automation, screenshots, form filling, page inspection, network/CPU emulation, DevTools streaming, or AI queries via ChatGPT/Gemini/Perplexity/Grok/AI Studio.
+disable-model-invocation: true
 ---
 
 # Surf Browser Automation
 
 Control Chrome browser via CLI or Unix socket.
+
+## Native Host / Socket Notes
+
+For WSL2 with Windows Chrome, run `surf install <extension-id>` inside WSL2. Surf detects WSL2 and writes the Windows-side native messaging manifest plus a wrapper that launches the WSL host. Use `surf install <extension-id> --target linux` only for Linux browsers running inside WSLg.
+
+On macOS, Chrome reads the native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. If native messaging fails, confirm that file exists, its `allowed_origins` extension ID matches `chrome://extensions`, then rerun `surf install <extension-id>`, restart Chrome, reload the extension, and inspect the extension service-worker console.
+
+If a command reports `Socket connect failed`, run `surf doctor` first, then check the `Attempted socket:` line. Default sockets are `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows. If `SURF_SOCKET` is set, the browser-launched host and the shell running `surf` must use the same value.
 
 ## CLI Quick Reference
 
@@ -35,6 +44,9 @@ surf type --text "hello"
 
 # 5. Screenshot
 surf screenshot --output /tmp/shot.png
+
+# Inspect animation/style changes as JSON
+surf animate-audit --selector ".thing" --duration 2000 --fps 10
 ```
 
 ## AI Assistants (No API Keys)
@@ -75,7 +87,7 @@ surf grok "what are the latest AI trends on X"    # Search X posts
 surf grok "analyze @username recent activity"     # Profile analysis  
 surf grok "summarize this page" --with-page       # Include page context
 surf grok "find viral AI posts" --deep-search     # DeepSearch mode
-surf grok "quick question" --model fast           # Models: auto, fast, expert, thinking (default)
+surf grok "quick question" --model fast           # Models: auto, fast, expert, grok-4.20-beta
 ```
 
 **Grok Validation & Troubleshooting:**
@@ -122,7 +134,7 @@ When AI queries fail, check these common issues:
 
 1. **Not logged in**: The error "login required" means you need to log into the service in Chrome (chatgpt.com, gemini.google.com, perplexity.ai, x.com, or aistudio.google.com)
 2. **Model selection failed**: The UI may have changed. Run `surf grok --validate` to check
-3. **Response timeout**: Thinking models (ChatGPT o1, Grok thinking) can take 45+ seconds. AI Studio builds can take several minutes.
+3. **Response timeout**: Reasoning-heavy models (ChatGPT o1, Grok Expert) can take 45+ seconds. AI Studio builds can take several minutes.
 4. **Element not found**: The service's UI changed. Check for surf-cli updates
 
 **Debugging workflow for agents:**
@@ -165,6 +177,8 @@ surf tab.groups                # List all tab groups
 
 ```bash
 surf window.list                              # List all windows
+surf resize 1280 720                         # Resize current browser window
+surf resize 1280                             # Set current window width only
 surf window.list --tabs                       # Include tab details
 surf window.new                               # New window
 surf window.new --url "https://example.com"   # New window with URL
@@ -176,14 +190,20 @@ surf window.resize --id 123 --width 1920 --height 1080
 surf window.resize --id 123 --state maximized # States: normal, minimized, maximized, fullscreen
 ```
 
-**Window isolation for agents:**
+**Multi-agent isolation:**
 ```bash
-# Create isolated window for agent work
+# Create a separate window for one agent and keep using its ID
 surf window.new "https://example.com"
-# Returns window ID, use with subsequent commands:
 surf --window-id 123 tab.list
 surf --window-id 123 go "https://other.com"
+
+# Pin work to a specific tab, or name it for easier handoff
+surf read --tab-id 456
+surf tab.name agent-a --tab-id 456
+surf tab.switch agent-a
 ```
+
+Use `window.new`, `--window-id`, `--tab-id`, and named tabs to keep parallel agents on separate targets. Surf serializes non-streaming browser CLI requests per socket with a file-based lock, so agents sharing one native host wait instead of interleaving commands. Use `--no-lock` only for intentional bypasses. For hard isolation, run separate browser/profile instances with separate native hosts and `SURF_SOCKET` values; each socket gets its own lock. Surf does not yet have `session.new`, session IDs, or independent per-agent CDP sessions.
 
 ## Input Methods
 
@@ -210,6 +230,7 @@ surf drag --from-x 100 --from-y 100 --to-x 200 --to-y 200
 ```bash
 surf page.read                 # Accessibility tree with refs + page text
 surf page.read --no-text       # Interactive elements only (no text content)
+surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf page.read --ref e5        # Get specific element details
 surf page.read --depth 3       # Limit tree depth
 surf page.read --compact       # Minimal output for LLM efficiency
@@ -258,11 +279,13 @@ surf element.styles ".card"            # Or by CSS selector
 ## Scrolling
 
 ```bash
-surf scroll.bottom
-surf scroll.top  
-surf scroll.to --y 500         # Scroll to Y position
+surf scroll down 800           # Scroll down 800px
+surf scroll up 400             # Scroll up 400px
+surf scroll bottom             # Scroll to bottom
+surf scroll top                # Scroll to top
+surf scroll.bottom             # Dot command form also works
+surf scroll.top
 surf scroll.to --ref e5        # Scroll element into view
-surf scroll.by --y 200         # Scroll by amount
 surf scroll.info               # Get scroll position
 ```
 
@@ -395,6 +418,7 @@ surf screenshot                           # Auto-saves to /tmp/surf-snap-*.png
 surf screenshot --output /tmp/shot.png    # Save to specific file
 surf screenshot --selector ".card"        # Element only
 surf screenshot --full-page               # Full page scroll capture
+surf screenshot --full-page /tmp/full.png # Full page saved to path
 surf screenshot --no-save                 # Return base64 only, don't save file
 ```
 
@@ -409,11 +433,12 @@ surf zoom 1                    # Reset to 100%
 ## Cookies & Storage
 
 ```bash
-surf cookie.list               # List cookies for current page
-surf cookie.list --domain .google.com
-surf cookie.set --name "token" --value "abc123"
-surf cookie.get --name "token"
-surf cookie.clear              # Clear all cookies
+surf cookie list               # List cookies for current page
+surf cookie list --domain .google.com
+surf cookie set --name "token" --value "abc123"
+surf cookie get "token"
+surf cookie clear --all        # Clear all cookies
+surf cookie delete "token"     # Clear one cookie
 ```
 
 ## History & Bookmarks
@@ -558,13 +583,17 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 5. **Auto-capture for debugging** - `--auto-capture` saves diagnostics on failure
 6. **AI tools use browser session** - Must be logged into the service (ChatGPT, Gemini, Perplexity, Grok, AI Studio), no API keys needed
 7. **Grok validation** - Run `surf grok --validate` if queries fail to check UI changes
-8. **Long timeouts for thinking models** - ChatGPT o1, Grok thinking can take 60+ seconds. AI Studio builds default to 600s.
+8. **Long timeouts for reasoning-heavy models** - ChatGPT o1 and Grok Expert can take 60+ seconds. AI Studio builds default to 600s.
 9. **AI Studio for unrestricted Gemini** - `surf aistudio` gives less filtered responses than `surf gemini` for the same models
 10. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
 11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
-12. **Window isolation** - Use `window.new` + `--window-id` to keep agent work separate from your browsing
-13. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
-14. **Frame context** - Use `frame.switch` before interacting with iframe content
+12. **Window isolation** - Use `window.new` + `--window-id` or `--tab-id` to keep agent work separate from your browsing
+13. **Request lock** - Non-streaming browser CLI requests serialize per socket; use `--no-lock` only when you intentionally want to bypass it
+14. **Native host diagnostics** - If commands fail with socket/native-host errors, run `surf doctor` or `surf doctor --browser all` before guessing at reinstall steps
+15. **Animation capture** - Use `surf record --duration 2000 --fps 10 --output /tmp/anim.gif` when the agent needs to see motion; use `animate-audit` for numeric timelines and `perf-audit` for jank/layout-shift snapshots
+16. **Hard isolation** - Use separate browser/profile instances plus separate `SURF_SOCKET` values when agents must not share a host or target
+17. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
+18. **Frame context** - Use `frame.switch` before interacting with iframe content
 
 ## Socket API
 
