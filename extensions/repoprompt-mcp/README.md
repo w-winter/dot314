@@ -289,6 +289,8 @@ If `apps.<target>.autoLaunchApp` is enabled, the extension will try to open that
 ### Switching between CE and Classic
 Use `/rp app ce` or `/rp app classic` to switch the active target for the current Pi session. The switch resets the MCP connection and recovers extension-owned read selection through workspace root matching in the newly selected app; manual selections are not copied between apps. If no unique matching window exists, use `/rp bind` after switching.
 
+The extension follows MCP tool-list change notifications and automatically refreshes the catalog used by search, describe, status, validation, and tool calls. Status identifies the catalog as fresh, stale, or unavailable. When a refresh fails, search and describe label last-successful results as stale, known tools remain callable, and tools absent from the stale catalog are reported as indeterminate until a later notification refresh succeeds. `/rp reconnect` forces a fresh connection and catalog on demand.
+
 ### "No matching window found"
 - Your `cwd` may not match any RepoPrompt workspace root
 - Use `/rp windows` to list windows

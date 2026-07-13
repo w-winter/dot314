@@ -152,6 +152,17 @@ function installMockRpClient(state) {
   const originalClose = RpClient.prototype.close;
   const originalCallTool = RpClient.prototype.callTool;
 
+  state.markCatalogStale = () => {
+    assert.ok(state.currentClient, "an MCP client must be connected before invalidating tools");
+    state.currentClient.toolListInvalidationGeneration += 1;
+  };
+
+  state.publishTools = (tools) => {
+    assert.ok(state.currentClient, "an MCP client must be connected before publishing tools");
+    state.currentClient._tools = tools.map((tool) => ({ ...tool }));
+    state.currentClient.publishedToolListGeneration = state.currentClient.toolListInvalidationGeneration;
+  };
+
   RpClient.prototype.connect = async function connect(command, args, env) {
     state.connects?.push({ command, args, env });
 
@@ -160,26 +171,37 @@ function installMockRpClient(state) {
       this.transport = null;
       this._status = "error";
       this._tools = [];
+      this.publishedToolListGeneration = null;
       throw new Error("RepoPrompt unavailable");
     }
 
     this.client = {};
     this.transport = {};
     this._status = "connected";
-    this._tools = [
+    this._error = undefined;
+    this.catalogRefreshError = undefined;
+    this.toolListInvalidationGeneration = 0;
+    this.publishedToolListGeneration = 0;
+    state.currentClient = this;
+    this._tools = (state.toolsByCommand?.get(command) ?? [
       { name: "list_windows", description: "" },
       { name: "manage_workspaces", description: "" },
       { name: "bind_context", description: "" },
       { name: "manage_selection", description: "" },
       { name: "chats", description: "" },
-    ];
+    ]).map((tool) => ({ ...tool }));
   };
 
   RpClient.prototype.close = async function close() {
+    if (state.currentClient === this) {
+      state.currentClient = null;
+    }
     this.client = null;
     this.transport = null;
     this._status = "disconnected";
     this._tools = [];
+    this.toolListInvalidationGeneration = 0;
+    this.publishedToolListGeneration = null;
   };
 
   RpClient.prototype.callTool = async function callTool(name, args = {}) {
@@ -324,6 +346,10 @@ function installMockRpClient(state) {
       }
 
       return makeTextResult("Selection updated");
+    }
+
+    if (state.forwardedTools?.has(name)) {
+      return makeTextResult(`Called ${name}`);
     }
 
     throw new Error(`Unexpected tool call: ${name} ${JSON.stringify(args)}`);
@@ -1969,6 +1995,169 @@ test("/rp app switches target, appends session state, and status reports the act
     assert.ok(entries.some((entry) => entry.customType === "repoprompt-mcp-active-app" && entry.data.app === "classic"));
     assert.ok(notifications.some((item) => item.message.includes("RepoPrompt Classic (classic) selected")));
     assert.ok(notifications.some((item) => item.message.includes("App: RepoPrompt Classic (classic)")));
+  } finally {
+    restoreClient();
+    process.env.HOME = originalHome;
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("extension catalog consumers observe harness-published freshness without reconnecting or binding", async () => {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-app-catalog-home-"));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "rp-app-catalog-root-"));
+  process.env.HOME = tempHome;
+
+  const globalTools = [
+    { name: "app_settings", description: "" },
+    { name: "bind_context", description: "" },
+    { name: "manage_workspaces", description: "" },
+  ];
+  const state = {
+    failConnect: false,
+    calls: [],
+    connects: [],
+    failAddByTab: new Map(),
+    tabsByWindow: new Map(),
+    liveSelectionByTab: new Map(),
+    forwardedTools: new Set(["app_settings", "get_file_tree"]),
+    toolsByCommand: new Map([
+      ["classic-mcp", [...globalTools, { name: "get_file_tree", description: "" }]],
+      ["ce-mcp", globalTools],
+    ]),
+  };
+  const restoreClient = installMockRpClient(state);
+
+  try {
+    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
+    writeFileSync(
+      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+      JSON.stringify(makeTestConfig({
+        activeApp: "classic",
+        autoBindOnStart: false,
+        apps: {
+          ce: { command: "ce-mcp", args: [] },
+          classic: { command: "classic-mcp", args: [] },
+        },
+      }))
+    );
+
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+
+    const entries = [];
+    const pi = createMockPi(entries);
+    repopromptMcp(pi);
+    const notifications = [];
+    const ctx = createContext(entries, tempRoot, false);
+    ctx.ui.notify = (message, level) => {
+      notifications.push({ message, level });
+    };
+    const command = pi.getCommand("rp");
+    const rpTool = pi.getTool("rp");
+    assert.ok(command, "rp command should be registered");
+    assert.ok(rpTool, "rp tool should be registered");
+
+    await pi.emit("session_start", ctx, { reason: "startup" });
+    await drainLifecycle();
+    await command.handler("app ce", ctx);
+    state.markCatalogStale();
+    state.calls.length = 0;
+
+    await command.handler("status", ctx);
+    const staleStatus = await rpTool.execute("stale-status", {}, undefined, () => {}, ctx);
+    const staleSearch = await rpTool.execute("stale-search", { search: "app" }, undefined, () => {}, ctx);
+    const staleMissingSearch = await rpTool.execute(
+      "stale-missing-search",
+      { search: "get_file_tree" },
+      undefined,
+      () => {},
+      ctx
+    );
+    const staleDescribe = await rpTool.execute(
+      "stale-describe",
+      { describe: "app_settings" },
+      undefined,
+      () => {},
+      ctx
+    );
+    const staleMissingDescribe = await rpTool.execute(
+      "stale-missing-describe",
+      { describe: "get_file_tree" },
+      undefined,
+      () => {},
+      ctx
+    );
+    const staleKnownCall = await rpTool.execute(
+      "stale-known-call",
+      { call: "app_settings", args: { op: "list" } },
+      undefined,
+      () => {},
+      ctx
+    );
+    const staleMissingCall = await rpTool.execute(
+      "stale-missing-call",
+      { call: "get_file_tree", args: { type: "files", max_depth: 1 } },
+      undefined,
+      () => {},
+      ctx
+    );
+
+    assert.ok(notifications.some((item) => item.message.includes("Tool catalog: stale (3 last-known tools)")));
+    assert.match(staleStatus.content[0].text, /Tool catalog: stale \(3 last-known tools\)/u);
+    assert.equal(staleStatus.details.toolCatalogFreshness, "stale");
+    assert.match(staleSearch.content[0].text, /results come from the last successful catalog/u);
+    assert.equal(staleSearch.details.toolCatalogFreshness, "stale");
+    assert.equal(staleMissingSearch.isError, true);
+    assert.equal(staleMissingSearch.details.error, "catalog_stale");
+    assert.match(staleDescribe.content[0].text, /results come from the last successful catalog/u);
+    assert.equal(staleDescribe.details.toolCatalogFreshness, "stale");
+    assert.equal(staleMissingDescribe.isError, true);
+    assert.equal(staleMissingDescribe.details.error, "catalog_stale");
+    assert.equal(staleKnownCall.details.toolCatalogFreshness, "stale");
+    assert.equal(staleMissingCall.isError, true);
+    assert.equal(staleMissingCall.details.error, "catalog_stale");
+    assert.equal(state.calls.filter((call) => call.name === "app_settings").length, 1);
+    assert.equal(state.calls.some((call) => call.name === "get_file_tree"), false);
+
+    state.publishTools([...globalTools, { name: "get_file_tree", description: "" }]);
+
+    const freshStatus = await rpTool.execute("fresh-status", {}, undefined, () => {}, ctx);
+    const freshSearch = await rpTool.execute(
+      "fresh-search",
+      { search: "get_file_tree" },
+      undefined,
+      () => {},
+      ctx
+    );
+    const freshDescribe = await rpTool.execute(
+      "fresh-describe",
+      { describe: "get_file_tree" },
+      undefined,
+      () => {},
+      ctx
+    );
+    const freshCall = await rpTool.execute(
+      "fresh-call",
+      { call: "get_file_tree", args: { type: "files", max_depth: 1 } },
+      undefined,
+      () => {},
+      ctx
+    );
+
+    assert.match(freshStatus.content[0].text, /Tool catalog: fresh \(4 tools\)/u);
+    assert.equal(freshStatus.details.toolCatalogFreshness, "fresh");
+    assert.equal(freshSearch.details.toolCatalogFreshness, "fresh");
+    assert.equal(freshDescribe.details.toolCatalogFreshness, "fresh");
+    assert.equal(freshCall.details.toolCatalogFreshness, "fresh");
+    assert.equal(state.calls.filter((call) => call.name === "get_file_tree").length, 1);
+    assert.equal(state.connects.length, 2);
+    assert.equal(state.calls.some((call) => call.name === "bind_context" && call.args.op === "bind"), false);
   } finally {
     restoreClient();
     process.env.HOME = originalHome;

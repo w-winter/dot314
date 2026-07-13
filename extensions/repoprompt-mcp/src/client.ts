@@ -2,6 +2,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "./types.js";
 import type {
   RpConnection,
@@ -9,6 +10,7 @@ import type {
   McpContent,
   McpToolResult,
   ConnectionStatus,
+  ToolCatalogFreshness,
 } from "./types.js";
 
 const CLIENT_INFO = {
@@ -18,6 +20,35 @@ const CLIENT_INFO = {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 6_000;
 const DEFAULT_LIST_TOOLS_TIMEOUT_MS = 10_000;
+
+export interface RpClientTransportOptions {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Creates the SDK resources owned by one RpClient connection attempt
+ *
+ * Each factory must return a fresh, unconnected resource. RpClient assumes
+ * exclusive ownership when the factory returns; a throwing factory owns any
+ * resource it allocated but did not return
+ */
+export interface RpClientDependencies {
+  createClient(): Client;
+  createTransport(connection: RpClientTransportOptions): StdioClientTransport;
+}
+
+interface ToolCatalogRefreshFlight {
+  epoch: number;
+  token: symbol;
+  promise: Promise<RpToolMeta[]>;
+}
+
+const DEFAULT_CLIENT_DEPENDENCIES: RpClientDependencies = {
+  createClient: () => new Client(CLIENT_INFO, { capabilities: {} }),
+  createTransport: (connection) => new StdioClientTransport(connection),
+};
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -38,7 +69,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   }
 }
 
-
 /**
  * Manages the MCP connection to RepoPrompt server
  */
@@ -48,7 +78,14 @@ export class RpClient {
   private _status: ConnectionStatus = "disconnected";
   private _tools: RpToolMeta[] = [];
   private _error: string | undefined;
+  private catalogRefreshError: string | undefined;
+  private connectionEpoch = 0;
+  private toolListInvalidationGeneration = 0;
+  private publishedToolListGeneration: number | null = null;
+  private toolCatalogRefreshFlight: ToolCatalogRefreshFlight | null = null;
   private toolCallTimeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS;
+
+  constructor(private readonly dependencies: RpClientDependencies = DEFAULT_CLIENT_DEPENDENCIES) {}
 
   get status(): ConnectionStatus {
     return this._status;
@@ -58,8 +95,16 @@ export class RpClient {
     return this._tools;
   }
 
+  get toolCatalogFreshness(): ToolCatalogFreshness {
+    if (this._status !== "connected" || this.publishedToolListGeneration === null) {
+      return "unavailable";
+    }
+
+    return this.publishedToolListGeneration === this.toolListInvalidationGeneration ? "fresh" : "stale";
+  }
+
   get error(): string | undefined {
-    return this._error;
+    return this.catalogRefreshError ?? this._error;
   }
 
   get isConnected(): boolean {
@@ -83,54 +128,65 @@ export class RpClient {
       throw new Error("Connection already in progress");
     }
 
-    // Close existing connection if any
     await this.close();
 
+    const connectionEpoch = ++this.connectionEpoch;
     this._status = "connecting";
     this._error = undefined;
+    this.catalogRefreshError = undefined;
+    this.toolListInvalidationGeneration = 0;
+    this.publishedToolListGeneration = null;
+    this.toolCatalogRefreshFlight = null;
     this.toolCallTimeoutMs = toolCallTimeoutMs;
 
+    let transport: StdioClientTransport | null = null;
+    let client: Client | null = null;
+
     try {
-      // Create transport
       const mergedEnv: Record<string, string> = {};
-      if (process.env) {
-        for (const [k, v] of Object.entries(process.env)) {
-          if (v !== undefined) mergedEnv[k] = v;
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined) {
+          mergedEnv[key] = value;
         }
       }
       if (env) {
         Object.assign(mergedEnv, env);
       }
 
-      this.transport = new StdioClientTransport({
+      transport = this.dependencies.createTransport({
         command,
         args,
         env: Object.keys(mergedEnv).length > 0 ? mergedEnv : undefined,
       });
+      this.transport = transport;
 
-      // Create client
-      this.client = new Client(CLIENT_INFO, {
-        capabilities: {},
+      const createdClient = this.dependencies.createClient();
+      client = createdClient;
+      this.client = createdClient;
+
+      createdClient.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        this.handleToolListChanged(createdClient, connectionEpoch);
       });
 
-      // Connect
       await withTimeout(
-        this.client.connect(this.transport),
+        client.connect(transport),
         DEFAULT_CONNECT_TIMEOUT_MS,
         `Timed out connecting to RepoPrompt MCP server after ${DEFAULT_CONNECT_TIMEOUT_MS}ms`
       );
-
-      // Fetch available tools
       await this.refreshTools();
 
-      this._status = "connected";
+      for (;;) {
+        this.assertCurrentConnection(client, connectionEpoch);
+        if (this.publishedToolListGeneration === this.toolListInvalidationGeneration) {
+          this._status = "connected";
+          return;
+        }
+        await this.refreshTools();
+      }
     } catch (error) {
-      this._status = "error";
-      this._error = error instanceof Error ? error.message : String(error);
-
-      // Clean up on error
-      await this.close();
-
+      if (this.connectionEpoch === connectionEpoch) {
+        await this.cleanupFailedConnection(client, transport, connectionEpoch, error);
+      }
       throw error;
     }
   }
@@ -138,20 +194,134 @@ export class RpClient {
   /**
    * Refresh the list of available tools
    */
-  async refreshTools(timeoutMs = DEFAULT_LIST_TOOLS_TIMEOUT_MS): Promise<RpToolMeta[]> {
-    if (!this.client) {
-      throw new Error("Not connected");
+  refreshTools(timeoutMs = DEFAULT_LIST_TOOLS_TIMEOUT_MS): Promise<RpToolMeta[]> {
+    const client = this.client;
+    const connectionEpoch = this.connectionEpoch;
+    if (!client) {
+      return Promise.reject(new Error("Not connected"));
     }
 
-    const result = await this.client.listTools(undefined, { timeout: timeoutMs });
+    if (this.toolCatalogRefreshFlight) {
+      return this.toolCatalogRefreshFlight.promise;
+    }
 
-    this._tools = (result.tools ?? []).map((tool) => ({
-      name: tool.name,
-      description: tool.description ?? "",
-      inputSchema: tool.inputSchema,
-    }));
+    const token = Symbol("tool-catalog-refresh");
+    let resolveFlight!: (tools: RpToolMeta[]) => void;
+    let rejectFlight!: (error: unknown) => void;
+    const promise = new Promise<RpToolMeta[]>((resolve, reject) => {
+      resolveFlight = resolve;
+      rejectFlight = reject;
+    });
 
-    return this._tools;
+    this.toolCatalogRefreshFlight = { epoch: connectionEpoch, token, promise };
+    void this.drainToolCatalog(client, connectionEpoch, token, timeoutMs).then(resolveFlight, rejectFlight);
+    return promise;
+  }
+
+  private async drainToolCatalog(
+    client: Client,
+    connectionEpoch: number,
+    token: symbol,
+    timeoutMs: number
+  ): Promise<RpToolMeta[]> {
+    try {
+      for (;;) {
+        this.assertCurrentConnection(client, connectionEpoch);
+        const requestGeneration = this.toolListInvalidationGeneration;
+
+        let result;
+        try {
+          result = await client.listTools(undefined, { timeout: timeoutMs });
+        } catch (error) {
+          this.assertCurrentConnection(client, connectionEpoch);
+          if (requestGeneration !== this.toolListInvalidationGeneration) {
+            continue;
+          }
+
+          if (this._status === "connected") {
+            const message = error instanceof Error ? error.message : String(error);
+            this.catalogRefreshError = message;
+            console.warn(
+              `[repoprompt-mcp] Tool catalog refresh failed (epoch ${connectionEpoch}, ` +
+              `generation ${requestGeneration}, observed ${this.toolListInvalidationGeneration}): ${message}`
+            );
+          }
+          throw error;
+        }
+
+        this.assertCurrentConnection(client, connectionEpoch);
+        if (requestGeneration !== this.toolListInvalidationGeneration) {
+          continue;
+        }
+
+        const tools = result.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description ?? "",
+          inputSchema: tool.inputSchema,
+        }));
+        this._tools = tools;
+        this.publishedToolListGeneration = requestGeneration;
+        this.catalogRefreshError = undefined;
+        return tools;
+      }
+    } finally {
+      const flight = this.toolCatalogRefreshFlight;
+      if (flight?.epoch === connectionEpoch && flight.token === token) {
+        this.toolCatalogRefreshFlight = null;
+      }
+    }
+  }
+
+  private handleToolListChanged(client: Client, connectionEpoch: number): void {
+    if (!this.isCurrentConnection(client, connectionEpoch)) {
+      return;
+    }
+
+    this.toolListInvalidationGeneration += 1;
+    if (this._status === "connected") {
+      void this.refreshTools().catch(() => {
+        // The shared refresh records the diagnostic; contain notification callback rejection
+      });
+    }
+  }
+
+  private isCurrentConnection(client: Client, connectionEpoch: number): boolean {
+    return this.client === client && this.connectionEpoch === connectionEpoch;
+  }
+
+  private assertCurrentConnection(client: Client, connectionEpoch: number): void {
+    if (!this.isCurrentConnection(client, connectionEpoch)) {
+      throw new Error("RepoPrompt MCP connection changed during tool catalog refresh");
+    }
+  }
+
+  private async cleanupFailedConnection(
+    client: Client | null,
+    transport: StdioClientTransport | null,
+    connectionEpoch: number,
+    error: unknown
+  ): Promise<void> {
+    if (this.connectionEpoch !== connectionEpoch) {
+      return;
+    }
+
+    this.connectionEpoch += 1;
+    this.client = null;
+    this.transport = null;
+    this._status = "disconnected";
+    this._tools = [];
+    this.toolListInvalidationGeneration = 0;
+    this.publishedToolListGeneration = null;
+    this.toolCatalogRefreshFlight = null;
+    this.catalogRefreshError = undefined;
+    this._error = error instanceof Error ? error.message : String(error);
+
+    if (client) {
+      await Promise.resolve().then(() => client.close()).catch(() => undefined);
+    }
+    if (transport) {
+      await Promise.resolve().then(() => transport.close()).catch(() => undefined);
+    }
   }
 
   /**
@@ -188,17 +358,17 @@ export class RpClient {
     }
 
     // Transform content to our types
-    const content: McpContent[] = ((result.content as unknown[]) ?? []).map((c) => {
+    const content: McpContent[] = (result.content as unknown[]).map((c) => {
       const item = c as Record<string, unknown>;
 
       if (item.type === "text") {
-        return { type: "text" as const, text: (item.text as string) ?? "" };
+        return { type: "text" as const, text: typeof item.text === "string" ? item.text : "" };
       }
       if (item.type === "image") {
         return {
           type: "image" as const,
-          data: (item.data as string) ?? "",
-          mimeType: (item.mimeType as string) ?? "image/png",
+          data: typeof item.data === "string" ? item.data : "",
+          mimeType: typeof item.mimeType === "string" ? item.mimeType : "image/png",
         };
       }
       if (item.type === "resource") {
@@ -226,26 +396,23 @@ export class RpClient {
     const transport = this.transport;
     const wasConnecting = this._status === "connecting";
 
+    this.connectionEpoch += 1;
     this.client = null;
     this.transport = null;
     this._status = "disconnected";
     this._tools = [];
+    this.toolListInvalidationGeneration = 0;
+    this.publishedToolListGeneration = null;
+    this.toolCatalogRefreshFlight = null;
+    this.catalogRefreshError = undefined;
 
     // If connect() never completed, skip the graceful MCP close and tear down the transport directly
     if (client && !wasConnecting) {
-      try {
-        await client.close();
-      } catch {
-        // Ignore close errors
-      }
+      await Promise.resolve().then(() => client.close()).catch(() => undefined);
     }
 
     if (transport) {
-      try {
-        await transport.close();
-      } catch {
-        // Ignore close errors
-      }
+      await Promise.resolve().then(() => transport.close()).catch(() => undefined);
     }
   }
 
@@ -262,7 +429,8 @@ export class RpClient {
       transport: this.transport,
       status: this._status,
       tools: this._tools,
-      error: this._error,
+      toolCatalogFreshness: this.toolCatalogFreshness,
+      error: this.error,
     };
   }
 }

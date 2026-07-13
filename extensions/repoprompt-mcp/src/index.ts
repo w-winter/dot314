@@ -34,6 +34,7 @@ import type {
   AutoSelectionEntryRangeData,
   ActiveAppEntryData,
   RpAppId,
+  ToolCatalogFreshness,
 } from "./types.js";
 import { ACTIVE_APP_ENTRY_TYPE, AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE, RP_APP_IDS } from "./types.js";
 import { getAppCliCommand, getAppLabel, getAppTargetConfig, getServerCommand, inferAppPath, loadConfig } from "./config.js";
@@ -2682,8 +2683,30 @@ Mode priority: call > describe > search > windows > bind > status`,
     await switchActiveApp(requested, ctx);
   }
 
+  const STALE_TOOL_CATALOG_WARNING =
+    "Tool catalog is stale; results come from the last successful catalog and may be incomplete.";
+
+  function formatToolCatalogStatus(freshness: ToolCatalogFreshness, toolsCount: number): string {
+    if (freshness === "fresh") {
+      return `Tool catalog: fresh (${toolsCount} tools)`;
+    }
+    if (freshness === "stale") {
+      return `Tool catalog: stale (${toolsCount} last-known tools)`;
+    }
+    return "Tool catalog: unavailable";
+  }
+
+  function formatStaleToolAbsence(toolName: string): string {
+    return (
+      `Tool catalog is stale; "${toolName}" is absent from the last successful catalog, ` +
+      "so availability cannot be determined."
+    );
+  }
+
   async function showStatus(ctx: ExtensionContext): Promise<void> {
     const client = getRpClient();
+    const toolCatalogFreshness = client.toolCatalogFreshness;
+    const tools = client.tools;
     const binding = client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
     const tabLabel = await resolveBindingTabLabel(binding);
 
@@ -2694,7 +2717,10 @@ Mode priority: call > describe > search > windows > bind > status`,
       msg += `Extension: ⏸ paused (use /rp app or /rp reconnect to resume)\n`;
     }
     msg += `Connection: ${client.isConnected ? "✓ connected" : "✗ disconnected"}\n`;
-    msg += `Tools: ${client.tools.length}\n`;
+    msg += `${formatToolCatalogStatus(toolCatalogFreshness, tools.length)}\n`;
+    if (client.error) {
+      msg += `Error: ${client.error}\n`;
+    }
 
     if (binding) {
       msg += `\nBound to:\n`;
@@ -2822,17 +2848,21 @@ Mode priority: call > describe > search > windows > bind > status`,
 
   async function executeStatus(ctx?: ExtensionContext) {
     const client = getRpClient();
+    const toolCatalogFreshness = client.toolCatalogFreshness;
+    const tools = client.tools;
+    const status = client.status;
+    const clientError = client.error;
     const binding = ctx && client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
     const tabLabel = await resolveBindingTabLabel(binding);
 
     const server = getServerCommand(config, activeApp);
 
-    let text = `RepoPrompt: ${client.status}\n`;
+    let text = `RepoPrompt: ${status}\n`;
     text += `App: ${activeAppDisplay()}\n`;
-    if (client.error) {
-      text += `Error: ${client.error}\n`;
+    if (clientError) {
+      text += `Error: ${clientError}\n`;
     }
-    text += `Tools: ${client.tools.length}\n`;
+    text += `${formatToolCatalogStatus(toolCatalogFreshness, tools.length)}\n`;
     if (!server) {
       text += `Server: (not configured / not auto-detected)\n`;
       text += `Hint: configure ~/.pi/agent/extensions/repoprompt-mcp.json for ${activeAppDisplay()}\n`;
@@ -2853,11 +2883,12 @@ Mode priority: call > describe > search > windows > bind > status`,
         mode: "status",
         app: activeApp,
         appLabel: activeAppLabel(),
-        status: client.status,
-        error: client.error,
+        status,
+        error: clientError,
         binding,
         tabLabel,
-        toolsCount: client.tools.length,
+        toolsCount: tools.length,
+        toolCatalogFreshness,
       },
     };
   }
@@ -2918,6 +2949,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
   async function executeSearch(query: string) {
     const client = getRpClient();
+    const toolCatalogFreshness = client.toolCatalogFreshness;
     const tools = client.tools;
 
     // Split query into terms and match any
@@ -2929,13 +2961,35 @@ Mode priority: call > describe > search > windows > bind > status`,
     });
 
     if (matches.length === 0) {
+      if (toolCatalogFreshness === "stale") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: (
+              `Tool catalog is stale; the last successful catalog has no tools matching "${query}", ` +
+              "so this is not an authoritative negative result."
+            ),
+          }],
+          details: {
+            mode: "search",
+            query,
+            matches: [],
+            count: 0,
+            error: "catalog_stale",
+            toolCatalogFreshness,
+          },
+          isError: true,
+        };
+      }
+
       return {
         content: [{ type: "text" as const, text: `No tools matching "${query}"` }],
-        details: { mode: "search", query, matches: [], count: 0 },
+        details: { mode: "search", query, matches: [], count: 0, toolCatalogFreshness },
       };
     }
 
-    let text = `## Found ${matches.length} tool(s) matching "${query}"\n\n`;
+    let text = toolCatalogFreshness === "stale" ? `${STALE_TOOL_CATALOG_WARNING}\n\n` : "";
+    text += `## Found ${matches.length} tool(s) matching "${query}"\n\n`;
 
     for (const tool of matches) {
       text += `**${tool.name}**\n`;
@@ -2948,26 +3002,52 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text: text.trim() }],
-      details: { mode: "search", query, matches: matches.map((m) => m.name), count: matches.length },
+      details: {
+        mode: "search",
+        query,
+        matches: matches.map((match) => match.name),
+        count: matches.length,
+        toolCatalogFreshness,
+      },
     };
   }
 
   async function executeDescribe(toolName: string) {
     const client = getRpClient();
+    const toolCatalogFreshness = client.toolCatalogFreshness;
+    const tools = client.tools;
     const normalized = normalizeToolName(toolName);
 
-    const tool = client.tools.find(
-      (t) => t.name === toolName || t.name === normalized || normalizeToolName(t.name) === normalized
+    const tool = tools.find(
+      (candidate) => (
+        candidate.name === toolName ||
+        candidate.name === normalized ||
+        normalizeToolName(candidate.name) === normalized
+      )
     );
 
     if (!tool) {
+      if (toolCatalogFreshness === "stale") {
+        return {
+          content: [{ type: "text" as const, text: formatStaleToolAbsence(toolName) }],
+          details: {
+            mode: "describe",
+            error: "catalog_stale",
+            requestedTool: toolName,
+            toolCatalogFreshness,
+          },
+          isError: true,
+        };
+      }
+
       return {
         content: [{ type: "text" as const, text: `Tool "${toolName}" not found. Use rp({ search: "..." }) to search.` }],
-        details: { mode: "describe", error: "not_found", requestedTool: toolName },
+        details: { mode: "describe", error: "not_found", requestedTool: toolName, toolCatalogFreshness },
       };
     }
 
-    let text = `## ${tool.name}\n\n`;
+    let text = toolCatalogFreshness === "stale" ? `${STALE_TOOL_CATALOG_WARNING}\n\n` : "";
+    text += `## ${tool.name}\n\n`;
     text += `${tool.description || "(no description)"}\n\n`;
 
     if (tool.inputSchema) {
@@ -2979,7 +3059,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     return {
       content: [{ type: "text" as const, text }],
-      details: { mode: "describe", tool },
+      details: { mode: "describe", tool, toolCatalogFreshness },
     };
   }
 
@@ -2989,17 +3069,32 @@ Mode priority: call > describe > search > windows > bind > status`,
     ctx?: ExtensionContext
   ) {
     const client = getRpClient();
+    const toolCatalogFreshness = client.toolCatalogFreshness;
+    const tools = client.tools;
     const toolName = normalizeToolName(params.call!);
 
     // Validate tool exists
-    const tool = client.tools.find(
-      (t) => t.name === toolName || normalizeToolName(t.name) === toolName
+    const tool = tools.find(
+      (candidate) => candidate.name === toolName || normalizeToolName(candidate.name) === toolName
     );
 
     if (!tool) {
+      if (toolCatalogFreshness === "stale") {
+        return {
+          content: [{ type: "text" as const, text: formatStaleToolAbsence(params.call!) }],
+          details: {
+            mode: "call",
+            error: "catalog_stale",
+            requestedTool: params.call,
+            toolCatalogFreshness,
+          },
+          isError: true,
+        };
+      }
+
       return {
         content: [{ type: "text" as const, text: `Tool "${params.call}" not found. Use rp({ search: "..." }) to search.` }],
-        details: { mode: "call", error: "not_found", requestedTool: params.call },
+        details: { mode: "call", error: "not_found", requestedTool: params.call, toolCatalogFreshness },
       };
     }
 
@@ -3207,6 +3302,7 @@ Mode priority: call > describe > search > windows > bind > status`,
           args: params.args,
           warning: guardResult.warning,
           editNoop,
+          toolCatalogFreshness,
           rpReadcache: rpReadcache ?? undefined,
           ...(normalizedTextResult ? normalizedTextResult.details : {}),
           ...(normalizedFileActionResult ?? {}),

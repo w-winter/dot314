@@ -80,12 +80,14 @@ export interface McpToolResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+export type ToolCatalogFreshness = "unavailable" | "fresh" | "stale";
 
 export interface RpConnection {
   client: Client;
   transport: StdioClientTransport;
   status: ConnectionStatus;
   tools: RpToolMeta[];
+  toolCatalogFreshness: ToolCatalogFreshness;
   error?: string;
 }
 
