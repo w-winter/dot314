@@ -209,7 +209,6 @@ See [prompts/README.md](prompts/README.md) for full descriptions.
 | | Prompt |
 |---|---|
 | ● | `rp-address-review.md` |
-| ● | `rp-plan.md` |
 | ● | `rp-review-chat.md` |
 
 **AGENTS.md prefaces for reliable RepoPrompt tool usage** — see [AGENTS-prefaces/README.md](AGENTS-prefaces/README.md)
