@@ -1,6 +1,6 @@
 {
   "name": "pi-skill-templates",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Nunjucks-templated SKILL.template.md skills for Pi, rendered from invocation arguments, options, and flags, and composed from other skills",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "skills", "templates", "nunjucks"],
   "license": "MIT",
