@@ -22,7 +22,7 @@ The fallback must be registered in Pi, have usable credentials, and expose a str
 
 Thresholds come from `model-aware-compaction`: an exact model-ID key wins, then the first matching `*` pattern, then its required `global` value, so an installed, valid config always supplies a threshold. Only when that config is absent entirely does the switch use Pi's own native auto-compaction point instead — `usedTokens > contextWindow - reserveTokens`, reading `compaction.reserveTokens` from `~/.pi/agent/settings.json` (default 16384). A present but unreadable or malformed `model-aware-compaction` config is reported as an error and the switch is skipped for that turn rather than silently ignored.
 
-The extension performs model switching only. Pi and any installed compaction extensions continue to own compaction behavior.
+After switching models, the extension applies that fallback entry's configured thinking level. Pi applies the level according to the target model's supported capabilities and remains responsible for compaction behavior.
 
 ## Configuration
 
@@ -34,15 +34,21 @@ Copy `config.json.example` to `config.json` beside the extension:
     "enabled": false,
     "selected": "anthropic/claude-opus-4-8",
     "models": [
-      "anthropic/claude-opus-4-8",
-      "openai-codex/gpt-5.4"
+      {
+        "model": "anthropic/claude-opus-4-8",
+        "thinkingLevel": "xhigh"
+      },
+      {
+        "model": "openai-codex/gpt-5.4",
+        "thinkingLevel": "medium"
+      }
     ]
   }
 }
 ```
 
-- `models` lists the fallback models available through `/context-limit-fallback`, using canonical `provider/modelId` references.
-- `enabled` and `selected` provide defaults for sessions without an explicit fallback choice. A non-empty `selected` value must appear in `models`, and `enabled: true` requires a selection.
+- `models` is the ordered set of fallback choices shown by `/context-limit-fallback`. Each entry requires a canonical `provider/modelId` `model` and a `thinkingLevel` of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+- `enabled` and `selected` provide defaults for sessions without an explicit fallback choice. A non-empty `selected` value must match an entry's `model`, and `enabled: true` requires a selection.
 
 Manual config edits take effect after reloading the extension or restarting Pi.
 
@@ -50,9 +56,9 @@ Configure thresholds in the sibling `../model-aware-compaction/config.json`, key
 
 ## Per-session command
 
-Run `/context-limit-fallback` to disable automatic switching or choose a configured fallback for the current session. The command stores the choice in the Pi session, allowing concurrent sessions to use different fallback behavior without rewriting `config.json`.
+Run `/context-limit-fallback` to disable automatic switching or choose a configured model and thinking level for the current session. The command stores the selected model reference in the Pi session, allowing concurrent sessions to use different fallback behavior without rewriting `config.json`.
 
-Session choices survive resume. Forks inherit the choice from their ancestry, and `/tree` restores the latest choice on the selected branch. Registry model names appear in the menu while session state uses canonical `provider/modelId` references.
+Session choices survive resume. Forks inherit the choice from their ancestry, and `/tree` restores the latest choice on the selected branch. Registry model names and configured thinking levels appear in the menu while session state uses canonical `provider/modelId` references.
 
 ## Extension order
 
@@ -60,4 +66,4 @@ Load `context-limit-fallback` before `model-aware-compaction`. Both evaluate at 
 
 ## Failure policy
 
-A successful switch is announced in the UI. Missing models, unavailable credentials, invalid context windows, and provider failures are reported while the active model remains unchanged. Invalid saved session choices are reported when the session or branch is loaded.
+A successful model-and-thinking switch is announced in the UI. Missing models, unavailable credentials, invalid context windows, and failures before Pi activates the target leave the active model unchanged. If Pi reports a failure after the target becomes active, the extension still applies its configured thinking level and reports the retained model transition. If applying that level reports an error, the extension reports the active target and the configured level without assuming whether Pi persisted the change. Invalid saved session choices are reported when the session or branch is loaded.

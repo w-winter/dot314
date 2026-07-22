@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
@@ -18,6 +19,7 @@ import {
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void> | void;
+type ThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
 type TestModel = {
     id: string;
     name: string;
@@ -30,7 +32,10 @@ const VALID_CONFIG = {
     fallback: {
         enabled: true,
         selected: "anthropic/large",
-        models: ["anthropic/large", "openai/other-large"],
+        models: [
+            { model: "anthropic/large", thinkingLevel: "xhigh" },
+            { model: "openai/other-large", thinkingLevel: "medium" },
+        ],
     },
 };
 const DEFAULT_THRESHOLDS = { global: 75, models: {} };
@@ -55,13 +60,17 @@ function stateEntry(enabled: boolean, selected: string): TestEntry {
 }
 
 function createHarness(options: {
+    thinkingLevel?: ThinkingLevel;
     setModel?: (model: TestModel) => Promise<boolean>;
+    setThinkingLevel?: (level: ThinkingLevel) => void;
     appendEntry?: (customType: string, data: unknown) => void;
 } = {}) {
     const handlers = new Map<string, EventHandler[]>();
     const commands = new Map<string, CommandHandler>();
     const registeredEvents: string[] = [];
     const appendedEntries: Array<{ customType: string; data: unknown }> = [];
+    const transitionCalls: string[] = [];
+    let thinkingLevel = options.thinkingLevel ?? "medium";
     const pi = {
         on(eventName: string, handler: EventHandler) {
             registeredEvents.push(eventName);
@@ -70,13 +79,24 @@ function createHarness(options: {
         registerCommand(name: string, command: { handler: CommandHandler }) {
             commands.set(name, command.handler);
         },
-        setModel: options.setModel ?? (async () => true),
+        async setModel(model: TestModel) {
+            transitionCalls.push(`set-model:${model.provider}/${model.id}`);
+            return options.setModel?.(model) ?? true;
+        },
+        getThinkingLevel() {
+            return thinkingLevel;
+        },
+        setThinkingLevel(level: ThinkingLevel) {
+            transitionCalls.push(`set-thinking-level:${level}`);
+            thinkingLevel = level;
+            options.setThinkingLevel?.(level);
+        },
         appendEntry(customType: string, data: unknown) {
             options.appendEntry?.(customType, data);
             appendedEntries.push({ customType, data });
         },
     } as unknown as ExtensionAPI;
-    return { appendedEntries, commands, handlers, pi, registeredEvents };
+    return { appendedEntries, commands, handlers, pi, registeredEvents, transitionCalls };
 }
 
 function createContext(options: {
@@ -149,15 +169,40 @@ function switchingContext(options: Parameters<typeof createContext>[0] = {}): Ex
 }
 
 describe("configuration", () => {
-    it("parses canonical defaults and allowed model references", () => {
+    const modelEntry = (model: string, thinkingLevel: string) => ({ model, thinkingLevel });
+
+    it("parses canonical model entries with required thinking levels", () => {
         const config = parseConfig(VALID_CONFIG);
         assert.equal(config.fallback.enabled, true);
-        assert.equal(config.fallback.models.length, 2);
-        assert.deepEqual(config.fallback.selected, {
-            value: "anthropic/large",
-            provider: "anthropic",
-            modelId: "large",
-        });
+        assert.deepEqual(config.fallback.models, [
+            { value: "anthropic/large", provider: "anthropic", modelId: "large", thinkingLevel: "xhigh" },
+            { value: "openai/other-large", provider: "openai", modelId: "other-large", thinkingLevel: "medium" },
+        ]);
+        assert.deepEqual(config.fallback.selected, config.fallback.models[0]);
+    });
+
+    it("loads the checked-in live and example model policies", () => {
+        for (const fileName of ["config.json", "config.json.example"]) {
+            const config = loadConfig(fileURLToPath(new URL(fileName, import.meta.url)));
+            assert.equal(config.fallback.models[0].value, "anthropic/claude-opus-4-8");
+            assert.equal(config.fallback.models[0].thinkingLevel, "xhigh");
+            assert.equal(config.fallback.models[1].value, "openai-codex/gpt-5.4");
+            assert.equal(config.fallback.models[1].thinkingLevel, "medium");
+        }
+    });
+
+    it("accepts every Pi thinking level", () => {
+        const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        for (const thinkingLevel of thinkingLevels) {
+            const config = parseConfig({
+                fallback: {
+                    enabled: true,
+                    selected: "anthropic/large",
+                    models: [modelEntry("anthropic/large", thinkingLevel)],
+                },
+            });
+            assert.equal(config.fallback.selected?.thinkingLevel, thinkingLevel);
+        }
     });
 
     it("uses disabled defaults when the configuration file is missing", () => {
@@ -166,23 +211,50 @@ describe("configuration", () => {
         });
     });
 
-    it("rejects malformed fallback fields", () => {
+    it("rejects malformed fallback fields and model entries", () => {
         assert.throws(() => parseConfig({}), /fallback must be an object/);
         assert.throws(() => parseConfig({ fallback: { enabled: "yes", selected: "", models: [] } }), /enabled/);
         assert.throws(() => parseConfig({ fallback: { enabled: false, selected: 5, models: [] } }), /selected/);
         assert.throws(() => parseConfig({ fallback: { enabled: false, selected: "", models: "x" } }), /models/);
+        for (const entry of [
+            "anthropic/large",
+            null,
+            [],
+            { thinkingLevel: "high" },
+            { model: "anthropic/large" },
+            { model: 5, thinkingLevel: "high" },
+            { model: "anthropic/large", thinkingLevel: 5 },
+            { model: "anthropic/large", thinkingLevel: "High" },
+            { model: "anthropic/large", thinkingLevel: " high" },
+        ]) {
+            assert.throws(() => parseConfig({ fallback: { enabled: false, selected: "", models: [entry] } }));
+        }
+        assert.throws(
+            () => parseConfig({
+                fallback: {
+                    enabled: false,
+                    selected: "",
+                    models: [modelEntry(" anthropic/large", "high")],
+                },
+            }),
+            /fallback\.models\[0\]\.model/,
+        );
     });
 
     it("rejects noncanonical, duplicate, unavailable, and empty enabled selections", () => {
         assert.throws(() => parseModelReference(" anthropic/large"), /canonical/);
         assert.throws(() => parseConfig({
-            fallback: { enabled: false, selected: "", models: ["anthropic/large", "anthropic/large"] },
+            fallback: {
+                enabled: false,
+                selected: "",
+                models: [modelEntry("anthropic/large", "high"), modelEntry("anthropic/large", "medium")],
+            },
         }), /unique/);
         assert.throws(() => parseConfig({
-            fallback: { enabled: true, selected: "anthropic/missing", models: ["anthropic/large"] },
+            fallback: { enabled: true, selected: "anthropic/missing", models: [modelEntry("anthropic/large", "high")] },
         }), /configured/);
         assert.throws(() => parseConfig({
-            fallback: { enabled: true, selected: "", models: ["anthropic/large"] },
+            fallback: { enabled: true, selected: "", models: [modelEntry("anthropic/large", "high")] },
         }), /selection/);
     });
 
@@ -398,14 +470,17 @@ describe("threshold handoff", () => {
         assert.match(notifications[0].message, /Invalid model-aware-compaction config/);
     });
 
-    it("switches when usage reaches the current session threshold", async () => {
-        let calls = 0;
+    it("sets the model before its configured thinking level at the threshold", async () => {
         const notifications: Array<{ message: string; level: string }> = [];
-        const harness = setup(VALID_CONFIG, { setModel: async () => { calls += 1; return true; } });
+        const harness = setup();
         const ctx = switchingContext({ usageTokens: 75, notifications });
         await emit(harness.handlers, "session_start", ctx);
         await emit(harness.handlers, "agent_end", ctx);
-        assert.equal(calls, 1);
+        assert.deepEqual(harness.transitionCalls, [
+            "set-model:anthropic/large",
+            "set-thinking-level:xhigh",
+        ]);
+        assert.equal(harness.pi.getThinkingLevel(), "xhigh");
         assert.deepEqual(notifications, [{
             message: "Switched to context-limit fallback: anthropic/large",
             level: "info",
@@ -413,20 +488,18 @@ describe("threshold handoff", () => {
     });
 
     it("does not switch below the threshold or while disabled", async () => {
-        let calls = 0;
-        const harness = setup(VALID_CONFIG, { setModel: async () => { calls += 1; return true; } });
+        const harness = setup();
         const below = switchingContext({ usageTokens: 74 });
         await emit(harness.handlers, "session_start", below);
         await emit(harness.handlers, "agent_end", below);
         const disabled = switchingContext({ branch: [stateEntry(false, "")] });
         await emit(harness.handlers, "session_start", disabled);
         await emit(harness.handlers, "agent_end", disabled);
-        assert.equal(calls, 0);
+        assert.deepEqual(harness.transitionCalls, []);
     });
 
     it("does nothing without an active model or usage, or once fallback is active", async () => {
-        let calls = 0;
-        const harness = setup(VALID_CONFIG, { setModel: async () => { calls += 1; return true; } });
+        const harness = setup();
         for (const ctx of [
             createContext({ models: [createModel("large", 1000)], usageTokens: 100 }),
             switchingContext({ usageTokens: null }),
@@ -435,7 +508,7 @@ describe("threshold handoff", () => {
             await emit(harness.handlers, "session_start", ctx);
             await emit(harness.handlers, "agent_end", ctx);
         }
-        assert.equal(calls, 0);
+        assert.deepEqual(harness.transitionCalls, []);
     });
 
     it("reports invalid active, absent, invalid, and non-larger fallback models", async () => {
@@ -452,10 +525,11 @@ describe("threshold handoff", () => {
             await emit(harness.handlers, "session_start", ctx);
             await emit(harness.handlers, "agent_end", ctx);
             assert.equal(notifications[0].level, "error");
+            assert.deepEqual(harness.transitionCalls, []);
         }
     });
 
-    it("reports missing credentials and thrown provider failures", async () => {
+    it("reports model failures without setting a thinking level", async () => {
         for (const setModel of [async () => false, async () => { throw new Error("provider failed"); }]) {
             const notifications: Array<{ message: string; level: string }> = [];
             const harness = setup(VALID_CONFIG, { setModel });
@@ -463,7 +537,78 @@ describe("threshold handoff", () => {
             await emit(harness.handlers, "session_start", ctx);
             await emit(harness.handlers, "agent_end", ctx);
             assert.equal(notifications[0].level, "error");
+            assert.equal(harness.transitionCalls.some((call) => call.startsWith("set-thinking-level:")), false);
         }
+    });
+
+    it("applies configured thinking after a late model-switch rejection", async () => {
+        const notifications: Array<{ message: string; level: string }> = [];
+        let currentModel = createModel("capable-x", 100);
+        const harness = setup(VALID_CONFIG, {
+            setModel: async (model) => {
+                currentModel = model;
+                throw new Error("late model event failed");
+            },
+        });
+        const ctx = switchingContext({ currentModel, notifications });
+        Object.defineProperty(ctx, "model", { get: () => currentModel });
+        await emit(harness.handlers, "session_start", ctx);
+        await emit(harness.handlers, "agent_end", ctx);
+        assert.deepEqual(harness.transitionCalls, [
+            "set-model:anthropic/large",
+            "set-thinking-level:xhigh",
+        ]);
+        assert.deepEqual(notifications, [{
+            message: "Context-limit fallback model anthropic/large became active, but model switching reported: "
+                + "late model event failed",
+            level: "error",
+        }]);
+    });
+
+    it("reports outcome-neutral thinking persistence failures", async () => {
+        const notifications: Array<{ message: string; level: string }> = [];
+        const harness = setup(VALID_CONFIG, {
+            setThinkingLevel: () => { throw new Error("thinking append failed"); },
+        });
+        const ctx = switchingContext({ notifications });
+        await emit(harness.handlers, "session_start", ctx);
+        await emit(harness.handlers, "agent_end", ctx);
+        assert.deepEqual(harness.transitionCalls, [
+            "set-model:anthropic/large",
+            "set-thinking-level:xhigh",
+        ]);
+        assert.equal(harness.pi.getThinkingLevel(), "xhigh");
+        assert.deepEqual(notifications, [{
+            message: "Context-limit fallback model anthropic/large is active, but applying configured thinking level "
+                + "xhigh reported: thinking append failed",
+            level: "error",
+        }]);
+    });
+
+    it("reports combined retained model and thinking failures", async () => {
+        const notifications: Array<{ message: string; level: string }> = [];
+        let currentModel = createModel("capable-x", 100);
+        const harness = setup(VALID_CONFIG, {
+            setModel: async (model) => {
+                currentModel = model;
+                throw new Error("late model event failed");
+            },
+            setThinkingLevel: () => { throw new Error("thinking append failed"); },
+        });
+        const ctx = switchingContext({ currentModel, notifications });
+        Object.defineProperty(ctx, "model", { get: () => currentModel });
+        await emit(harness.handlers, "session_start", ctx);
+        await emit(harness.handlers, "agent_end", ctx);
+        assert.deepEqual(harness.transitionCalls, [
+            "set-model:anthropic/large",
+            "set-thinking-level:xhigh",
+        ]);
+        assert.equal(harness.pi.getThinkingLevel(), "xhigh");
+        assert.deepEqual(notifications, [{
+            message: "Context-limit fallback model anthropic/large is active, but applying configured thinking level "
+                + "xhigh reported: thinking append failed. Model switching also reported: late model event failed",
+            level: "error",
+        }]);
     });
 
     it("reports automatic failures through console without UI", async () => {
@@ -487,6 +632,7 @@ describe("command", () => {
         selection?: string;
         appendEntry?: (customType: string, data: unknown) => void;
         setModel?: (model: TestModel) => Promise<boolean>;
+        models?: TestModel[];
         hasUI?: boolean;
     } = {}) {
         const notifications: Array<{ message: string; level: string }> = [];
@@ -498,6 +644,7 @@ describe("command", () => {
             select: async () => options.selection,
             notifications,
             hasUI: options.hasUI,
+            ...(options.models ? { models: options.models } : {}),
         });
         return {
             ...harness,
@@ -519,8 +666,10 @@ describe("command", () => {
         assert.match(subject.notifications[0].message, /disabled for this session/);
     });
 
-    it("uses registry labels and appends a complete selected snapshot", async () => {
-        const subject = setupCommand({ selection: "other-large name — openai/other-large" });
+    it("shows thinking in registry labels and persists only the selected model", async () => {
+        const subject = setupCommand({
+            selection: "other-large name — openai/other-large — thinking: medium",
+        });
         const before = readFileSync(subject.configPath, "utf8");
         await subject.handler("", subject.ctx);
         assert.equal(readFileSync(subject.configPath, "utf8"), before);
@@ -528,11 +677,28 @@ describe("command", () => {
             customType: "context-limit-fallback-state",
             data: { enabled: true, selected: "openai/other-large" },
         });
-        assert.match(subject.notifications[0].message, /for this session/);
+        assert.equal(
+            subject.notifications[0].message,
+            "Context-limit fallback set to openai/other-large with thinking level medium for this session",
+        );
+    });
+
+    it("shows thinking in labels for unregistered models", async () => {
+        const subject = setupCommand({
+            selection: "openai/other-large — thinking: medium",
+            models: [createModel("large", 1000)],
+        });
+        await subject.handler("", subject.ctx);
+        assert.deepEqual(subject.appendedEntries[0], {
+            customType: "context-limit-fallback-state",
+            data: { enabled: true, selected: "openai/other-large" },
+        });
     });
 
     it("appends even when the selection equals the shared default", async () => {
-        const subject = setupCommand({ selection: "large name — anthropic/large" });
+        const subject = setupCommand({
+            selection: "large name — anthropic/large — thinking: xhigh",
+        });
         await subject.handler("", subject.ctx);
         assert.equal(subject.appendedEntries.length, 1);
     });
@@ -549,15 +715,16 @@ describe("command", () => {
         }
     });
 
-    it("uses an enabled command selection on the next agent_end", async () => {
-        let selectedModel = "";
+    it("uses a command-selected model and thinking level on the next agent_end", async () => {
         const subject = setupCommand({
-            selection: "other-large name — openai/other-large",
-            setModel: async (model) => { selectedModel = `${model.provider}/${model.id}`; return true; },
+            selection: "other-large name — openai/other-large — thinking: medium",
         });
         await subject.handler("", subject.ctx);
         await emit(subject.handlers, "agent_end", subject.ctx);
-        assert.equal(selectedModel, "openai/other-large");
+        assert.deepEqual(subject.transitionCalls, [
+            "set-model:openai/other-large",
+            "set-thinking-level:medium",
+        ]);
     });
 
     it("stops switching after a disabled command selection", async () => {

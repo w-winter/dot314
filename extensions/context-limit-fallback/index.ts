@@ -7,7 +7,8 @@
  * Shared configuration supplies defaults and the allowed fallback models; `/context-limit-fallback`
  * stores an explicit override in the current session.
  *
- * This extension only switches the model. It never compacts, summarizes, or mutates usage.
+ * This extension switches the model and applies its configured thinking level. It never compacts,
+ * summarizes, or mutates usage.
  */
 
 import {
@@ -20,17 +21,23 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type ThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
+
 export interface ConfiguredModelReference {
     readonly value: string;
     readonly provider: string;
     readonly modelId: string;
 }
 
+export interface ConfiguredFallbackModel extends ConfiguredModelReference {
+    readonly thinkingLevel: ThinkingLevel;
+}
+
 export interface ContextLimitFallbackConfig {
     readonly fallback: {
         readonly enabled: boolean;
-        readonly selected: ConfiguredModelReference | undefined;
-        readonly models: readonly ConfiguredModelReference[];
+        readonly selected: ConfiguredFallbackModel | undefined;
+        readonly models: readonly ConfiguredFallbackModel[];
     };
 }
 
@@ -51,8 +58,17 @@ type PersistedFallbackSessionState =
     | { readonly enabled: true; readonly selected: string };
 type EffectiveFallbackSessionState =
     | { readonly enabled: false }
-    | { readonly enabled: true; readonly selected: ConfiguredModelReference };
+    | { readonly enabled: true; readonly selected: ConfiguredFallbackModel };
 
+const THINKING_LEVELS = [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+] as const satisfies readonly ThinkingLevel[];
 const DEFAULT_RESERVE_TOKENS = 16384;
 const FALLBACK_STATE_ENTRY_TYPE = "context-limit-fallback-state";
 const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -98,42 +114,78 @@ export function parseModelReference(value: string): ConfiguredModelReference {
     return { value, provider, modelId };
 }
 
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+    return typeof value === "string" && THINKING_LEVELS.some((level) => level === value);
+}
+
+function parseConfiguredFallbackModel(value: unknown, owner: string): ConfiguredFallbackModel {
+    if (!isObject(value)) {
+        throw new Error(`${owner} must be an object with model and thinkingLevel`);
+    }
+    if (typeof value.model !== "string") {
+        throw new Error(`${owner}.model must be a canonical provider/modelId string`);
+    }
+    if (!isThinkingLevel(value.thinkingLevel)) {
+        throw new Error(`${owner}.thinkingLevel must be one of: ${THINKING_LEVELS.join(", ")}`);
+    }
+
+    let modelReference: ConfiguredModelReference;
+    try {
+        modelReference = parseModelReference(value.model);
+    } catch (error) {
+        if (error instanceof Error) {
+            error.message = `${owner}.model: ${error.message}`;
+        }
+        throw error;
+    }
+
+    return {
+        ...modelReference,
+        thinkingLevel: value.thinkingLevel,
+    };
+}
+
 export function parseConfig(value: unknown): ContextLimitFallbackConfig {
     if (!isObject(value)) {
         throw new Error("config must be an object");
     }
-    if (!isObject(value.fallback)) {
+    const policy = value.fallback;
+    if (!isObject(policy)) {
         throw new Error("fallback must be an object");
     }
-    if (typeof value.fallback.enabled !== "boolean") {
+    if (typeof policy.enabled !== "boolean") {
         throw new Error("fallback.enabled must be a boolean");
     }
-    if (typeof value.fallback.selected !== "string") {
+    if (typeof policy.selected !== "string") {
         throw new Error("fallback.selected must be a string");
     }
-    if (!Array.isArray(value.fallback.models) || !value.fallback.models.every((model) => typeof model === "string")) {
-        throw new Error("fallback.models must be an array of canonical provider/modelId strings");
+    if (!Array.isArray(policy.models)) {
+        throw new Error("fallback.models must be an array of model and thinkingLevel objects");
     }
 
-    const fallbackModels = value.fallback.models.map(parseModelReference);
-    if (new Set(fallbackModels.map((model) => model.value)).size !== fallbackModels.length) {
+    const configuredModels = policy.models.map((model, index) => (
+        parseConfiguredFallbackModel(model, `fallback.models[${index}]`)
+    ));
+    if (new Set(configuredModels.map((model) => model.value)).size !== configuredModels.length) {
         throw new Error("fallback.models entries must be unique");
     }
 
-    const selectedValue = value.fallback.selected;
-    const selected = selectedValue === "" ? undefined : parseModelReference(selectedValue);
-    if (selected && !fallbackModels.some((model) => model.value === selected.value)) {
+    const selectedReference = policy.selected === "" ? undefined : parseModelReference(policy.selected);
+    const selected = selectedReference
+        ? configuredModels.find((model) => model.value === selectedReference.value)
+        : undefined;
+    if (selectedReference && !selected) {
         throw new Error("fallback.selected must be one of the configured fallback.models");
     }
-    if (value.fallback.enabled && !selected) {
+    if (policy.enabled && !selected) {
         throw new Error("fallback.enabled requires a fallback selection");
     }
 
     return {
         fallback: {
-            enabled: value.fallback.enabled,
+            enabled: policy.enabled,
             selected,
-            models: fallbackModels,
+            models: configuredModels,
         },
     };
 }
@@ -208,12 +260,15 @@ export function loadThresholdConfig(thresholdConfigPath = THRESHOLD_CONFIG_PATH)
     try {
         return parseThresholdConfig(JSON.parse(configText) as unknown);
     } catch (error) {
-        throw new Error(`Invalid model-aware-compaction config at ${thresholdConfigPath}: ${errorMessage(error)}`);
+        if (error instanceof Error) {
+            error.message = `Invalid model-aware-compaction config at ${thresholdConfigPath}: ${error.message}`;
+        }
+        throw error;
     }
 }
 
 export function getThresholdPercent(config: ThresholdConfig, modelId: string): number {
-    if (config.models[modelId] !== undefined) {
+    if (Object.hasOwn(config.models, modelId)) {
         return config.models[modelId];
     }
     for (const [pattern, threshold] of Object.entries(config.models)) {
@@ -231,7 +286,7 @@ export function getThresholdPercent(config: ThresholdConfig, modelId: string): n
 
 function parseFallbackSessionState(
     value: unknown,
-    configuredModels: readonly ConfiguredModelReference[],
+    configuredModels: readonly ConfiguredFallbackModel[],
 ): EffectiveFallbackSessionState {
     if (!isObject(value)) {
         throw new Error("state must be an object");
@@ -265,10 +320,11 @@ function parseFallbackSessionState(
 }
 
 function stateFromConfig(config: ContextLimitFallbackConfig): EffectiveFallbackSessionState {
-    if (!config.fallback.enabled) {
+    const policy = config.fallback;
+    if (!policy.enabled) {
         return { enabled: false };
     }
-    return { enabled: true, selected: config.fallback.selected! };
+    return { enabled: true, selected: policy.selected! };
 }
 
 function resolveFallbackSessionState(
@@ -283,7 +339,10 @@ function resolveFallbackSessionState(
         try {
             return parseFallbackSessionState(entry.data, config.fallback.models);
         } catch (error) {
-            throw new Error(`Invalid "${FALLBACK_STATE_ENTRY_TYPE}" session entry: ${errorMessage(error)}`);
+            if (error instanceof Error) {
+                error.message = `Invalid "${FALLBACK_STATE_ENTRY_TYPE}" session entry: ${error.message}`;
+            }
+            throw error;
         }
     }
     return stateFromConfig(config);
@@ -342,6 +401,7 @@ async function maybeSwitchToFallback(
         return;
     }
 
+    let retainedModelSwitchFailure: { readonly error: unknown } | undefined;
     try {
         const activeContextWindow = requireContextWindow(
             activeModel.contextWindow,
@@ -356,29 +416,59 @@ async function maybeSwitchToFallback(
             return;
         }
 
-        const fallbackModel = ctx.modelRegistry.getAll().find(
+        const targetModel = ctx.modelRegistry.getAll().find(
             (model) => model.provider === selected.provider && model.id === selected.modelId,
         );
-        if (!fallbackModel) {
+        if (!targetModel) {
             throw new SwitchError(`${selected.value} is not registered`);
         }
 
-        const fallbackContextWindow = requireContextWindow(
-            fallbackModel.contextWindow,
+        const targetContextWindow = requireContextWindow(
+            targetModel.contextWindow,
             `fallback model ${selected.value}`,
         );
-        if (fallbackContextWindow <= activeContextWindow) {
+        if (targetContextWindow <= activeContextWindow) {
             throw new SwitchError(
                 `${selected.value} must have a larger context window than ${modelReference(activeModel)} `
-                + `(${fallbackContextWindow} <= ${activeContextWindow})`,
+                + `(${targetContextWindow} <= ${activeContextWindow})`,
             );
         }
 
-        if (!await pi.setModel(fallbackModel)) {
+        if (!await pi.setModel(targetModel)) {
             throw new SwitchError(`No API key for ${selected.value}`);
         }
     } catch (error) {
-        notify(ctx, `Could not switch to context-limit fallback: ${errorMessage(error)}`, "error");
+        const currentModel = ctx.model;
+        if (currentModel?.provider !== selected.provider || currentModel.id !== selected.modelId) {
+            notify(ctx, `Could not switch to context-limit fallback: ${errorMessage(error)}`, "error");
+            return;
+        }
+        retainedModelSwitchFailure = { error };
+    }
+
+    try {
+        pi.setThinkingLevel(selected.thinkingLevel);
+    } catch (error) {
+        const thinkingFailure = errorMessage(error);
+        const failureMessage = retainedModelSwitchFailure
+            ? `${thinkingFailure}. Model switching also reported: ${errorMessage(retainedModelSwitchFailure.error)}`
+            : thinkingFailure;
+        notify(
+            ctx,
+            `Context-limit fallback model ${selected.value} is active, but applying configured thinking level `
+                + `${selected.thinkingLevel} reported: ${failureMessage}`,
+            "error",
+        );
+        return;
+    }
+
+    if (retainedModelSwitchFailure) {
+        notify(
+            ctx,
+            `Context-limit fallback model ${selected.value} became active, but model switching reported: `
+                + errorMessage(retainedModelSwitchFailure.error),
+            "error",
+        );
         return;
     }
 
@@ -411,10 +501,9 @@ export function registerContextLimitFallback(
                 const registeredModel = registryModels.find(
                     (model) => model.provider === configuredModel.provider && model.id === configuredModel.modelId,
                 );
+                const configuredLabel = `${configuredModel.value} — thinking: ${configuredModel.thinkingLevel}`;
                 return {
-                    label: registeredModel
-                        ? `${registeredModel.name} — ${configuredModel.value}`
-                        : configuredModel.value,
+                    label: registeredModel ? `${registeredModel.name} — ${configuredLabel}` : configuredLabel,
                     reference: configuredModel.value,
                 };
             });
@@ -444,7 +533,8 @@ export function registerContextLimitFallback(
                 notify(
                     ctx,
                     effectiveState.enabled
-                        ? `Context-limit fallback set to ${effectiveState.selected.value} for this session`
+                        ? `Context-limit fallback set to ${effectiveState.selected.value} with thinking level `
+                            + `${effectiveState.selected.thinkingLevel} for this session`
                         : "Context-limit fallback disabled for this session",
                     "info",
                 );
