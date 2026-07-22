@@ -25,6 +25,7 @@ export interface Harness {
   emitInput(event: Partial<InputEvent>): Promise<unknown>;
   emit(eventName: string, event?: Record<string, unknown>): Promise<unknown>;
   invokeCommand(name: string, args?: string, overrides?: Partial<ExtensionCommandContext>): Promise<void>;
+  setProjectTrusted(trusted: boolean): void;
   cleanup(): void;
 }
 
@@ -41,6 +42,7 @@ export function createHarness(options?: {
   cwd?: string;
   commands?: Array<{ name: string; description?: string; source: "skill" | "extension" | "prompt"; path: string }>;
   isIdle?: boolean;
+  projectTrusted?: boolean;
 }): Harness {
   const handlers = new Map<string, Handler[]>();
   const commandHandlers = new Map<string, CommandHandler>();
@@ -51,6 +53,7 @@ export function createHarness(options?: {
   const agentDir = join(userHomeDir, ".pi", "agent");
   mkdirSync(agentDir, { recursive: true });
   let idle = options?.isIdle ?? true;
+  let projectTrusted = options?.projectTrusted ?? true;
 
   const ui = {
     notify(message: string, level: string) {
@@ -70,6 +73,7 @@ export function createHarness(options?: {
     modelRegistry: {} as ExtensionContext["modelRegistry"],
     model: { id: "claude-sonnet-4" } as ExtensionContext["model"],
     isIdle: () => idle,
+    isProjectTrusted: () => projectTrusted,
     signal: undefined,
     abort() {},
     hasPendingMessages: () => false,
@@ -188,6 +192,9 @@ export function createHarness(options?: {
         throw new Error(`Unknown command ${name}`);
       }
       await handler(args, { ...commandContext, ...overrides });
+    },
+    setProjectTrusted(trusted: boolean) {
+      projectTrusted = trusted;
     },
     cleanup() {
       rmSync(cwd, { recursive: true, force: true });

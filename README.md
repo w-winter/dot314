@@ -127,6 +127,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ◐ | `sandbox/` | | OS-level sandboxing |
 | ● | `session-ask/` | [`pi-session-ask`](https://www.npmjs.com/package/pi-session-ask) | Query "pre-historical" context (post-compaction, post-fork/handoff) via subagent |
 | ◐ | `session-switch/` | | `/resume`-style session picker with live preview, plus `pi --switch-session` startup relaunch |
+| ● | `skill-templates/` | [`pi-skill-templates`](https://www.npmjs.com/package/pi-skill-templates) | Nunjucks-templated `SKILL.template.md` skills rendered from invocation args, options, and flags, and composed from other skills |
 | ◐ | `tools/` | | UI for enabling/disabling active Pi tools |
 | ◐ | `usage-bar.ts` | | Provider quota overlay |
 
@@ -145,7 +146,6 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ● | `repoprompt-cli/` |
 | ◐ | `rewind/` — archived; use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
 | ○ | `skill-palette/` |
-| ● | `skill-templates/` |
 | ● | `subagent-bridge/` |
 | ○ | `titlebar-spinner.ts` |
 | ○ | `todos.ts` |

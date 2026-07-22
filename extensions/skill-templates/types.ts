@@ -47,6 +47,7 @@ export interface ParsedInvocationArgs {
 
 export interface ExtensionState {
   cwd: string;
+  projectTrusted: boolean;
   catalog: TemplateCatalog;
   catalogInitialized: boolean;
   refreshPending: boolean;

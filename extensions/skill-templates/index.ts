@@ -28,6 +28,7 @@ function createEmptyCatalog(): TemplateCatalog {
 function createInitialState(options?: SkillTemplatesExtensionOptions): ExtensionState {
   return {
     cwd: options?.initialCwd ?? process.cwd(),
+    projectTrusted: false,
     catalog: createEmptyCatalog(),
     catalogInitialized: false,
     refreshPending: false,
@@ -86,7 +87,7 @@ function registerAliasCommands(
     pi.registerCommand(aliasName, {
       description: `${skill.description} [template alias]`,
       handler: async (args: string, ctx: ExtensionCommandContext) => {
-        ensureCatalogCurrent(state, pi, ctx.cwd, options);
+        ensureCatalogCurrent(state, pi, ctx.cwd, ctx.isProjectTrusted(), options);
 
         const currentSkill = state.catalog.skillsByName.get(skill.name);
         if (!currentSkill) {
@@ -126,10 +127,12 @@ function applyCatalog(
   state: ExtensionState,
   pi: ExtensionAPI,
   cwd: string,
+  projectTrusted: boolean,
   catalog: TemplateCatalog,
   options?: SkillTemplatesExtensionOptions,
 ): void {
   state.cwd = cwd;
+  state.projectTrusted = projectTrusted;
   state.catalog = catalog;
   state.catalogInitialized = true;
   state.refreshPending = false;
@@ -137,7 +140,7 @@ function applyCatalog(
   registerAliasCommands(state, pi, options);
 }
 
-function initializeFallbackCatalog(
+function initializeGlobalCatalog(
   state: ExtensionState,
   pi: ExtensionAPI,
   options?: SkillTemplatesExtensionOptions,
@@ -145,37 +148,46 @@ function initializeFallbackCatalog(
   const catalog = buildTemplateCatalog({
     cwd: state.cwd,
     commands: [],
+    projectTrusted: false,
     agentDir: options?.agentDir,
     userHomeDir: options?.userHomeDir,
   });
-  applyCatalog(state, pi, state.cwd, catalog, options);
+  applyCatalog(state, pi, state.cwd, false, catalog, options);
 }
 
 function refreshCatalog(
   state: ExtensionState,
   pi: ExtensionAPI,
   cwd: string,
+  projectTrusted: boolean,
   options?: SkillTemplatesExtensionOptions,
 ): void {
   const catalog = buildTemplateCatalog({
     cwd,
     commands: pi.getCommands(),
+    projectTrusted,
     agentDir: options?.agentDir,
     userHomeDir: options?.userHomeDir,
   });
-  applyCatalog(state, pi, cwd, catalog, options);
+  applyCatalog(state, pi, cwd, projectTrusted, catalog, options);
 }
 
 function ensureCatalogCurrent(
   state: ExtensionState,
   pi: ExtensionAPI,
   cwd: string,
+  projectTrusted: boolean,
   options?: SkillTemplatesExtensionOptions,
 ): void {
-  if (state.catalogInitialized && !state.refreshPending && state.cwd === cwd) {
+  if (
+    state.catalogInitialized
+    && !state.refreshPending
+    && state.cwd === cwd
+    && state.projectTrusted === projectTrusted
+  ) {
     return;
   }
-  refreshCatalog(state, pi, cwd, options);
+  refreshCatalog(state, pi, cwd, projectTrusted, options);
 }
 
 function handleTemplateSkillInput(
@@ -194,7 +206,7 @@ function handleTemplateSkillInput(
     return { action: "continue" };
   }
 
-  ensureCatalogCurrent(state, pi, ctx.cwd, options);
+  ensureCatalogCurrent(state, pi, ctx.cwd, ctx.isProjectTrusted(), options);
   const skill = state.catalog.skillsByName.get(invocation.skillName);
   if (!skill) {
     return { action: "continue" };
@@ -219,10 +231,10 @@ function handleTemplateSkillInput(
 
 export default function skillTemplatesExtension(pi: ExtensionAPI, options?: SkillTemplatesExtensionOptions): void {
   const state = createInitialState(options);
-  initializeFallbackCatalog(state, pi, options);
+  initializeGlobalCatalog(state, pi, options);
 
   pi.on("session_start", (_event, ctx) => {
-    refreshCatalog(state, pi, ctx.cwd, options);
+    refreshCatalog(state, pi, ctx.cwd, ctx.isProjectTrusted(), options);
     notifyShadowedSkills(state, ctx);
   });
 

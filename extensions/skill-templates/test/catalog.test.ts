@@ -69,6 +69,7 @@ test("buildTemplateCatalog prefers roots inferred from loaded skills before fall
   const catalog = buildTemplateCatalog({
     cwd,
     commands: [createCommand(join(inferredRoot, "review", "SKILL.md"))],
+    projectTrusted: true,
     agentDir,
     userHomeDir: homeDir,
   });
@@ -92,6 +93,7 @@ test("buildTemplateCatalog infers root correctly for direct markdown core skill 
   const catalog = buildTemplateCatalog({
     cwd,
     commands: [createCommand(join(directRoot, "review.md"))],
+    projectTrusted: true,
     agentDir,
     userHomeDir: homeDir,
   });
@@ -111,7 +113,7 @@ test("buildTemplateCatalog respects ignore files and stops recursing below a tem
   createSkill(projectRoot, "parent", "---\ndescription: parent\n---\nParent body\n");
   createSkill(join(projectRoot, "parent"), "child", "---\ndescription: child\n---\nChild body\n");
 
-  const catalog = buildTemplateCatalog({ cwd, commands: [], userHomeDir: homeDir, agentDir: join(homeDir, ".pi", "agent") });
+  const catalog = buildTemplateCatalog({ cwd, commands: [], projectTrusted: true, userHomeDir: homeDir, agentDir: join(homeDir, ".pi", "agent") });
   const names = catalog.orderedSkills.map((skill) => skill.name);
 
   assert.deepEqual(names, ["parent"]);
@@ -135,7 +137,7 @@ test("buildTemplateCatalog warns when sibling SKILL.md frontmatter diverges with
     "utf8",
   );
 
-  const catalog = buildTemplateCatalog({ cwd, commands: [], userHomeDir: homeDir, agentDir: join(homeDir, ".pi", "agent") });
+  const catalog = buildTemplateCatalog({ cwd, commands: [], projectTrusted: true, userHomeDir: homeDir, agentDir: join(homeDir, ".pi", "agent") });
   const warningMessages = catalog.diagnostics.map((diagnostic) => diagnostic.message);
 
   assert.equal(catalog.shadowedSkills.length, 0);
@@ -161,8 +163,80 @@ test("buildTemplateCatalog marks a sibling SKILL.md as shadowed only when the ef
     "utf8",
   );
 
-  const catalog = buildTemplateCatalog({ cwd, commands: [], userHomeDir: homeDir, agentDir: join(homeDir, ".pi", "agent") });
+  const catalog = buildTemplateCatalog({ cwd, commands: [], projectTrusted: true, userHomeDir: homeDir, agentDir: join(homeDir, ".pi", "agent") });
 
   assert.equal(catalog.shadowedSkills.length, 1);
   assert.equal(catalog.shadowedSkills[0]?.name, "review");
+});
+
+test("buildTemplateCatalog does not inspect project sources while untrusted", () => {
+  const homeDir = createTempDir();
+  const agentDir = join(homeDir, ".pi", "agent");
+  const repoRoot = join(homeDir, "workspace");
+  const cwd = join(repoRoot, "nested");
+  const commandRoot = join(homeDir, "command-package", "skills");
+  const configuredRoot = join(homeDir, "configured-skills");
+  const projectSettingsPath = join(cwd, ".pi", "settings.json");
+  const brokenProjectTemplate = join(cwd, ".pi", "skills", "broken-project", "SKILL.template.md");
+
+  mkdirSync(join(repoRoot, ".git"), { recursive: true });
+  mkdirSync(dirname(brokenProjectTemplate), { recursive: true });
+  createSkill(commandRoot, "command-review");
+  createSkill(join(agentDir, "skills"), "global-review");
+  createSkill(configuredRoot, "configured-review");
+  createSkill(join(repoRoot, ".agents", "skills"), "ancestor-review");
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ skills: [configuredRoot] }), "utf8");
+  writeFileSync(projectSettingsPath, "{ invalid json", "utf8");
+  writeFileSync(brokenProjectTemplate, "---\nname: broken-project\n---\nBody\n", "utf8");
+
+  const input = {
+    cwd,
+    commands: [createCommand(join(commandRoot, "command-review", "SKILL.md"))],
+    agentDir,
+    userHomeDir: homeDir,
+  };
+  const untrustedCatalog = buildTemplateCatalog({ ...input, projectTrusted: false });
+
+  assert.deepEqual(
+    untrustedCatalog.orderedSkills.map((skill) => skill.name),
+    ["command-review", "global-review", "configured-review"],
+  );
+  assert.equal(untrustedCatalog.diagnostics.some((diagnostic) => diagnostic.path === projectSettingsPath), false);
+  const canonicalBrokenProjectTemplate = realpathSync(brokenProjectTemplate);
+  assert.equal(
+    untrustedCatalog.diagnostics.some((diagnostic) => diagnostic.path === canonicalBrokenProjectTemplate),
+    false,
+  );
+
+  const trustedCatalog = buildTemplateCatalog({ ...input, projectTrusted: true });
+
+  assert.ok(trustedCatalog.orderedSkills.some((skill) => skill.name === "ancestor-review"));
+  assert.ok(trustedCatalog.diagnostics.some((diagnostic) => diagnostic.path === projectSettingsPath));
+  assert.ok(trustedCatalog.diagnostics.some((diagnostic) => diagnostic.path === canonicalBrokenProjectTemplate));
+});
+
+test("buildTemplateCatalog classifies configured paths by their settings source", () => {
+  const homeDir = createTempDir();
+  const agentDir = join(homeDir, ".pi", "agent");
+  const cwd = join(homeDir, "workspace");
+  const globalConfiguredRoot = join(cwd, "global-configured-skills");
+  const projectConfiguredRoot = join(cwd, "project-configured-skills");
+  const projectSettingsPath = join(cwd, ".pi", "settings.json");
+
+  createSkill(globalConfiguredRoot, "global-in-project");
+  createSkill(projectConfiguredRoot, "project-configured");
+  mkdirSync(agentDir, { recursive: true });
+  mkdirSync(dirname(projectSettingsPath), { recursive: true });
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ skills: [globalConfiguredRoot] }), "utf8");
+  writeFileSync(projectSettingsPath, JSON.stringify({ skills: ["../project-configured-skills"] }), "utf8");
+
+  const input = { cwd, commands: [], agentDir, userHomeDir: homeDir };
+  const untrustedCatalog = buildTemplateCatalog({ ...input, projectTrusted: false });
+  const trustedCatalog = buildTemplateCatalog({ ...input, projectTrusted: true });
+
+  assert.deepEqual(untrustedCatalog.orderedSkills.map((skill) => skill.name), ["global-in-project"]);
+  assert.deepEqual(
+    trustedCatalog.orderedSkills.map((skill) => skill.name),
+    ["global-in-project", "project-configured"],
+  );
 });

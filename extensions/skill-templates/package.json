@@ -13,10 +13,10 @@
     "nunjucks": "^3.2.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.79.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.1",
+    "@earendil-works/pi-coding-agent": "^0.79.1",
     "@types/nunjucks": "^3.2.6"
   },
   "pi": {

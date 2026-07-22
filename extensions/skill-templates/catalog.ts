@@ -2,8 +2,12 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import {
+  CONFIG_DIR_NAME,
+  getAgentDir,
+  parseFrontmatter,
+  type SlashCommandInfo,
+} from "@earendil-works/pi-coding-agent";
 import ignore from "ignore";
 
 import {
@@ -27,6 +31,7 @@ interface SkillFrontmatter {
 export interface BuildTemplateCatalogInput {
   cwd: string;
   commands: SlashCommandInfo[];
+  projectTrusted: boolean;
   agentDir?: string;
   userHomeDir?: string;
 }
@@ -192,7 +197,7 @@ function collectRootCandidates(input: BuildTemplateCatalogInput): {
   diagnostics: DiscoveryDiagnostic[];
 } {
   const userHomeDir = input.userHomeDir ?? homedir();
-  const agentDir = input.agentDir ?? join(userHomeDir, ".pi", "agent");
+  const agentDir = input.agentDir ?? getAgentDir();
   const roots: string[] = [];
   const diagnostics: DiscoveryDiagnostic[] = [];
   const seen = new Set<string>();
@@ -215,13 +220,18 @@ function collectRootCandidates(input: BuildTemplateCatalogInput): {
 
   addRoot(join(agentDir, "skills"));
   addRoot(join(userHomeDir, ".agents", "skills"));
-  addRoot(resolve(input.cwd, ".pi", "skills"));
 
-  for (const projectAgentsSkillsDir of collectAncestorAgentsSkillDirs(input.cwd)) {
-    addRoot(projectAgentsSkillsDir);
+  if (input.projectTrusted) {
+    addRoot(resolve(input.cwd, CONFIG_DIR_NAME, "skills"));
+    for (const projectAgentsSkillsDir of collectAncestorAgentsSkillDirs(input.cwd)) {
+      addRoot(projectAgentsSkillsDir);
+    }
   }
 
-  const settingsPaths = [join(agentDir, "settings.json"), resolve(input.cwd, ".pi", "settings.json")];
+  const settingsPaths = [join(agentDir, "settings.json")];
+  if (input.projectTrusted) {
+    settingsPaths.push(resolve(input.cwd, CONFIG_DIR_NAME, "settings.json"));
+  }
   for (const settingsPath of settingsPaths) {
     if (!existsSync(settingsPath)) {
       continue;

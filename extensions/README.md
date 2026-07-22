@@ -174,7 +174,7 @@
   - Example starter file: [`../shell/pi-inline.zsh.example`](../shell/pi-inline.zsh.example)
 
 - ● [`skill-templates/`](skill-templates/) ([README](./skill-templates/README.md))
-  - Adds `SKILL.template.md` — Nunjucks-templated skill files rendered at invocation time from the user's positional arguments, named options, and flags; supports conditional sections, `{% include %}` partials, and a `{% skill %}` tag for composing content from other skills; output uses the same `<skill ...>` envelope as core `SKILL.md`
+  - Renders `SKILL.template.md` with Nunjucks for explicit skill invocations; `{% skill %}` recursively renders another skill body in the shared invocation context, while the final prompt keeps one root `<skill>` envelope and one root reference base
 
 - ● [`subagent-bridge/`](subagent-bridge/) ([README](./subagent-bridge/README.md))
   - Gives subagents spawned or resumed in the current orchestrator short, stable handles usable with `subagent_resume` and `intercom` in place of `.jsonl` paths or session UUIDs; requires `pi-interactive-subagents` and `pi-intercom`

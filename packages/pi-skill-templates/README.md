@@ -1,6 +1,30 @@
-# skill-templates
+# skill-templates for Pi (`pi-skill-templates`)
 
 Adds Nunjucks-rendered `SKILL.template.md` files alongside Pi's `SKILL.md` skill format. A template renders at invocation time from the positional arguments, named options, and flags you pass, so one skill definition can adapt its instructions to the request, include or omit sections, and compose content from other skills — all while producing the same `<skill>` prompt envelope as Pi's built-in skill expansion.
+
+## Install
+
+From npm:
+
+```bash
+pi install npm:pi-skill-templates
+```
+
+From the dot314 git bundle (filtered install):
+
+```json
+{
+  "packages": [
+    {
+      "source": "git:github.com/w-winter/dot314",
+      "extensions": ["extensions/skill-templates/index.ts"],
+      "skills": [],
+      "themes": [],
+      "prompts": []
+    }
+  ]
+}
+```
 
 ## Why
 
@@ -62,5 +86,3 @@ A template with malformed frontmatter is skipped with a warning. Duplicate or re
 Aliases can remain visible after a template is removed or project trust is revoked during a session. Invoking one refreshes the catalog and reports it as stale rather than rendering the removed template; reload the session to refresh command visibility.
 
 Skill directories added by other extensions are discoverable when those extensions also register a skill command from that directory.
-
-For npm installation and package-specific docs, see [`packages/pi-skill-templates/README.md`](../../packages/pi-skill-templates/README.md)

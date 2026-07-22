@@ -13,14 +13,45 @@ function canonicalizePath(path: string): string {
   }
 }
 
-test("factory load registers aliases from fallback roots before session_start", async () => {
+test("factory load registers global aliases and excludes project aliases before session_start", () => {
   const cwd = createTempDir();
-  const skillDir = join(cwd, ".pi", "skills", "review");
+  const globalSkillDir = join(cwd, "home", ".pi", "agent", "skills", "global-review");
+  const projectSkillDir = join(cwd, ".pi", "skills", "project-review");
+  writeTextFile(join(globalSkillDir, "SKILL.template.md"), "---\ndescription: global review\n---\nGlobal body");
+  writeTextFile(join(projectSkillDir, "SKILL.template.md"), "---\ndescription: project review\n---\nProject body");
+
+  const harness = createHarness({ cwd, projectTrusted: false });
+
+  assert.ok(harness.commands.has("skill-template:global-review"));
+  assert.ok(!harness.commands.has("skill-template:project-review"));
+  harness.cleanup();
+});
+
+test("session_start excludes project templates when the project is untrusted", async () => {
+  const harness = createHarness({ projectTrusted: false });
+  const skillDir = join(harness.cwd, ".pi", "skills", "review");
   writeTextFile(join(skillDir, "SKILL.template.md"), "---\ndescription: review\n---\nBody");
 
-  const harness = createHarness({ cwd });
+  await harness.emit("session_start");
+  await harness.emit("resources_discover");
+  const result = await harness.emitInput({ text: "/skill:review" });
 
-  assert.ok(harness.commands.has("skill-template:review"));
+  assert.deepEqual(result, { action: "continue" });
+  harness.cleanup();
+});
+
+test("input refreshes the catalog when project trust changes for the same cwd", async () => {
+  const harness = createHarness({ projectTrusted: false });
+  const skillDir = join(harness.cwd, ".pi", "skills", "review");
+  writeTextFile(join(skillDir, "SKILL.template.md"), "---\ndescription: review\n---\nBody");
+
+  await harness.emit("session_start");
+  assert.deepEqual(await harness.emitInput({ text: "/skill:review" }), { action: "continue" });
+
+  harness.setProjectTrusted(true);
+  const trustedResult = await harness.emitInput({ text: "/skill:review" });
+
+  assert.equal((trustedResult as { action?: string }).action, "transform");
   harness.cleanup();
 });
 
@@ -113,6 +144,22 @@ test("alias command returns immediately while idle without waiting for a state f
   assert.equal(harness.sentUserMessages[0]?.options, undefined);
   assert.ok(String(harness.sentUserMessages[0]?.content).includes("Body python"));
 
+  harness.cleanup();
+});
+
+test("alias command does not render a project template after trust is revoked", async () => {
+  const harness = createHarness();
+  const skillDir = join(harness.cwd, ".pi", "skills", "review");
+  writeTextFile(join(skillDir, "SKILL.template.md"), "---\ndescription: review\n---\nBody");
+
+  await harness.emit("session_start");
+  assert.ok(harness.commands.has("skill-template:review"));
+
+  harness.setProjectTrusted(false);
+  await harness.invokeCommand("skill-template:review");
+
+  assert.equal(harness.sentUserMessages.length, 0);
+  assert.ok(harness.notifications.some((notification) => notification.message.includes("stale")));
   harness.cleanup();
 });
 

@@ -96,6 +96,47 @@ test("renderTemplateInvocation supports {% skill %} inclusion and strips frontma
   assert.equal(result.renderedBody, "Intro\nGuide for review in python\nOutro");
 });
 
+test("renderTemplateInvocation keeps included relative references under the single root notice", () => {
+  const dir = createTempDir();
+  const skillDir = join(dir, "review");
+  const includedDir = join(dir, "shared-guide");
+  mkdirSync(includedDir, { recursive: true });
+  writeFileSync(
+    join(includedDir, "SKILL.md"),
+    "---\ndescription: guide\n---\nGuide for {{ skill_name }}\nRun scripts/check.py",
+    "utf8",
+  );
+  const skill = createTemplateSkill(
+    skillDir,
+    "---\ndescription: review\n---\n{% skill \"../shared-guide/SKILL.md\" %}",
+  );
+
+  const result = renderTemplateInvocation({ skill, rawArgs: "" });
+
+  assert.equal(result.renderedBody, "Guide for review\nRun scripts/check.py");
+  assert.equal(result.invocationText.match(/<skill name=/g)?.length, 1);
+  assert.equal(result.invocationText.match(/References are relative to/g)?.length, 1);
+  assert.ok(result.invocationText.includes("Run scripts/check.py"));
+  assert.ok(!result.invocationText.includes(includedDir));
+});
+
+test("renderTemplateInvocation preserves raw argument spelling separately from parsed values", () => {
+  const dir = createTempDir();
+  const skill = createTemplateSkill(
+    join(dir, "review"),
+    "---\ndescription: review\n---\nraw={{ all_args }}\nargs={{ args | join('|') }}\nlang={{ lang }}",
+  );
+  const rawArgs = '"security audit" --lang=python -- --literal';
+
+  const result = renderTemplateInvocation({ skill, rawArgs });
+
+  assert.equal(
+    result.renderedBody,
+    'raw="security audit" --lang=python -- --literal\nargs=security audit|--literal\nlang=python',
+  );
+  assert.ok(result.invocationText.endsWith(rawArgs));
+});
+
 test("renderTemplateInvocation reports circular native includes", () => {
   const dir = createTempDir();
   const skillDir = join(dir, "review");
