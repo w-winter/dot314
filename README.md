@@ -139,6 +139,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 |---|---|
 | ◐ | `agentic-compaction/` |
 | ○ | `code-actions/` |
+| ● | `context-limit-fallback/` |
 | ◐ | `extension-stats.ts` |
 | ● | `inline-shell.ts` |
 | ○ | `interactive-shell.ts` |

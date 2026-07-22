@@ -22,6 +22,11 @@
   - Requires `compaction.enabled: true` in settings; see README for `reserveTokens` tuning
   - Compatible with compaction-summary extensions (e.g. `agentic-compaction` via `session_before_compact`)
 
+- ● [`context-limit-fallback/`](context-limit-fallback/) ([README](./context-limit-fallback/README.md))
+  - Offers a per-session switch to a configured larger-context model at the first native reserve-token or valid model-aware percentage boundary
+  - `/context-limit-fallback` stores a branch-local session choice; choices survive resume, follow fork ancestry, and are restored by `/tree` navigation
+  - Loads immediately before `model-aware-compaction`, switches only on eligible completed runs, and leaves compaction behavior with Pi
+
 - ● [`session-ask/`](session-ask/) ([README](./session-ask/README.md))
   - `session_ask({ question, sessionPath? })` queries the current (or specified) session JSONL (including pre-compaction history) without bloating the current model context; `/session-ask ...` is a UI wrapper
   - `session_lineage({ ... })` returns fork ancestry (parentSession chain)

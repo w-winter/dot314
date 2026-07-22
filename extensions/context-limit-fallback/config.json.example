@@ -1,0 +1,10 @@
+{
+  "fallback": {
+    "enabled": false,
+    "selected": "anthropic/claude-opus-4-8",
+    "models": [
+      "anthropic/claude-opus-4-8",
+      "openai-codex/gpt-5.4"
+    ]
+  }
+}
