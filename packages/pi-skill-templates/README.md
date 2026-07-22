@@ -79,6 +79,10 @@ Only the rendered body is inserted. Inclusion does not add a nested `<skill>` el
 
 The final prompt has one outer `<skill>` envelope and one `References are relative to ...` line for the root `SKILL.template.md` directory. Nested template lookup still resolves from the file currently rendering, but relative asset, script, and file references emitted by included bodies are not rewritten. Write those references for the root invocation directory, or add explicit prose around the inclusion that identifies the included section's reference base.
 
+## Example
+
+[`skills/rp-deep-build/SKILL.template.md`](https://github.com/w-winter/dot314/tree/main/skills/rp-deep-build/SKILL.template.md) in the dot314 repository is a full working template: it reads `--planner` and `--executor` flags with defaults, keeps the ticket text after a `--` sentinel, branches into configuration-error and routing sections with `{% if %}`, and composes its planning and review phases from other skills with `{% skill %}`.
+
 ## Errors and scope
 
 A template with malformed frontmatter is skipped with a warning. Duplicate or reserved option keys, missing include targets, inclusion cycles, and rendering failures stop the invocation and surface an error. Template rendering applies to explicit user invocation; Pi's model-invoked skill-reading flow uses `SKILL.md`.

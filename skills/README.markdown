@@ -2,6 +2,11 @@
 
 ## New or locally modified
 
+- ● [`rp-deep-build/`](rp-deep-build/)
+  - Goal-driven full build loop: plan (with or without multi-agent critique) → approve → implement (direct or orchestrated) → validate → review → fix until Ship. Rendered from `SKILL.template.md` with configurable planner (`deep`|`build`) and executor (`auto`|`direct`|`orchestrate`).
+  - Composes RepoPrompt-managed skills: `rp-build`, `rp-deep-plan`, `rp-review`, `rp-orchestrate`
+  - **Requires:** [`pi-codex-goal`](https://github.com/fitchmultz/pi-codex-goal) for durable `create_goal`/`update_goal` tools, and [`skill-templates`](../extensions/skill-templates/) for `SKILL.template.md` rendering
+
 - ● [`repoprompt-tool-guidance-refresh/`](repoprompt-tool-guidance-refresh/)
   - Two-phase workflow for updating RepoPrompt tool guidance across version upgrades:
     1. Invoke **before** upgrading → captures baseline (`rp-cli -l`, `rp-cli --help`)
