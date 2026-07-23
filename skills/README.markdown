@@ -4,7 +4,7 @@
 
 - ● [`rp-deep-build/`](rp-deep-build/)
   - Goal-driven full build loop: plan (with or without multi-agent critique) → approve → implement (direct or orchestrated) → validate → review → fix until Ship. Rendered from `SKILL.template.md` with configurable planner (`deep`|`build`) and executor (`auto`|`direct`|`orchestrate`).
-  - Composes RepoPrompt-managed skills: `rp-build`, `rp-deep-plan`, `rp-review`, `rp-orchestrate`
+  - Composes RepoPrompt-managed skills: [`rp-build`](https://github.com/repoprompt/repoprompt-ce/blob/main/Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt%2BBuild.swift), [`rp-deep-plan`](https://github.com/repoprompt/repoprompt-ce/blob/main/Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt%2BDeepPlan.swift), [`rp-review`](https://github.com/repoprompt/repoprompt-ce/blob/main/Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt%2BReview.swift), [`rp-orchestrate`](https://github.com/repoprompt/repoprompt-ce/blob/main/Sources/RepoPrompt/Infrastructure/AI/Prompts/Workflows/WorkflowPrompt%2BOrchestrate.swift)
   - **Requires:** [`pi-codex-goal`](https://github.com/fitchmultz/pi-codex-goal) for durable `create_goal`/`update_goal` tools, and [`skill-templates`](../extensions/skill-templates/) for `SKILL.template.md` rendering
 
 - ● [`repoprompt-tool-guidance-refresh/`](repoprompt-tool-guidance-refresh/)
