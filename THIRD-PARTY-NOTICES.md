@@ -125,7 +125,6 @@ request addition of an open-source license.
 - **No license specified**
 - **Used in:**
   - `extensions/editor-enhancements/` (◐ file-picker and shell-completions components)
-  - `extensions/agentic-compaction/` (◐ derived from file-based-compaction)
 
 ### damianpdr/pi-handoff
 - **URL:** https://github.com/damianpdr/pi-handoff

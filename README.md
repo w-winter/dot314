@@ -137,7 +137,6 @@ These extensions are tracked in the repository but not exported by the Pi packag
 
 | | Extension |
 |---|---|
-| ◐ | `agentic-compaction/` |
 | ○ | `code-actions/` |
 | ● | `context-limit-fallback/` |
 | ◐ | `extension-stats.ts` |

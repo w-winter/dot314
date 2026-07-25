@@ -14,13 +14,11 @@
 - ● [`grounded-compaction/`](grounded-compaction/) ([README](./grounded-compaction/README.md))
   - Replaces Pi's compaction summarizer with configurable model presets, user-editable prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, and bash-derived file operations; also augments branch summarization during `/tree` with the same files-touched grounding and optional prompt customization
   - Uses the shared collector from [`_shared/files-touched-core.ts`](_shared/files-touched-core.ts); see [Pi compaction docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) for background
-  - ⚠ Hooks `session_before_compact` — incompatible with other extensions that do the same (e.g. `agentic-compaction`); having both active is a race condition
 
 - ● [`model-aware-compaction/`](model-aware-compaction/) ([README](./model-aware-compaction/README.md))
   - Triggers Pi's **built-in auto-compaction** at per-model percent-used thresholds (0-100), configured via `config.json` (keyed by model ID, supports `*` wildcards)
   - Nudges Pi's native compaction pipeline rather than calling `ctx.compact()`, preserving the compaction UI and automatic queued-message flush
   - Requires `compaction.enabled: true` in settings; see README for `reserveTokens` tuning
-  - Compatible with compaction-summary extensions (e.g. `agentic-compaction` via `session_before_compact`)
 
 - ● [`context-limit-fallback/`](context-limit-fallback/) ([README](./context-limit-fallback/README.md))
   - Offers a per-session switch to a configured larger-context model at the first native reserve-token or valid model-aware percentage boundary
@@ -214,11 +212,6 @@
   - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
 - ◐ [`rewind/`](rewind/) ([README](./rewind/README.md)) — **Archived.** Session-native rewrite developed in ([`b432676`](https://github.com/w-winter/dot314/commit/b43267682059a4b7c37d557b608e8413ecbd0298)) now adopted upstream into [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook).  Install with `pi install npm:pi-rewind-hook`
-
-- ◐ [`agentic-compaction/`](agentic-compaction/) ([README](./agentic-compaction/README.md); upstream: [laulauland/dotfiles](https://github.com/laulauland/dotfiles/tree/main/shared/.pi/agent/extensions/file-based-compaction))
-  - Agentic compaction via a virtual filesystem: mounts `/conversation.json` and lets a summarizer model explore it with portable bash/zsh commands
-  - Emphasizes deterministic, tool-result-verified modified-file tracking (native + `rp`), filters likely temp artifacts, supports `/compact <note>`, and can parallelize tool calls via `toolCallConcurrency`
-  - ⚠ Hooks `session_before_compact` — incompatible with other extensions that do the same (e.g. `grounded-compaction`); having both active is a race condition
 
 - ◐ [`files-touched.ts`](files-touched.ts) (upstream: [badlogic/pi-mono `.pi/extensions/files.ts`](https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/files.ts))
   - `/files-touched` shows files read/written/edited in the active session branch and opens the selected file in VS Code
