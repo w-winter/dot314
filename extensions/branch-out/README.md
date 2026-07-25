@@ -86,20 +86,20 @@ Routing is automatic and tried in this order:
 7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
 8. Alacritty window
 
-The Orca backend matches `ORCA_PANE_KEY` to the exact tab and leaf returned by `orca terminal list`, then runs `orca terminal split` against that terminal handle. `right` creates a horizontal split and `down` creates a vertical split. `launchMode` must be `"split"` for Orca.
+The Orca backend matches `ORCA_PANE_KEY` to the exact tab and leaf returned by `orca terminal list`, then runs `orca terminal split` against that terminal handle. Orca defaults to a horizontal split that opens the new pane to the right; an explicit `down` preference creates a vertical split. `launchMode` must be `"split"` for Orca.
 
 ### Backend capability matrix
 
 | Backend | `tab` | `split` — static directions | `split` — rotating policies |
 |---------|-------|------------------------------|--------------------------|
-| Orca | — | `right` `down` | — (use fallback list) |
+| Orca | — | `right` `down` | Defaults to `right` |
 | cmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
 | tmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
 | iTerm2 | ✓ | `right` `down` | — (use fallback list) |
 | Terminal.app | ✓ | — (error) | — (error) |
 | Ghostty | — (new window) | — (error) | — (error) |
 
-Backends that don't support the requested `splitDirection` fail fast with an explicit error rather than silently doing something else. Use a comma-separated fallback list in `splitDirection` to handle this gracefully (e.g. `"counterclockwise,right"` works on all split-capable backends).
+Backends without a default for the requested `splitDirection` fail fast with an explicit error. Use a comma-separated preference list to select a supported direction across backends (e.g. `"counterclockwise,right"`).
 
 ## Examples
 

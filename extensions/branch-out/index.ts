@@ -160,6 +160,7 @@ function resolveSupportedSplitDirection(
 		case "tmux":
 			return preferences[0]
 		case "orca":
+			return preferences.find((direction) => direction === "right" || direction === "down") ?? "right"
 		case "iterm":
 			return preferences.find((direction) => direction === "right" || direction === "down")
 		default:

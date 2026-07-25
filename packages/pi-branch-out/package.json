@@ -1,7 +1,7 @@
 {
   "name": "pi-branch-out",
-  "version": "0.1.4",
-  "description": "Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing",
+  "version": "0.1.5",
+  "description": "Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing, and support for cmux, tmux, iTerm2, Terminal.app, Ghostty, and Orca.",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
   "repository": {
