@@ -220,7 +220,7 @@
   - Shared core ([`_shared/files-touched-core.ts`](_shared/files-touched-core.ts)) also tracks bash-level file operations: `sed -i` (edit), `cp`/`rsync` (write destination), `tee`/`touch` (write), `patch` (edit), `curl -o`/`wget -O` (write), and shell output redirections (`>`, `>>`)
 
 - ◐ [`branch-out/`](branch-out/) ([README](branch-out/README.md)) (upstream: [davidgasquez/dotfiles](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts))
-  - `/branch [--model <query>] [message]` forks the current session into a new terminal split pane or tab; backend-aware routing across cmux, tmux, iTerm2, Terminal.app, and Ghostty; split direction is config-driven (`left/right/up/down`, or `clockwise`/`counterclockwise` layout policies for cmux/tmux) with comma-separated fallback lists for cross-backend configs; optional `--model` targets a different model in the child; optional `message` prefills the child editor with a 10-second auto-submit countdown
+  - `/branch [--model <query>] [message]` forks the current session into a new terminal split pane or tab; backend-aware routing across cmux, tmux, iTerm2, Terminal.app, Ghostty, and Orca; split direction is config-driven (`left/right/up/down`, or `clockwise`/`counterclockwise` layout policies for cmux/tmux) with comma-separated fallback lists for cross-backend configs; optional `--model` targets a different model in the child; optional `message` prefills the child editor with a 10-second auto-submit countdown
 
 - ◐ [`handover/`](handover/) ([README](./handover/README.md))
   - `/handover [optional purpose]` generates a rich handover / rehydration message, forks from the first user message, and prefills the child editor with the final draft plus an appended files-touched block
@@ -288,6 +288,8 @@
 - ◐ [`cmux/`](cmux/) (upstream: [HazAT/pi-config](https://github.com/HazAT/pi-config/blob/main/extensions/cmux/index.ts))
   - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
   - This version adds workspace auto-renaming: on `session_start` and `agent_end`, syncs the cmux workspace name to the Pi session name using `CMUX_WORKSPACE_ID` so concurrent cmux workspaces do not cross-rename (only when the workspace has exactly 1 pane and 1 surface)
+
+- ● [`orca-session-tab-title/`](orca-session-tab-title/) — renames the containing Orca tab to the active named Pi session on session start and `/name`, using `ORCA_TAB_ID` to target the correct tab across split panes
 
 - ○ [`interactive-shell.ts`](interactive-shell.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`preset.ts`](preset.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))

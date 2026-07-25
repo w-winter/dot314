@@ -1,6 +1,6 @@
 # branch-out
 
-Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing.  Routing, split geometry, and focus behavior are all config-driven.
+Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing. Routing, split geometry, and focus behavior are config-driven. Inside Orca, the fork opens as a new pane in the current terminal tab and worktree.
 
 ## Command
 
@@ -78,24 +78,28 @@ rm /tmp/pi-branch-out-layout-state.json
 Routing is automatic and tried in this order:
 
 1. `--branch-out-terminal` flag override (always wins)
-2. cmux — detected via `CMUX_SOCKET_PATH`
-3. tmux — detected via `TMUX`
-4. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
-5. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
-6. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
-7. Fallback Alacritty window
+2. Orca — detected via `ORCA_WORKTREE_ID` and `ORCA_PANE_KEY`
+3. cmux — detected via `CMUX_SOCKET_PATH`
+4. tmux — detected via `TMUX`
+5. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
+6. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
+7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
+8. Alacritty window
+
+The Orca backend matches `ORCA_PANE_KEY` to the exact tab and leaf returned by `orca terminal list`, then runs `orca terminal split` against that terminal handle. `right` creates a horizontal split and `down` creates a vertical split. `launchMode` must be `"split"` for Orca.
 
 ### Backend capability matrix
 
 | Backend | `tab` | `split` — static directions | `split` — rotating policies |
 |---------|-------|------------------------------|--------------------------|
+| Orca | — | `right` `down` | — (use fallback list) |
 | cmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
 | tmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
 | iTerm2 | ✓ | `right` `down` | — (use fallback list) |
 | Terminal.app | ✓ | — (error) | — (error) |
 | Ghostty | — (new window) | — (error) | — (error) |
 
-Backends that don't support the requested `splitDirection` fail fast with an explicit error rather than silently doing something else.  Use a comma-separated fallback list in `splitDirection` to handle this gracefully (e.g. `"counterclockwise,right"` works on all split-capable backends).
+Backends that don't support the requested `splitDirection` fail fast with an explicit error rather than silently doing something else. Use a comma-separated fallback list in `splitDirection` to handle this gracefully (e.g. `"counterclockwise,right"` works on all split-capable backends).
 
 ## Examples
 

@@ -26,7 +26,7 @@ type LaunchMode = "tab" | "split"
 type StaticSplitDirection = "left" | "right" | "up" | "down"
 type RotatingSplitDirection = "clockwise" | "counterclockwise"
 type SplitDirection = StaticSplitDirection | RotatingSplitDirection
-type TerminalBackend = "cmux" | "tmux" | "iterm" | "terminal" | "ghostty" | "unknown"
+type TerminalBackend = "orca" | "cmux" | "tmux" | "iterm" | "terminal" | "ghostty" | "unknown"
 
 type ModelRef = {
 	provider: string
@@ -159,6 +159,7 @@ function resolveSupportedSplitDirection(
 		case "cmux":
 		case "tmux":
 			return preferences[0]
+		case "orca":
 		case "iterm":
 			return preferences.find((direction) => direction === "right" || direction === "down")
 		default:
@@ -167,6 +168,7 @@ function resolveSupportedSplitDirection(
 }
 
 function detectTerminalBackend(): TerminalBackend {
+	if (process.env.ORCA_WORKTREE_ID && process.env.ORCA_PANE_KEY) return "orca"
 	if (process.env.CMUX_SOCKET_PATH) return "cmux"
 	if (process.env.TMUX) return "tmux"
 	if (process.env.TERM_PROGRAM === "iTerm.app") return "iterm"
@@ -637,6 +639,29 @@ function buildBranchCommand(forkFile: string): string {
 	return `pi --session ${shellQuote(forkFile)}`
 }
 
+function resolveOrcaCommand(): string {
+	return normalizeTerminalFlag(process.env.ORCA_CLI_COMMAND)
+		?? (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : "orca")
+}
+
+function parseOrcaTerminalHandle(output: string, paneKey: string): string | undefined {
+	try {
+		const parsed = JSON.parse(output) as {
+			result?: {
+				terminals?: Array<{ handle?: unknown; tabId?: unknown; leafId?: unknown }>
+			}
+		}
+		const terminal = parsed.result?.terminals?.find((candidate) => (
+			typeof candidate.tabId === "string"
+			&& typeof candidate.leafId === "string"
+			&& `${candidate.tabId}:${candidate.leafId}` === paneKey
+		))
+		return typeof terminal?.handle === "string" && terminal.handle ? terminal.handle : undefined
+	} catch {
+		return undefined
+	}
+}
+
 function extractCmuxSurface(output: string): string | undefined {
 	return output.match(/surface:\d+/)?.[0]
 }
@@ -729,6 +754,60 @@ function updateRotatingState(
 	queue: LayoutLeafState[],
 ): void {
 	upsertLayoutState({ backend, workspaceKey, policy, queue })
+}
+
+async function openInOrca(
+	pi: ExtensionAPI,
+	forkFile: string,
+	config: ExtensionConfig,
+): Promise<{ opened: boolean; error?: string }> {
+	const worktreeId = process.env.ORCA_WORKTREE_ID
+	const paneKey = process.env.ORCA_PANE_KEY
+	if (!worktreeId || !paneKey) return { opened: false }
+	if (config.launchMode !== "split") {
+		return { opened: false, error: "Orca branch launch requires launchMode 'split'" }
+	}
+
+	const resolvedSplitDirection = resolveSupportedSplitDirection("orca", config.splitDirectionPreferences)
+	if (!resolvedSplitDirection) {
+		return { opened: false, error: `Split direction '${config.splitDirection}' is not supported in Orca` }
+	}
+
+	const orcaCommand = resolveOrcaCommand()
+	const listResult = await pi.exec(orcaCommand, ["terminal", "list", "--worktree", `id:${worktreeId}`, "--json"])
+	if (listResult.code !== 0) {
+		return { opened: false, error: listResult.stderr || listResult.stdout || "orca terminal list failed" }
+	}
+
+	const currentHandle = parseOrcaTerminalHandle(`${listResult.stdout || listResult.stderr}`, paneKey)
+	if (!currentHandle) {
+		return { opened: false, error: `Could not resolve Orca pane '${paneKey}' to a terminal handle` }
+	}
+
+	const direction = resolvedSplitDirection === "right" ? "horizontal" : "vertical"
+	const splitResult = await pi.exec(orcaCommand, [
+		"terminal",
+		"split",
+		"--terminal",
+		currentHandle,
+		"--direction",
+		direction,
+		"--command",
+		buildBranchCommand(forkFile),
+		"--json",
+	])
+	if (splitResult.code !== 0) {
+		return { opened: false, error: splitResult.stderr || splitResult.stdout || "orca terminal split failed" }
+	}
+
+	if (config.preserveFocus) {
+		const focusResult = await pi.exec(orcaCommand, ["terminal", "switch", "--terminal", currentHandle, "--json"])
+		if (focusResult.code !== 0) {
+			return { opened: false, error: focusResult.stderr || focusResult.stdout || "orca terminal switch failed" }
+		}
+	}
+
+	return { opened: true }
 }
 
 async function openInCmux(
@@ -1036,6 +1115,12 @@ async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext
 
 	const config = loadConfig()
 	const activeBackend = detectTerminalBackend()
+
+	if (activeBackend === "orca") {
+		const orcaAttempt = await openInOrca(pi, forkFile, config)
+		if (!orcaAttempt.opened) throw new Error(orcaAttempt.error || "Orca launch failed")
+		return
+	}
 
 	if (activeBackend === "cmux") {
 		const cmuxAttempt = await openInCmux(pi, forkFile, config)

@@ -142,6 +142,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ◐ | `extension-stats.ts` |
 | ● | `inline-shell.ts` |
 | ○ | `interactive-shell.ts` |
+| ● | `orca-session-tab-title/` |
 | ○ | `preset.ts` |
 | ● | `repoprompt-cli/` |
 | ◐ | `rewind/` — archived; use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
