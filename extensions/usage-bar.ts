@@ -8,7 +8,7 @@
  * - Reset countdowns
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readStoredCredential, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -429,14 +429,12 @@ function loadAntigravityAuthFromPiAuthJson(): AntigravityAuth | undefined {
 }
 
 async function loadAntigravityAuth(modelRegistry: any): Promise<AntigravityAuth | undefined> {
-	// Prefer model registry auth storage first (may auto-refresh).
 	try {
-		const accessToken = await Promise.resolve(modelRegistry?.authStorage?.getApiKey?.("google-antigravity"));
-		const raw = await Promise.resolve(modelRegistry?.authStorage?.get?.("google-antigravity"));
-
-		const projectId = typeof raw?.projectId === "string" ? raw.projectId : undefined;
-		const refreshToken = typeof raw?.refresh === "string" ? raw.refresh : undefined;
-		const expiresAt = typeof raw?.expires === "number" ? raw.expires : undefined;
+		const accessToken = await modelRegistry.getApiKeyForProvider("google-antigravity");
+		const storedCredential = readStoredCredential("google-antigravity") as Record<string, unknown> | undefined;
+		const projectId = typeof storedCredential?.projectId === "string" ? storedCredential.projectId : undefined;
+		const refreshToken = typeof storedCredential?.refresh === "string" ? storedCredential.refresh : undefined;
+		const expiresAt = typeof storedCredential?.expires === "number" ? storedCredential.expires : undefined;
 
 		if (typeof accessToken === "string" && accessToken.length > 0) {
 			return { accessToken, projectId, refreshToken, expiresAt };
@@ -550,7 +548,7 @@ async function fetchAntigravityUsage(modelRegistry: any): Promise<UsageSnapshot>
 
 		const getQuotaInfo = (modelKeys: string[]): { usedPercent: number; resetDescription?: string } | null => {
 			for (const key of modelKeys) {
-				const qi = models?.[key]?.quotaInfo;
+				const qi = models[key]?.quotaInfo;
 				if (!qi) continue;
 				// In practice (CodexBar issue #129), some models only provide resetTime.
 				// Treat missing remainingFraction as 0% remaining (100% used), which matches Antigravity's behavior when quota is exhausted.
@@ -672,13 +670,7 @@ function readCodexAuthFile(filePath: string): { accessToken?: string; accountId?
 	}
 }
 
-/**
- * Discover all unique Codex credentials from multiple sources:
- * 1. ~/.pi/agent/auth.json (authoritative, all openai-codex* keys)
- * 2. modelRegistry.authStorage (runtime auth, may be fresher)
- * 3. ~/.codex/*auth*.json files
- * Deduplicates by access_token first, then by usage stats when fetched
- */
+/** Discover unique Codex credentials from configured auth sources and deduplicate matching access tokens */
 async function discoverCodexCredentials(modelRegistry: any): Promise<CodexCredential[]> {
 	const credentials: CodexCredential[] = [];
 	const seenTokens = new Set<string>();
@@ -697,18 +689,18 @@ async function discoverCodexCredentials(modelRegistry: any): Promise<CodexCreden
 		}
 	}
 
-	// 2. Fallback: modelRegistry.authStorage (may have fresher token or be only source)
+	// 2. Include runtime auth when it differs from the stored credential snapshot
 	try {
-		const registryToken = await modelRegistry?.authStorage?.getApiKey?.("openai-codex");
-		if (registryToken && !seenTokens.has(registryToken)) {
-			const cred = await modelRegistry?.authStorage?.get?.("openai-codex");
-			const accountId = cred?.type === "oauth" ? cred.accountId : undefined;
+		const runtimeToken = await modelRegistry.getApiKeyForProvider("openai-codex");
+		if (runtimeToken && !seenTokens.has(runtimeToken)) {
+			const storedCredential = readStoredCredential("openai-codex") as Record<string, unknown> | undefined;
+			const accountId = typeof storedCredential?.accountId === "string" ? storedCredential.accountId : undefined;
 			credentials.push({
-				accessToken: registryToken,
+				accessToken: runtimeToken,
 				accountId,
-				source: "registry",
+				source: "runtime",
 			});
-			seenTokens.add(registryToken);
+			seenTokens.add(runtimeToken);
 		}
 	} catch {}
 
