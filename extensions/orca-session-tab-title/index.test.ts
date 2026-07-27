@@ -10,7 +10,7 @@ type Context = {
 };
 type Handler = (event: Event, ctx: Context) => Promise<void>;
 
-const ORIGINAL_ORCA_TAB_ID = process.env.ORCA_TAB_ID;
+const ORIGINAL_ORCA_PANE_KEY = process.env.ORCA_PANE_KEY;
 
 function createHarness(sessionName: string | undefined) {
 	const handlers = new Map<string, Handler>();
@@ -29,8 +29,8 @@ function createHarness(sessionName: string | undefined) {
 					stdout: JSON.stringify({
 						result: {
 							terminals: [
-								{ handle: "other-handle", tabId: "other-tab" },
-								{ handle: "target-handle", tabId: "target-tab" },
+								{ handle: "other-handle", leafId: "other-leaf", tabId: "other-tab" },
+								{ handle: "target-handle", leafId: "target-leaf", tabId: "reminted-tab" },
 							],
 						},
 					}),
@@ -52,20 +52,20 @@ function createHarness(sessionName: string | undefined) {
 }
 
 async function loadExtension() {
-	process.env.ORCA_TAB_ID = "target-tab";
+	process.env.ORCA_PANE_KEY = "stale-tab:target-leaf";
 	const moduleUrl = new URL(`./index.ts?test=${Date.now()}`, import.meta.url);
 	return (await import(moduleUrl.href)).default as (pi: ExtensionAPI) => void;
 }
 
 afterEach(() => {
-	if (ORIGINAL_ORCA_TAB_ID === undefined) {
-		delete process.env.ORCA_TAB_ID;
+	if (ORIGINAL_ORCA_PANE_KEY === undefined) {
+		delete process.env.ORCA_PANE_KEY;
 	} else {
-		process.env.ORCA_TAB_ID = ORIGINAL_ORCA_TAB_ID;
+		process.env.ORCA_PANE_KEY = ORIGINAL_ORCA_PANE_KEY;
 	}
 });
 
-test("session start renames the containing Orca tab to the named Pi session", async () => {
+test("session start renames the containing Orca tab after its tab id is reminted", async () => {
 	const extension = await loadExtension();
 	const harness = createHarness(" active session ");
 	extension(harness.pi);

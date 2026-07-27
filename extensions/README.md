@@ -289,7 +289,7 @@
   - cmux integration — pushes Pi agent state (model, thinking level, tokens, cost, tool activity) into the cmux sidebar; fire-and-forget, no-op when `CMUX_SOCKET_PATH` is unset
   - This version adds workspace auto-renaming: on `session_start` and `agent_end`, syncs the cmux workspace name to the Pi session name using `CMUX_WORKSPACE_ID` so concurrent cmux workspaces do not cross-rename (only when the workspace has exactly 1 pane and 1 surface)
 
-- ● [`orca-session-tab-title/`](orca-session-tab-title/) — renames the containing Orca tab to the active named Pi session on session start and `/name`, using `ORCA_TAB_ID` to target the correct tab across split panes
+- ● [`orca-session-tab-title/`](orca-session-tab-title/) — renames the containing Orca tab to the active named Pi session on session start and `/name`, using the durable leaf identity from `ORCA_PANE_KEY` to target the correct tab across split panes and Orca restarts
 
 - ○ [`interactive-shell.ts`](interactive-shell.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`preset.ts`](preset.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
