@@ -32,7 +32,7 @@
       "./extensions/grounded-compaction/index.ts",
       "./extensions/handover/index.ts",
       "./extensions/iterm-tab-color.ts",
-      "./extensions/protect-paths.ts",
+      "./extensions/protect-paths/index.ts",
       "./extensions/md.ts",
       "./extensions/assistant-provenance/index.ts",
       "./extensions/model-aware-compaction/index.ts",

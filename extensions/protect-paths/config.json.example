@@ -1,0 +1,6 @@
+{
+  "trustedReadPaths": [
+    "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent",
+    "/Users/you/.pi/agent/npm/node_modules/pi-web-access"
+  ]
+}

@@ -157,12 +157,12 @@
   - Search results are shown to the user but filtered out of LLM context via the `context` hook
   - **Recommendation:** For general-purpose web search with agents, I now prefer [nicobailon/pi-web-access](https://github.com/nicobailon/pi-web-access) — it uses Gemini search which provides better indexing and returns an AI-synthesized overview alongside citations, which works better for agent workflows. `brave-search` remains useful when you specifically need individual search results with per-result previews
 
-- ● [`protect-paths.ts`](protect-paths.ts) - standalone directory/command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails)
-  - 🔄 **Replaces the directory protection and brew prevention hooks from the old `guardrails/` directory.** For `.env` file protection and AST-based dangerous command gates (the other components of the old `guardrails/`), install upstream: `pi install npm:@aliou/pi-guardrails`
-  - Hard blocks: `.git/` and `node_modules/` directory access (file tools + bash command parsing), Homebrew install/upgrade commands
-  - Uses just-bash AST analysis (requires `just-bash` >= 2) to inspect nested command structures (including substitutions/functions/conditionals)
-  - Confirm gates: broad delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
-  - Allowlist for Pi's Homebrew install path in `node_modules/` (read-only)
+- ● [`protect-paths/`](protect-paths/) - standalone directory and command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails)
+  - Hard blocks `.git/` and untrusted `node_modules/` access from file tools and Bash commands, plus Homebrew install and upgrade commands
+  - Uses just-bash AST analysis to inspect nested command structures, including substitutions, functions, and conditionals
+  - Confirms broad delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
+  - Allows known read-only commands to inspect roots listed in `trustedReadPaths`; copy [`config.json.example`](protect-paths/config.json.example) to `config.json` and edit the absolute paths
+  - Pair with `pi install npm:@aliou/pi-guardrails` for `.env` file protection
 
 - ● `reverse-thinking.ts` - Adds backward (e.g. 'med' -> 'low') cycling movement through thinking levels via `shift+alt+tab`
 

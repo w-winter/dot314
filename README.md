@@ -119,7 +119,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ◐ | `oracle.ts` | | Second opinion from alternate model |
 | ◐ | `plan-mode.ts` | [`pi-plan-modus`](https://www.npmjs.com/package/pi-plan-modus) | Read-only planning sandbox with RepoPrompt support |
 | ● | `poly-notify/` | [`pi-poly-notify`](https://www.npmjs.com/package/pi-poly-notify) | Desktop / sound / Pushover notifications |
-| ● | `protect-paths.ts` | | Directory protection, brew prevention, command gates. 🔄 Pair with [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` + AST gates |
+| ● | `protect-paths/` | | Directory protection with configurable trusted read paths, brew prevention, and command gates. Pair with [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` protection |
 | ● | `repoprompt-mcp/` | [`pi-repoprompt-mcp`](https://www.npmjs.com/package/pi-repoprompt-mcp) | RepoPrompt MCP proxy with adaptive diff rendering, collapsed outputs, read-cache, and branch-safe binding |
 | ● | `reverse-thinking.ts` | | Backward thinking-level cycling on `shift+alt+tab` |
 | ● | `roam/` | [`pi-roam`](https://www.npmjs.com/package/pi-roam) | Post-hoc tmux handoff for remote continuation of sessions |

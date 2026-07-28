@@ -25,6 +25,7 @@ extensions/sandbox/sandbox.json
 extensions/vog/vog.json
 extensions/assistant-provenance/config.json
 extensions/command-center/config.json
+extensions/protect-paths/config.json
 extensions/repoprompt-cli/config.json
 
 # Binaries (downloaded per-machine)
