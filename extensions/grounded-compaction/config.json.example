@@ -3,6 +3,7 @@
         "inCompactionSummary": true,
         "inBranchSummary": true
     },
+    "toolResultChars": 2000,
     "defaultPreset": "default",
     "largeContextPreset": "large",
     "presets": {

@@ -55,6 +55,7 @@ For background on Pi's compaction lifecycle, see the [compaction docs](https://g
     "inCompactionSummary": true,
     "inBranchSummary": true
   },
+  "toolResultChars": null,
   "defaultPreset": "current",
   "presets": {}
 }
@@ -71,6 +72,18 @@ Controls files-touched grounding per feature.  Accepts `true`, `false`, or an ob
 Boolean applies to both; omitted defaults to both enabled.
 
 For compaction, the manifest is passed into the summarizer prompt and a cumulative version is appended verbatim to the persisted summary.  For branch summaries, the manifest is injected into the prompt instructions for Pi's native summarizer to reproduce.  In both cases, the manifest also serves as a recall aid for the summarizer itself — file operations buried across many tool calls in a long context are easy to miss without an authoritative inventory.
+
+### `toolResultChars`
+
+Controls how much text from each tool result the summarizer sees. `null` or omission passes the full text through. A positive integer keeps that many characters from the start of each result and appends a note saying how many were dropped. Either way only text is included; images and other non-text tool output are not.
+
+Pi's own compaction keeps 2000 characters of each tool result, which holds summarization cost down and stays workable on models of any context size. Setting `toolResultChars` to `2000` matches that; `null` opts out of it. Keeping more text gives the summarizer better recall of what tools actually returned, at the cost of a larger, more expensive request that is likelier to need `largeContextPreset` (below).
+
+That cost is usually worth paying when the substance of a session lives in tool output rather than in the conversation around it — reading long files, working through test failures, inspecting query results or logs. Two thousand characters is often just the head of a file or the first frames of a stack trace, so a summary built from it can record which files were examined while losing what they contained. The files-touched manifest preserves the paths either way, but only the tool text carries what was in them.
+
+A limit earns its keep in the opposite case: sessions dominated by bulky, low-signal output such as long directory listings, verbose build logs, or repeated large fetches. There the extra text mostly buys request size, and a cap keeps compaction affordable on a smaller default model.
+
+This setting applies to compaction only; summaries created from `/tree` are unaffected.
 
 ### `defaultPreset`, `largeContextPreset`, and `presets`
 
@@ -90,7 +103,7 @@ These are compaction-only. `defaultPreset` controls which model runs compaction 
 
 Compaction measures each summarization request before sending it, counting the prompt contract, the previous summary, your focus text, the files-touched manifest, and the serialized conversation. When a request does not fit the model that would run it, the whole compaction is sent to `largeContextPreset` instead. When Pi splits an oversized turn into two summaries — one for earlier history, one for the beginning of that turn — both run on the same model.
 
-This measures the summarization request, not the session. A long session usually produces a much smaller request, because compaction summarizes only the span being replaced and truncates tool results, so a session far larger than the summarizer's context window can still compact without rerouting.
+This measures the summarization request, not the session. A long session usually produces a smaller request because compaction summarizes only the span being replaced. A configured `toolResultChars` limit can reduce it further, so a session larger than the summarizer's context window may still compact without rerouting.
 
 `"current"` uses the session's active model and thinking level. An explicit `--preset <name>` or `-p <name>` always overrides `defaultPreset` and never reroutes to `largeContextPreset`. Preset lookup for directives is deterministic: exact match → case-insensitive → prefix → normalized substring.
 

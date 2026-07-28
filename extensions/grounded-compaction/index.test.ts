@@ -5,7 +5,13 @@ import os from "node:os";
 import path from "node:path";
 
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { SessionBeforeCompactEvent, SessionBeforeTreeEvent, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+    convertToLlm,
+    serializeConversation,
+    type SessionBeforeCompactEvent,
+    type SessionBeforeTreeEvent,
+    type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 
 import {
     DEFAULT_COMPACTION_PROMPT_CONTRACT,
@@ -283,18 +289,24 @@ function createTreeEvent(overrides?: Partial<SessionBeforeTreeEvent>): SessionBe
     } as SessionBeforeTreeEvent;
 }
 
+function createTestConfig(overrides: Partial<GroundedCompactionConfig> = {}): GroundedCompactionConfig {
+    return {
+        includeFilesTouched: {
+            inCompactionSummary: false,
+            inBranchSummary: false,
+        },
+        defaultPreset: "current",
+        toolResultChars: null,
+        presets: {},
+        ...overrides,
+    };
+}
+
 function createDeps(overrides: Partial<GroundedRunDeps> = {}): GroundedRunDeps {
     return {
         complete: async () => createAssistantResponse("summary"),
         collectFilesTouched: () => [],
-        loadConfig: async () => ({
-            includeFilesTouched: {
-                inCompactionSummary: false,
-                inBranchSummary: false,
-            },
-            defaultPreset: "current",
-            presets: {},
-        }),
+        loadConfig: async () => createTestConfig(),
         loadCompactionPrompt: async () => "Keep it concise",
         loadBranchSummaryPrompt: async () => undefined,
         ...overrides,
@@ -461,6 +473,21 @@ describe("grounded-compaction config", () => {
         assert.equal(config.largeContextPreset, "large");
     });
 
+    it("uses full tool results by default and accepts a positive character limit", () => {
+        assert.equal(parseConfig({}).toolResultChars, null);
+        assert.equal(parseConfig({ toolResultChars: null }).toolResultChars, null);
+        assert.equal(parseConfig({ toolResultChars: 8_000 }).toolResultChars, 8_000);
+    });
+
+    it("rejects invalid toolResultChars values", () => {
+        for (const toolResultChars of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "2000"]) {
+            assert.throws(
+                () => parseConfig({ toolResultChars }),
+                /toolResultChars must be null or a positive integer/,
+            );
+        }
+    });
+
     it("rejects invalid largeContextPreset references", () => {
         const presets = {
             fast: { model: "openai-codex/gpt-5.4-mini" },
@@ -613,6 +640,53 @@ describe("grounded-compaction prompt assembly", () => {
     });
 });
 
+describe("grounded-compaction message serialization", () => {
+    const messages = [
+        messageEntry("serialize-user", "user", "Inspect the result").message,
+        messageEntry("serialize-tool", "toolResult", "abcdef").message,
+    ];
+
+    it("preserves complete tool-result text by default", () => {
+        assert.equal(
+            serializePreparedMessages(messages),
+            "[User]: Inspect the result\n\n[Tool result]: abcdef",
+        );
+    });
+
+    it("matches Pi's head-only truncation format when a limit is configured", () => {
+        assert.equal(
+            serializePreparedMessages(messages, 3),
+            "[User]: Inspect the result\n\n[Tool result]: abc\n\n[... 3 more characters truncated]",
+        );
+    });
+
+    it("does not truncate tool-result text at the exact limit", () => {
+        assert.equal(serializePreparedMessages(messages, 6), serializePreparedMessages(messages));
+        assert.match(serializePreparedMessages(messages, 5), /\[\.\.\. 1 more characters truncated\]$/);
+    });
+
+    it("matches Pi's native serialization when configured with Pi's limit", () => {
+        const assistantMessage = messageEntry("serialize-assistant", "assistant", "unused").message;
+        const parityMessages = [
+            messages[0],
+            {
+                ...assistantMessage,
+                content: [
+                    { type: "thinking", thinking: "Inspecting" },
+                    { type: "text", text: "Found the call" },
+                    { type: "toolCall", id: "call-read", name: "read", arguments: { path: "src/a.ts" } },
+                ],
+            },
+            messageEntry("serialize-large-tool", "toolResult", "x".repeat(2_001)).message,
+        ] as Parameters<typeof convertToLlm>[0];
+
+        assert.equal(
+            serializePreparedMessages(parityMessages, 2_000),
+            serializeConversation(convertToLlm(parityMessages)),
+        );
+    });
+});
+
 describe("grounded-compaction branch-summary instruction builder", () => {
     it("returns undefined when neither a prompt contract nor manifest is present", () => {
         assert.equal(buildBranchSummaryInstructions({ focusText: "keep parser detail" }), undefined);
@@ -723,7 +797,7 @@ describe("grounded-compaction runtime", () => {
                 selectedModelId = model.id;
                 return createAssistantResponse("summary from configured default preset");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: {
                     inCompactionSummary: false,
                     inBranchSummary: false,
@@ -744,6 +818,105 @@ describe("grounded-compaction runtime", () => {
             model: "openai-codex/gpt-5.4-mini",
             thinkingLevel: "medium",
         });
+    });
+
+    it("applies toolResultChars to the prompt used for compaction", async () => {
+        const event = createEvent();
+        const toolResult = messageEntry("history-tool", "toolResult", "abcdefghij");
+        const model = createModel();
+        const { ctx } = createContext([model]);
+        let promptText = "";
+
+        const result = await runGroundedCompaction(
+            createEvent({
+                branchEntries: [toolResult, ...event.branchEntries.slice(1)],
+                preparation: {
+                    ...event.preparation,
+                    messagesToSummarize: [toolResult.message],
+                },
+            }),
+            ctx,
+            createDeps({
+                complete: async (_model, context) => {
+                    promptText = ((context.messages[0].content as Array<{ text?: string }>)[0].text ?? "") as string;
+                    return createAssistantResponse("summary");
+                },
+                loadConfig: async () => createTestConfig({
+                    includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                    defaultPreset: "current",
+                    toolResultChars: 4,
+                    presets: {},
+                }),
+            }),
+        );
+
+        assert.ok(result && "compaction" in result);
+        assert.match(promptText, /\[Tool result\]: abcd\n\n\[\.\.\. 6 more characters truncated\]/);
+        assert.equal(promptText.includes("abcdefghij"), false);
+    });
+
+    it("uses the configured tool-result limit when selecting the capacity route", async () => {
+        const baseEvent = createEvent();
+        const toolResult = messageEntry("capacity-tool", "toolResult", "x".repeat(4_000));
+        const reserveTokens = 50;
+        const event = createEvent({
+            branchEntries: [toolResult, ...baseEvent.branchEntries.slice(1)],
+            preparation: {
+                ...baseEvent.preparation,
+                messagesToSummarize: [toolResult.message],
+                settings: { ...baseEvent.preparation.settings, reserveTokens },
+            },
+        });
+        const cappedPrompt = buildSummaryUserPrompt({
+            mode: "history",
+            promptContract: "Keep it concise",
+            serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize, 4),
+        });
+        const defaultModel = createModel({
+            id: "default",
+            contextWindow: estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${cappedPrompt}`) + reserveTokens,
+            maxTokens: reserveTokens,
+        });
+        const largeModel = createModel({
+            provider: "openai-codex",
+            id: "large",
+            contextWindow: 1_000_000,
+            maxTokens: 1_000,
+        });
+        const loadConfigWithLimit = (toolResultChars: number | null) => async () => createTestConfig({
+            defaultPreset: "current",
+            largeContextPreset: "large",
+            toolResultChars,
+            presets: { large: { model: "openai-codex/large" } },
+        });
+
+        const cappedContext = createContext([defaultModel, largeModel], defaultModel);
+        const cappedCalls: string[] = [];
+        const cappedResult = await runGroundedCompaction(event, cappedContext.ctx, createDeps({
+            complete: async (model) => {
+                cappedCalls.push(model.id);
+                return createAssistantResponse("capped summary");
+            },
+            loadConfig: loadConfigWithLimit(4),
+        }));
+
+        assert.ok(cappedResult && "compaction" in cappedResult);
+        assert.deepEqual(cappedCalls, ["default"]);
+        assert.equal(cappedContext.authLookups.includes("openai-codex/large"), false);
+
+        const fullContext = createContext([defaultModel, largeModel], defaultModel);
+        const fullCalls: string[] = [];
+        const fullResult = await runGroundedCompaction(event, fullContext.ctx, createDeps({
+            complete: async (model) => {
+                fullCalls.push(model.id);
+                return createAssistantResponse("large summary");
+            },
+            loadConfig: loadConfigWithLimit(null),
+        }));
+
+        assert.ok(fullResult && "compaction" in fullResult);
+        assert.deepEqual(fullCalls, ["large"]);
+        assert.equal(fullContext.authLookups.includes("openai-codex/large"), true);
     });
 
     it("cancels an oversized ordinary request instead of falling through to Pi compaction", async () => {
@@ -784,7 +957,7 @@ describe("grounded-compaction runtime", () => {
                 calledModels.push(model.id);
                 return createAssistantResponse("large summary");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "fast",
                 largeContextPreset: "large",
@@ -822,7 +995,7 @@ describe("grounded-compaction runtime", () => {
                     completeCalls += 1;
                     return createAssistantResponse("must not run");
                 },
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                     defaultPreset: "current",
                     largeContextPreset: "large",
@@ -863,7 +1036,7 @@ describe("grounded-compaction runtime", () => {
                 capturedBudgets.push(options.maxTokens);
                 return createAssistantResponse(model.id === "large" ? "large summary" : "unexpected summary");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
                 largeContextPreset: "large",
@@ -931,7 +1104,7 @@ describe("grounded-compaction runtime", () => {
                     completeCalls += 1;
                     return createAssistantResponse("must not run");
                 },
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                     defaultPreset: "fast",
                     largeContextPreset: "large",
@@ -958,7 +1131,7 @@ describe("grounded-compaction runtime", () => {
                 calledModels.push(model.id);
                 return createAssistantResponse("", "error");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
                 largeContextPreset: "large",
@@ -1093,7 +1266,7 @@ describe("grounded-compaction runtime", () => {
                 completeCalls += 1;
                 return createAssistantResponse("must not run");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
                 largeContextPreset: "large",
@@ -1131,7 +1304,7 @@ describe("grounded-compaction runtime", () => {
                 completeCalls += 1;
                 return createAssistantResponse("must not run");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
                 largeContextPreset: "large",
@@ -1155,7 +1328,7 @@ describe("grounded-compaction runtime", () => {
                 completeCalls += 1;
                 return createAssistantResponse("must not run");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
                 largeContextPreset: "large",
@@ -1174,7 +1347,7 @@ describe("grounded-compaction runtime", () => {
 
         const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
             complete: async () => createAssistantResponse("", "error"),
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
                 largeContextPreset: "large",
@@ -1200,7 +1373,7 @@ describe("grounded-compaction runtime", () => {
                         completeCalls += 1;
                         return createAssistantResponse("must not run");
                     },
-                    loadConfig: async () => ({
+                    loadConfig: async () => createTestConfig({
                         includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                         defaultPreset: "current",
                         largeContextPreset: "large",
@@ -1253,7 +1426,7 @@ describe("grounded-compaction runtime", () => {
                 selectedModelId = model.id;
                 return createAssistantResponse("summary from session fallback");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: {
                     inCompactionSummary: false,
                     inBranchSummary: false,
@@ -1306,7 +1479,7 @@ describe("grounded-compaction runtime", () => {
                 assert.equal(promptText.includes("--preset"), false);
                 return createAssistantResponse("summary from current override");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: {
                     inCompactionSummary: false,
                     inBranchSummary: false,
@@ -1348,7 +1521,7 @@ describe("grounded-compaction runtime", () => {
                 promptText = ((context.messages[0].content as Array<{ text?: string }>)[0].text ?? "") as string;
                 return createAssistantResponse("summary from default path");
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: {
                     inCompactionSummary: false,
                     inBranchSummary: false,
@@ -1374,7 +1547,7 @@ describe("grounded-compaction runtime", () => {
 
         const result = await runGroundedCompaction(event, ctx, createDeps({
             complete: async () => createAssistantResponse("", "error"),
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: {
                     inCompactionSummary: false,
                     inBranchSummary: false,
@@ -1401,7 +1574,7 @@ describe("grounded-compaction runtime", () => {
                     calledModels.push(model.id);
                     return createAssistantResponse("", "error");
                 },
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                     defaultPreset: "current",
                     presets: { explicit: { model: "anthropic/explicit" } },
@@ -1582,7 +1755,7 @@ describe("grounded-compaction runtime", () => {
                     lastTimestamp: 3,
                 }];
             },
-            loadConfig: async () => ({
+            loadConfig: async () => createTestConfig({
                 includeFilesTouched: {
                     inCompactionSummary: true,
                     inBranchSummary: false,
@@ -1635,7 +1808,7 @@ describe("grounded-compaction tree augmentation runtime", () => {
             }),
             ctx,
             createDeps({
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: {
                         inCompactionSummary: false,
                         inBranchSummary: true,
@@ -1660,7 +1833,7 @@ describe("grounded-compaction tree augmentation runtime", () => {
             }),
             ctx,
             createDeps({
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: {
                         inCompactionSummary: false,
                         inBranchSummary: true,
@@ -1691,7 +1864,7 @@ describe("grounded-compaction tree augmentation runtime", () => {
                     operations: new Set(["read"]),
                     lastTimestamp: 1,
                 }],
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: {
                         inCompactionSummary: false,
                         inBranchSummary: true,
@@ -1730,7 +1903,7 @@ describe("grounded-compaction tree augmentation runtime", () => {
                     operations: new Set(["edit"]),
                     lastTimestamp: 1,
                 }],
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: {
                         inCompactionSummary: false,
                         inBranchSummary: true,
@@ -1769,7 +1942,7 @@ describe("grounded-compaction tree augmentation runtime", () => {
                     capturedEntries = entries;
                     return [];
                 },
-                loadConfig: async () => ({
+                loadConfig: async () => createTestConfig({
                     includeFilesTouched: {
                         inCompactionSummary: false,
                         inBranchSummary: true,

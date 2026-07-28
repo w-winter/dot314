@@ -2,7 +2,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { completeSimple, type Api, type AssistantMessage, type Message, type Model } from "@earendil-works/pi-ai";
+import {
+    contentText,
+    type Api,
+    type AssistantMessage,
+    type Message,
+    type Model,
+} from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
     convertToLlm,
     findTurnStartIndex,
@@ -38,6 +45,7 @@ export interface GroundedCompactionConfig {
     includeFilesTouched: IncludeFilesTouchedSettings;
     defaultPreset: string;
     largeContextPreset?: string;
+    toolResultChars: number | null;
     presets: Record<string, PresetConfig>;
 }
 
@@ -204,6 +212,7 @@ const DEFAULT_INCLUDE_FILES_TOUCHED_SETTINGS: IncludeFilesTouchedSettings = {
 export const DEFAULT_CONFIG: GroundedCompactionConfig = {
     includeFilesTouched: DEFAULT_INCLUDE_FILES_TOUCHED_SETTINGS,
     defaultPreset: CURRENT_PRESET_SENTINEL,
+    toolResultChars: null,
     presets: {},
 };
 
@@ -340,6 +349,18 @@ export function parseConfig(value: unknown): GroundedCompactionConfig {
     }
 
     const includeFilesTouched = parseIncludeFilesTouchedSettings(value.includeFilesTouched);
+    const toolResultChars =
+        value.toolResultChars === undefined || value.toolResultChars === null
+            ? null
+            : typeof value.toolResultChars === "number"
+                && Number.isInteger(value.toolResultChars)
+                && value.toolResultChars > 0
+                ? value.toolResultChars
+                : (() => {
+                    throw new Error(
+                        "Invalid grounded-compaction config: toolResultChars must be null or a positive integer",
+                    );
+                })();
 
     const defaultPreset =
         value.defaultPreset === undefined
@@ -415,6 +436,7 @@ export function parseConfig(value: unknown): GroundedCompactionConfig {
         includeFilesTouched,
         defaultPreset,
         ...(largeContextPreset ? { largeContextPreset } : {}),
+        toolResultChars,
         presets,
     };
 }
@@ -691,8 +713,44 @@ export function stripGroundedCompactionManifestTail(text?: string): string | und
     return stripped || undefined;
 }
 
-export function serializePreparedMessages(messages: PreparedMessages): string {
-    return serializeConversation(convertToLlm(messages));
+function truncateToolResult(text: string, maxChars: number): string {
+    if (text.length <= maxChars) {
+        return text;
+    }
+
+    const truncatedChars = text.length - maxChars;
+    return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+}
+
+function serializeConversationForCompaction(messages: Message[], toolResultChars: number | null): string {
+    const parts: string[] = [];
+
+    for (const message of messages) {
+        if (message.role !== "toolResult") {
+            const serializedMessage = serializeConversation([message]);
+            if (serializedMessage) {
+                parts.push(serializedMessage);
+            }
+            continue;
+        }
+
+        const content = contentText(message.content, "");
+        if (content) {
+            const serializedContent = toolResultChars === null
+                ? content
+                : truncateToolResult(content, toolResultChars);
+            parts.push(`[Tool result]: ${serializedContent}`);
+        }
+    }
+
+    return parts.join("\n\n");
+}
+
+export function serializePreparedMessages(
+    messages: PreparedMessages,
+    toolResultChars: number | null = null,
+): string {
+    return serializeConversationForCompaction(convertToLlm(messages), toolResultChars);
 }
 
 function notify(ctx: HookContext, message: string, level: NotifyLevel = "warning"): void {
@@ -1112,17 +1170,21 @@ function buildSummaryArtifacts(params: {
 function prepareSummaryBatch(params: {
     event: SessionBeforeCompactEvent;
     promptContract: string;
+    toolResultChars: number | null;
     focusText?: string;
     previousSummary?: string;
     summaryArtifacts: SummaryArtifacts;
 }): PreparedSummaryBatch {
-    const { event, promptContract, focusText, previousSummary, summaryArtifacts } = params;
+    const { event, promptContract, toolResultChars, focusText, previousSummary, summaryArtifacts } = params;
     if (event.preparation.isSplitTurn && event.preparation.turnPrefixMessages.length > 0) {
         const history = event.preparation.messagesToSummarize.length > 0
             ? prepareSummaryRequest({
                 mode: "history",
                 promptContract,
-                serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize),
+                serializedConversation: serializePreparedMessages(
+                    event.preparation.messagesToSummarize,
+                    toolResultChars,
+                ),
                 previousSummary,
                 focusText,
                 filesTouchedManifestBlock: summaryArtifacts.historyManifestBlock,
@@ -1131,7 +1193,10 @@ function prepareSummaryBatch(params: {
         const turnPrefix = prepareSummaryRequest({
             mode: "turn-prefix",
             promptContract,
-            serializedConversation: serializePreparedMessages(event.preparation.turnPrefixMessages),
+            serializedConversation: serializePreparedMessages(
+                event.preparation.turnPrefixMessages,
+                toolResultChars,
+            ),
             focusText,
             filesTouchedManifestBlock: summaryArtifacts.turnPrefixManifestBlock,
         });
@@ -1148,7 +1213,10 @@ function prepareSummaryBatch(params: {
         history: prepareSummaryRequest({
             mode: "history",
             promptContract,
-            serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize),
+            serializedConversation: serializePreparedMessages(
+                event.preparation.messagesToSummarize,
+                toolResultChars,
+            ),
             previousSummary,
             focusText,
             filesTouchedManifestBlock: summaryArtifacts.historyManifestBlock,
@@ -1364,6 +1432,7 @@ export async function runGroundedCompaction(
         const batch = prepareSummaryBatch({
             event,
             promptContract,
+            toolResultChars: config.toolResultChars,
             focusText: parsedInstructions.focusText,
             previousSummary,
             summaryArtifacts,
