@@ -3,19 +3,20 @@
         "inCompactionSummary": true,
         "inBranchSummary": true
     },
-    "defaultPreset": "fast",
+    "defaultPreset": "default",
+    "largeContextPreset": "large",
     "presets": {
-        "fast": {
-            "model": "openai-codex/gpt-5.4-mini",
-            "thinkingLevel": "low"
-        },
-        "cheap": {
-            "model": "openai-codex/gpt-5.4-mini",
+        "default": {
+            "model": "openai-codex/gpt-5.6-terra",
             "thinkingLevel": "medium"
         },
+        "large": {
+            "model": "openai-codex/gpt-5.4",
+            "thinkingLevel": "xhigh"
+        },
         "deep": {
-            "model": "anthropic/claude-opus-4-6",
-            "thinkingLevel": "high"
+            "model": "anthropic/claude-opus-5-0",
+            "thinkingLevel": "xhigh"
         }
     }
 }

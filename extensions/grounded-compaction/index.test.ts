@@ -10,9 +10,11 @@ import type { SessionBeforeCompactEvent, SessionBeforeTreeEvent, SessionEntry } 
 import {
     DEFAULT_COMPACTION_PROMPT_CONTRACT,
     DEFAULT_CONFIG,
+    DEFAULT_SYSTEM_PROMPT,
     buildBranchSummaryInstructions,
     buildSummaryUserPrompt,
     deriveSummaryEntrySpans,
+    estimateInputTokens,
     formatManifestOperations,
     getEffectiveThinkingLevel,
     loadBranchSummaryPromptContract,
@@ -24,6 +26,7 @@ import {
     resolvePresetMatch,
     runGroundedBranchSummaryAugmentation,
     runGroundedCompaction,
+    serializePreparedMessages,
     stripGroundedCompactionManifestTail,
     type GroundedCompactionConfig,
 } from "./index.ts";
@@ -179,16 +182,30 @@ function compactionEntry(id: string, summary: string, firstKeptEntryId = "first-
     } as SessionEntry;
 }
 
-function createContext(models: Model<Api>[], currentModel = models[0]): { ctx: TestContext; notifications: string[] } {
+function createContext(
+    models: Model<Api>[],
+    currentModel = models[0],
+    authFailures: ReadonlySet<string> = new Set(),
+): {
+    ctx: TestContext;
+    notifications: string[];
+    notificationLevels: Array<{ message: string; level?: string }>;
+    authLookups: string[];
+} {
     const notifications: string[] = [];
+    const notificationLevels: Array<{ message: string; level?: string }> = [];
+    const authLookups: string[] = [];
 
     return {
         notifications,
+        notificationLevels,
+        authLookups,
         ctx: {
             hasUI: true,
             ui: {
-                notify(message) {
+                notify(message, level) {
                     notifications.push(message);
+                    notificationLevels.push({ message, level });
                 },
             },
             model: currentModel,
@@ -197,7 +214,12 @@ function createContext(models: Model<Api>[], currentModel = models[0]): { ctx: T
                 getAll() {
                     return models;
                 },
-                async getApiKeyAndHeaders() {
+                async getApiKeyAndHeaders(model) {
+                    const reference = `${model.provider}/${model.id}`;
+                    authLookups.push(reference);
+                    if (authFailures.has(reference)) {
+                        return { ok: false as const, error: `no credentials for ${reference}` };
+                    }
                     return { ok: true as const, apiKey: "test-key" };
                 },
             },
@@ -424,6 +446,43 @@ describe("grounded-compaction config", () => {
         });
 
         assert.equal(config.defaultPreset, "fast");
+    });
+
+    it("accepts an exact declared largeContextPreset", () => {
+        const config = parseConfig({
+            defaultPreset: "fast",
+            largeContextPreset: "large",
+            presets: {
+                fast: { model: "openai-codex/gpt-5.4-mini" },
+                large: { model: "openai-codex/gpt-5.4" },
+            },
+        });
+
+        assert.equal(config.largeContextPreset, "large");
+    });
+
+    it("rejects invalid largeContextPreset references", () => {
+        const presets = {
+            fast: { model: "openai-codex/gpt-5.4-mini" },
+            large: { model: "openai-codex/gpt-5.4" },
+        };
+
+        assert.throws(
+            () => parseConfig({ defaultPreset: "fast", largeContextPreset: " ", presets }),
+            /largeContextPreset must be a non-empty string/,
+        );
+        assert.throws(
+            () => parseConfig({ defaultPreset: "fast", largeContextPreset: "Large", presets }),
+            /largeContextPreset 'Large' was not found in presets/,
+        );
+        assert.throws(
+            () => parseConfig({ defaultPreset: "fast", largeContextPreset: "fast", presets }),
+            /largeContextPreset must differ from defaultPreset/,
+        );
+        assert.throws(
+            () => parseConfig({ defaultPreset: "fast", largeContextPreset: 5, presets }),
+            /largeContextPreset must be a non-empty string/,
+        );
     });
 });
 
@@ -687,6 +746,497 @@ describe("grounded-compaction runtime", () => {
         });
     });
 
+    it("cancels an oversized ordinary request instead of falling through to Pi compaction", async () => {
+        const tooSmallModel = createModel({ contextWindow: 100, maxTokens: 50 });
+        const { ctx, notifications } = createContext([tooSmallModel]);
+        let completeCalls = 0;
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("must not run");
+            },
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+        assert.match(notifications.at(-1) ?? "", /context window|capacity/i);
+    });
+
+    it("reroutes an oversized ordinary request before calling the default provider", async () => {
+        const fastModel = createModel({
+            provider: "openai-codex",
+            id: "gpt-5.4-mini",
+            contextWindow: 100,
+            maxTokens: 50,
+        });
+        const largeModel = createModel({
+            provider: "openai-codex",
+            id: "gpt-5.4",
+            contextWindow: 10_000,
+            maxTokens: 800,
+        });
+        const { ctx, notifications, notificationLevels } = createContext([fastModel, largeModel], fastModel);
+        const calledModels: string[] = [];
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async (model) => {
+                calledModels.push(model.id);
+                return createAssistantResponse("large summary");
+            },
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "fast",
+                largeContextPreset: "large",
+                presets: {
+                    fast: { model: "openai-codex/gpt-5.4-mini", thinkingLevel: "low" },
+                    large: { model: "openai-codex/gpt-5.4", thinkingLevel: "medium" },
+                },
+            }),
+        }));
+
+        assert.deepEqual(calledModels, ["gpt-5.4"]);
+        assert.ok(result && "compaction" in result);
+        assert.deepEqual(result.compaction.details, {
+            model: "openai-codex/gpt-5.4",
+            thinkingLevel: "medium",
+        });
+        assert.match(notifications.at(-1) ?? "", /routing to large/i);
+        assert.equal(notificationLevels.at(-1)?.level, "info");
+    });
+
+    it("requires the configured large model to have a strictly larger context window", async () => {
+        for (const largeContextWindow of [100, 50]) {
+            const fastModel = createModel({ id: "fast", contextWindow: 100, maxTokens: 50 });
+            const candidateModel = createModel({
+                provider: "anthropic",
+                id: "large",
+                contextWindow: largeContextWindow,
+                maxTokens: 10,
+            });
+            const { ctx, notifications } = createContext([fastModel, candidateModel], fastModel);
+            let completeCalls = 0;
+
+            const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+                complete: async () => {
+                    completeCalls += 1;
+                    return createAssistantResponse("must not run");
+                },
+                loadConfig: async () => ({
+                    includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                    defaultPreset: "current",
+                    largeContextPreset: "large",
+                    presets: { large: { model: "anthropic/large" } },
+                }),
+            }));
+
+            assert.deepEqual(result, { cancel: true });
+            assert.equal(completeCalls, 0);
+            assert.match(notifications.at(-1) ?? "", /strictly larger context window/i);
+        }
+    });
+
+    it("uses one large-context model for every split-turn summary call", async () => {
+        const fastModel = createModel({ id: "fast", contextWindow: 500, maxTokens: 50 });
+        const largeModel = createModel({ id: "large", contextWindow: 10_000, maxTokens: 500 });
+        const { ctx } = createContext([fastModel, largeModel], fastModel);
+        const oldUser = messageEntry("old-user", "user", "Short prior turn");
+        const currentUser = messageEntry("current-user", "user", "x".repeat(2_000));
+        const keptAssistant = messageEntry("kept-assistant", "assistant", "Kept suffix");
+        const baseEvent = createEvent();
+        const calledModels: string[] = [];
+        const capturedBudgets: Array<number | undefined> = [];
+        const event = createEvent({
+            branchEntries: [oldUser, currentUser, keptAssistant],
+            preparation: {
+                ...baseEvent.preparation,
+                firstKeptEntryId: keptAssistant.id,
+                messagesToSummarize: [oldUser.message],
+                turnPrefixMessages: [currentUser.message],
+                isSplitTurn: true,
+            },
+        });
+
+        const result = await runGroundedCompaction(event, ctx, createDeps({
+            complete: async (model, _context, options) => {
+                calledModels.push(model.id);
+                capturedBudgets.push(options.maxTokens);
+                return createAssistantResponse(model.id === "large" ? "large summary" : "unexpected summary");
+            },
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "current",
+                largeContextPreset: "large",
+                presets: { large: { model: "anthropic/large" } },
+            }),
+        }));
+
+        assert.ok(result && "compaction" in result);
+        assert.deepEqual(calledModels, ["large", "large"]);
+        assert.deepEqual(capturedBudgets, [500, 500]);
+        assert.equal(result.compaction.details.model, "anthropic/large");
+    });
+
+    it("preflights every split-turn request before starting provider work", async () => {
+        const model = createModel({ contextWindow: 500, maxTokens: 50 });
+        const { ctx } = createContext([model]);
+        const oldUser = messageEntry("old-user", "user", "Short prior turn");
+        const currentUser = messageEntry("current-user", "user", "x".repeat(20_000));
+        const keptAssistant = messageEntry("kept-assistant", "assistant", "Kept suffix");
+        const baseEvent = createEvent();
+        let completeCalls = 0;
+        const event = createEvent({
+            branchEntries: [oldUser, currentUser, keptAssistant],
+            preparation: {
+                ...baseEvent.preparation,
+                firstKeptEntryId: keptAssistant.id,
+                messagesToSummarize: [oldUser.message],
+                turnPrefixMessages: [currentUser.message],
+                isSplitTurn: true,
+            },
+        });
+
+        const result = await runGroundedCompaction(event, ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("must not run");
+            },
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+    });
+
+    it("keeps explicit presets authoritative instead of using largeContextPreset", async () => {
+        const fastModel = createModel({
+            provider: "openai-codex",
+            id: "gpt-5.4-mini",
+            contextWindow: 100,
+            maxTokens: 50,
+        });
+        const largeModel = createModel({
+            provider: "openai-codex",
+            id: "gpt-5.4",
+            contextWindow: 10_000,
+            maxTokens: 800,
+        });
+        const { ctx } = createContext([fastModel, largeModel], fastModel);
+        let completeCalls = 0;
+
+        const result = await runGroundedCompaction(
+            createEvent({ customInstructions: "-p fast" }),
+            ctx,
+            createDeps({
+                complete: async () => {
+                    completeCalls += 1;
+                    return createAssistantResponse("must not run");
+                },
+                loadConfig: async () => ({
+                    includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                    defaultPreset: "fast",
+                    largeContextPreset: "large",
+                    presets: {
+                        fast: { model: "openai-codex/gpt-5.4-mini" },
+                        large: { model: "openai-codex/gpt-5.4" },
+                    },
+                }),
+            }),
+        );
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+    });
+
+    it("does not use largeContextPreset after a non-capacity provider failure", async () => {
+        const defaultModel = createModel({ id: "default" });
+        const largeModel = createModel({ provider: "anthropic", id: "large", contextWindow: 1_000_000 });
+        const { ctx, authLookups } = createContext([defaultModel, largeModel], defaultModel);
+        const calledModels: string[] = [];
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async (model) => {
+                calledModels.push(model.id);
+                return createAssistantResponse("", "error");
+            },
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "current",
+                largeContextPreset: "large",
+                presets: { large: { model: "anthropic/large" } },
+            }),
+        }));
+
+        assert.equal(result, undefined);
+        assert.deepEqual(calledModels, ["default"]);
+        assert.equal(authLookups.includes("anthropic/large"), false);
+    });
+
+    it("uses model maxTokens as the shared preflight and completion output budget", async () => {
+        const model = createModel({ maxTokens: 125 });
+        const { ctx } = createContext([model]);
+        let capturedMaxTokens: number | undefined;
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async (_model, _context, options) => {
+                capturedMaxTokens = options.maxTokens;
+                return createAssistantResponse("summary");
+            },
+        }));
+
+        assert.ok(result && "compaction" in result);
+        assert.equal(capturedMaxTokens, 125);
+    });
+
+    it("accepts a summary request at exact context-window equality", async () => {
+        const event = createEvent();
+        const maxTokens = 125;
+        const userPrompt = buildSummaryUserPrompt({
+            mode: "history",
+            promptContract: "Keep it concise",
+            serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize),
+        });
+        const estimatedInputTokens = estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${userPrompt}`);
+        const model = createModel({ contextWindow: estimatedInputTokens + maxTokens, maxTokens });
+        const { ctx } = createContext([model]);
+        let completeCalls = 0;
+
+        const result = await runGroundedCompaction(event, ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("summary");
+            },
+        }));
+
+        assert.ok(result && "compaction" in result);
+        assert.equal(completeCalls, 1);
+    });
+
+    it("rejects invalid model capacity limits before provider execution", async () => {
+        for (const overrides of [
+            { contextWindow: 0 },
+            { contextWindow: -1 },
+            { contextWindow: Number.NaN },
+            { contextWindow: Number.POSITIVE_INFINITY },
+            { maxTokens: 0 },
+            { maxTokens: -1 },
+            { maxTokens: Number.NaN },
+            { maxTokens: Number.POSITIVE_INFINITY },
+        ]) {
+            const model = createModel(overrides);
+            const { ctx } = createContext([model]);
+            let completeCalls = 0;
+            const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+                complete: async () => {
+                    completeCalls += 1;
+                    return createAssistantResponse("must not run");
+                },
+            }));
+
+            assert.deepEqual(result, { cancel: true });
+            assert.equal(completeCalls, 0);
+        }
+    });
+
+    it("uses reserveTokens as the output budget when it is smaller than model maxTokens", async () => {
+        const model = createModel({ maxTokens: 5_000 });
+        const { ctx } = createContext([model]);
+        let capturedMaxTokens: number | undefined;
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async (_model, _context, options) => {
+                capturedMaxTokens = options.maxTokens;
+                return createAssistantResponse("summary");
+            },
+        }));
+
+        assert.ok(result && "compaction" in result);
+        assert.equal(capturedMaxTokens, 800);
+    });
+
+    it("counts the whole assembled prompt, not just the serialized conversation", async () => {
+        const baseEvent = createEvent();
+        const conversationOnly = buildSummaryUserPrompt({
+            mode: "history",
+            promptContract: "Keep it concise",
+            serializedConversation: serializePreparedMessages(baseEvent.preparation.messagesToSummarize),
+        });
+        const maxTokens = 50;
+        const model = createModel({
+            contextWindow: estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${conversationOnly}`) + maxTokens + 100,
+            maxTokens,
+        });
+        const { ctx } = createContext([model]);
+        let completeCalls = 0;
+        const event = createEvent({
+            preparation: { ...baseEvent.preparation, previousSummary: "p".repeat(20_000) },
+        });
+
+        const result = await runGroundedCompaction(event, ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("must not run");
+            },
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+    });
+
+    it("never resolves largeContextPreset for invalid capacity limits", async () => {
+        const brokenModel = createModel({ id: "broken", contextWindow: 0 });
+        const largeModel = createModel({ id: "large", contextWindow: 1_000_000 });
+        const { ctx, authLookups } = createContext([brokenModel, largeModel], brokenModel);
+        let completeCalls = 0;
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("must not run");
+            },
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "current",
+                largeContextPreset: "large",
+                presets: { large: { model: "anthropic/large" } },
+            }),
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+        assert.equal(authLookups.includes("anthropic/large"), false);
+    });
+
+    it("starts no provider call when the large candidate cannot fit every split-turn request", async () => {
+        const fastModel = createModel({ id: "fast", contextWindow: 100, maxTokens: 50 });
+        const largeModel = createModel({ id: "large", contextWindow: 3_000, maxTokens: 50 });
+        const { ctx, authLookups } = createContext([fastModel, largeModel], fastModel);
+        const oldUser = messageEntry("old-user", "user", "Short prior turn");
+        const currentUser = messageEntry("current-user", "user", "x".repeat(20_000));
+        const keptAssistant = messageEntry("kept-assistant", "assistant", "Kept suffix");
+        const baseEvent = createEvent();
+        let completeCalls = 0;
+        const event = createEvent({
+            branchEntries: [oldUser, currentUser, keptAssistant],
+            preparation: {
+                ...baseEvent.preparation,
+                firstKeptEntryId: keptAssistant.id,
+                messagesToSummarize: [oldUser.message],
+                turnPrefixMessages: [currentUser.message],
+                isSplitTurn: true,
+            },
+        });
+
+        const result = await runGroundedCompaction(event, ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("must not run");
+            },
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "current",
+                largeContextPreset: "large",
+                presets: { large: { model: "anthropic/large" } },
+            }),
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+        assert.equal(authLookups.includes("anthropic/large"), true);
+    });
+
+    it("cancels when the large candidate cannot authenticate", async () => {
+        const fastModel = createModel({ id: "fast", contextWindow: 100, maxTokens: 50 });
+        const largeModel = createModel({ provider: "anthropic", id: "large", contextWindow: 1_000_000 });
+        const { ctx } = createContext([fastModel, largeModel], fastModel, new Set(["anthropic/large"]));
+        let completeCalls = 0;
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async () => {
+                completeCalls += 1;
+                return createAssistantResponse("must not run");
+            },
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "current",
+                largeContextPreset: "large",
+                presets: { large: { model: "anthropic/large" } },
+            }),
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+    });
+
+    it("cancels instead of stock fallback when the rerouted model fails", async () => {
+        const fastModel = createModel({ id: "fast", contextWindow: 100, maxTokens: 50 });
+        const largeModel = createModel({ provider: "anthropic", id: "large", contextWindow: 1_000_000 });
+        const { ctx } = createContext([fastModel, largeModel], fastModel);
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: async () => createAssistantResponse("", "error"),
+            loadConfig: async () => ({
+                includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                defaultPreset: "current",
+                largeContextPreset: "large",
+                presets: { large: { model: "anthropic/large" } },
+            }),
+        }));
+
+        assert.deepEqual(result, { cancel: true });
+    });
+
+    it("never resolves largeContextPreset for explicit or malformed directives", async () => {
+        for (const customInstructions of ["-p current", "--preset"]) {
+            const fastModel = createModel({ id: "fast", contextWindow: 100, maxTokens: 50 });
+            const largeModel = createModel({ provider: "anthropic", id: "large", contextWindow: 1_000_000 });
+            const { ctx, authLookups } = createContext([fastModel, largeModel], fastModel);
+            let completeCalls = 0;
+
+            const result = await runGroundedCompaction(
+                createEvent({ customInstructions }),
+                ctx,
+                createDeps({
+                    complete: async () => {
+                        completeCalls += 1;
+                        return createAssistantResponse("must not run");
+                    },
+                    loadConfig: async () => ({
+                        includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                        defaultPreset: "current",
+                        largeContextPreset: "large",
+                        presets: { large: { model: "anthropic/large" } },
+                    }),
+                }),
+            );
+
+            assert.deepEqual(result, { cancel: true });
+            assert.equal(completeCalls, 0);
+            assert.equal(authLookups.includes("anthropic/large"), false);
+        }
+    });
+
+    it("cancels quietly when the compaction signal is already aborted", async () => {
+        const { ctx, notifications } = createContext([createModel()]);
+        const controller = new AbortController();
+        controller.abort();
+        let completeCalls = 0;
+
+        const result = await runGroundedCompaction(
+            createEvent({ customInstructions: "--preset", signal: controller.signal }),
+            ctx,
+            createDeps({
+                complete: async () => {
+                    completeCalls += 1;
+                    return createAssistantResponse("must not run");
+                },
+            }),
+        );
+
+        assert.deepEqual(result, { cancel: true });
+        assert.equal(completeCalls, 0);
+        assert.deepEqual(notifications, []);
+    });
+
     it("falls back from a configured defaultPreset to the current session model", async () => {
         const openAiModel = createModel({
             provider: "openai",
@@ -835,6 +1385,32 @@ describe("grounded-compaction runtime", () => {
         }));
 
         assert.deepEqual(result, { cancel: true });
+    });
+
+    it("does not retry a resolved explicit preset after provider failure", async () => {
+        const currentModel = createModel({ id: "current" });
+        const explicitModel = createModel({ id: "explicit" });
+        const { ctx } = createContext([currentModel, explicitModel], currentModel);
+        const calledModels: string[] = [];
+
+        const result = await runGroundedCompaction(
+            createEvent({ customInstructions: "-p explicit" }),
+            ctx,
+            createDeps({
+                complete: async (model) => {
+                    calledModels.push(model.id);
+                    return createAssistantResponse("", "error");
+                },
+                loadConfig: async () => ({
+                    includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
+                    defaultPreset: "current",
+                    presets: { explicit: { model: "anthropic/explicit" } },
+                }),
+            }),
+        );
+
+        assert.deepEqual(result, { cancel: true });
+        assert.deepEqual(calledModels, ["explicit"]);
     });
 
     it("uses only the turn-context section when a split turn has no earlier history span", async () => {

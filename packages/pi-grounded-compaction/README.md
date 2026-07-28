@@ -72,21 +72,27 @@ Boolean applies to both; omitted defaults to both enabled.
 
 For compaction, the manifest is passed into the summarizer prompt and a cumulative version is appended verbatim to the persisted summary.  For branch summaries, the manifest is injected into the prompt instructions for Pi's native summarizer to reproduce.  In both cases, the manifest also serves as a recall aid for the summarizer itself — file operations buried across many tool calls in a long context are easy to miss without an authoritative inventory.
 
-### `defaultPreset` and `presets`
+### `defaultPreset`, `largeContextPreset`, and `presets`
 
-These are compaction-only.  `defaultPreset` controls which model runs `/compact` by default; an explicit `--preset <name>` or `-p <name>` always overrides it.
+These are compaction-only. `defaultPreset` controls which model runs compaction by default. The optional `largeContextPreset` names one other key in `presets`, used only when a summarization request is too large for the default preset's model; it must name a model Pi has registered with a strictly larger context window.
 
 ```json
 {
   "defaultPreset": "fast",
+  "largeContextPreset": "large",
   "presets": {
     "fast": { "model": "openai-codex/gpt-5.4-mini", "thinkingLevel": "low" },
+    "large": { "model": "openai-codex/gpt-5.4", "thinkingLevel": "medium" },
     "deep": { "model": "anthropic/claude-opus-4-6", "thinkingLevel": "high" }
   }
 }
 ```
 
-`"current"` uses the session's active model and thinking level.  Preset lookup is deterministic: exact match → case-insensitive → prefix → normalized substring.  Failed lookups fall back to the current session model with a warning.
+Compaction measures each summarization request before sending it, counting the prompt contract, the previous summary, your focus text, the files-touched manifest, and the serialized conversation. When a request does not fit the model that would run it, the whole compaction is sent to `largeContextPreset` instead. When Pi splits an oversized turn into two summaries — one for earlier history, one for the beginning of that turn — both run on the same model.
+
+This measures the summarization request, not the session. A long session usually produces a much smaller request, because compaction summarizes only the span being replaced and truncates tool results, so a session far larger than the summarizer's context window can still compact without rerouting.
+
+`"current"` uses the session's active model and thinking level. An explicit `--preset <name>` or `-p <name>` always overrides `defaultPreset` and never reroutes to `largeContextPreset`. Preset lookup for directives is deterministic: exact match → case-insensitive → prefix → normalized substring.
 
 ## `/compact` usage
 
@@ -140,6 +146,10 @@ W  src/bar.ts
 
 ## Failure policy
 
-**Compaction**: failed presets fall back to the session model.  If the session model also fails after an explicit preset directive, compaction is cancelled to avoid leaking raw directive text.  Aborts return cancellation quietly.
+**Compaction**: if the configured default preset or an explicit `-p` preset cannot be resolved or authenticated, compaction falls back to the session model.
+
+Rerouting to `largeContextPreset` happens only when a request is too large for the model that would otherwise run it. Past that point there is nothing left to fall back to, so compaction is cancelled with a warning rather than handed back to Pi's stock summarizer if `largeContextPreset` is unset, cannot be resolved or authenticated, names a model whose context window is not larger, or still cannot fit the request. A summarization failure after rerouting also cancels.
+
+An explicit `-p` preset cancels if its model cannot fit the request or fails while summarizing. A summarization failure on a compaction that did fit leaves Pi's stock compaction available. Aborts cancel quietly.
 
 **Branch summary**: any failure returns `undefined` with a warning, letting Pi's stock flow proceed.

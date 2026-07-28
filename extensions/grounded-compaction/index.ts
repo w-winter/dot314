@@ -37,6 +37,7 @@ type PresetConfig = {
 export interface GroundedCompactionConfig {
     includeFilesTouched: IncludeFilesTouchedSettings;
     defaultPreset: string;
+    largeContextPreset?: string;
     presets: Record<string, PresetConfig>;
 }
 
@@ -88,17 +89,57 @@ type HookContext = {
     };
 };
 
-type SummaryCallInput = {
+type PreparedSummaryRequest = Readonly<{
     mode: SummaryMode;
-    promptContract: string;
+    userPrompt: string;
+    estimatedInputTokens: number;
+}>;
+
+type PreparedSummaryBatch =
+    | Readonly<{
+        kind: "history-only";
+        history: PreparedSummaryRequest;
+    }>
+    | Readonly<{
+        kind: "split-turn";
+        history?: PreparedSummaryRequest;
+        turnPrefix: PreparedSummaryRequest;
+        carriedHistorySummary?: string;
+    }>;
+
+type ModelSummaryCapacity = Readonly<{
+    modelKey: string;
+    contextWindow: number;
+    maxOutputTokens: number;
+}>;
+
+type PreflightedSummaryBatch = Readonly<{
+    batch: PreparedSummaryBatch;
     summarizer: ResolvedSummarizer;
-    reserveTokens: number;
-    signal: AbortSignal;
-    serializedConversation: string;
-    previousSummary?: string;
-    focusText?: string;
-    filesTouchedManifestBlock?: string;
-};
+    capacity: ModelSummaryCapacity;
+}>;
+
+type SummaryExecutionRoute =
+    | Readonly<{ kind: "default"; plan: PreflightedSummaryBatch }>
+    | Readonly<{
+        kind: "large-context";
+        presetName: string;
+        plan: PreflightedSummaryBatch;
+        defaultCapacityFailure: SummaryCapacityError;
+    }>;
+
+type SummaryCapacityIssue =
+    | Readonly<{ kind: "invalid-reserve-tokens"; reserveTokens: number }>
+    | Readonly<{ kind: "invalid-context-window"; modelKey: string; contextWindow: number }>
+    | Readonly<{ kind: "invalid-max-output-tokens"; modelKey: string; maxTokens: number }>
+    | Readonly<{
+        kind: "request-too-large";
+        modelKey: string;
+        mode: SummaryMode;
+        estimatedInputTokens: number;
+        maxOutputTokens: number;
+        contextWindow: number;
+    }>;
 
 type SummaryArtifacts = {
     historyManifestBlock?: string;
@@ -117,6 +158,30 @@ type RunDeps = {
 class CompactionAbortedError extends Error {
     constructor() {
         super("Compaction aborted");
+    }
+}
+
+function describeSummaryCapacityIssue(issue: SummaryCapacityIssue): string {
+    switch (issue.kind) {
+        case "invalid-reserve-tokens":
+            return `Invalid summary reserveTokens: ${issue.reserveTokens}`;
+        case "invalid-context-window":
+            return `${issue.modelKey} context window must be a positive finite number; received ${issue.contextWindow}`;
+        case "invalid-max-output-tokens":
+            return `${issue.modelKey} maxTokens must be a positive finite number; received ${issue.maxTokens}`;
+        case "request-too-large":
+            return `Estimated ${issue.mode} summary request (${issue.estimatedInputTokens} + ${issue.maxOutputTokens}) `
+                + `exceeds ${issue.modelKey} context window ${issue.contextWindow}`;
+    }
+}
+
+class SummaryCapacityError extends Error {
+    readonly issue: SummaryCapacityIssue;
+
+    constructor(issue: SummaryCapacityIssue) {
+        super(describeSummaryCapacityIssue(issue));
+        this.name = "SummaryCapacityError";
+        this.issue = issue;
     }
 }
 
@@ -285,6 +350,17 @@ export function parseConfig(value: unknown): GroundedCompactionConfig {
                     throw new Error("Invalid grounded-compaction config: defaultPreset must be a non-empty string");
                 })();
 
+    const largeContextPreset =
+        value.largeContextPreset === undefined
+            ? undefined
+            : typeof value.largeContextPreset === "string" && value.largeContextPreset.trim()
+                ? value.largeContextPreset.trim()
+                : (() => {
+                    throw new Error(
+                        "Invalid grounded-compaction config: largeContextPreset must be a non-empty string",
+                    );
+                })();
+
     const presetsValue = value.presets === undefined ? {} : value.presets;
     if (!isObject(presetsValue)) {
         throw new Error("Invalid grounded-compaction config: presets must be an object");
@@ -320,15 +396,25 @@ export function parseConfig(value: unknown): GroundedCompactionConfig {
         };
     }
 
-    if (defaultPreset !== CURRENT_PRESET_SENTINEL && !presets[defaultPreset]) {
+    if (defaultPreset !== CURRENT_PRESET_SENTINEL && !Object.hasOwn(presets, defaultPreset)) {
         throw new Error(
             `Invalid grounded-compaction config: defaultPreset '${defaultPreset}' was not found in presets`,
         );
     }
 
+    if (largeContextPreset && !Object.hasOwn(presets, largeContextPreset)) {
+        throw new Error(
+            `Invalid grounded-compaction config: largeContextPreset '${largeContextPreset}' was not found in presets`,
+        );
+    }
+    if (largeContextPreset === defaultPreset) {
+        throw new Error("Invalid grounded-compaction config: largeContextPreset must differ from defaultPreset");
+    }
+
     return {
         includeFilesTouched,
         defaultPreset,
+        ...(largeContextPreset ? { largeContextPreset } : {}),
         presets,
     };
 }
@@ -403,8 +489,8 @@ export function parseCompactInstructions(text?: string): ParsedCompactInstructio
         return { usesPresetDirective: true };
     }
 
-    const presetQuery = match[1]?.trim();
-    const focusText = match[2]?.trim();
+    const presetQuery = (match[1] as string | undefined)?.trim();
+    const focusText = (match[2] as string | undefined)?.trim();
     if (!presetQuery) {
         return { usesPresetDirective: true };
     }
@@ -843,17 +929,75 @@ export function estimateInputTokens(text: string): number {
     return Math.ceil(text.length / 4);
 }
 
-function enforceContextWindow(model: Model<any>, systemPrompt: string, userPrompt: string, reserveTokens: number): void {
-    if (!model.contextWindow) {
-        return;
+function prepareSummaryRequest(params: {
+    mode: SummaryMode;
+    promptContract: string;
+    serializedConversation: string;
+    previousSummary?: string;
+    focusText?: string;
+    filesTouchedManifestBlock?: string;
+}): PreparedSummaryRequest {
+    const userPrompt = buildSummaryUserPrompt(params);
+    return {
+        mode: params.mode,
+        userPrompt,
+        estimatedInputTokens: estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${userPrompt}`),
+    };
+}
+
+function resolveModelSummaryCapacity(model: Model<any>, reserveTokens: number): ModelSummaryCapacity {
+    const modelKey = `${model.provider}/${model.id}`;
+    if (!Number.isFinite(reserveTokens) || reserveTokens <= 0) {
+        throw new SummaryCapacityError({ kind: "invalid-reserve-tokens", reserveTokens });
+    }
+    if (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0) {
+        throw new SummaryCapacityError({
+            kind: "invalid-context-window",
+            modelKey,
+            contextWindow: model.contextWindow,
+        });
+    }
+    if (!Number.isFinite(model.maxTokens) || model.maxTokens <= 0) {
+        throw new SummaryCapacityError({
+            kind: "invalid-max-output-tokens",
+            modelKey,
+            maxTokens: model.maxTokens,
+        });
     }
 
-    const estimatedInputTokens = estimateInputTokens(`${systemPrompt}\n\n${userPrompt}`);
-    if (estimatedInputTokens + reserveTokens > model.contextWindow) {
-        throw new Error(
-            `Estimated summary request (${estimatedInputTokens} + ${reserveTokens}) exceeds ${model.provider}/${model.id} context window`,
+    return {
+        modelKey,
+        contextWindow: model.contextWindow,
+        maxOutputTokens: Math.min(reserveTokens, model.maxTokens),
+    };
+}
+
+function preflightSummaryBatch(params: {
+    batch: PreparedSummaryBatch;
+    summarizer: ResolvedSummarizer;
+    reserveTokens: number;
+}): PreflightedSummaryBatch {
+    const capacity = resolveModelSummaryCapacity(params.summarizer.model, params.reserveTokens);
+    const requests = params.batch.kind === "history-only"
+        ? [params.batch.history]
+        : [params.batch.history, params.batch.turnPrefix].filter(
+            (request): request is PreparedSummaryRequest => request !== undefined,
         );
+
+    for (const request of requests) {
+        if (request.estimatedInputTokens + capacity.maxOutputTokens > capacity.contextWindow) {
+            throw new SummaryCapacityError({
+                kind: "request-too-large",
+                modelKey: capacity.modelKey,
+                mode: request.mode,
+                estimatedInputTokens: request.estimatedInputTokens,
+                maxOutputTokens: capacity.maxOutputTokens,
+                contextWindow: capacity.contextWindow,
+            });
+        }
     }
+
+    return { batch: params.batch, summarizer: params.summarizer, capacity };
 }
 
 function buildSummaryRequestMessage(userPrompt: string): Message {
@@ -872,52 +1016,44 @@ function getTextFromAssistantResponse(response: AssistantMessage): string {
         .trim();
 }
 
-async function executeSummaryCall(input: SummaryCallInput, deps: RunDeps): Promise<string> {
-    if (input.signal.aborted) {
+async function executePreparedSummaryRequest(params: {
+    request: PreparedSummaryRequest;
+    summarizer: ResolvedSummarizer;
+    maxOutputTokens: number;
+    signal: AbortSignal;
+}, deps: RunDeps): Promise<string> {
+    if (params.signal.aborted) {
         throw new CompactionAbortedError();
     }
 
-    const systemPrompt = DEFAULT_SYSTEM_PROMPT;
-    const userPrompt = buildSummaryUserPrompt({
-        mode: input.mode,
-        promptContract: input.promptContract,
-        serializedConversation: input.serializedConversation,
-        previousSummary: input.previousSummary,
-        focusText: input.focusText,
-        filesTouchedManifestBlock: input.filesTouchedManifestBlock,
-    });
-
-    enforceContextWindow(input.summarizer.model, systemPrompt, userPrompt, input.reserveTokens);
-
-    const reasoningLevel = toReasoningLevel(input.summarizer.reasoningLevel);
+    const reasoningLevel = toReasoningLevel(params.summarizer.reasoningLevel);
     const options = reasoningLevel
         ? {
-            apiKey: input.summarizer.apiKey,
-            headers: input.summarizer.headers,
-            maxTokens: input.reserveTokens,
-            signal: input.signal,
+            apiKey: params.summarizer.apiKey,
+            headers: params.summarizer.headers,
+            maxTokens: params.maxOutputTokens,
+            signal: params.signal,
             reasoning: reasoningLevel,
         }
         : {
-            apiKey: input.summarizer.apiKey,
-            headers: input.summarizer.headers,
-            maxTokens: input.reserveTokens,
-            signal: input.signal,
+            apiKey: params.summarizer.apiKey,
+            headers: params.summarizer.headers,
+            maxTokens: params.maxOutputTokens,
+            signal: params.signal,
         };
 
     const response = await deps.complete(
-        input.summarizer.model,
+        params.summarizer.model,
         {
-            systemPrompt,
-            messages: [buildSummaryRequestMessage(userPrompt)],
+            systemPrompt: DEFAULT_SYSTEM_PROMPT,
+            messages: [buildSummaryRequestMessage(params.request.userPrompt)],
         },
         options,
     );
 
-    if (input.signal.aborted || response.stopReason === "aborted") {
+    if (isSignalAborted(params.signal) || response.stopReason === "aborted") {
         throw new CompactionAbortedError();
     }
-
     if (response.stopReason === "error") {
         throw new Error(response.errorMessage || "Summarization failed");
     }
@@ -926,7 +1062,6 @@ async function executeSummaryCall(input: SummaryCallInput, deps: RunDeps): Promi
     if (!text) {
         throw new Error("Summarization returned empty output");
     }
-
     return text;
 }
 
@@ -974,72 +1109,81 @@ function buildSummaryArtifacts(params: {
     };
 }
 
-async function summarizeWithResolvedModel(params: {
+function prepareSummaryBatch(params: {
     event: SessionBeforeCompactEvent;
     promptContract: string;
-    summarizer: ResolvedSummarizer;
     focusText?: string;
     previousSummary?: string;
     summaryArtifacts: SummaryArtifacts;
-}, deps: RunDeps): Promise<string> {
-    const { event, promptContract, summarizer, focusText, previousSummary, summaryArtifacts } = params;
-    const reserveTokens = event.preparation.settings.reserveTokens;
-
+}): PreparedSummaryBatch {
+    const { event, promptContract, focusText, previousSummary, summaryArtifacts } = params;
     if (event.preparation.isSplitTurn && event.preparation.turnPrefixMessages.length > 0) {
-        const [historySummary, turnPrefixSummary] = await Promise.all([
-            event.preparation.messagesToSummarize.length > 0
-                ? executeSummaryCall(
-                    {
-                        mode: "history",
-                        promptContract,
-                        summarizer,
-                        reserveTokens,
-                        signal: event.signal,
-                        serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize),
-                        previousSummary,
-                        focusText,
-                        filesTouchedManifestBlock: summaryArtifacts.historyManifestBlock,
-                    },
-                    deps,
-                )
-                : Promise.resolve(previousSummary),
-            executeSummaryCall(
-                {
-                    mode: "turn-prefix",
-                    promptContract,
-                    summarizer,
-                    reserveTokens,
-                    signal: event.signal,
-                    serializedConversation: serializePreparedMessages(event.preparation.turnPrefixMessages),
-                    focusText,
-                    filesTouchedManifestBlock: summaryArtifacts.turnPrefixManifestBlock,
-                },
-                deps,
-            ),
-        ]);
-
-        return appendWholeBranchManifest(
-            mergeSplitTurnSummary(historySummary, turnPrefixSummary),
-            summaryArtifacts.wholeBranchManifestBlock,
-        );
+        const history = event.preparation.messagesToSummarize.length > 0
+            ? prepareSummaryRequest({
+                mode: "history",
+                promptContract,
+                serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize),
+                previousSummary,
+                focusText,
+                filesTouchedManifestBlock: summaryArtifacts.historyManifestBlock,
+            })
+            : undefined;
+        const turnPrefix = prepareSummaryRequest({
+            mode: "turn-prefix",
+            promptContract,
+            serializedConversation: serializePreparedMessages(event.preparation.turnPrefixMessages),
+            focusText,
+            filesTouchedManifestBlock: summaryArtifacts.turnPrefixManifestBlock,
+        });
+        return {
+            kind: "split-turn",
+            history,
+            turnPrefix,
+            carriedHistorySummary: history ? undefined : previousSummary,
+        };
     }
 
-    const historySummary = await executeSummaryCall(
-        {
+    return {
+        kind: "history-only",
+        history: prepareSummaryRequest({
             mode: "history",
             promptContract,
-            summarizer,
-            reserveTokens,
-            signal: event.signal,
             serializedConversation: serializePreparedMessages(event.preparation.messagesToSummarize),
             previousSummary,
             focusText,
             filesTouchedManifestBlock: summaryArtifacts.historyManifestBlock,
+        }),
+    };
+}
+
+async function executePreflightedSummaryBatch(
+    plan: PreflightedSummaryBatch,
+    signal: AbortSignal,
+    wholeBranchManifestBlock: string | undefined,
+    deps: RunDeps,
+): Promise<string> {
+    const execute = (request: PreparedSummaryRequest) => executePreparedSummaryRequest(
+        {
+            request,
+            summarizer: plan.summarizer,
+            maxOutputTokens: plan.capacity.maxOutputTokens,
+            signal,
         },
         deps,
     );
 
-    return appendWholeBranchManifest(historySummary, summaryArtifacts.wholeBranchManifestBlock);
+    if (plan.batch.kind === "history-only") {
+        return appendWholeBranchManifest(await execute(plan.batch.history), wholeBranchManifestBlock);
+    }
+
+    const [historySummary, turnPrefixSummary] = await Promise.all([
+        plan.batch.history ? execute(plan.batch.history) : Promise.resolve(plan.batch.carriedHistorySummary),
+        execute(plan.batch.turnPrefix),
+    ]);
+    return appendWholeBranchManifest(
+        mergeSplitTurnSummary(historySummary, turnPrefixSummary),
+        wholeBranchManifestBlock,
+    );
 }
 
 function buildSuccessResult(
@@ -1064,8 +1208,94 @@ function isAbortError(error: unknown): boolean {
     return error instanceof CompactionAbortedError;
 }
 
+function isSignalAborted(signal: AbortSignal): boolean {
+    return signal.aborted;
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+    if (isSignalAborted(signal)) {
+        throw new CompactionAbortedError();
+    }
+}
+
 function describePresetFallback(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+async function resolveConfiguredDefaultSummarizer(
+    ctx: HookContext,
+    config: GroundedCompactionConfig,
+    branchEntries: SessionEntry[],
+    signal: AbortSignal,
+): Promise<ResolvedSummarizer> {
+    if (config.defaultPreset === CURRENT_PRESET_SENTINEL) {
+        return resolveDefaultSummarizer(ctx, branchEntries);
+    }
+
+    try {
+        return await resolvePresetSummarizer(ctx, config, config.defaultPreset);
+    } catch (error) {
+        if (isAbortError(error)) {
+            throw error;
+        }
+        throwIfAborted(signal);
+        notify(
+            ctx,
+            `Configured defaultPreset '${config.defaultPreset}' failed (${describePresetFallback(error)}). `
+                + "Falling back to the current session model.",
+            "warning",
+        );
+        return resolveDefaultSummarizer(ctx, branchEntries);
+    }
+}
+
+async function selectOrdinarySummaryRoute(params: {
+    batch: PreparedSummaryBatch;
+    defaultSummarizer: ResolvedSummarizer;
+    config: GroundedCompactionConfig;
+    ctx: HookContext;
+    reserveTokens: number;
+}): Promise<SummaryExecutionRoute> {
+    try {
+        return {
+            kind: "default",
+            plan: preflightSummaryBatch({
+                batch: params.batch,
+                summarizer: params.defaultSummarizer,
+                reserveTokens: params.reserveTokens,
+            }),
+        };
+    } catch (error) {
+        if (!(error instanceof SummaryCapacityError) || error.issue.kind !== "request-too-large") {
+            throw error;
+        }
+
+        const presetName = params.config.largeContextPreset;
+        if (!presetName) {
+            throw error;
+        }
+
+        const largeSummarizer = await resolvePresetSummarizer(params.ctx, params.config, presetName);
+        const largeCapacity = resolveModelSummaryCapacity(largeSummarizer.model, params.reserveTokens);
+        if (largeCapacity.contextWindow <= error.issue.contextWindow) {
+            throw new Error(
+                `Configured largeContextPreset '${presetName}' must have a strictly larger context window than `
+                    + `${error.issue.modelKey} (${largeCapacity.contextWindow} <= ${error.issue.contextWindow})`,
+            );
+        }
+        const plan = preflightSummaryBatch({
+            batch: params.batch,
+            summarizer: largeSummarizer,
+            reserveTokens: params.reserveTokens,
+        });
+
+        return {
+            kind: "large-context",
+            presetName,
+            plan,
+            defaultCapacityFailure: error,
+        };
+    }
 }
 
 export async function runGroundedBranchSummaryAugmentation(
@@ -1097,7 +1327,7 @@ export async function runGroundedBranchSummaryAugmentation(
             filesTouchedManifestBlock,
         });
     } catch (error) {
-        if (event.signal.aborted) {
+        if (isSignalAborted(event.signal)) {
             return undefined;
         }
 
@@ -1113,6 +1343,8 @@ export async function runGroundedCompaction(
     deps: RunDeps = DEFAULT_DEPS,
 ): Promise<{ compaction: { summary: string; firstKeptEntryId: string; tokensBefore: number; details: GroundedCompactionDetails } } | { cancel: true } | undefined> {
     try {
+        throwIfAborted(event.signal);
+
         const config = await deps.loadConfig(EXTENSION_DIR);
         const promptContract = await deps.loadCompactionPrompt(EXTENSION_DIR);
         const parsedInstructions = parseCompactInstructions(event.customInstructions);
@@ -1129,95 +1361,119 @@ export async function runGroundedCompaction(
             collectFilesTouchedImpl: deps.collectFilesTouched,
         });
         const previousSummary = stripGroundedCompactionManifestTail(event.preparation.previousSummary);
+        const batch = prepareSummaryBatch({
+            event,
+            promptContract,
+            focusText: parsedInstructions.focusText,
+            previousSummary,
+            summaryArtifacts,
+        });
+        const reserveTokens = event.preparation.settings.reserveTokens;
 
-        if (parsedInstructions.usesPresetDirective && parsedInstructions.presetQuery) {
+        if (parsedInstructions.usesPresetDirective) {
+            let summarizer: ResolvedSummarizer;
             try {
-                const summarizer =
-                    parsedInstructions.presetQuery === CURRENT_PRESET_SENTINEL
-                        ? await resolveDefaultSummarizer(ctx, event.branchEntries)
-                        : await resolvePresetSummarizer(ctx, config, parsedInstructions.presetQuery);
-                const summary = await summarizeWithResolvedModel(
-                    {
-                        event,
-                        promptContract,
-                        summarizer,
-                        focusText: parsedInstructions.focusText,
-                        previousSummary,
-                        summaryArtifacts,
-                    },
-                    deps,
-                );
-
-                return buildSuccessResult(event, summary, summarizer);
-            } catch (error) {
-                if (isAbortError(error)) {
-                    return { cancel: true };
+                if (!parsedInstructions.presetQuery) {
+                    notify(ctx, "Malformed preset directive. Falling back to the current session model.", "warning");
+                    summarizer = await resolveDefaultSummarizer(ctx, event.branchEntries);
+                } else if (parsedInstructions.presetQuery === CURRENT_PRESET_SENTINEL) {
+                    summarizer = await resolveDefaultSummarizer(ctx, event.branchEntries);
+                } else {
+                    try {
+                        summarizer = await resolvePresetSummarizer(ctx, config, parsedInstructions.presetQuery);
+                    } catch (error) {
+                        if (isAbortError(error)) {
+                            throw error;
+                        }
+                        throwIfAborted(event.signal);
+                        notify(
+                            ctx,
+                            `Preset '${parsedInstructions.presetQuery}' failed (${describePresetFallback(error)}). `
+                                + "Falling back to the current session model.",
+                            "warning",
+                        );
+                        summarizer = await resolveDefaultSummarizer(ctx, event.branchEntries);
+                    }
                 }
 
-                notify(
-                    ctx,
-                    `Preset compaction path failed (${describePresetFallback(error)}). Falling back to the current session model.`,
-                    "warning",
+                const plan = preflightSummaryBatch({ batch, summarizer, reserveTokens });
+                const summary = await executePreflightedSummaryBatch(
+                    plan,
+                    event.signal,
+                    summaryArtifacts.wholeBranchManifestBlock,
+                    deps,
                 );
+                return buildSuccessResult(event, summary, summarizer);
+            } catch (error) {
+                if (isAbortError(error) || event.signal.aborted) {
+                    return { cancel: true };
+                }
+                notify(ctx, `Grounded preset compaction failed: ${describePresetFallback(error)}`, "warning");
+                return { cancel: true };
             }
-        } else if (parsedInstructions.usesPresetDirective) {
-            notify(ctx, "Malformed preset directive. Falling back to the current session model.", "warning");
+        }
+
+        const defaultSummarizer = await resolveConfiguredDefaultSummarizer(
+            ctx,
+            config,
+            event.branchEntries,
+            event.signal,
+        );
+        let route: SummaryExecutionRoute;
+        try {
+            route = await selectOrdinarySummaryRoute({
+                batch,
+                defaultSummarizer,
+                config,
+                ctx,
+                reserveTokens,
+            });
+        } catch (error) {
+            if (isAbortError(error) || event.signal.aborted) {
+                return { cancel: true };
+            }
+            notify(ctx, `Grounded compaction capacity routing failed: ${describePresetFallback(error)}`, "warning");
+            return { cancel: true };
+        }
+
+        if (route.kind === "large-context") {
+            if (event.signal.aborted) {
+                return { cancel: true };
+            }
+            const issue = route.defaultCapacityFailure.issue;
+            if (issue.kind !== "request-too-large") {
+                throw new Error("Invalid large-context route without a request capacity failure");
+            }
+            notify(
+                ctx,
+                `Grounded compaction ${issue.mode} request does not fit ${issue.modelKey}; routing to `
+                    + `${route.presetName} (${route.plan.capacity.modelKey}).`,
+                "info",
+            );
         }
 
         try {
-            let summarizer: ResolvedSummarizer;
-
-            if (config.defaultPreset === CURRENT_PRESET_SENTINEL) {
-                summarizer = await resolveDefaultSummarizer(ctx, event.branchEntries);
-            } else {
-                try {
-                    summarizer = await resolvePresetSummarizer(ctx, config, config.defaultPreset);
-                } catch (error) {
-                    if (isAbortError(error)) {
-                        return { cancel: true };
-                    }
-
-                    notify(
-                        ctx,
-                        `Configured defaultPreset '${config.defaultPreset}' failed (${describePresetFallback(error)}). Falling back to the current session model.`,
-                        "warning",
-                    );
-                    summarizer = await resolveDefaultSummarizer(ctx, event.branchEntries);
-                }
-            }
-
-            const summary = await summarizeWithResolvedModel(
-                {
-                    event,
-                    promptContract,
-                    summarizer,
-                    focusText: parsedInstructions.focusText,
-                    previousSummary,
-                    summaryArtifacts,
-                },
+            const summary = await executePreflightedSummaryBatch(
+                route.plan,
+                event.signal,
+                summaryArtifacts.wholeBranchManifestBlock,
                 deps,
             );
-
-            return buildSuccessResult(event, summary, summarizer);
+            return buildSuccessResult(event, summary, route.plan.summarizer);
         } catch (error) {
-            if (isAbortError(error)) {
+            if (isAbortError(error) || event.signal.aborted) {
                 return { cancel: true };
             }
-
-            const message = error instanceof Error ? error.message : String(error);
-            notify(ctx, `Grounded compaction failed: ${message}`, "warning");
-            return parsedInstructions.usesPresetDirective ? { cancel: true } : undefined;
+            notify(ctx, `Grounded compaction failed: ${describePresetFallback(error)}`, "warning");
+            return route.kind === "large-context" ? { cancel: true } : undefined;
         }
     } catch (error) {
         if (isAbortError(error) || event.signal.aborted) {
             return { cancel: true };
         }
 
-        const message = error instanceof Error ? error.message : String(error);
-        notify(ctx, `Grounded compaction failed: ${message}`, "warning");
-
-        const parsedInstructions = parseCompactInstructions(event.customInstructions);
-        return parsedInstructions.usesPresetDirective ? { cancel: true } : undefined;
+        notify(ctx, `Grounded compaction failed: ${describePresetFallback(error)}`, "warning");
+        return parseCompactInstructions(event.customInstructions).usesPresetDirective ? { cancel: true } : undefined;
     }
 }
 
