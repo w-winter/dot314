@@ -33,6 +33,7 @@ import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { resolveModelAndThinking } from "./lib/mode-utils.js";
 import {
 	type SingleResult,
+	type SubagentRequestAuth,
 	formatToolCall,
 	formatUsage,
 	btwTaskPreview,
@@ -55,6 +56,18 @@ type ScopedModelCandidate = {
 	model: any;
 	thinkingLevel?: string;
 };
+
+type RequestAuthResolution =
+	| ({ ok: true } & SubagentRequestAuth)
+	| { ok: false; error: string };
+
+export function getRequestAuthError(model: { provider: string }, auth: RequestAuthResolution): string | undefined {
+	if (!auth.ok) return auth.error;
+	if (model.provider === "openai-codex" && !auth.apiKey) {
+		return "Authentication failed for \"openai-codex\". Run '/login openai-codex' to re-authenticate.";
+	}
+	return undefined;
+}
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
@@ -431,6 +444,7 @@ export default function (pi: ExtensionAPI) {
 
 			let targetModel = resolved.model;
 			let thinkingLevel = resolved.thinkingLevel;
+			let requestAuth: SubagentRequestAuth | undefined;
 
 			if (modelOpt) {
 				const rankedModels = rankModelCandidates(
@@ -442,8 +456,9 @@ export default function (pi: ExtensionAPI) {
 				let matchedModel: ScopedModelCandidate | undefined;
 				for (const candidate of rankedModels) {
 					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(candidate.model);
-					if (auth.ok) {
+					if (!getRequestAuthError(candidate.model, auth)) {
 						matchedModel = candidate;
+						requestAuth = auth;
 						break;
 					}
 				}
@@ -464,6 +479,22 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const provider = ctx.modelRegistry.getProvider(targetModel.provider);
+			if (!provider) {
+				ctx.ui.notify(`Provider "${targetModel.provider}" is unavailable.`, "error");
+				return;
+			}
+
+			if (!requestAuth) {
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(targetModel);
+				const authError = getRequestAuthError(targetModel, auth);
+				if (authError) {
+					ctx.ui.notify(authError, "error");
+					return;
+				}
+				requestAuth = auth;
+			}
+
 			// Build tools
 			const tools: AgentTool<any>[] = [
 				createReadTool(ctx.cwd),
@@ -473,13 +504,7 @@ export default function (pi: ExtensionAPI) {
 			];
 
 			const systemPrompt = ctx.getSystemPrompt();
-			const authResolver = async (_provider: string) => {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(targetModel!);
-				if (!auth.ok) {
-					throw new Error(auth.error);
-				}
-				return { apiKey: auth.apiKey, headers: auth.headers };
-			};
+			const parentSessionId = ctx.sessionManager.getSessionId();
 
 			// Serialize current conversation context for the subagent
 			const branch = ctx.sessionManager.getBranch();
@@ -509,7 +534,9 @@ export default function (pi: ExtensionAPI) {
 				tools,
 				targetModel,
 				thinkingLevel,
-				authResolver,
+				provider.streamSimple.bind(provider),
+				requestAuth,
+				parentSessionId,
 				undefined, // no abort signal — runs to completion
 				(progressResult) => {
 					// Update widget with live tool call feed
