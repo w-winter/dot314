@@ -17,6 +17,9 @@
     - [`rp-tool-defs/`](repoprompt-tool-guidance-refresh/rp-tool-defs/) — captured snapshots and diffs
     - [`rp-cli-prompts/`](repoprompt-tool-guidance-refresh/rp-cli-prompts/) — CLI-specific prompts maintained by this skill
 
+- ● [`docs-review/`](docs-review/)
+  - Post-hoc review of docs and prompts (user-facing or agent-facing) for the curse-of-knowledge failure mode: models write as if the reader shares their context window, leaking local jargon, plan/changelog language, and orphaned deixis, while omitting definitions and grounding a cold reader needs. Names the intended reader per file, then fixes leakage and omission directly.
+
 - ◐ [`text-search/`](text-search/)
   - Search indexed text corpora (sessions, docs, logs) using qmd. Use instead of grep.
   - Contents:
