@@ -122,13 +122,16 @@ export class RpClient {
     command: string,
     args: string[],
     env?: Record<string, string>,
-    toolCallTimeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS
+    toolCallTimeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     if (this._status === "connecting") {
       throw new Error("Connection already in progress");
     }
 
     await this.close();
+    signal?.throwIfAborted();
 
     const connectionEpoch = ++this.connectionEpoch;
     this._status = "connecting";
@@ -173,11 +176,13 @@ export class RpClient {
         DEFAULT_CONNECT_TIMEOUT_MS,
         `Timed out connecting to RepoPrompt MCP server after ${DEFAULT_CONNECT_TIMEOUT_MS}ms`
       );
+      signal?.throwIfAborted();
       await this.refreshTools();
 
       for (;;) {
+        signal?.throwIfAborted();
         this.assertCurrentConnection(client, connectionEpoch);
-        if (this.publishedToolListGeneration === this.toolListInvalidationGeneration) {
+        if (this.catalogGenerationIsCurrent()) {
           this._status = "connected";
           return;
         }
@@ -285,6 +290,10 @@ export class RpClient {
     }
   }
 
+  private catalogGenerationIsCurrent(): boolean {
+    return this.publishedToolListGeneration === this.toolListInvalidationGeneration;
+  }
+
   private isCurrentConnection(client: Client, connectionEpoch: number): boolean {
     return this.client === client && this.connectionEpoch === connectionEpoch;
   }
@@ -330,7 +339,8 @@ export class RpClient {
   async callTool(
     name: string,
     args?: Record<string, unknown>,
-    timeoutMs?: number
+    timeoutMs?: number,
+    signal?: AbortSignal
   ): Promise<McpToolResult> {
     if (!this.client) {
       throw new Error("Not connected to RepoPrompt MCP server");
@@ -346,14 +356,16 @@ export class RpClient {
           arguments: args ?? {},
         },
         undefined,
-        { timeout: resolvedTimeoutMs }
+        { timeout: resolvedTimeoutMs, ...(signal ? { signal } : {}) }
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
       // Do NOT tear down the whole MCP connection on tool-call failures. Tool errors
       // (including timeouts) are common and should not force users to /rp reconnect
-      this._error = message;
+      if (!signal?.aborted) {
+        this._error = message;
+      }
       throw new Error(message);
     }
 

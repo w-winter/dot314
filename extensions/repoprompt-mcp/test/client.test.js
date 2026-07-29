@@ -53,6 +53,29 @@ test("RpClient.close gracefully closes the MCP client after a successful connect
   assert.equal(client.toolCatalogFreshness, "unavailable");
 });
 
+test("RpClient.connect does not create a transport after cancellation during initial close", async () => {
+  let transportCreations = 0;
+  const closeWork = deferred();
+  const client = new RpClient({
+    createTransport() {
+      transportCreations += 1;
+      return { close: async () => {} };
+    },
+    createClient() {
+      throw new Error("SDK client must not be created");
+    },
+  });
+  client.close = async () => closeWork.promise;
+  const controller = new AbortController();
+  const connectPromise = client.connect("fake-rp", [], undefined, undefined, controller.signal);
+
+  controller.abort(new Error("connection lifecycle cancelled"));
+  closeWork.resolve();
+
+  await assert.rejects(connectPromise, /connection lifecycle cancelled/u);
+  assert.equal(transportCreations, 0);
+});
+
 test("RpClient.callTool uses the configured default tool timeout", async () => {
   const client = new RpClient();
   let receivedOptions;
@@ -70,6 +93,41 @@ test("RpClient.callTool uses the configured default tool timeout", async () => {
   assert.deepEqual(receivedOptions, { timeout: 1234 });
   assert.equal(result.isError, false);
   assert.deepEqual(result.content, [{ type: "text", text: "ok" }]);
+});
+
+test("RpClient.callTool forwards an AbortSignal with the configured timeout", async () => {
+  const client = new RpClient();
+  const controller = new AbortController();
+  let receivedOptions;
+
+  client.client = {
+    callTool: async (_request, _metadata, options) => {
+      receivedOptions = options;
+      return { content: [{ type: "text", text: "ok" }], isError: false };
+    },
+  };
+  client.setToolCallTimeoutMs(1234);
+
+  await client.callTool("context_builder", {}, undefined, controller.signal);
+
+  assert.deepEqual(receivedOptions, { timeout: 1234, signal: controller.signal });
+});
+
+test("RpClient.callTool does not record intentional cancellation as a connection error", async () => {
+  const client = new RpClient();
+  const controller = new AbortController();
+  controller.abort();
+  client.client = {
+    callTool: async () => {
+      throw new Error("request cancelled");
+    },
+  };
+  client._status = "connected";
+
+  await assert.rejects(client.callTool("context_builder", {}, undefined, controller.signal), /request cancelled/u);
+
+  assert.equal(client.status, "connected");
+  assert.equal(client.error, undefined);
 });
 
 function deferred() {

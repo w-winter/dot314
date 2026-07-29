@@ -66,6 +66,12 @@ import { normalizeFileActionResult } from "./file-action-normalization.js";
 import { summarizeRpCall, summarizeRpResult } from "./presentation-summary.js";
 import { extractJsonContent, extractTextContent } from "./mcp-json.js";
 import { resolveToolName } from "./tool-names.js";
+import {
+  CONTEXT_BUILDER_WAIT_TIMEOUT_MS,
+  ContextBuilderJobError,
+  ContextBuilderJobManager,
+} from "./context-builder-jobs.js";
+import type { ContextBuilderJobTarget, ContextBuilderResetReason } from "./context-builder-jobs.js";
 
 import { readFileWithCache } from "./readcache/read-file.js";
 import { RP_READCACHE_CUSTOM_TYPE, SCOPE_FULL, scopeRange } from "./readcache/constants.js";
@@ -564,17 +570,66 @@ const RpToolSchema = Type.Object({
   ),
 });
 
+const CONTEXT_BUILDER_TOOL_NAME = "context_builder";
+const CONTEXT_BUILDER_WAIT_TOOL_NAME = "context_builder_wait";
+const CONTEXT_BUILDER_WAIT_SECONDS = CONTEXT_BUILDER_WAIT_TIMEOUT_MS / 1000;
+const CONTEXT_BUILDER_WAIT_TOOL: RpToolMeta = {
+  name: CONTEXT_BUILDER_WAIT_TOOL_NAME,
+  description: (
+    `Wait up to ${CONTEXT_BUILDER_WAIT_SECONDS} seconds for a Context Builder job started by ` +
+    `rp({ call: "context_builder", ... }). Repeat with the same job_id while it is running. ` +
+    "The terminal result can be consumed once. Other RepoPrompt tools remain synchronous."
+  ),
+  inputSchema: {
+    type: "object",
+    properties: {
+      job_id: {
+        type: "string",
+        minLength: 1,
+        description: "Opaque job ID returned by context_builder",
+      },
+    },
+    required: ["job_id"],
+    additionalProperties: false,
+  },
+};
+
+class ContextBuilderExecutionError extends Error {
+  constructor(code: string, message: string) {
+    super(`[${code}] ${message}`);
+    this.name = "ContextBuilderExecutionError";
+  }
+}
+
+/** Result of the serialized portion of an active-app switch, consumed by the handover phase */
+interface AppSwitchHandover {
+  connected: boolean;
+  sourceState: AutoSelectionEntryData | null;
+  recoveryPaths: string[];
+}
+
+interface RepoPromptMcpDependencies {
+  contextBuilderJobs?: ContextBuilderJobManager;
+  launchApp?: (appPath: string) => Promise<boolean>;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Extension Entry Point
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function repopromptMcp(pi: ExtensionAPI) {
+export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPromptMcpDependencies = {}) {
+  const contextBuilderJobs = dependencies.contextBuilderJobs ?? new ContextBuilderJobManager();
+  const launchApp = dependencies.launchApp ?? tryLaunchApp;
   let config: RpConfig = loadConfig();
-    let activeApp: RpAppId = config.activeApp;
+  let activeApp: RpAppId = config.activeApp;
   let connectedApp: RpAppId | null = null;
   let initPromise: Promise<void> | null = null;
   let shutdownRequested = false;
   let extensionPaused = false;
+  let contextBuilderLifecycleGeneration = 0;
+  let connectionLifecycleController = new AbortController();
+  let connectionTransition: Promise<void> | null = null;
+  let connectionRecovery: { signal: AbortSignal; promise: Promise<void> } | null = null;
 
   function isRpAppId(value: unknown): value is RpAppId {
     return RP_APP_IDS.includes(value as RpAppId);
@@ -635,19 +690,111 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     connectedApp = app;
   }
 
+  function invalidateConnectionLifecycle(reason: string): void {
+    if (!connectionLifecycleController.signal.aborted) {
+      connectionLifecycleController.abort(new Error(`RepoPrompt connection lifecycle superseded: ${reason}`));
+    }
+    initPromise = null;
+    connectionRecovery = null;
+  }
+
+  /**
+   * Publish the post-connect recovery flight for the current lifecycle
+   *
+   * Tool dispatch waits on this instead of on the connection transition, so binding and selection
+   * recovery gate calls without blocking a later reconnect, app switch, or shutdown
+   */
+  function registerConnectionRecovery(signal: AbortSignal, work: Promise<void>): Promise<void> {
+    const flight = work.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      if (connectionRecovery?.promise === flight) {
+        connectionRecovery = null;
+      }
+    });
+    connectionRecovery = { signal, promise: flight };
+    return flight;
+  }
+
+  /** Wait for a promise only while its connection lifecycle remains current */
+  async function awaitWithinConnectionLifecycle(work: Promise<void>, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const handleAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", handleAbort, { once: true });
+      void work.then(resolve, reject).finally(() => signal.removeEventListener("abort", handleAbort));
+    });
+  }
+
+  /** Wait for the current lifecycle's recovery so calls never dispatch against an unrecovered binding */
+  async function awaitConnectionRecovery(signal: AbortSignal): Promise<void> {
+    for (;;) {
+      signal.throwIfAborted();
+      const flight = connectionRecovery;
+      if (!flight || flight.signal !== signal) {
+        return;
+      }
+      await awaitWithinConnectionLifecycle(flight.promise, signal);
+      if (connectionRecovery === flight) {
+        return;
+      }
+    }
+  }
+
+  function beginConnectionLifecycle(reason: string): AbortSignal {
+    invalidateConnectionLifecycle(reason);
+    connectionLifecycleController = new AbortController();
+    return connectionLifecycleController.signal;
+  }
+
+  function connectionLifecycleIsCurrent(signal: AbortSignal): boolean {
+    return signal === connectionLifecycleController.signal && !signal.aborted && !shutdownRequested;
+  }
+
+  async function runConnectionTransition<T>(
+    signal: AbortSignal,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    while (connectionTransition) {
+      await connectionTransition;
+    }
+    signal.throwIfAborted();
+
+    const operationPromise = operation(signal);
+    const transition = operationPromise.then(() => undefined, () => undefined);
+    connectionTransition = transition;
+    try {
+      return await operationPromise;
+    } finally {
+      if (connectionTransition === transition) {
+        connectionTransition = null;
+      }
+    }
+  }
+
+  async function resetClientAndContextBuilderJobs(reason: ContextBuilderResetReason): Promise<void> {
+    contextBuilderLifecycleGeneration += 1;
+    contextBuilderJobs.reset(reason);
+    await resetRpClient();
+  }
+
   async function resetConnectionForActiveAppChange(previousApp: RpAppId): Promise<void> {
     if (previousApp === activeApp) {
       return;
     }
 
-    initPromise = null;
-    connectedApp = null;
-    clearBinding();
-    clearReadcacheCaches();
-    clearRootsCache();
-    resetAutoSelectionRuntimeState();
-    clearPendingTransitionSelectionState();
-    await resetRpClient();
+    const lifecycleSignal = beginConnectionLifecycle("active_app_change");
+    await runConnectionTransition(lifecycleSignal, async (signal) => {
+      signal.throwIfAborted();
+      connectedApp = null;
+      clearBinding();
+      clearReadcacheCaches();
+      clearRootsCache();
+      resetAutoSelectionRuntimeState();
+      clearPendingTransitionSelectionState();
+      await resetClientAndContextBuilderJobs("active_app_change");
+    });
   }
 
   pi.on("before_agent_start", async () => {
@@ -1502,7 +1649,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
   async function ensureTabScopedBinding(
     ctx: ExtensionContext,
     reason = "RepoPrompt binding has no tab. Re-bind with /rp bind."
-  ): Promise<RpBinding> {
+  ): Promise<RpBinding & { tab: string }> {
     const binding = await syncAutoSelectionToCurrentBranch(ctx);
 
     if (!binding) {
@@ -1513,15 +1660,98 @@ export default function repopromptMcp(pi: ExtensionAPI) {
       throw new Error(reason);
     }
 
-    return binding;
+    return { ...binding, tab: binding.tab };
   }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Lifecycle Events
   // ───────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Finish a freshly established connection: bind a window, then reconcile branch selection
+   *
+   * Runs outside the serialized connection transition so a slow RepoPrompt window or selection
+   * operation cannot delay an explicit reconnect, app switch, or shutdown
+   */
+  async function completeConnectionRecovery(
+    ctx: ExtensionContext,
+    syncOptions: AutoSelectionSyncOptions,
+    pendingTargetPolicy: "reuse" | "refresh",
+    lifecycleSignal: AbortSignal,
+  ): Promise<void> {
+    try {
+      await autoBindAfterConnect(pi, ctx, config, lifecycleSignal);
+    } catch {
+      if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+        return;
+      }
+    }
+
+    try {
+      await syncAutoSelectionToCurrentBranch(ctx, syncOptions, pendingTargetPolicy);
+    } catch (err) {
+      if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+        return;
+      }
+      // The pending transition target is retained by the sync itself, so the next reconnect retries it
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `${activeAppLabel()}: selection recovery failed (${err instanceof Error ? err.message : err}). ` +
+          "Run /rp reconnect to retry.",
+          "warning"
+        );
+      }
+    }
+  }
+
+  async function retryStartupAfterConnectionFailure(
+    ctx: ExtensionContext,
+    syncOptions: AutoSelectionSyncOptions,
+    lifecycleSignal: AbortSignal,
+  ): Promise<void> {
+    // If autoLaunchApp is enabled, try opening the app and retrying once
+    const targetConfig = getAppTargetConfig(config, activeApp);
+    if (targetConfig.autoLaunchApp) {
+      const appPath = inferAppPath(config, activeApp);
+      const launched = await launchApp(appPath);
+      if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+        return;
+      }
+      if (launched) {
+        try {
+          await runConnectionTransition(lifecycleSignal, async (signal) => {
+            await resetClientAndContextBuilderJobs("startup_retry");
+            signal.throwIfAborted();
+            connectedApp = null;
+            clearRootsCache();
+            await initializeExtension(pi, ctx, config, markConnectedApp, signal);
+          });
+          await completeConnectionRecovery(ctx, syncOptions, "refresh", lifecycleSignal);
+          return;
+        } catch {
+          if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+            return;
+          }
+          // Fall through to pause
+        }
+      }
+    }
+
+    if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+      return;
+    }
+    extensionPaused = true;
+    if (ctx.hasUI) {
+      ctx.ui.notify(
+        `${activeAppLabel()} unavailable — extension paused. Use /rp reconnect or /rp app when ready.`,
+        "warning"
+      );
+    }
+  }
+
   pi.on("session_start", async (event, ctx) => {
     shutdownRequested = false;
+    const lifecycleSignal = beginConnectionLifecycle("session_start");
     extensionPaused = false;
     connectedApp = null;
     restoreRuntimeApp(ctx);
@@ -1547,51 +1777,30 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     seedPendingTransitionTargetForSessionStart(ctx, syncOptions);
 
     // Non-blocking initialization
-    const pendingInit = initializeExtension(pi, ctx, config, markConnectedApp);
+    const pendingInit = initializeExtension(pi, ctx, config, markConnectedApp, lifecycleSignal);
     initPromise = pendingInit;
 
-    pendingInit.then(async () => {
-      if (initPromise === pendingInit) {
-        initPromise = null;
-      }
-      if (shutdownRequested) {
-        return;
-      }
-      await syncAutoSelectionToCurrentBranch(ctx, syncOptions, "refresh");
-    }).catch(async () => {
-      if (initPromise === pendingInit) {
-        initPromise = null;
-      }
-      if (shutdownRequested) {
-        return;
-      }
-      // If autoLaunchApp is enabled, try opening the app and retrying once
-      const targetConfig = getAppTargetConfig(config, activeApp);
-      if (targetConfig.autoLaunchApp) {
-        const appPath = inferAppPath(config, activeApp);
-        const launched = await tryLaunchApp(appPath);
-        if (launched) {
-          try {
-            await resetRpClient();
-            connectedApp = null;
-            clearRootsCache();
-            await initializeExtension(pi, ctx, config, markConnectedApp);
-            await syncAutoSelectionToCurrentBranch(ctx, syncOptions, "refresh");
+    // Connection failure and post-connection recovery failure have different semantics, so they are
+    // handled by separate settlement paths rather than by one chained catch
+    void registerConnectionRecovery(
+      lifecycleSignal,
+      pendingInit.then(
+        async () => {
+          if (initPromise !== pendingInit || !connectionLifecycleIsCurrent(lifecycleSignal)) {
             return;
-          } catch {
-            // Fall through to pause
           }
-        }
-      }
-
-      extensionPaused = true;
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `${activeAppLabel()} unavailable — extension paused. Use /rp reconnect or /rp app when ready.`,
-          "warning"
-        );
-      }
-    });
+          initPromise = null;
+          await completeConnectionRecovery(ctx, syncOptions, "refresh", lifecycleSignal);
+        },
+        async () => {
+          if (initPromise !== pendingInit || !connectionLifecycleIsCurrent(lifecycleSignal)) {
+            return;
+          }
+          initPromise = null;
+          await retryStartupAfterConnectionFailure(ctx, syncOptions, lifecycleSignal);
+        },
+      ),
+    );
   });
 
   pi.on("session_compact", async () => {
@@ -1600,7 +1809,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async () => {
     shutdownRequested = true;
-    initPromise = null;
+    invalidateConnectionLifecycle("session_shutdown");
     updatePendingTransitionSelectionFromLiveState();
 
     // Never block Pi shutdown on an MCP startup handshake that may be stuck waiting on the app
@@ -1608,7 +1817,7 @@ export default function repopromptMcp(pi: ExtensionAPI) {
     clearReadcacheCaches();
     clearRootsCache();
     resetAutoSelectionRuntimeState();
-    await resetRpClient();
+    await resetClientAndContextBuilderJobs("session_shutdown");
     connectedApp = null;
   });
 
@@ -1899,30 +2108,55 @@ export default function repopromptMcp(pi: ExtensionAPI) {
 
         case "reconnect": {
           const wasPaused = extensionPaused;
+          const lifecycleSignal = beginConnectionLifecycle("reconnect");
           try {
-            config = loadRuntimeConfig();
-            await resetRpClient();
-            connectedApp = null;
-            clearBinding();
-            clearRootsCache();
-            extensionPaused = false;
-            await initializeExtension(pi, ctx, config, markConnectedApp);
-            await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
-            ctx.ui.notify(`${activeAppDisplay()} reconnected`, "info");
-
-            if (wasPaused) {
-              pi.sendMessage(
-                {
-                  customType: "rp-availability",
-                  content: `${activeAppDisplay()} (\`rp\` tool) is now available.`,
-                  display: false,
-                },
-                { triggerTurn: false },
+            await runConnectionTransition(lifecycleSignal, async (signal) => {
+              config = loadRuntimeConfig();
+              await resetClientAndContextBuilderJobs("reconnect");
+              signal.throwIfAborted();
+              connectedApp = null;
+              clearBinding();
+              clearRootsCache();
+              extensionPaused = false;
+              try {
+                await initializeExtension(pi, ctx, config, markConnectedApp, signal);
+              } catch (err) {
+                signal.throwIfAborted();
+                // Publish the paused state before the transition is released so calls queued
+                // behind this reconnect observe it instead of starting their own connection
+                extensionPaused = true;
+                throw err;
+              }
+              signal.throwIfAborted();
+              registerConnectionRecovery(
+                signal,
+                completeConnectionRecovery(ctx, reconnectAutoSelectionSyncOptions(), "reuse", signal),
               );
-            }
+            });
+            await awaitConnectionRecovery(lifecycleSignal);
           } catch (err) {
+            if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+              break;
+            }
             extensionPaused = true;
             ctx.ui.notify(`Reconnection failed: ${err instanceof Error ? err.message : err}`, "error");
+            break;
+          }
+
+          if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
+            break;
+          }
+          ctx.ui.notify(`${activeAppDisplay()} reconnected`, "info");
+
+          if (wasPaused) {
+            pi.sendMessage(
+              {
+                customType: "rp-availability",
+                content: `${activeAppDisplay()} (\`rp\` tool) is now available.`,
+                display: false,
+              },
+              { triggerTurn: false },
+            );
           }
           break;
         }
@@ -1961,6 +2195,13 @@ Usage:
   rp({ search: "query" })              → Search for tools
   rp({ describe: "tool_name" })        → Show tool parameters
   rp({ call: "tool_name", args: {...}})→ Call a tool
+  rp({ call: "context_builder", args: {...} })
+                                          → Start Context Builder and receive a job_id
+  rp({ call: "context_builder_wait", args: { job_id: "..." } })
+                                          → Wait up to ${CONTEXT_BUILDER_WAIT_SECONDS} seconds; repeat while running
+
+Only Context Builder uses the asynchronous start/wait protocol. Its terminal result is returned once.
+All other forwarded RepoPrompt tools return their results directly.
 
 Common tools: read_file, get_file_tree, get_code_structure, file_search,
 apply_edits, manage_selection, workspace_context
@@ -1969,8 +2210,27 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     parameters: RpToolSchema,
 
-    async execute(_toolCallId, params: RpToolParams, _signal, onUpdate, _ctx) {
-      if (extensionPaused) {
+    async execute(_toolCallId, params: RpToolParams, signal, onUpdate, _ctx) {
+      const mode = params.call
+        ? "call"
+        : params.describe
+          ? "describe"
+          : params.search
+            ? "search"
+            : params.windows
+              ? "windows"
+              : params.bind
+                ? "bind"
+                : "status";
+      const normalizedCall = mode === "call" ? normalizeToolName(params.call ?? "") : "";
+      const waitingForContextBuilder = normalizedCall === CONTEXT_BUILDER_WAIT_TOOL_NAME;
+      if (normalizedCall === CONTEXT_BUILDER_TOOL_NAME && signal?.aborted) {
+        throwContextBuilderError(
+          "context_builder_start_aborted",
+          "Context Builder was cancelled before the background job started.",
+        );
+      }
+      if (extensionPaused && !waitingForContextBuilder) {
         throw new Error(
           `The rp tool is not currently available because ${activeAppDisplay()} is disconnected. ` +
           "The user can run /rp app or /rp reconnect when the selected app is running."
@@ -1980,14 +2240,20 @@ Mode priority: call > describe > search > windows > bind > status`,
       // Provide a no-op if onUpdate is undefined
       const safeOnUpdate = onUpdate ?? (() => {});
 
-      // Only modes that need MCP require a connection
-      if (params.call || params.describe || params.search || params.windows || params.bind) {
-        await ensureConnected(_ctx as ExtensionContext | undefined);
+      // The wrapper-owned wait operation reads only extension runtime state
+      const requiresConnection = mode === "call" ? !waitingForContextBuilder : mode !== "status";
+      if (requiresConnection) {
+        const connectionWork = ensureConnected(_ctx as ExtensionContext | undefined);
+        if (normalizedCall === CONTEXT_BUILDER_TOOL_NAME) {
+          await awaitContextBuilderStartPhase(connectionWork, signal);
+        } else {
+          await connectionWork;
+        }
       }
 
       // Mode resolution: call > describe > search > windows > bind > status
       if (params.call) {
-        return executeToolCall(params, safeOnUpdate, _ctx as ExtensionContext | undefined);
+        return executeToolCall(params, safeOnUpdate, signal, _ctx as ExtensionContext | undefined);
       }
       if (params.describe) {
         return executeDescribe(params.describe);
@@ -2049,7 +2315,8 @@ Mode priority: call > describe > search > windows > bind > status`,
     renderResult(
       result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
       options: ToolRenderResultOptions,
-      theme: Theme
+      theme: Theme,
+      context: { isError: boolean },
     ) {
       const details = (result.details ?? {}) as Record<string, unknown>;
 
@@ -2062,7 +2329,7 @@ Mode priority: call > describe > search > windows > bind > status`,
         return new Text(theme.fg("warning", "Running…"), 0, 0);
       }
 
-      const isError = result.isError || details.isError;
+      const isError = context.isError || result.isError === true || details.isError === true;
       if (isError) {
         return new Text(theme.fg("error", "↳ " + textContent), 0, 0);
       }
@@ -2156,24 +2423,93 @@ Mode priority: call > describe > search > windows > bind > status`,
     ctx?: ExtensionContext,
     options: { syncAutoSelection?: boolean } = {}
   ): Promise<void> {
+    for (;;) {
+      const lifecycleSignal = connectionLifecycleController.signal;
+      try {
+        // A published recovery owns connection establishment for this lifecycle. Wait before
+        // entering the transition so a lazy call cannot create a competing same-lifecycle client.
+        await awaitConnectionRecovery(lifecycleSignal);
+        lifecycleSignal.throwIfAborted();
+        if (lifecycleSignal !== connectionLifecycleController.signal) {
+          continue;
+        }
+
+        await runConnectionTransition(lifecycleSignal, async (signal) => {
+          const connected = await ensureConnectedWithinTransition(signal);
+          if (connected && ctx && options.syncAutoSelection !== false) {
+            const recovery = (async () => {
+              try {
+                await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
+                signal.throwIfAborted();
+              } catch {
+                signal.throwIfAborted();
+                // Fail-open
+              }
+            })();
+            registerConnectionRecovery(signal, recovery);
+          }
+        });
+
+        // Recovery owns the tab-scoped target this call depends on. It remains outside the
+        // transition lock, but is published before a fresh connection releases that lock.
+        await awaitConnectionRecovery(lifecycleSignal);
+        lifecycleSignal.throwIfAborted();
+        if (lifecycleSignal !== connectionLifecycleController.signal) {
+          continue;
+        }
+        if (extensionPaused) {
+          throw new Error(
+            `The rp tool is not currently available because ${activeAppDisplay()} is disconnected. ` +
+            "The user can run /rp app or /rp reconnect when the selected app is running."
+          );
+        }
+
+        const client = getRpClient();
+        if (!client.isConnected || connectedApp !== activeApp) {
+          continue;
+        }
+        return;
+      } catch (err) {
+        if (lifecycleSignal.aborted && !shutdownRequested) {
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /** Establishes the connection and reports whether this call performed a fresh connect */
+  async function ensureConnectedWithinTransition(signal: AbortSignal): Promise<boolean> {
     if (initPromise) {
       await initPromise;
+      signal.throwIfAborted();
+    }
+    if (extensionPaused) {
+      throw new Error(
+        `The rp tool is not currently available because ${activeAppDisplay()} is disconnected. ` +
+        "The user can run /rp app or /rp reconnect when the selected app is running."
+      );
     }
 
     // Reload config so connection/runtime knobs apply without requiring /reload
     config = loadRuntimeConfig();
 
-    const client = getRpClient();
+    let client = getRpClient();
     if (config.toolCallTimeoutMs !== undefined) {
       client.setToolCallTimeoutMs(config.toolCallTimeoutMs);
     }
     if (client.isConnected && connectedApp === activeApp) {
-      return;
+      return false;
     }
 
     if (client.isConnected && connectedApp !== activeApp) {
-      await resetRpClient();
+      await resetClientAndContextBuilderJobs("connected_app_change");
+      signal.throwIfAborted();
       connectedApp = null;
+      client = getRpClient();
+      if (config.toolCallTimeoutMs !== undefined) {
+        client.setToolCallTimeoutMs(config.toolCallTimeoutMs);
+      }
     }
 
     // Lazy reconnect: allow the user to install/configure RepoPrompt after Pi starts
@@ -2187,16 +2523,10 @@ Mode priority: call > describe > search > windows > bind > status`,
     }
 
     const targetConfig = getAppTargetConfig(config, activeApp);
-    await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs);
+    await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs, signal);
+    signal.throwIfAborted();
     connectedApp = activeApp;
-
-    if (ctx && options.syncAutoSelection !== false) {
-      try {
-        await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
-      } catch {
-        // Fail-open
-      }
-    }
+    return true;
   }
 
   function parseNumber(value: unknown): number | undefined {
@@ -2557,107 +2887,169 @@ Mode priority: call > describe > search > windows > bind > status`,
       return;
     }
 
-    const sourceState = capturedAutoSelectionForAppSwitch(ctx);
-    const recoveryPaths = sourceState ? autoSelectionManagedPaths(sourceState) : [];
-
-    activeApp = nextApp;
-    config = loadRuntimeConfig();
-    persistActiveApp(nextApp);
-
-    initPromise = null;
-    clearBinding();
-    clearReadcacheCaches();
-    clearRootsCache();
-    resetAutoSelectionRuntimeState();
-    clearPendingTransitionSelectionState();
-    await resetRpClient();
-    connectedApp = null;
-
-    const server = getServerCommand(config, activeApp);
-    if (!server) {
-      extensionPaused = true;
-      ctx.ui.notify(
-        `${activeAppDisplay()} MCP server not found. Configure ~/.pi/agent/extensions/repoprompt-mcp.json ` +
-          `or install ${getAppCliCommand(activeApp)}.`,
-        "error"
-      );
-      return;
-    }
-
-    const targetConfig = getAppTargetConfig(config, activeApp);
-    const client = getRpClient();
-
+    const lifecycleSignal = beginConnectionLifecycle("active_app_change");
+    let handover: AppSwitchHandover;
     try {
-      extensionPaused = false;
-      await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs);
-      connectedApp = activeApp;
+      handover = await runConnectionTransition(lifecycleSignal, async (signal) => {
+        const sourceState = capturedAutoSelectionForAppSwitch(ctx);
+        const recoveryPaths = sourceState ? autoSelectionManagedPaths(sourceState) : [];
+
+        activeApp = nextApp;
+        config = loadRuntimeConfig();
+        persistActiveApp(nextApp);
+
+        clearBinding();
+        clearReadcacheCaches();
+        clearRootsCache();
+        resetAutoSelectionRuntimeState();
+        clearPendingTransitionSelectionState();
+        await resetClientAndContextBuilderJobs("active_app_change");
+        signal.throwIfAborted();
+        connectedApp = null;
+
+        const server = getServerCommand(config, activeApp);
+        if (!server) {
+          extensionPaused = true;
+          ctx.ui.notify(
+            `${activeAppDisplay()} MCP server not found. Configure ~/.pi/agent/extensions/repoprompt-mcp.json ` +
+              `or install ${getAppCliCommand(activeApp)}.`,
+            "error"
+          );
+          return { connected: false, sourceState, recoveryPaths };
+        }
+
+        const targetConfig = getAppTargetConfig(config, activeApp);
+        const client = getRpClient();
+
+        try {
+          extensionPaused = false;
+          await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs, signal);
+          signal.throwIfAborted();
+          connectedApp = activeApp;
+        } catch (err) {
+          signal.throwIfAborted();
+          // Publish the paused state before the transition is released so calls queued behind
+          // this app switch observe it instead of starting their own connection
+          extensionPaused = true;
+          ctx.ui.notify(
+            `Failed to connect to ${activeAppDisplay()}: ${err instanceof Error ? err.message : err}`,
+            "error"
+          );
+          return { connected: false, sourceState, recoveryPaths };
+        }
+
+        const connectedHandover = { connected: true, sourceState, recoveryPaths };
+        registerConnectionRecovery(
+          signal,
+          completeAppSwitchHandover(ctx, connectedHandover, signal),
+        );
+        return connectedHandover;
+      });
+      if (handover.connected) {
+        await awaitConnectionRecovery(lifecycleSignal);
+      }
     } catch (err) {
-      extensionPaused = true;
-      ctx.ui.notify(
-        `Failed to connect to ${activeAppDisplay()}: ${err instanceof Error ? err.message : err}`,
-        "error"
-      );
+      if (connectionLifecycleIsCurrent(lifecycleSignal)) {
+        throw err;
+      }
       return;
     }
 
-    if (recoveryPaths.length === 0) {
-      ctx.ui.notify(`${activeAppDisplay()} selected. Not bound; use /rp bind to choose a window.`, "info");
+    if (!handover.connected || !connectionLifecycleIsCurrent(lifecycleSignal)) {
       return;
     }
+  }
 
-    let windows: RpWindow[];
-    try {
-      windows = await fetchWindows(pi, config);
-    } catch (err) {
-      ctx.ui.notify(
-        `${activeAppDisplay()} selected, but window recovery failed: ${err instanceof Error ? err.message : err}. ` +
-          "Use /rp bind.",
-        "warning"
-      );
-      return;
-    }
-
-    const recovery = await findRecoveryWindowBySelectionPaths(windows, recoveryPaths, ctx.cwd);
-    if (!recovery.window) {
-      const reason = recovery.ambiguous
-        ? "multiple windows contain this session's required roots"
-        : "no open window contains this session's required roots";
-      ctx.ui.notify(`${activeAppDisplay()} selected, but ${reason}. Use /rp bind.`, "warning");
-      return;
-    }
+  /**
+   * Bind a window and replay the previous selection after switching RepoPrompt apps
+   *
+   * Runs outside the serialized connection transition so slow window and tab operations cannot
+   * block a later reconnect, app switch, or shutdown
+   */
+  async function completeAppSwitchHandover(
+    ctx: ExtensionContext,
+    handover: AppSwitchHandover,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const { sourceState, recoveryPaths } = handover;
 
     try {
-      const initialBinding = await bindToWindow(pi, recovery.window.id, undefined, config);
-      const recoveredBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
-        reuseSoleEmptyTab: true,
-      }) ?? initialBinding;
-
-      if (sourceState && recoveredBinding.tab) {
-        const targetState = normalizeAutoSelectionState({
-          ...sourceState,
-          app: activeApp,
-          windowId: recoveredBinding.windowId,
-          tab: recoveredBinding.tab,
-          workspace: recoveredBinding.workspace,
-        });
-
-        await reconcileAutoSelectionStates(null, targetState);
-        persistAutoSelectionState(targetState);
+      if (recoveryPaths.length === 0) {
+        ctx.ui.notify(`${activeAppDisplay()} selected. Not bound; use /rp bind to choose a window.`, "info");
+        return;
       }
 
-      const tabLabel = await resolveBindingTabLabel(recoveredBinding);
+      let windows: RpWindow[];
+      try {
+        windows = await fetchWindows(pi, config);
+        signal.throwIfAborted();
+      } catch (err) {
+        signal.throwIfAborted();
+        ctx.ui.notify(
+          `${activeAppDisplay()} selected, but window recovery failed: ${err instanceof Error ? err.message : err}. ` +
+            "Use /rp bind.",
+          "warning"
+        );
+        return;
+      }
+
+      const recovery = await findRecoveryWindowBySelectionPaths(windows, recoveryPaths, ctx.cwd);
+      signal.throwIfAborted();
+      if (!recovery.window) {
+        const reason = recovery.ambiguous
+          ? "multiple windows contain this session's required roots"
+          : "no open window contains this session's required roots";
+        ctx.ui.notify(`${activeAppDisplay()} selected, but ${reason}. Use /rp bind.`, "warning");
+        return;
+      }
+
+      try {
+        const initialBinding = await bindToWindow(pi, recovery.window.id, undefined, config);
+        signal.throwIfAborted();
+        const recoveredBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
+          reuseSoleEmptyTab: true,
+        }) ?? initialBinding;
+        signal.throwIfAborted();
+
+        if (sourceState && recoveredBinding.tab) {
+          const targetState = normalizeAutoSelectionState({
+            ...sourceState,
+            app: activeApp,
+            windowId: recoveredBinding.windowId,
+            tab: recoveredBinding.tab,
+            workspace: recoveredBinding.workspace,
+          });
+
+          await reconcileAutoSelectionStates(null, targetState);
+          signal.throwIfAborted();
+          persistAutoSelectionState(targetState);
+        }
+
+        const tabLabel = await resolveBindingTabLabel(recoveredBinding);
+        signal.throwIfAborted();
+        ctx.ui.notify(
+          `${activeAppDisplay()} selected and bound to window ${recoveredBinding.windowId}` +
+            (recoveredBinding.workspace ? ` (${recoveredBinding.workspace})` : "") +
+            (tabLabel ? `, tab "${tabLabel}"` : ""),
+          "info"
+        );
+      } catch (err) {
+        signal.throwIfAborted();
+        clearBinding();
+        ctx.ui.notify(
+          `${activeAppDisplay()} selected, but handover failed: ${err instanceof Error ? err.message : err}. ` +
+            "Use /rp bind.",
+          "warning"
+        );
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        return;
+      }
       ctx.ui.notify(
-        `${activeAppDisplay()} selected and bound to window ${recoveredBinding.windowId}` +
-          (recoveredBinding.workspace ? ` (${recoveredBinding.workspace})` : "") +
-          (tabLabel ? `, tab "${tabLabel}"` : ""),
-        "info"
-      );
-    } catch (err) {
-      clearBinding();
-      ctx.ui.notify(
-        `${activeAppDisplay()} selected, but handover failed: ${err instanceof Error ? err.message : err}. ` +
+        `${activeAppDisplay()} selected, but handover failed: ${error instanceof Error ? error.message : error}. ` +
           "Use /rp bind.",
-        "warning"
+        "warning",
       );
     }
   }
@@ -2947,10 +3339,37 @@ Mode priority: call > describe > search > windows > bind > status`,
     };
   }
 
+  function presentTool(tool: RpToolMeta): RpToolMeta {
+    const normalized = normalizeToolName(tool.name);
+    if (normalized !== CONTEXT_BUILDER_TOOL_NAME) {
+      return tool;
+    }
+
+    return {
+      ...tool,
+      description: (
+        `${tool.description || "Build deep repository context and produce a response."} ` +
+        "This wrapper starts Context Builder asynchronously and returns a job_id immediately. " +
+        `Call ${CONTEXT_BUILDER_WAIT_TOOL_NAME} with that ID; each wait blocks up to ` +
+        `${CONTEXT_BUILDER_WAIT_SECONDS} seconds. Consume the terminal result before starting another job on the same ` +
+        "app/window/tab."
+      ),
+    };
+  }
+
+  function presentedTools(tools: RpToolMeta[]): RpToolMeta[] {
+    return [
+      ...tools
+        .filter((tool) => normalizeToolName(tool.name) !== CONTEXT_BUILDER_WAIT_TOOL_NAME)
+        .map(presentTool),
+      CONTEXT_BUILDER_WAIT_TOOL,
+    ];
+  }
+
   async function executeSearch(query: string) {
     const client = getRpClient();
     const toolCatalogFreshness = client.toolCatalogFreshness;
-    const tools = client.tools;
+    const tools = presentedTools(client.tools);
 
     // Split query into terms and match any
     const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
@@ -3015,7 +3434,7 @@ Mode priority: call > describe > search > windows > bind > status`,
   async function executeDescribe(toolName: string) {
     const client = getRpClient();
     const toolCatalogFreshness = client.toolCatalogFreshness;
-    const tools = client.tools;
+    const tools = presentedTools(client.tools);
     const normalized = normalizeToolName(toolName);
 
     const tool = tools.find(
@@ -3063,15 +3482,214 @@ Mode priority: call > describe > search > windows > bind > status`,
     };
   }
 
+  type RpResponseContent =
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string };
+
+  function buildToolCallResponse(options: {
+    result: McpToolResult;
+    toolName: string;
+    userArgs: Record<string, unknown>;
+    originalArgs?: Record<string, unknown>;
+    warning?: string;
+    toolCatalogFreshness: ToolCatalogFreshness;
+    rpReadcache?: RpReadcacheMetaV1 | null;
+    fileActionDeleteSnapshot?: string;
+    contextBuilderJob?: Record<string, unknown>;
+  }) {
+    const normalizedTool = normalizeToolName(options.toolName);
+    const textContent = options.result.content
+      .filter((content): content is { type: "text"; text: string } => content.type === "text")
+      .map((content) => content.text)
+      .join("\n");
+    const normalizedTextResult = options.result.isError
+      ? null
+      : normalizeToolResultText({ toolName: normalizedTool, text: textContent });
+    const normalizedFileActionResult = options.result.isError
+      ? null
+      : normalizeFileActionResult({
+          action: options.userArgs.action,
+          path: options.userArgs.path,
+          content: options.userArgs.content,
+          deletedContent: options.fileActionDeleteSnapshot,
+        });
+    const editNoop = isEditOperation(options.toolName) && isNoopEdit(textContent);
+    const content: RpResponseContent[] = options.result.content.map((item) => {
+      if (item.type === "text") {
+        return { type: "text", text: item.text };
+      }
+      if (item.type === "image") {
+        return { type: "image", data: item.data, mimeType: item.mimeType };
+      }
+      return { type: "text", text: JSON.stringify(item) };
+    });
+    const nonPrimaryContent: RpResponseContent[] = [];
+    for (const item of options.result.content) {
+      if (item.type === "text") {
+        continue;
+      }
+      if (item.type === "image") {
+        nonPrimaryContent.push({ type: "image", data: item.data, mimeType: item.mimeType });
+        continue;
+      }
+      nonPrimaryContent.push({ type: "text", text: JSON.stringify(item) });
+    }
+    let responseContent = normalizedTextResult
+      ? [{ type: "text" as const, text: normalizedTextResult.contentText }, ...nonPrimaryContent]
+      : normalizedFileActionResult?.contentText
+        ? [{ type: "text" as const, text: normalizedFileActionResult.contentText }, ...nonPrimaryContent]
+        : content.length > 0
+          ? content
+          : [{ type: "text" as const, text: "(empty result)" }];
+
+    if (editNoop && !options.result.isError) {
+      responseContent = [
+        { type: "text" as const, text: "⚠ No changes applied (no-op edit)" },
+        ...responseContent,
+      ];
+    }
+
+    return {
+      content: responseContent,
+      details: {
+        mode: "call",
+        tool: options.toolName,
+        args: options.originalArgs,
+        warning: options.warning,
+        editNoop,
+        toolCatalogFreshness: options.toolCatalogFreshness,
+        rpReadcache: options.rpReadcache ?? undefined,
+        ...(normalizedTextResult ? normalizedTextResult.details : {}),
+        ...(normalizedFileActionResult ?? {}),
+        ...(options.contextBuilderJob ? { contextBuilderJob: options.contextBuilderJob } : {}),
+      },
+      isError: options.result.isError,
+    };
+  }
+
+  function missingTabBindingResponse(toolName: string, message: string) {
+    return {
+      content: [{ type: "text" as const, text: message }],
+      details: { mode: "call", error: "missing_tab_binding", tool: toolName, message },
+      isError: true,
+    };
+  }
+
+  function throwContextBuilderError(code: string, message: string): never {
+    throw new ContextBuilderExecutionError(code, message);
+  }
+
+  async function awaitContextBuilderStartPhase<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) {
+      return work;
+    }
+    if (signal.aborted) {
+      throwContextBuilderError(
+        "context_builder_start_aborted",
+        "Context Builder was cancelled before the background job started.",
+      );
+    }
+
+    return await new Promise<T>((resolve, reject) => {
+      const handleAbort = () => reject(new ContextBuilderExecutionError(
+        "context_builder_start_aborted",
+        "Context Builder was cancelled before the background job started.",
+      ));
+      const removeAbortListener = () => signal.removeEventListener("abort", handleAbort);
+      signal.addEventListener("abort", handleAbort, { once: true });
+      void work.then(
+        (value) => {
+          removeAbortListener();
+          resolve(value);
+        },
+        (error) => {
+          removeAbortListener();
+          reject(error);
+        },
+      );
+    });
+  }
+
+  async function executeContextBuilderWait(
+    params: RpToolParams,
+    onUpdate: (
+      partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
+    ) => void,
+    signal?: AbortSignal,
+  ) {
+    const args = params.args ?? {};
+    const keys = Object.keys(args);
+    const jobId = typeof args.job_id === "string" ? args.job_id.trim() : "";
+    if (jobId.length === 0 || keys.length !== 1 || keys[0] !== "job_id") {
+      throwContextBuilderError(
+        "invalid_context_builder_wait_args",
+        "context_builder_wait requires exactly one non-empty string argument: job_id.",
+      );
+    }
+
+    onUpdate({
+      content: [{ type: "text", text: `Waiting for Context Builder job ${jobId}…` }],
+      details: { mode: "call", tool: CONTEXT_BUILDER_WAIT_TOOL_NAME, status: "running", jobId },
+    });
+
+    try {
+      const outcome = await contextBuilderJobs.wait(jobId, signal);
+      if (outcome.status === "running") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: (
+              `Context Builder job "${jobId}" is still running. Call ` +
+              `rp({ call: "${CONTEXT_BUILDER_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) again.`
+            ),
+          }],
+          details: {
+            mode: "call",
+            tool: CONTEXT_BUILDER_WAIT_TOOL_NAME,
+            contextBuilderJob: { jobId, status: "running", target: outcome.descriptor.target },
+          },
+        };
+      }
+
+      if (outcome.result.isError) {
+        throwContextBuilderError(
+          "context_builder_tool_failed",
+          extractTextContent(outcome.result.content) || "Context Builder returned an error.",
+        );
+      }
+
+      return buildToolCallResponse({
+        result: outcome.result,
+        toolName: outcome.descriptor.toolName,
+        userArgs: { ...outcome.descriptor.userArgs },
+        originalArgs: { ...outcome.descriptor.userArgs },
+        toolCatalogFreshness: outcome.descriptor.toolCatalogFreshness,
+        contextBuilderJob: { jobId, status: "completed", target: outcome.descriptor.target },
+      });
+    } catch (error) {
+      if (error instanceof ContextBuilderJobError) {
+        throwContextBuilderError(error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
   async function executeToolCall(
     params: RpToolParams,
-    onUpdate: (partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void,
+    onUpdate: (
+      partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
+    ) => void,
+    signal?: AbortSignal,
     ctx?: ExtensionContext
   ) {
+    const toolName = normalizeToolName(params.call!);
+    if (toolName === CONTEXT_BUILDER_WAIT_TOOL_NAME) {
+      return executeContextBuilderWait(params, onUpdate, signal);
+    }
+
     const client = getRpClient();
     const toolCatalogFreshness = client.toolCatalogFreshness;
     const tools = client.tools;
-    const toolName = normalizeToolName(params.call!);
 
     // Validate tool exists
     const tool = tools.find(
@@ -3079,6 +3697,15 @@ Mode priority: call > describe > search > windows > bind > status`,
     );
 
     if (!tool) {
+      if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
+        throwContextBuilderError(
+          toolCatalogFreshness === "stale" ? "catalog_stale" : "not_found",
+          toolCatalogFreshness === "stale"
+            ? formatStaleToolAbsence(params.call!)
+            : `Tool "${params.call}" not found. Use rp({ search: "..." }) to search.`,
+        );
+      }
+
       if (toolCatalogFreshness === "stale") {
         return {
           content: [{ type: "text" as const, text: formatStaleToolAbsence(params.call!) }],
@@ -3105,6 +3732,9 @@ Mode priority: call > describe > search > windows > bind > status`,
     });
 
     if (!guardResult.allowed) {
+      if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
+        throwContextBuilderError("blocked", guardResult.reason!);
+      }
       return {
         content: [{ type: "text" as const, text: guardResult.reason! }],
         details: { mode: "call", error: "blocked", tool: tool.name },
@@ -3113,47 +3743,131 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     const userArgs = (params.args ?? {}) as Record<string, unknown>;
     const normalizedTool = normalizeToolName(tool.name);
+    const contextBuilderStartGeneration = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
+      ? contextBuilderLifecycleGeneration
+      : null;
+    const contextBuilderUserArgs = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
+      ? structuredClone(userArgs)
+      : null;
+    const binding = getBinding();
+    let contextBuilderTarget: ContextBuilderJobTarget | null =
+      normalizedTool === CONTEXT_BUILDER_TOOL_NAME && binding?.tab
+        ? { app: binding.app, windowId: binding.windowId, tab: binding.tab }
+        : null;
+    const contextBuilderBindingMessage = "Context Builder requires a bound RepoPrompt tab.";
+    const tabBindingMessage =
+      "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools.";
+    const needsTabScopedBinding = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
+      ? ctx === undefined || !binding?.tab
+      : binding !== null &&
+        !binding.tab &&
+        normalizedTool !== "manage_workspaces" &&
+        normalizedTool !== "list_windows" &&
+        normalizedTool !== "bind_context" &&
+        normalizedTool !== "agent_run" &&
+        normalizedTool !== "agent_manage";
 
-    if (
-      getBinding() &&
-      !getBinding()?.tab &&
-      normalizedTool !== "manage_workspaces" &&
-      normalizedTool !== "list_windows" &&
-      normalizedTool !== "bind_context" &&
-      normalizedTool !== "agent_run" &&
-      normalizedTool !== "agent_manage"
-    ) {
+    if (needsTabScopedBinding) {
+      const message = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
+        ? contextBuilderBindingMessage
+        : tabBindingMessage;
       if (!ctx) {
-        return {
-          content: [{ type: "text" as const, text: "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools." }],
-          details: { mode: "call", error: "missing_tab_binding", tool: tool.name },
-          isError: true,
-        };
+        if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
+          throwContextBuilderError("missing_tab_binding", message);
+        }
+        return missingTabBindingResponse(tool.name, message);
       }
 
       try {
-        await ensureTabScopedBinding(ctx, "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools.");
+        const bindingWork = ensureTabScopedBinding(ctx, message);
+        const tabScopedBinding = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
+          ? await awaitContextBuilderStartPhase(bindingWork, signal)
+          : await bindingWork;
+        if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
+          contextBuilderTarget = {
+            app: tabScopedBinding.app,
+            windowId: tabScopedBinding.windowId,
+            tab: tabScopedBinding.tab,
+          };
+        }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text" as const, text: message }],
-          details: { mode: "call", error: "missing_tab_binding", tool: tool.name, message },
-          isError: true,
-        };
+        if (error instanceof ContextBuilderExecutionError) {
+          throw error;
+        }
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
+          throwContextBuilderError("missing_tab_binding", errorMessage);
+        }
+        return missingTabBindingResponse(tool.name, errorMessage);
       }
     }
 
-    // Merge binding args with user args (strip wrapper-only args before forwarding)
-    const bindingArgs = getBindingArgs();
+    const resolvedContextBuilderTarget = contextBuilderTarget;
+
+    // Context Builder uses the same resolved binding snapshot for job identity and forwarding
+    const bindingArgs = resolvedContextBuilderTarget
+      ? { _windowID: resolvedContextBuilderTarget.windowId, context_id: resolvedContextBuilderTarget.tab }
+      : getBindingArgs();
 
     const bypassCache = normalizedTool === "read_file" && userArgs.bypass_cache === true;
 
     const forwardedUserArgs = buildForwardedUserArgs({
       toolName: normalizedTool,
-      userArgs,
+      userArgs: contextBuilderUserArgs ?? userArgs,
     });
 
     const mergedArgs = { ...forwardedUserArgs, ...bindingArgs };
+
+    if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
+      if (contextBuilderStartGeneration !== contextBuilderLifecycleGeneration) {
+        throwContextBuilderError(
+          "context_builder_start_cancelled",
+          "Context Builder start was cancelled because the RepoPrompt connection changed.",
+        );
+      }
+      if (signal?.aborted) {
+        throwContextBuilderError(
+          "context_builder_start_aborted",
+          "Context Builder was cancelled before the background job started.",
+        );
+      }
+      if (!resolvedContextBuilderTarget || !contextBuilderUserArgs) {
+        throw new Error("Context Builder start invariant violated");
+      }
+      try {
+        const started = contextBuilderJobs.start({
+          descriptor: {
+            target: resolvedContextBuilderTarget,
+            toolName: tool.name,
+            userArgs: contextBuilderUserArgs,
+            toolCatalogFreshness,
+          },
+          run: (jobSignal) => client.callTool(tool.name, mergedArgs, undefined, jobSignal),
+        });
+        const jobId = started.jobId;
+        return {
+          content: [{
+            type: "text" as const,
+            text: (
+              `Context Builder started in the background. Job ID: "${jobId}". Call ` +
+              `rp({ call: "${CONTEXT_BUILDER_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) ` +
+              "to retrieve the result."
+            ),
+          }],
+          details: {
+            mode: "call",
+            tool: tool.name,
+            contextBuilderJob: { jobId, status: "running", target: started.descriptor.target },
+            toolCatalogFreshness,
+          },
+        };
+      } catch (error) {
+        if (error instanceof ContextBuilderJobError) {
+          throwContextBuilderError(error.code, error.message);
+        }
+        throw error;
+      }
+    }
 
     const fileActionDeleteSnapshot = normalizedTool === "file_actions"
       && userArgs.action === "delete"
@@ -3229,86 +3943,16 @@ Mode priority: call > describe > search > windows > bind > status`,
         }
       }
 
-      // Transform content to text
-      const textContent = result.content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
-      const normalizedTextResult = result.isError
-        ? null
-        : normalizeToolResultText({
-          toolName: normalizedTool,
-          text: textContent,
-        });
-      const normalizedFileActionResult = result.isError
-        ? null
-        : normalizeFileActionResult({
-          action: userArgs.action,
-          path: userArgs.path,
-          content: userArgs.content,
-          deletedContent: fileActionDeleteSnapshot,
-        });
-
-      // Check for noop edits
-      const editNoop = isEditOperation(tool.name) && isNoopEdit(textContent);
-
-      // Build response
-      type RpResponseContent =
-        | { type: "text"; text: string }
-        | { type: "image"; data: string; mimeType: string };
-
-      const content: RpResponseContent[] = result.content.map((c) => {
-        if (c.type === "text") {
-          return { type: "text", text: c.text };
-        }
-        if (c.type === "image") {
-          return { type: "image", data: c.data, mimeType: c.mimeType };
-        }
-        return { type: "text", text: JSON.stringify(c) };
+      return buildToolCallResponse({
+        result,
+        toolName: tool.name,
+        userArgs,
+        originalArgs: params.args,
+        warning: guardResult.warning,
+        toolCatalogFreshness,
+        rpReadcache,
+        fileActionDeleteSnapshot,
       });
-
-      const nonPrimaryContent: RpResponseContent[] = [];
-      for (const c of result.content) {
-        if (c.type === "text") {
-          continue;
-        }
-        if (c.type === "image") {
-          nonPrimaryContent.push({ type: "image", data: c.data, mimeType: c.mimeType });
-          continue;
-        }
-        nonPrimaryContent.push({ type: "text", text: JSON.stringify(c) });
-      }
-
-      let responseContent = normalizedTextResult
-        ? [{ type: "text" as const, text: normalizedTextResult.contentText }, ...nonPrimaryContent]
-        : normalizedFileActionResult?.contentText
-          ? [{ type: "text" as const, text: normalizedFileActionResult.contentText }, ...nonPrimaryContent]
-          : content.length > 0
-            ? content
-            : [{ type: "text" as const, text: "(empty result)" }];
-
-      if (editNoop && !result.isError) {
-        responseContent = [
-          { type: "text" as const, text: "⚠ No changes applied (no-op edit)" },
-          ...responseContent,
-        ];
-      }
-
-      return {
-        content: responseContent,
-        details: {
-          mode: "call",
-          tool: tool.name,
-          args: params.args,
-          warning: guardResult.warning,
-          editNoop,
-          toolCatalogFreshness,
-          rpReadcache: rpReadcache ?? undefined,
-          ...(normalizedTextResult ? normalizedTextResult.details : {}),
-          ...(normalizedFileActionResult ?? {}),
-        },
-        isError: result.isError,
-      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
@@ -3570,8 +4214,11 @@ async function initializeExtension(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   config: RpConfig,
-  onConnected?: (app: RpAppId) => void
+  onConnected: ((app: RpAppId) => void) | undefined,
+  signal: AbortSignal,
 ): Promise<void> {
+  signal.throwIfAborted();
+
   // Try to restore binding from session
   restoreBinding(ctx, config);
 
@@ -3592,27 +4239,46 @@ async function initializeExtension(
 
   // Connect to RepoPrompt
   const client = getRpClient();
-  await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs);
+  await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs, signal);
+  signal.throwIfAborted();
   onConnected?.(app);
 
   // Notify connection
   if (ctx.hasUI) {
     ctx.ui.notify(`${getAppLabel(config, app)}: connected (${client.tools.length} tools)`, "info");
   }
+}
 
-  // Auto-detect and bind if enabled
+/**
+ * Auto-detect and bind a window after a connection is established
+ *
+ * Runs outside the serialized connection transition because window and tab discovery are
+ * long-running RepoPrompt operations that must never block an explicit reconnect or app switch
+ */
+async function autoBindAfterConnect(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  config: RpConfig,
+  signal: AbortSignal,
+): Promise<void> {
+  const app = config.activeApp;
+  signal.throwIfAborted();
+
   if (config.autoBindOnStart && !getBinding()) {
     try {
       const { binding, windows, ambiguity } = await autoDetectAndBind(pi, config);
+      signal.throwIfAborted();
 
       if (binding) {
         const reconciledBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
           reuseSoleEmptyTab: true,
         });
+        signal.throwIfAborted();
 
         if (ctx.hasUI) {
           const activeBinding = reconciledBinding ?? binding;
           const tabLabel = await resolveLiveBindingTabLabel(activeBinding);
+          signal.throwIfAborted();
           ctx.ui.notify(
             `${getAppLabel(config, app)}: auto-bound to window ${activeBinding.windowId}` +
             ` (${activeBinding.workspace ?? "unknown"})` +
@@ -3622,13 +4288,17 @@ async function initializeExtension(
         }
       } else if (ambiguity && ambiguity.candidates.length > 0 && ctx.hasUI) {
         const selected = await promptForWindowSelection(ctx, ambiguity.candidates);
+        signal.throwIfAborted();
 
         if (selected) {
           const chosenBinding = await bindToWindow(pi, selected.id, undefined, config);
+          signal.throwIfAborted();
           const reconciledBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
             reuseSoleEmptyTab: true,
           });
+          signal.throwIfAborted();
           const tabLabel = await resolveLiveBindingTabLabel(reconciledBinding ?? chosenBinding);
+          signal.throwIfAborted();
           ctx.ui.notify(
             `${getAppLabel(config, app)}: bound to window ${(reconciledBinding ?? chosenBinding).windowId}` +
             ` (${(reconciledBinding ?? chosenBinding).workspace ?? "unknown"})` +
@@ -3654,6 +4324,7 @@ async function initializeExtension(
         );
       }
     } catch (err) {
+      signal.throwIfAborted();
       // Auto-detect failed, not critical
       console.error("RepoPrompt auto-detect failed:", err);
     }

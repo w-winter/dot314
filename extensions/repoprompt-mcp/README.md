@@ -42,6 +42,15 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
 - Markdown-aware styling for headings and lists
 
+### Asynchronous Context Builder
+
+- `context_builder` starts in the background and immediately returns an opaque job ID, so a long context build never occupies a single blocking tool call
+- `context_builder_wait` waits for up to 210 seconds and returns either a running status or the original terminal Context Builder result; a timed-out or interrupted wait leaves the job running
+- Repeat `context_builder_wait` with the same job ID while the job is running; the first wait that observes the terminal result returns and consumes it
+- Each bound RepoPrompt tab can have one outstanding Context Builder job; consume its terminal result before starting another, while different tabs can run jobs concurrently
+- Reconnecting, switching RepoPrompt apps, reloading the extension, or ending the Pi session cancels outstanding jobs and invalidates their IDs
+- Other forwarded RepoPrompt tools remain synchronous
+
 ### Safety checks
 
 - Delete operations are blocked unless you pass `allowDelete: true`
@@ -181,6 +190,15 @@ rp({ describe: "apply_edits" })
 
 // Call a RepoPrompt tool (binding args are injected automatically)
 rp({ call: "read_file", args: { path: "src/main.ts" } })
+
+// Start Context Builder asynchronously and save the returned job ID
+rp({
+  call: "context_builder",
+  args: { instructions: "Explore the implementation and produce a plan", response_type: "plan" }
+})
+
+// Wait for the result; repeat with the same job ID while the job is running
+rp({ call: "context_builder_wait", args: { job_id: "cb_..." } })
 
 // Edit confirmation gate (only required if confirmEdits=true in config)
 rp({
