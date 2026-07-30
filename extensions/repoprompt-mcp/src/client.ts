@@ -3,11 +3,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { assertMcpToolResult } from "./mcp-tool-result.js";
 import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "./types.js";
 import type {
   RpConnection,
   RpToolMeta,
-  McpContent,
   McpToolResult,
   ConnectionStatus,
   ToolCatalogFreshness,
@@ -369,34 +369,10 @@ export class RpClient {
       throw new Error(message);
     }
 
-    // Transform content to our types
-    const content: McpContent[] = (result.content as unknown[]).map((c) => {
-      const item = c as Record<string, unknown>;
-
-      if (item.type === "text") {
-        return { type: "text" as const, text: typeof item.text === "string" ? item.text : "" };
-      }
-      if (item.type === "image") {
-        return {
-          type: "image" as const,
-          data: typeof item.data === "string" ? item.data : "",
-          mimeType: typeof item.mimeType === "string" ? item.mimeType : "image/png",
-        };
-      }
-      if (item.type === "resource") {
-        return {
-          type: "resource" as const,
-          resource: item.resource as { uri: string; text?: string; blob?: string },
-        };
-      }
-
-      // Fallback: stringify unknown content
-      return { type: "text" as const, text: JSON.stringify(c) };
-    });
-
+    assertMcpToolResult(result, `RepoPrompt tool "${name}" returned an invalid MCP tool result`);
     return {
-      content,
-      isError: Boolean(result.isError),
+      content: result.content,
+      ...(result.isError !== undefined ? { isError: result.isError } : {}),
     };
   }
 

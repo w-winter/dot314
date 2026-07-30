@@ -42,14 +42,15 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
 - Markdown-aware styling for headings and lists
 
-### Asynchronous Context Builder
+### Asynchronous Context Builder and Oracle jobs
 
-- `context_builder` starts in the background and immediately returns an opaque job ID, so a long context build never occupies a single blocking tool call
-- `context_builder_wait` waits for up to 210 seconds and returns either a running status or the original terminal Context Builder result; a timed-out or interrupted wait leaves the job running
-- Repeat `context_builder_wait` with the same job ID while the job is running; the first wait that observes the terminal result returns and consumes it
-- Each bound RepoPrompt tab can have one outstanding Context Builder job; consume its terminal result before starting another, while different tabs can run jobs concurrently
-- Reconnecting, switching RepoPrompt apps, reloading the extension, or ending the Pi session cancels outstanding jobs and invalidates their IDs
-- Other forwarded RepoPrompt tools remain synchronous
+- Calls to `context_builder` and `oracle_send` through `rp` start in the background and immediately return opaque job IDs, so long model operations do not occupy one blocking tool call
+- Use `context_builder_wait` for Context Builder jobs and `oracle_send_wait` for Oracle jobs; each wait lasts up to 210 seconds and returns either a running status or the terminal result
+- Starting a job sends exactly one request to RepoPrompt; wait calls check that existing job and never send a duplicate request
+- Repeat the matching wait call with the same job ID while a job is running; a timed-out or interrupted wait leaves the job running, and the first wait that observes the terminal result returns and consumes it
+- A bound RepoPrompt tab can run one Context Builder job and one Oracle job at the same time; different tabs can also run jobs concurrently
+- Reconnecting, switching RepoPrompt apps, reloading the extension, or ending the Pi session cancels outstanding Context Builder and Oracle jobs and invalidates their IDs
+- `/rp oracle` runs synchronously, `agent_run` uses session-based execution, and other RepoPrompt tool calls return their results directly
 
 ### Safety checks
 
@@ -199,6 +200,15 @@ rp({
 
 // Wait for the result; repeat with the same job ID while the job is running
 rp({ call: "context_builder_wait", args: { job_id: "cb_..." } })
+
+// Start an Oracle request asynchronously
+rp({
+  call: "oracle_send",
+  args: { message: "Review the selected changes", mode: "review", export_response: true }
+})
+
+// Wait for the same Oracle request; repeat while it is running
+rp({ call: "oracle_send_wait", args: { job_id: "oracle_..." } })
 
 // Edit confirmation gate (only required if confirmEdits=true in config)
 rp({

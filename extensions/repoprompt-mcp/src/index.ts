@@ -71,7 +71,14 @@ import {
   ContextBuilderJobError,
   ContextBuilderJobManager,
 } from "./context-builder-jobs.js";
-import type { ContextBuilderJobTarget, ContextBuilderResetReason } from "./context-builder-jobs.js";
+import type { RepoPromptJobResetReason, RepoPromptJobTarget } from "./mcp-tool-jobs.js";
+import {
+  ORACLE_SEND_TOOL_NAME,
+  ORACLE_SEND_WAIT_TIMEOUT_MS,
+  ORACLE_SEND_WAIT_TOOL_NAME,
+  OracleSendJobError,
+  OracleSendJobManager,
+} from "./oracle-send-jobs.js";
 
 import { readFileWithCache } from "./readcache/read-file.js";
 import { RP_READCACHE_CUSTOM_TYPE, SCOPE_FULL, scopeRange } from "./readcache/constants.js";
@@ -578,7 +585,9 @@ const CONTEXT_BUILDER_WAIT_TOOL: RpToolMeta = {
   description: (
     `Wait up to ${CONTEXT_BUILDER_WAIT_SECONDS} seconds for a Context Builder job started by ` +
     `rp({ call: "context_builder", ... }). Repeat with the same job_id while it is running. ` +
-    "The terminal result can be consumed once. Other RepoPrompt tools remain synchronous."
+    "The terminal result can be consumed once; cancelling or timing out a wait does not cancel the job. " +
+    "Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
+    `Oracle sends use the separate ${ORACLE_SEND_WAIT_TOOL_NAME} protocol.`
   ),
   inputSchema: {
     type: "object",
@@ -593,12 +602,46 @@ const CONTEXT_BUILDER_WAIT_TOOL: RpToolMeta = {
     additionalProperties: false,
   },
 };
+const ORACLE_SEND_WAIT_SECONDS = ORACLE_SEND_WAIT_TIMEOUT_MS / 1000;
+const ORACLE_SEND_WAIT_TOOL: RpToolMeta = {
+  name: ORACLE_SEND_WAIT_TOOL_NAME,
+  description: (
+    `Wait up to ${ORACLE_SEND_WAIT_SECONDS} seconds for an Oracle send job started by ` +
+    `rp({ call: "oracle_send", ... }). Repeat with the same job_id while it is running. ` +
+    "The terminal result can be consumed once; cancelling or timing out a wait does not cancel the job. " +
+    "Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
+    `Context Builder uses the separate ${CONTEXT_BUILDER_WAIT_TOOL_NAME} protocol.`
+  ),
+  inputSchema: {
+    type: "object",
+    properties: {
+      job_id: {
+        type: "string",
+        minLength: 1,
+        description: "Opaque job ID returned by oracle_send",
+      },
+    },
+    required: ["job_id"],
+    additionalProperties: false,
+  },
+};
 
-class ContextBuilderExecutionError extends Error {
+class BackgroundJobExecutionError extends Error {
   constructor(code: string, message: string) {
     super(`[${code}] ${message}`);
-    this.name = "ContextBuilderExecutionError";
+    this.name = "BackgroundJobExecutionError";
   }
+}
+
+interface BackgroundStartProtocol {
+  readonly toolName: typeof CONTEXT_BUILDER_TOOL_NAME | typeof ORACLE_SEND_TOOL_NAME;
+  readonly bindingMessage: string;
+  readonly missingTabCode: string;
+  readonly startCancelledCode: string;
+  readonly startCancelledMessage: string;
+  readonly startAbortedCode: string;
+  readonly startAbortedMessage: string;
+  throwError(code: string, message: string): never;
 }
 
 /** Result of the serialized portion of an active-app switch, consumed by the handover phase */
@@ -610,6 +653,7 @@ interface AppSwitchHandover {
 
 interface RepoPromptMcpDependencies {
   contextBuilderJobs?: ContextBuilderJobManager;
+  oracleSendJobs?: OracleSendJobManager;
   launchApp?: (appPath: string) => Promise<boolean>;
 }
 
@@ -619,6 +663,7 @@ interface RepoPromptMcpDependencies {
 
 export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPromptMcpDependencies = {}) {
   const contextBuilderJobs = dependencies.contextBuilderJobs ?? new ContextBuilderJobManager();
+  const oracleSendJobs = dependencies.oracleSendJobs ?? new OracleSendJobManager();
   const launchApp = dependencies.launchApp ?? tryLaunchApp;
   let config: RpConfig = loadConfig();
   let activeApp: RpAppId = config.activeApp;
@@ -626,7 +671,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   let initPromise: Promise<void> | null = null;
   let shutdownRequested = false;
   let extensionPaused = false;
-  let contextBuilderLifecycleGeneration = 0;
+  let backgroundJobLifecycleGeneration = 0;
   let connectionLifecycleController = new AbortController();
   let connectionTransition: Promise<void> | null = null;
   let connectionRecovery: { signal: AbortSignal; promise: Promise<void> } | null = null;
@@ -773,9 +818,10 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     }
   }
 
-  async function resetClientAndContextBuilderJobs(reason: ContextBuilderResetReason): Promise<void> {
-    contextBuilderLifecycleGeneration += 1;
+  async function resetClientAndBackgroundJobs(reason: RepoPromptJobResetReason): Promise<void> {
+    backgroundJobLifecycleGeneration += 1;
     contextBuilderJobs.reset(reason);
+    oracleSendJobs.reset(reason);
     await resetRpClient();
   }
 
@@ -793,7 +839,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
       clearRootsCache();
       resetAutoSelectionRuntimeState();
       clearPendingTransitionSelectionState();
-      await resetClientAndContextBuilderJobs("active_app_change");
+      await resetClientAndBackgroundJobs("active_app_change");
     });
   }
 
@@ -1720,7 +1766,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
       if (launched) {
         try {
           await runConnectionTransition(lifecycleSignal, async (signal) => {
-            await resetClientAndContextBuilderJobs("startup_retry");
+            await resetClientAndBackgroundJobs("startup_retry");
             signal.throwIfAborted();
             connectedApp = null;
             clearRootsCache();
@@ -1817,7 +1863,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     clearReadcacheCaches();
     clearRootsCache();
     resetAutoSelectionRuntimeState();
-    await resetClientAndContextBuilderJobs("session_shutdown");
+    await resetClientAndBackgroundJobs("session_shutdown");
     connectedApp = null;
   });
 
@@ -2112,7 +2158,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
           try {
             await runConnectionTransition(lifecycleSignal, async (signal) => {
               config = loadRuntimeConfig();
-              await resetClientAndContextBuilderJobs("reconnect");
+              await resetClientAndBackgroundJobs("reconnect");
               signal.throwIfAborted();
               connectedApp = null;
               clearBinding();
@@ -2199,9 +2245,13 @@ Usage:
                                           → Start Context Builder and receive a job_id
   rp({ call: "context_builder_wait", args: { job_id: "..." } })
                                           → Wait up to ${CONTEXT_BUILDER_WAIT_SECONDS} seconds; repeat while running
+  rp({ call: "oracle_send", args: {...} })
+                                          → Start Oracle and receive a job_id
+  rp({ call: "oracle_send_wait", args: { job_id: "..." } })
+                                          → Wait up to ${ORACLE_SEND_WAIT_SECONDS} seconds; repeat while running
 
-Only Context Builder uses the asynchronous start/wait protocol. Its terminal result is returned once.
-All other forwarded RepoPrompt tools return their results directly.
+Context Builder and generic Oracle sends use asynchronous start/wait protocols with one-shot terminal results.
+Agent runs remain session-based. Other forwarded RepoPrompt tools return their results directly.
 
 Common tools: read_file, get_file_tree, get_code_structure, file_search,
 apply_edits, manage_selection, workspace_context
@@ -2223,14 +2273,15 @@ Mode priority: call > describe > search > windows > bind > status`,
                 ? "bind"
                 : "status";
       const normalizedCall = mode === "call" ? normalizeToolName(params.call ?? "") : "";
-      const waitingForContextBuilder = normalizedCall === CONTEXT_BUILDER_WAIT_TOOL_NAME;
-      if (normalizedCall === CONTEXT_BUILDER_TOOL_NAME && signal?.aborted) {
-        throwContextBuilderError(
-          "context_builder_start_aborted",
-          "Context Builder was cancelled before the background job started.",
-        );
+      const backgroundProtocol = backgroundStartProtocolFor(normalizedCall);
+      const executionParams = backgroundProtocol
+        ? { ...params, args: structuredClone(params.args ?? {}) }
+        : params;
+      const waitingForBackgroundJob = isLocalWaitTool(normalizedCall);
+      if (backgroundProtocol && signal?.aborted) {
+        throwBackgroundStartAborted(backgroundProtocol);
       }
-      if (extensionPaused && !waitingForContextBuilder) {
+      if (extensionPaused && !waitingForBackgroundJob) {
         throw new Error(
           `The rp tool is not currently available because ${activeAppDisplay()} is disconnected. ` +
           "The user can run /rp app or /rp reconnect when the selected app is running."
@@ -2240,20 +2291,24 @@ Mode priority: call > describe > search > windows > bind > status`,
       // Provide a no-op if onUpdate is undefined
       const safeOnUpdate = onUpdate ?? (() => {});
 
-      // The wrapper-owned wait operation reads only extension runtime state
-      const requiresConnection = mode === "call" ? !waitingForContextBuilder : mode !== "status";
+      // Wrapper-owned wait operations read only extension runtime state
+      const requiresConnection = mode === "call" ? !waitingForBackgroundJob : mode !== "status";
       if (requiresConnection) {
         const connectionWork = ensureConnected(_ctx as ExtensionContext | undefined);
-        if (normalizedCall === CONTEXT_BUILDER_TOOL_NAME) {
-          await awaitContextBuilderStartPhase(connectionWork, signal);
+        if (backgroundProtocol) {
+          await awaitBackgroundJobStartPhase(
+            connectionWork,
+            signal,
+            () => backgroundStartAbortedError(backgroundProtocol),
+          );
         } else {
           await connectionWork;
         }
       }
 
       // Mode resolution: call > describe > search > windows > bind > status
-      if (params.call) {
-        return executeToolCall(params, safeOnUpdate, signal, _ctx as ExtensionContext | undefined);
+      if (mode === "call" && executionParams.call) {
+        return executeToolCall(executionParams, safeOnUpdate, signal, _ctx as ExtensionContext | undefined);
       }
       if (params.describe) {
         return executeDescribe(params.describe);
@@ -2502,8 +2557,10 @@ Mode priority: call > describe > search > windows > bind > status`,
       return false;
     }
 
-    if (client.isConnected && connectedApp !== activeApp) {
-      await resetClientAndContextBuilderJobs("connected_app_change");
+    const replacingConnection = connectedApp !== null && (!client.isConnected || connectedApp !== activeApp);
+    if (replacingConnection) {
+      const resetReason = connectedApp === activeApp ? "reconnect" : "connected_app_change";
+      await resetClientAndBackgroundJobs(resetReason);
       signal.throwIfAborted();
       connectedApp = null;
       client = getRpClient();
@@ -2903,7 +2960,7 @@ Mode priority: call > describe > search > windows > bind > status`,
         clearRootsCache();
         resetAutoSelectionRuntimeState();
         clearPendingTransitionSelectionState();
-        await resetClientAndContextBuilderJobs("active_app_change");
+        await resetClientAndBackgroundJobs("active_app_change");
         signal.throwIfAborted();
         connectedApp = null;
 
@@ -3341,28 +3398,40 @@ Mode priority: call > describe > search > windows > bind > status`,
 
   function presentTool(tool: RpToolMeta): RpToolMeta {
     const normalized = normalizeToolName(tool.name);
-    if (normalized !== CONTEXT_BUILDER_TOOL_NAME) {
-      return tool;
+    if (normalized === CONTEXT_BUILDER_TOOL_NAME) {
+      return {
+        ...tool,
+        description: (
+          `${tool.description || "Build deep repository context and produce a response."} ` +
+          "This wrapper starts Context Builder asynchronously and returns a job_id immediately. " +
+          `Call ${CONTEXT_BUILDER_WAIT_TOOL_NAME} with that ID; each wait blocks up to ` +
+          `${CONTEXT_BUILDER_WAIT_SECONDS} seconds. Consume the terminal result before starting another ` +
+          "job on the same app/window/tab."
+        ),
+      };
     }
-
-    return {
-      ...tool,
-      description: (
-        `${tool.description || "Build deep repository context and produce a response."} ` +
-        "This wrapper starts Context Builder asynchronously and returns a job_id immediately. " +
-        `Call ${CONTEXT_BUILDER_WAIT_TOOL_NAME} with that ID; each wait blocks up to ` +
-        `${CONTEXT_BUILDER_WAIT_SECONDS} seconds. Consume the terminal result before starting another job on the same ` +
-        "app/window/tab."
-      ),
-    };
+    if (normalized === ORACLE_SEND_TOOL_NAME) {
+      return {
+        ...tool,
+        description: (
+          `${tool.description || "Consult Oracle."} ` +
+          "This wrapper starts every generic Oracle send asynchronously and returns a job_id immediately. " +
+          `Call ${ORACLE_SEND_WAIT_TOOL_NAME} with that ID; each wait blocks up to ` +
+          `${ORACLE_SEND_WAIT_SECONDS} seconds. Consume the terminal result before starting another ` +
+          "Oracle send on the same app/window/tab. The /rp oracle command remains synchronous."
+        ),
+      };
+    }
+    return tool;
   }
 
   function presentedTools(tools: RpToolMeta[]): RpToolMeta[] {
     return [
       ...tools
-        .filter((tool) => normalizeToolName(tool.name) !== CONTEXT_BUILDER_WAIT_TOOL_NAME)
+        .filter((tool) => !isLocalWaitTool(normalizeToolName(tool.name)))
         .map(presentTool),
       CONTEXT_BUILDER_WAIT_TOOL,
+      ORACLE_SEND_WAIT_TOOL,
     ];
   }
 
@@ -3407,7 +3476,10 @@ Mode priority: call > describe > search > windows > bind > status`,
       };
     }
 
-    let text = toolCatalogFreshness === "stale" ? `${STALE_TOOL_CATALOG_WARNING}\n\n` : "";
+    const includesCatalogTool = matches.some((tool) => !isLocalWaitTool(normalizeToolName(tool.name)));
+    let text = toolCatalogFreshness === "stale" && includesCatalogTool
+      ? `${STALE_TOOL_CATALOG_WARNING}\n\n`
+      : "";
     text += `## Found ${matches.length} tool(s) matching "${query}"\n\n`;
 
     for (const tool of matches) {
@@ -3465,7 +3537,9 @@ Mode priority: call > describe > search > windows > bind > status`,
       };
     }
 
-    let text = toolCatalogFreshness === "stale" ? `${STALE_TOOL_CATALOG_WARNING}\n\n` : "";
+    let text = toolCatalogFreshness === "stale" && !isLocalWaitTool(normalizeToolName(tool.name))
+      ? `${STALE_TOOL_CATALOG_WARNING}\n\n`
+      : "";
     text += `## ${tool.name}\n\n`;
     text += `${tool.description || "(no description)"}\n\n`;
 
@@ -3496,6 +3570,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     rpReadcache?: RpReadcacheMetaV1 | null;
     fileActionDeleteSnapshot?: string;
     contextBuilderJob?: Record<string, unknown>;
+    oracleSendJob?: Record<string, unknown>;
   }) {
     const normalizedTool = normalizeToolName(options.toolName);
     const textContent = options.result.content
@@ -3562,8 +3637,32 @@ Mode priority: call > describe > search > windows > bind > status`,
         ...(normalizedTextResult ? normalizedTextResult.details : {}),
         ...(normalizedFileActionResult ?? {}),
         ...(options.contextBuilderJob ? { contextBuilderJob: options.contextBuilderJob } : {}),
+        ...(options.oracleSendJob ? { oracleSendJob: options.oracleSendJob } : {}),
       },
       isError: options.result.isError,
+    };
+  }
+
+  function buildToolCallFailureResponse(options: {
+    toolName: string;
+    message: string;
+    toolInputSchema?: unknown;
+    oracleSendJob?: Record<string, unknown>;
+  }) {
+    let errorText = `Failed to call ${options.toolName}: ${options.message}`;
+    if (options.toolInputSchema) {
+      errorText += `\n\nExpected parameters:\n${formatSchema(options.toolInputSchema)}`;
+    }
+    return {
+      content: [{ type: "text" as const, text: errorText }],
+      details: {
+        mode: "call",
+        error: "call_failed",
+        tool: options.toolName,
+        message: options.message,
+        ...(options.oracleSendJob ? { oracleSendJob: options.oracleSendJob } : {}),
+      },
+      isError: true,
     };
   }
 
@@ -3575,26 +3674,72 @@ Mode priority: call > describe > search > windows > bind > status`,
     };
   }
 
-  function throwContextBuilderError(code: string, message: string): never {
-    throw new ContextBuilderExecutionError(code, message);
+  function isBackgroundStartTool(toolName: string): boolean {
+    return backgroundStartProtocolFor(toolName) !== null;
   }
 
-  async function awaitContextBuilderStartPhase<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  function isLocalWaitTool(toolName: string): boolean {
+    return toolName === CONTEXT_BUILDER_WAIT_TOOL_NAME || toolName === ORACLE_SEND_WAIT_TOOL_NAME;
+  }
+
+  function throwContextBuilderError(code: string, message: string): never {
+    throw new BackgroundJobExecutionError(code, message);
+  }
+
+  function throwOracleSendError(code: string, message: string): never {
+    throw new BackgroundJobExecutionError(code, message);
+  }
+
+  function backgroundStartProtocolFor(toolName: string): BackgroundStartProtocol | null {
+    if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
+      return {
+        toolName: CONTEXT_BUILDER_TOOL_NAME,
+        bindingMessage: "Context Builder requires a bound RepoPrompt tab.",
+        missingTabCode: "missing_tab_binding",
+        startCancelledCode: "context_builder_start_cancelled",
+        startCancelledMessage: "Context Builder start was cancelled because the RepoPrompt connection changed.",
+        startAbortedCode: "context_builder_start_aborted",
+        startAbortedMessage: "Context Builder was cancelled before the background job started.",
+        throwError: throwContextBuilderError,
+      };
+    }
+    if (toolName === ORACLE_SEND_TOOL_NAME) {
+      return {
+        toolName: ORACLE_SEND_TOOL_NAME,
+        bindingMessage: "Oracle send requires a bound RepoPrompt tab.",
+        missingTabCode: "oracle_send_missing_tab_binding",
+        startCancelledCode: "oracle_send_start_cancelled",
+        startCancelledMessage: "Oracle send was cancelled because the RepoPrompt connection changed.",
+        startAbortedCode: "oracle_send_start_aborted",
+        startAbortedMessage: "Oracle send was cancelled before the background job started.",
+        throwError: throwOracleSendError,
+      };
+    }
+    return null;
+  }
+
+  function backgroundStartAbortedError(protocol: BackgroundStartProtocol): BackgroundJobExecutionError {
+    return new BackgroundJobExecutionError(protocol.startAbortedCode, protocol.startAbortedMessage);
+  }
+
+  function throwBackgroundStartAborted(protocol: BackgroundStartProtocol): never {
+    throw backgroundStartAbortedError(protocol);
+  }
+
+  async function awaitBackgroundJobStartPhase<T>(
+    work: Promise<T>,
+    signal: AbortSignal | undefined,
+    createAbortError: () => BackgroundJobExecutionError,
+  ): Promise<T> {
     if (!signal) {
       return work;
     }
     if (signal.aborted) {
-      throwContextBuilderError(
-        "context_builder_start_aborted",
-        "Context Builder was cancelled before the background job started.",
-      );
+      throw createAbortError();
     }
 
     return await new Promise<T>((resolve, reject) => {
-      const handleAbort = () => reject(new ContextBuilderExecutionError(
-        "context_builder_start_aborted",
-        "Context Builder was cancelled before the background job started.",
-      ));
+      const handleAbort = () => reject(createAbortError());
       const removeAbortListener = () => signal.removeEventListener("abort", handleAbort);
       signal.addEventListener("abort", handleAbort, { once: true });
       void work.then(
@@ -3674,6 +3819,67 @@ Mode priority: call > describe > search > windows > bind > status`,
     }
   }
 
+  async function executeOracleSendWait(
+    params: RpToolParams,
+    onUpdate: (
+      partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
+    ) => void,
+    signal?: AbortSignal,
+  ) {
+    const args = params.args ?? {};
+    const keys = Object.keys(args);
+    const jobId = typeof args.job_id === "string" ? args.job_id.trim() : "";
+    if (jobId.length === 0 || keys.length !== 1 || keys[0] !== "job_id") {
+      throwOracleSendError(
+        "invalid_oracle_send_wait_args",
+        "oracle_send_wait requires exactly one non-empty string argument: job_id.",
+      );
+    }
+
+    onUpdate({
+      content: [{ type: "text", text: `Waiting for Oracle send job ${jobId}…` }],
+      details: { mode: "call", tool: ORACLE_SEND_WAIT_TOOL_NAME, status: "running", jobId },
+    });
+
+    try {
+      const outcome = await oracleSendJobs.wait(jobId, signal);
+      const oracleSendJob = { jobId, status: outcome.status, target: outcome.descriptor.target };
+      if (outcome.status === "running") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: (
+              `Oracle send job "${jobId}" is still running. Call ` +
+              `rp({ call: "${ORACLE_SEND_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) again.`
+            ),
+          }],
+          details: { mode: "call", tool: ORACLE_SEND_WAIT_TOOL_NAME, oracleSendJob },
+        };
+      }
+      if (outcome.status === "failed") {
+        return buildToolCallFailureResponse({
+          toolName: outcome.descriptor.toolName,
+          message: outcome.message,
+          toolInputSchema: outcome.descriptor.toolInputSchema,
+          oracleSendJob,
+        });
+      }
+      return buildToolCallResponse({
+        result: outcome.result,
+        toolName: outcome.descriptor.toolName,
+        userArgs: { ...outcome.descriptor.userArgs },
+        originalArgs: { ...outcome.descriptor.userArgs },
+        toolCatalogFreshness: outcome.descriptor.toolCatalogFreshness,
+        oracleSendJob,
+      });
+    } catch (error) {
+      if (error instanceof OracleSendJobError) {
+        throwOracleSendError(error.code, error.message);
+      }
+      throw error;
+    }
+  }
+
   async function executeToolCall(
     params: RpToolParams,
     onUpdate: (
@@ -3686,6 +3892,9 @@ Mode priority: call > describe > search > windows > bind > status`,
     if (toolName === CONTEXT_BUILDER_WAIT_TOOL_NAME) {
       return executeContextBuilderWait(params, onUpdate, signal);
     }
+    if (toolName === ORACLE_SEND_WAIT_TOOL_NAME) {
+      return executeOracleSendWait(params, onUpdate, signal);
+    }
 
     const client = getRpClient();
     const toolCatalogFreshness = client.toolCatalogFreshness;
@@ -3697,13 +3906,15 @@ Mode priority: call > describe > search > windows > bind > status`,
     );
 
     if (!tool) {
-      if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
-        throwContextBuilderError(
-          toolCatalogFreshness === "stale" ? "catalog_stale" : "not_found",
-          toolCatalogFreshness === "stale"
-            ? formatStaleToolAbsence(params.call!)
-            : `Tool "${params.call}" not found. Use rp({ search: "..." }) to search.`,
-        );
+      if (isBackgroundStartTool(toolName)) {
+        const code = toolCatalogFreshness === "stale" ? "catalog_stale" : "not_found";
+        const message = toolCatalogFreshness === "stale"
+          ? formatStaleToolAbsence(params.call!)
+          : `Tool "${params.call}" not found. Use rp({ search: "..." }) to search.`;
+        if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
+          throwContextBuilderError(code, message);
+        }
+        throwOracleSendError(code, message);
       }
 
       if (toolCatalogFreshness === "stale") {
@@ -3732,8 +3943,11 @@ Mode priority: call > describe > search > windows > bind > status`,
     });
 
     if (!guardResult.allowed) {
-      if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
-        throwContextBuilderError("blocked", guardResult.reason!);
+      if (isBackgroundStartTool(toolName)) {
+        if (toolName === CONTEXT_BUILDER_TOOL_NAME) {
+          throwContextBuilderError("blocked", guardResult.reason!);
+        }
+        throwOracleSendError("blocked", guardResult.reason!);
       }
       return {
         content: [{ type: "text" as const, text: guardResult.reason! }],
@@ -3743,21 +3957,18 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     const userArgs = (params.args ?? {}) as Record<string, unknown>;
     const normalizedTool = normalizeToolName(tool.name);
-    const contextBuilderStartGeneration = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
-      ? contextBuilderLifecycleGeneration
-      : null;
-    const contextBuilderUserArgs = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
-      ? structuredClone(userArgs)
-      : null;
+    const backgroundProtocol = backgroundStartProtocolFor(normalizedTool);
+    const concreteToolName = tool.name;
+    const toolInputSchema = backgroundProtocol ? structuredClone(tool.inputSchema) : tool.inputSchema;
+    const backgroundStartGeneration = backgroundProtocol ? backgroundJobLifecycleGeneration : null;
+    const backgroundUserArgs = backgroundProtocol ? structuredClone(userArgs) : null;
     const binding = getBinding();
-    let contextBuilderTarget: ContextBuilderJobTarget | null =
-      normalizedTool === CONTEXT_BUILDER_TOOL_NAME && binding?.tab
-        ? { app: binding.app, windowId: binding.windowId, tab: binding.tab }
-        : null;
-    const contextBuilderBindingMessage = "Context Builder requires a bound RepoPrompt tab.";
+    let backgroundTarget: RepoPromptJobTarget | null = backgroundProtocol && binding?.tab
+      ? { app: binding.app, windowId: binding.windowId, tab: binding.tab }
+      : null;
     const tabBindingMessage =
       "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools.";
-    const needsTabScopedBinding = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
+    const needsTabScopedBinding = backgroundProtocol
       ? ctx === undefined || !binding?.tab
       : binding !== null &&
         !binding.tab &&
@@ -3768,102 +3979,148 @@ Mode priority: call > describe > search > windows > bind > status`,
         normalizedTool !== "agent_manage";
 
     if (needsTabScopedBinding) {
-      const message = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
-        ? contextBuilderBindingMessage
-        : tabBindingMessage;
+      const message = backgroundProtocol ? backgroundProtocol.bindingMessage : tabBindingMessage;
       if (!ctx) {
-        if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
-          throwContextBuilderError("missing_tab_binding", message);
+        if (backgroundProtocol) {
+          backgroundProtocol.throwError(backgroundProtocol.missingTabCode, message);
         }
         return missingTabBindingResponse(tool.name, message);
       }
 
       try {
         const bindingWork = ensureTabScopedBinding(ctx, message);
-        const tabScopedBinding = normalizedTool === CONTEXT_BUILDER_TOOL_NAME
-          ? await awaitContextBuilderStartPhase(bindingWork, signal)
+        const tabScopedBinding = backgroundProtocol
+          ? await awaitBackgroundJobStartPhase(
+              bindingWork,
+              signal,
+              () => backgroundStartAbortedError(backgroundProtocol),
+            )
           : await bindingWork;
-        if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
-          contextBuilderTarget = {
+        if (backgroundProtocol) {
+          backgroundTarget = {
             app: tabScopedBinding.app,
             windowId: tabScopedBinding.windowId,
             tab: tabScopedBinding.tab,
           };
         }
       } catch (error) {
-        if (error instanceof ContextBuilderExecutionError) {
+        if (error instanceof BackgroundJobExecutionError) {
           throw error;
         }
+        if (backgroundProtocol && backgroundStartGeneration !== backgroundJobLifecycleGeneration) {
+          backgroundProtocol.throwError(
+            backgroundProtocol.startCancelledCode,
+            backgroundProtocol.startCancelledMessage,
+          );
+        }
+        if (backgroundProtocol && signal?.aborted) {
+          throwBackgroundStartAborted(backgroundProtocol);
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
-        if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
-          throwContextBuilderError("missing_tab_binding", errorMessage);
+        if (backgroundProtocol) {
+          backgroundProtocol.throwError(backgroundProtocol.missingTabCode, errorMessage);
         }
         return missingTabBindingResponse(tool.name, errorMessage);
       }
     }
 
-    const resolvedContextBuilderTarget = contextBuilderTarget;
+    const resolvedBackgroundTarget = backgroundTarget;
 
-    // Context Builder uses the same resolved binding snapshot for job identity and forwarding
-    const bindingArgs = resolvedContextBuilderTarget
-      ? { _windowID: resolvedContextBuilderTarget.windowId, context_id: resolvedContextBuilderTarget.tab }
+    // Background jobs use one resolved binding snapshot for job identity and forwarding
+    const bindingArgs = resolvedBackgroundTarget
+      ? { _windowID: resolvedBackgroundTarget.windowId, context_id: resolvedBackgroundTarget.tab }
       : getBindingArgs();
 
     const bypassCache = normalizedTool === "read_file" && userArgs.bypass_cache === true;
 
     const forwardedUserArgs = buildForwardedUserArgs({
       toolName: normalizedTool,
-      userArgs: contextBuilderUserArgs ?? userArgs,
+      userArgs: backgroundUserArgs ?? userArgs,
     });
 
     const mergedArgs = { ...forwardedUserArgs, ...bindingArgs };
 
-    if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
-      if (contextBuilderStartGeneration !== contextBuilderLifecycleGeneration) {
-        throwContextBuilderError(
-          "context_builder_start_cancelled",
-          "Context Builder start was cancelled because the RepoPrompt connection changed.",
+    if (backgroundProtocol) {
+      if (backgroundStartGeneration !== backgroundJobLifecycleGeneration) {
+        backgroundProtocol.throwError(
+          backgroundProtocol.startCancelledCode,
+          backgroundProtocol.startCancelledMessage,
         );
       }
       if (signal?.aborted) {
-        throwContextBuilderError(
-          "context_builder_start_aborted",
-          "Context Builder was cancelled before the background job started.",
-        );
+        throwBackgroundStartAborted(backgroundProtocol);
       }
-      if (!resolvedContextBuilderTarget || !contextBuilderUserArgs) {
-        throw new Error("Context Builder start invariant violated");
+      if (!resolvedBackgroundTarget || !backgroundUserArgs) {
+        throw new Error("Background job start invariant violated");
       }
+
+      if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
+        try {
+          const started = contextBuilderJobs.start({
+            descriptor: {
+              target: resolvedBackgroundTarget,
+              toolName: concreteToolName,
+              userArgs: backgroundUserArgs,
+              toolCatalogFreshness,
+            },
+            run: (jobSignal) => client.callTool(concreteToolName, mergedArgs, undefined, jobSignal),
+          });
+          const jobId = started.jobId;
+          return {
+            content: [{
+              type: "text" as const,
+              text: (
+                `Context Builder started in the background. Job ID: "${jobId}". Call ` +
+                `rp({ call: "${CONTEXT_BUILDER_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) ` +
+                "to retrieve the result."
+              ),
+            }],
+            details: {
+              mode: "call",
+              tool: concreteToolName,
+              contextBuilderJob: { jobId, status: "running", target: started.descriptor.target },
+              toolCatalogFreshness,
+            },
+          };
+        } catch (error) {
+          if (error instanceof ContextBuilderJobError) {
+            throwContextBuilderError(error.code, error.message);
+          }
+          throw error;
+        }
+      }
+
       try {
-        const started = contextBuilderJobs.start({
+        const started = oracleSendJobs.start({
           descriptor: {
-            target: resolvedContextBuilderTarget,
-            toolName: tool.name,
-            userArgs: contextBuilderUserArgs,
+            target: resolvedBackgroundTarget,
+            toolName: concreteToolName,
+            userArgs: backgroundUserArgs,
             toolCatalogFreshness,
+            toolInputSchema,
           },
-          run: (jobSignal) => client.callTool(tool.name, mergedArgs, undefined, jobSignal),
+          run: (jobSignal) => client.callTool(concreteToolName, mergedArgs, undefined, jobSignal),
         });
         const jobId = started.jobId;
         return {
           content: [{
             type: "text" as const,
             text: (
-              `Context Builder started in the background. Job ID: "${jobId}". Call ` +
-              `rp({ call: "${CONTEXT_BUILDER_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) ` +
+              `Oracle send started in the background. Job ID: "${jobId}". Call ` +
+              `rp({ call: "${ORACLE_SEND_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) ` +
               "to retrieve the result."
             ),
           }],
           details: {
             mode: "call",
-            tool: tool.name,
-            contextBuilderJob: { jobId, status: "running", target: started.descriptor.target },
+            tool: concreteToolName,
+            oracleSendJob: { jobId, status: "running", target: started.descriptor.target },
             toolCatalogFreshness,
           },
         };
       } catch (error) {
-        if (error instanceof ContextBuilderJobError) {
-          throwContextBuilderError(error.code, error.message);
+        if (error instanceof OracleSendJobError) {
+          throwOracleSendError(error.code, error.message);
         }
         throw error;
       }
@@ -3954,19 +4211,11 @@ Mode priority: call > describe > search > windows > bind > status`,
         fileActionDeleteSnapshot,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      // Include schema in error for self-correction
-      let errorText = `Failed to call ${tool.name}: ${message}`;
-      if (tool.inputSchema) {
-        errorText += `\n\nExpected parameters:\n${formatSchema(tool.inputSchema)}`;
-      }
-
-      return {
-        content: [{ type: "text" as const, text: errorText }],
-        details: { mode: "call", error: "call_failed", tool: tool.name, message },
-        isError: true,
-      };
+      return buildToolCallFailureResponse({
+        toolName: tool.name,
+        message: error instanceof Error ? error.message : String(error),
+        toolInputSchema: tool.inputSchema,
+      });
     }
   }
 }

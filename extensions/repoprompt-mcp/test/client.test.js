@@ -95,6 +95,44 @@ test("RpClient.callTool uses the configured default tool timeout", async () => {
   assert.deepEqual(result.content, [{ type: "text", text: "ok" }]);
 });
 
+test("RpClient.callTool preserves valid MCP content without coercion", async () => {
+  const client = new RpClient();
+  const content = [
+    { type: "text", text: "ok" },
+    { type: "image", data: "abc", mimeType: "image/png" },
+    { type: "resource", resource: { uri: "file:///result", text: "result", mimeType: "text/plain" } },
+  ];
+  client.client = {
+    callTool: async () => ({ content, isError: false }),
+  };
+
+  const result = await client.callTool("oracle_send");
+
+  assert.deepEqual(result, { content, isError: false });
+});
+
+test("RpClient.callTool rejects malformed MCP results instead of coercing them", async () => {
+  const client = new RpClient();
+  const malformedResults = [
+    { content: [{ type: "text" }], isError: false },
+    { content: [{ type: "image", data: 42, mimeType: "image/png" }], isError: false },
+    { content: [{ type: "unsupported_content", payload: "value" }], isError: false },
+    { content: [{ type: "text", text: "ok" }], isError: "false" },
+    { content: new Array(1), isError: false },
+    { content: [{ type: "resource", resource: { uri: "file:///missing-payload" } }], isError: false },
+  ];
+
+  for (const malformedResult of malformedResults) {
+    client.client = {
+      callTool: async () => malformedResult,
+    };
+    await assert.rejects(
+      client.callTool("oracle_send"),
+      /RepoPrompt tool "oracle_send" returned an invalid MCP tool result/u,
+    );
+  }
+});
+
 test("RpClient.callTool forwards an AbortSignal with the configured timeout", async () => {
   const client = new RpClient();
   const controller = new AbortController();

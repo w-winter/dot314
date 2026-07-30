@@ -73,6 +73,38 @@ test("ContextBuilderJobManager rejects duplicate running jobs for one target", (
   assert.equal(secondRunnerCalled, false);
 });
 
+test("ContextBuilderJobManager preserves live collision wording and permits consumed ID reuse", async () => {
+  const manager = createManager({ createJobId: () => "cb_reused" });
+  const firstWork = deferred();
+  const first = manager.start({ descriptor: descriptor("TAB-1"), run: () => firstWork.promise });
+  let collidingRunnerCalled = false;
+
+  assert.throws(
+    () => manager.start({
+      descriptor: descriptor("TAB-2"),
+      run: async () => {
+        collidingRunnerCalled = true;
+        return textResult("unexpected");
+      },
+    }),
+    (error) => {
+      assert.equal(error.message, "Context Builder job ID collision: cb_reused");
+      return true;
+    },
+  );
+  assert.equal(collidingRunnerCalled, false);
+
+  firstWork.resolve(textResult("first"));
+  assert.deepEqual((await manager.wait(first.jobId)).result, textResult("first"));
+
+  const reused = manager.start({
+    descriptor: descriptor("TAB-2"),
+    run: async () => textResult("second"),
+  });
+  assert.equal(reused.jobId, first.jobId);
+  assert.deepEqual((await manager.wait(reused.jobId)).result, textResult("second"));
+});
+
 test("ContextBuilderJobManager start results do not expose manager-owned target state", async () => {
   const manager = createManager();
   const work = deferred();

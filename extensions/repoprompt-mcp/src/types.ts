@@ -59,13 +59,18 @@ export interface McpImageContent {
   mimeType: string;
 }
 
+interface McpResourceBase {
+  uri: string;
+  mimeType?: string;
+}
+
+export type McpResourcePayload =
+  | (McpResourceBase & { text: string; blob?: string })
+  | (McpResourceBase & { blob: string; text?: string });
+
 export interface McpResourceContent {
   type: "resource";
-  resource: {
-    uri: string;
-    text?: string;
-    blob?: string;
-  };
+  resource: McpResourcePayload;
 }
 
 export type McpContent = McpTextContent | McpImageContent | McpResourceContent;
