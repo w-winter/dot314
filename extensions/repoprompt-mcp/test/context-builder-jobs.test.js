@@ -34,11 +34,14 @@ function textResult(text) {
 function createManager(options = {}) {
   let nextId = 1;
   return new ContextBuilderJobManager({
-    waitTimeoutMs: 5,
     createJobId: () => `cb_test_${nextId++}`,
     warn: () => {},
     ...options,
   });
+}
+
+function wait(manager, jobId, signal, timeoutMs = 5) {
+  return manager.wait(jobId, { kind: "bounded", timeoutMs }, signal);
 }
 
 async function expectJobError(promise, code) {
@@ -95,14 +98,14 @@ test("ContextBuilderJobManager preserves live collision wording and permits cons
   assert.equal(collidingRunnerCalled, false);
 
   firstWork.resolve(textResult("first"));
-  assert.deepEqual((await manager.wait(first.jobId)).result, textResult("first"));
+  assert.deepEqual((await wait(manager, first.jobId)).result, textResult("first"));
 
   const reused = manager.start({
     descriptor: descriptor("TAB-2"),
     run: async () => textResult("second"),
   });
   assert.equal(reused.jobId, first.jobId);
-  assert.deepEqual((await manager.wait(reused.jobId)).result, textResult("second"));
+  assert.deepEqual((await wait(manager, reused.jobId)).result, textResult("second"));
 });
 
 test("ContextBuilderJobManager start results do not expose manager-owned target state", async () => {
@@ -114,7 +117,7 @@ test("ContextBuilderJobManager start results do not expose manager-owned target 
   started.descriptor.target.tab = "MUTATED";
   work.resolve(textResult("done"));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual((await manager.wait(started.jobId)).descriptor, originalDescriptor);
+  assert.deepEqual((await wait(manager, started.jobId)).descriptor, originalDescriptor);
 
   const replacement = manager.start({
     descriptor: originalDescriptor,
@@ -128,13 +131,13 @@ test("ContextBuilderJobManager running waits do not expose manager-owned target 
   const work = deferred();
   const originalDescriptor = descriptor();
   const { jobId } = manager.start({ descriptor: originalDescriptor, run: () => work.promise });
-  const running = await manager.wait(jobId);
+  const running = await wait(manager, jobId);
 
   assert.equal(running.status, "running");
   running.descriptor.target.tab = "MUTATED";
   work.resolve(textResult("done"));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual((await manager.wait(jobId)).descriptor, originalDescriptor);
+  assert.deepEqual((await wait(manager, jobId)).descriptor, originalDescriptor);
 
   const replacement = manager.start({
     descriptor: originalDescriptor,
@@ -153,12 +156,12 @@ test("ContextBuilderJobManager deeply isolates descriptor arguments", async () =
   const started = manager.start({ descriptor: originalDescriptor, run: () => work.promise });
   started.descriptor.userArgs.options.paths.push("start-mutation.ts");
 
-  const running = await manager.wait(started.jobId);
+  const running = await wait(manager, started.jobId);
   assert.equal(running.status, "running");
   running.descriptor.userArgs.options.paths.push("wait-mutation.ts");
 
   work.resolve(textResult("done"));
-  const completed = await manager.wait(started.jobId);
+  const completed = await wait(manager, started.jobId);
   assert.deepEqual(completed.descriptor.userArgs, originalDescriptor.userArgs);
 });
 
@@ -177,7 +180,7 @@ test("ContextBuilderJobManager permits different tabs and releases occupancy on 
     () => manager.start({ descriptor: descriptor("TAB-1"), run: async () => textResult("unexpected") }),
     (error) => error instanceof ContextBuilderJobError && error.code === "context_builder_result_unconsumed",
   );
-  assert.deepEqual((await manager.wait(first.jobId)).result, textResult("first"));
+  assert.deepEqual((await wait(manager, first.jobId)).result, textResult("first"));
   const replacement = manager.start({ descriptor: descriptor("TAB-1"), run: async () => textResult("replacement") });
   assert.notEqual(replacement.jobId, first.jobId);
 
@@ -189,24 +192,35 @@ test("ContextBuilderJobManager wait times out without consuming the job", async 
   const work = deferred();
   const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
 
-  assert.deepEqual(await manager.wait(jobId), {
+  assert.deepEqual(await wait(manager, jobId), {
     status: "running",
     jobId,
     descriptor: descriptor(),
   });
 
   work.resolve(textResult("done"));
-  const completed = await manager.wait(jobId);
+  const completed = await wait(manager, jobId);
   assert.equal(completed.status, "completed");
   assert.deepEqual(completed.result, textResult("done"));
-  await expectJobError(manager.wait(jobId), "context_builder_job_consumed");
+  await expectJobError(wait(manager, jobId), "context_builder_job_consumed");
+});
+
+test("ContextBuilderJobManager prefers settlement published at a bounded deadline", async () => {
+  const manager = createManager();
+  const work = deferred();
+  const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
+  setTimeout(() => work.resolve(textResult("done")), 0);
+
+  const completed = await manager.wait(jobId, { kind: "bounded", timeoutMs: 0 });
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(completed.result, textResult("done"));
 });
 
 test("ContextBuilderJobManager gives a terminal result to only one concurrent waiter", async () => {
-  const manager = createManager({ waitTimeoutMs: 100 });
+  const manager = createManager();
   const work = deferred();
   const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
-  const waits = [manager.wait(jobId), manager.wait(jobId)];
+  const waits = [wait(manager, jobId), wait(manager, jobId)];
 
   work.resolve(textResult("done"));
   const outcomes = await Promise.allSettled(waits);
@@ -224,17 +238,17 @@ test("ContextBuilderJobManager retains failure until one wait consumes it", asyn
     },
   });
 
-  await expectJobError(manager.wait(jobId), "context_builder_job_failed");
-  await expectJobError(manager.wait(jobId), "context_builder_job_consumed");
-  await expectJobError(manager.wait("cb_unknown"), "context_builder_job_not_found");
+  await expectJobError(wait(manager, jobId), "context_builder_job_failed");
+  await expectJobError(wait(manager, jobId), "context_builder_job_consumed");
+  await expectJobError(wait(manager, "cb_unknown"), "context_builder_job_not_found");
 });
 
 test("ContextBuilderJobManager rejects an invalid runtime runner result", async () => {
   const manager = createManager();
   const { jobId } = manager.start({ descriptor: descriptor(), run: async () => undefined });
 
-  await expectJobError(manager.wait(jobId), "context_builder_job_failed");
-  await expectJobError(manager.wait(jobId), "context_builder_job_consumed");
+  await expectJobError(wait(manager, jobId), "context_builder_job_failed");
+  await expectJobError(wait(manager, jobId), "context_builder_job_consumed");
   const replacement = manager.start({ descriptor: descriptor(), run: async () => textResult("replacement") });
   assert.notEqual(replacement.jobId, jobId);
 });
@@ -253,7 +267,7 @@ test("ContextBuilderJobManager bounds outstanding jobs and releases capacity", a
   );
 
   work[0].resolve(textResult("first"));
-  await manager.wait(started[0].jobId);
+  await wait(manager, started[0].jobId);
   const afterConsumption = manager.start({
     descriptor: descriptor("TAB-AFTER-CONSUMPTION"),
     run: async () => textResult("after consumption"),
@@ -277,15 +291,30 @@ test("ContextBuilderJobManager bounds consumed job tombstones", async () => {
     const started = manager.start({ descriptor: descriptor(), run: async () => textResult(`done-${index}`) });
     firstJobId ??= started.jobId;
     latestJobId = started.jobId;
-    await manager.wait(started.jobId);
+    await wait(manager, started.jobId);
   }
 
-  await expectJobError(manager.wait(firstJobId), "context_builder_job_not_found");
-  await expectJobError(manager.wait(latestJobId), "context_builder_job_consumed");
+  await expectJobError(wait(manager, firstJobId), "context_builder_job_not_found");
+  await expectJobError(wait(manager, latestJobId), "context_builder_job_consumed");
+});
+
+test("ContextBuilderJobManager waits until settlement without a heartbeat", async () => {
+  const manager = createManager();
+  const work = deferred();
+  const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
+  let settled = false;
+  const waiting = manager.wait(jobId, { kind: "until_settled" }).finally(() => {
+    settled = true;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  work.resolve(textResult("done"));
+  assert.deepEqual((await waiting).result, textResult("done"));
 });
 
 test("ContextBuilderJobManager aborting a waiter leaves the background job running", async () => {
-  const manager = createManager({ waitTimeoutMs: 100 });
+  const manager = createManager();
   const work = deferred();
   let jobSignal;
   const { jobId } = manager.start({
@@ -296,7 +325,7 @@ test("ContextBuilderJobManager aborting a waiter leaves the background job runni
     },
   });
   const controller = new AbortController();
-  const waiting = manager.wait(jobId, controller.signal);
+  const waiting = manager.wait(jobId, { kind: "until_settled" }, controller.signal);
   controller.abort();
 
   await assert.rejects(waiting, (error) => {
@@ -310,12 +339,12 @@ test("ContextBuilderJobManager aborting a waiter leaves the background job runni
   await new Promise((resolve) => setImmediate(resolve));
   const terminalController = new AbortController();
   terminalController.abort();
-  await assert.rejects(manager.wait(jobId, terminalController.signal), (error) => {
+  await assert.rejects(wait(manager, jobId, terminalController.signal), (error) => {
     assert.equal(error.code, "context_builder_wait_aborted");
     assert.match(error.message, /did not cancel or consume/u);
     return true;
   });
-  assert.deepEqual((await manager.wait(jobId)).result, textResult("done"));
+  assert.deepEqual((await wait(manager, jobId)).result, textResult("done"));
 });
 
 test("ContextBuilderJobManager reset before dispatch does not invoke the runner", async () => {
@@ -333,24 +362,24 @@ test("ContextBuilderJobManager reset before dispatch does not invoke the runner"
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(runnerCalls, 0);
-  await expectJobError(manager.wait(jobId), "context_builder_job_not_found");
+  await expectJobError(wait(manager, jobId), "context_builder_job_not_found");
 });
 
 test("ContextBuilderJobManager settlement followed by reset cancels an active waiter", async () => {
-  const manager = createManager({ waitTimeoutMs: 100 });
+  const manager = createManager();
   const work = deferred();
   const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
-  const waiting = manager.wait(jobId);
+  const waiting = wait(manager, jobId);
 
   work.resolve(textResult("done"));
   queueMicrotask(() => manager.reset("reconnect"));
 
   await expectJobError(waiting, "context_builder_job_cancelled");
-  await expectJobError(manager.wait(jobId), "context_builder_job_not_found");
+  await expectJobError(wait(manager, jobId), "context_builder_job_not_found");
 });
 
 test("ContextBuilderJobManager reset aborts jobs, wakes waiters, and clears occupancy", async () => {
-  const manager = createManager({ waitTimeoutMs: 100 });
+  const manager = createManager();
   const oldWork = deferred();
   let oldSignal;
   const { jobId } = manager.start({
@@ -360,15 +389,15 @@ test("ContextBuilderJobManager reset aborts jobs, wakes waiters, and clears occu
       return oldWork.promise;
     },
   });
-  const waiting = manager.wait(jobId);
+  const waiting = manager.wait(jobId, { kind: "until_settled" });
   await new Promise((resolve) => setImmediate(resolve));
 
   manager.reset("reconnect");
   assert.equal(oldSignal.aborted, true);
   await expectJobError(waiting, "context_builder_job_cancelled");
-  await expectJobError(manager.wait(jobId), "context_builder_job_not_found");
+  await expectJobError(wait(manager, jobId), "context_builder_job_not_found");
 
   const next = manager.start({ descriptor: descriptor(), run: async () => textResult("new") });
   oldWork.reject(new Error("late rejection"));
-  assert.deepEqual((await manager.wait(next.jobId)).result, textResult("new"));
+  assert.deepEqual((await wait(manager, next.jobId)).result, textResult("new"));
 });

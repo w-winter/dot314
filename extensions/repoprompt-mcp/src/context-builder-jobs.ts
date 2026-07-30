@@ -6,10 +6,10 @@ import {
   type RepoPromptJobResetReason,
   type RepoPromptJobTarget,
   type RetainedMcpJobFailure,
+  type RetainedMcpJobWaitPolicy,
 } from "./mcp-tool-jobs.js";
 import type { McpToolResult, ToolCatalogFreshness } from "./types.js";
 
-export const CONTEXT_BUILDER_WAIT_TIMEOUT_MS = 210_000;
 export const CONTEXT_BUILDER_CONSUMED_TOMBSTONE_LIMIT = 256;
 export const CONTEXT_BUILDER_JOB_CAPACITY = 16;
 
@@ -71,7 +71,6 @@ export class ContextBuilderJobError extends Error {
 }
 
 export interface ContextBuilderJobManagerOptions {
-  waitTimeoutMs?: number;
   createJobId?: () => string;
   warn?: (message: string) => void | Promise<void>;
 }
@@ -146,7 +145,6 @@ export class ContextBuilderJobManager {
   constructor(options: ContextBuilderJobManagerOptions = {}) {
     const warn = options.warn ?? ((message: string) => console.warn(message));
     this.registry = new RetainedMcpJobRegistry({
-      waitTimeoutMs: options.waitTimeoutMs ?? CONTEXT_BUILDER_WAIT_TIMEOUT_MS,
       capacity: CONTEXT_BUILDER_JOB_CAPACITY,
       consumedTombstoneLimit: CONTEXT_BUILDER_CONSUMED_TOMBSTONE_LIMIT,
       consumedJobIdPolicy: "reuse",
@@ -171,9 +169,13 @@ export class ContextBuilderJobManager {
     }
   }
 
-  async wait(jobId: string, signal?: AbortSignal): Promise<ContextBuilderJobWaitOutcome> {
+  async wait(
+    jobId: string,
+    policy: RetainedMcpJobWaitPolicy,
+    signal?: AbortSignal,
+  ): Promise<ContextBuilderJobWaitOutcome> {
     try {
-      const outcome = await this.registry.wait(jobId, signal);
+      const outcome = await this.registry.wait(jobId, policy, signal);
       if (outcome.status === "failed") {
         throw new ContextBuilderJobError(
           "context_builder_job_failed",

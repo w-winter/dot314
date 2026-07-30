@@ -12,6 +12,8 @@
   },
   "autoBindOnStart": true,
   "persistBinding": true,
+  "backgroundWaitHeartbeatEnabled": true,
+  "backgroundWaitCacheTtlMsByModel": {},
   "confirmDeletes": true,
   "confirmEdits": false,
   "toolCallTimeoutMs": 5400000,

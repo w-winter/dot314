@@ -67,14 +67,16 @@ import { summarizeRpCall, summarizeRpResult } from "./presentation-summary.js";
 import { extractJsonContent, extractTextContent } from "./mcp-json.js";
 import { resolveToolName } from "./tool-names.js";
 import {
-  CONTEXT_BUILDER_WAIT_TIMEOUT_MS,
   ContextBuilderJobError,
   ContextBuilderJobManager,
 } from "./context-builder-jobs.js";
 import type { RepoPromptJobResetReason, RepoPromptJobTarget } from "./mcp-tool-jobs.js";
 import {
+  resolveBackgroundWaitPolicy,
+  type BackgroundWaitPolicyResolver,
+} from "./background-wait-policy.js";
+import {
   ORACLE_SEND_TOOL_NAME,
-  ORACLE_SEND_WAIT_TIMEOUT_MS,
   ORACLE_SEND_WAIT_TOOL_NAME,
   OracleSendJobError,
   OracleSendJobManager,
@@ -579,14 +581,14 @@ const RpToolSchema = Type.Object({
 
 const CONTEXT_BUILDER_TOOL_NAME = "context_builder";
 const CONTEXT_BUILDER_WAIT_TOOL_NAME = "context_builder_wait";
-const CONTEXT_BUILDER_WAIT_SECONDS = CONTEXT_BUILDER_WAIT_TIMEOUT_MS / 1000;
 const CONTEXT_BUILDER_WAIT_TOOL: RpToolMeta = {
   name: CONTEXT_BUILDER_WAIT_TOOL_NAME,
   description: (
-    `Wait up to ${CONTEXT_BUILDER_WAIT_SECONDS} seconds for a Context Builder job started by ` +
-    `rp({ call: "context_builder", ... }). Repeat with the same job_id while it is running. ` +
-    "The terminal result can be consumed once; cancelling or timing out a wait does not cancel the job. " +
-    "Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
+    "Wait for a Context Builder job started by rp({ call: \"context_builder\", ... }). " +
+    "A wait may return running shortly before a known or configured prompt-cache deadline; otherwise it " +
+    "remains pending until the job settles. If it returns running, repeat the same wait as your next action. " +
+    "The terminal result can be consumed once; cancelling a wait or reaching a cache deadline does not cancel " +
+    "the job. Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
     `Oracle sends use the separate ${ORACLE_SEND_WAIT_TOOL_NAME} protocol.`
   ),
   inputSchema: {
@@ -602,14 +604,14 @@ const CONTEXT_BUILDER_WAIT_TOOL: RpToolMeta = {
     additionalProperties: false,
   },
 };
-const ORACLE_SEND_WAIT_SECONDS = ORACLE_SEND_WAIT_TIMEOUT_MS / 1000;
 const ORACLE_SEND_WAIT_TOOL: RpToolMeta = {
   name: ORACLE_SEND_WAIT_TOOL_NAME,
   description: (
-    `Wait up to ${ORACLE_SEND_WAIT_SECONDS} seconds for an Oracle send job started by ` +
-    `rp({ call: "oracle_send", ... }). Repeat with the same job_id while it is running. ` +
-    "The terminal result can be consumed once; cancelling or timing out a wait does not cancel the job. " +
-    "Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
+    "Wait for an Oracle send job started by rp({ call: \"oracle_send\", ... }). " +
+    "A wait may return running shortly before a known or configured prompt-cache deadline; otherwise it " +
+    "remains pending until the job settles. If it returns running, repeat the same wait as your next action. " +
+    "The terminal result can be consumed once; cancelling a wait or reaching a cache deadline does not cancel " +
+    "the job. Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
     `Context Builder uses the separate ${CONTEXT_BUILDER_WAIT_TOOL_NAME} protocol.`
   ),
   inputSchema: {
@@ -654,6 +656,7 @@ interface AppSwitchHandover {
 interface RepoPromptMcpDependencies {
   contextBuilderJobs?: ContextBuilderJobManager;
   oracleSendJobs?: OracleSendJobManager;
+  resolveBackgroundWaitPolicy?: BackgroundWaitPolicyResolver;
   launchApp?: (appPath: string) => Promise<boolean>;
 }
 
@@ -664,6 +667,7 @@ interface RepoPromptMcpDependencies {
 export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPromptMcpDependencies = {}) {
   const contextBuilderJobs = dependencies.contextBuilderJobs ?? new ContextBuilderJobManager();
   const oracleSendJobs = dependencies.oracleSendJobs ?? new OracleSendJobManager();
+  const backgroundWaitPolicyResolver = dependencies.resolveBackgroundWaitPolicy ?? resolveBackgroundWaitPolicy;
   const launchApp = dependencies.launchApp ?? tryLaunchApp;
   let config: RpConfig = loadConfig();
   let activeApp: RpAppId = config.activeApp;
@@ -675,6 +679,16 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   let connectionLifecycleController = new AbortController();
   let connectionTransition: Promise<void> | null = null;
   let connectionRecovery: { signal: AbortSignal; promise: Promise<void> } | null = null;
+
+  function resolveCurrentBackgroundWaitPolicy(ctx?: ExtensionContext) {
+    const waitConfig = loadConfig({ activeApp });
+    return backgroundWaitPolicyResolver({
+      heartbeatEnabled: waitConfig.backgroundWaitHeartbeatEnabled ?? true,
+      cacheTtlMsByModel: waitConfig.backgroundWaitCacheTtlMsByModel ?? {},
+      model: ctx?.model,
+      processCacheRetention: process.env.PI_CACHE_RETENTION,
+    });
+  }
 
   function isRpAppId(value: unknown): value is RpAppId {
     return RP_APP_IDS.includes(value as RpAppId);
@@ -2244,11 +2258,11 @@ Usage:
   rp({ call: "context_builder", args: {...} })
                                           → Start Context Builder and receive a job_id
   rp({ call: "context_builder_wait", args: { job_id: "..." } })
-                                          → Wait up to ${CONTEXT_BUILDER_WAIT_SECONDS} seconds; repeat while running
+                                          → Wait for completion or a cache-aware running heartbeat
   rp({ call: "oracle_send", args: {...} })
                                           → Start Oracle and receive a job_id
   rp({ call: "oracle_send_wait", args: { job_id: "..." } })
-                                          → Wait up to ${ORACLE_SEND_WAIT_SECONDS} seconds; repeat while running
+                                          → Wait for completion or a cache-aware running heartbeat
 
 Context Builder and generic Oracle sends use asynchronous start/wait protocols with one-shot terminal results.
 Agent runs remain session-based. Other forwarded RepoPrompt tools return their results directly.
@@ -3404,9 +3418,9 @@ Mode priority: call > describe > search > windows > bind > status`,
         description: (
           `${tool.description || "Build deep repository context and produce a response."} ` +
           "This wrapper starts Context Builder asynchronously and returns a job_id immediately. " +
-          `Call ${CONTEXT_BUILDER_WAIT_TOOL_NAME} with that ID; each wait blocks up to ` +
-          `${CONTEXT_BUILDER_WAIT_SECONDS} seconds. Consume the terminal result before starting another ` +
-          "job on the same app/window/tab."
+          `Call ${CONTEXT_BUILDER_WAIT_TOOL_NAME} with that ID. A wait returns on completion or shortly before ` +
+          "a known or configured prompt-cache deadline; otherwise it remains pending until settlement. " +
+          "Consume the terminal result before starting another job on the same app/window/tab."
         ),
       };
     }
@@ -3416,9 +3430,10 @@ Mode priority: call > describe > search > windows > bind > status`,
         description: (
           `${tool.description || "Consult Oracle."} ` +
           "This wrapper starts every generic Oracle send asynchronously and returns a job_id immediately. " +
-          `Call ${ORACLE_SEND_WAIT_TOOL_NAME} with that ID; each wait blocks up to ` +
-          `${ORACLE_SEND_WAIT_SECONDS} seconds. Consume the terminal result before starting another ` +
-          "Oracle send on the same app/window/tab. The /rp oracle command remains synchronous."
+          `Call ${ORACLE_SEND_WAIT_TOOL_NAME} with that ID. A wait returns on completion or shortly before ` +
+          "a known or configured prompt-cache deadline; otherwise it remains pending until settlement. " +
+          "Consume the terminal result before starting another Oracle send on the same app/window/tab. " +
+          "The /rp oracle command remains synchronous."
         ),
       };
     }
@@ -3761,6 +3776,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
     ) => void,
     signal?: AbortSignal,
+    ctx?: ExtensionContext,
   ) {
     const args = params.args ?? {};
     const keys = Object.keys(args);
@@ -3777,14 +3793,16 @@ Mode priority: call > describe > search > windows > bind > status`,
       details: { mode: "call", tool: CONTEXT_BUILDER_WAIT_TOOL_NAME, status: "running", jobId },
     });
 
+    const waitPolicy = resolveCurrentBackgroundWaitPolicy(ctx);
+
     try {
-      const outcome = await contextBuilderJobs.wait(jobId, signal);
+      const outcome = await contextBuilderJobs.wait(jobId, waitPolicy, signal);
       if (outcome.status === "running") {
         return {
           content: [{
             type: "text" as const,
             text: (
-              `Context Builder job "${jobId}" is still running. Call ` +
+              `Context Builder job "${jobId}" is still running. As your next action, call ` +
               `rp({ call: "${CONTEXT_BUILDER_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) again.`
             ),
           }],
@@ -3825,6 +3843,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
     ) => void,
     signal?: AbortSignal,
+    ctx?: ExtensionContext,
   ) {
     const args = params.args ?? {};
     const keys = Object.keys(args);
@@ -3841,15 +3860,17 @@ Mode priority: call > describe > search > windows > bind > status`,
       details: { mode: "call", tool: ORACLE_SEND_WAIT_TOOL_NAME, status: "running", jobId },
     });
 
+    const waitPolicy = resolveCurrentBackgroundWaitPolicy(ctx);
+
     try {
-      const outcome = await oracleSendJobs.wait(jobId, signal);
+      const outcome = await oracleSendJobs.wait(jobId, waitPolicy, signal);
       const oracleSendJob = { jobId, status: outcome.status, target: outcome.descriptor.target };
       if (outcome.status === "running") {
         return {
           content: [{
             type: "text" as const,
             text: (
-              `Oracle send job "${jobId}" is still running. Call ` +
+              `Oracle send job "${jobId}" is still running. As your next action, call ` +
               `rp({ call: "${ORACLE_SEND_WAIT_TOOL_NAME}", args: { job_id: "${jobId}" } }) again.`
             ),
           }],
@@ -3890,10 +3911,10 @@ Mode priority: call > describe > search > windows > bind > status`,
   ) {
     const toolName = normalizeToolName(params.call!);
     if (toolName === CONTEXT_BUILDER_WAIT_TOOL_NAME) {
-      return executeContextBuilderWait(params, onUpdate, signal);
+      return executeContextBuilderWait(params, onUpdate, signal, ctx);
     }
     if (toolName === ORACLE_SEND_WAIT_TOOL_NAME) {
-      return executeOracleSendWait(params, onUpdate, signal);
+      return executeOracleSendWait(params, onUpdate, signal, ctx);
     }
 
     const client = getRpClient();

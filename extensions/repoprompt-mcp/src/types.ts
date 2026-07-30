@@ -130,6 +130,10 @@ export interface RpConfig {
   // Behavior
   autoBindOnStart?: boolean;       // Auto-detect and bind to matching window (default: true)
   persistBinding?: boolean;        // Remember binding across session (default: true)
+  // Return running before known or configured prompt-cache deadlines (default: true)
+  backgroundWaitHeartbeatEnabled?: boolean;
+  // Cache TTL ms by provider/model, provider/*, or *; null waits until settlement
+  backgroundWaitCacheTtlMsByModel?: Record<string, number | null>;
 
   // Safety
   confirmDeletes?: boolean;        // Require confirmation for deletes (default: true)

@@ -51,6 +51,8 @@ const DEFAULT_CONFIG: RpConfig = {
   apps: DEFAULT_APPS,
   autoBindOnStart: true,
   persistBinding: true,
+  backgroundWaitHeartbeatEnabled: true,
+  backgroundWaitCacheTtlMsByModel: {},
   confirmDeletes: true,
   confirmEdits: false,
   toolCallTimeoutMs: DEFAULT_TOOL_CALL_TIMEOUT_MS,
@@ -245,6 +247,27 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+function normalizeBackgroundWaitCacheTtlMsByModel(value: unknown): Record<string, number | null> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const normalizedEntries = Object.entries(value as Record<string, unknown>)
+    .flatMap<readonly [string, number | null]>(([key, cacheTtlMs]) => {
+      if (key.trim() === "") {
+        return [];
+      }
+      if (cacheTtlMs === null) {
+        return [[key, null] as const];
+      }
+      if (typeof cacheTtlMs !== "number" || !Number.isFinite(cacheTtlMs)) {
+        return [];
+      }
+      return [[key, Math.min(86_400_000, Math.max(120_000, Math.floor(cacheTtlMs)))] as const];
+    });
+  return Object.fromEntries(normalizedEntries);
+}
+
 function toDiffViewMode(value: unknown): DiffViewMode {
   return DIFF_VIEW_MODES.includes(value as DiffViewMode)
     ? (value as DiffViewMode)
@@ -308,6 +331,12 @@ export function loadConfig(overrides?: Partial<RpConfig>): RpConfig {
     1_000,
     24 * 60 * 60 * 1000,
     DEFAULT_TOOL_CALL_TIMEOUT_MS
+  );
+  config.backgroundWaitHeartbeatEnabled = typeof config.backgroundWaitHeartbeatEnabled === "boolean"
+    ? config.backgroundWaitHeartbeatEnabled
+    : true;
+  config.backgroundWaitCacheTtlMsByModel = normalizeBackgroundWaitCacheTtlMsByModel(
+    config.backgroundWaitCacheTtlMsByModel,
   );
   config.diffViewMode = toDiffViewMode(config.diffViewMode);
   config.diffSplitMinWidth = clampNumber(config.diffSplitMinWidth, 70, 240, DEFAULT_CONFIG.diffSplitMinWidth ?? 120);

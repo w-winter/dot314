@@ -19,6 +19,15 @@ export interface RetainedMcpJobRequest<TDescriptor> {
   run(signal: AbortSignal): Promise<McpToolResult>;
 }
 
+export type RetainedMcpJobWaitPolicy =
+  | {
+      readonly kind: "until_settled";
+    }
+  | {
+      readonly kind: "bounded";
+      readonly timeoutMs: number;
+    };
+
 export type RetainedMcpJobWaitOutcome<TDescriptor> =
   | {
       readonly status: "running";
@@ -118,7 +127,6 @@ type RetainedMcpJobRecord<TDescriptor> =
 export type RetainedMcpJobFailureKind = "invalid_result" | "runner_rejected";
 
 export interface RetainedMcpJobRegistryOptions<TDescriptor> {
-  readonly waitTimeoutMs: number;
   readonly capacity: number;
   readonly consumedTombstoneLimit: number;
   readonly consumedJobIdPolicy: "reject" | "reuse";
@@ -233,7 +241,11 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
     return { jobId, descriptor: this.options.cloneDescriptor(descriptor) };
   }
 
-  async wait(jobId: string, signal?: AbortSignal): Promise<RetainedMcpJobWaitOutcome<TDescriptor>> {
+  async wait(
+    jobId: string,
+    policy: RetainedMcpJobWaitPolicy,
+    signal?: AbortSignal,
+  ): Promise<RetainedMcpJobWaitOutcome<TDescriptor>> {
     if (signal?.aborted) {
       throw this.waitAborted(jobId);
     }
@@ -247,21 +259,29 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
       return this.consume(jobId, initial);
     }
 
+    type WaitWake =
+      | { kind: "settled" }
+      | { kind: "reset"; reason: RepoPromptJobResetReason }
+      | { kind: "timeout" }
+      | { kind: "aborted" };
+
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
-    const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
-      timeoutId = setTimeout(() => resolve({ kind: "timeout" }), this.options.waitTimeoutMs);
-    });
-    const aborted = new Promise<{ kind: "aborted" }>((resolve) => {
-      if (!signal) {
-        return;
-      }
-      abortListener = () => resolve({ kind: "aborted" });
-      signal.addEventListener("abort", abortListener, { once: true });
-    });
+    const wakePromises: Array<Promise<WaitWake>> = [initial.changed];
+    if (policy.kind === "bounded") {
+      wakePromises.push(new Promise<{ kind: "timeout" }>((resolve) => {
+        timeoutId = setTimeout(() => resolve({ kind: "timeout" }), policy.timeoutMs);
+      }));
+    }
+    if (signal) {
+      wakePromises.push(new Promise<{ kind: "aborted" }>((resolve) => {
+        abortListener = () => resolve({ kind: "aborted" });
+        signal.addEventListener("abort", abortListener, { once: true });
+      }));
+    }
 
     try {
-      const wake = await Promise.race([initial.changed, timeout, aborted]);
+      const wake = await Promise.race(wakePromises);
       if (wake.kind === "reset") {
         throw new RetainedMcpJobError({
           reason: "cancelled",
@@ -291,6 +311,9 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
         throw this.unavailableJobError(jobId);
       }
       if (current.status === "running") {
+        if (wake.kind !== "timeout") {
+          throw new Error(`Retained MCP job ${jobId} woke without settlement or a bounded timeout`);
+        }
         return {
           status: "running",
           jobId,
@@ -299,7 +322,7 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
       }
       return this.consume(jobId, current);
     } finally {
-      if (timeoutId) {
+      if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
       if (signal && abortListener) {

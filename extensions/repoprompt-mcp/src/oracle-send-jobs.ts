@@ -6,12 +6,12 @@ import {
   type RepoPromptJobResetReason,
   type RepoPromptJobTarget,
   type RetainedMcpJobFailure,
+  type RetainedMcpJobWaitPolicy,
 } from "./mcp-tool-jobs.js";
 import type { McpToolResult, ToolCatalogFreshness } from "./types.js";
 
 export const ORACLE_SEND_TOOL_NAME = "oracle_send";
 export const ORACLE_SEND_WAIT_TOOL_NAME = "oracle_send_wait";
-export const ORACLE_SEND_WAIT_TIMEOUT_MS = 210_000;
 export const ORACLE_SEND_JOB_CAPACITY = 16;
 export const ORACLE_SEND_CONSUMED_TOMBSTONE_LIMIT = 256;
 
@@ -76,7 +76,6 @@ export class OracleSendJobError extends Error {
 }
 
 export interface OracleSendJobManagerOptions {
-  readonly waitTimeoutMs?: number;
   readonly createJobId?: () => string;
   readonly warn?: (message: string) => void | Promise<void>;
 }
@@ -152,7 +151,6 @@ export class OracleSendJobManager {
   constructor(options: OracleSendJobManagerOptions = {}) {
     const warn = options.warn ?? ((message: string) => console.warn(message));
     this.registry = new RetainedMcpJobRegistry({
-      waitTimeoutMs: options.waitTimeoutMs ?? ORACLE_SEND_WAIT_TIMEOUT_MS,
       capacity: ORACLE_SEND_JOB_CAPACITY,
       consumedTombstoneLimit: ORACLE_SEND_CONSUMED_TOMBSTONE_LIMIT,
       consumedJobIdPolicy: "reject",
@@ -178,9 +176,13 @@ export class OracleSendJobManager {
     }
   }
 
-  async wait(jobId: string, signal?: AbortSignal): Promise<OracleSendJobWaitOutcome> {
+  async wait(
+    jobId: string,
+    policy: RetainedMcpJobWaitPolicy,
+    signal?: AbortSignal,
+  ): Promise<OracleSendJobWaitOutcome> {
     try {
-      return await this.registry.wait(jobId, signal);
+      return await this.registry.wait(jobId, policy, signal);
     } catch (error) {
       if (error instanceof RetainedMcpJobError) {
         throw oracleSendError(error.failure);

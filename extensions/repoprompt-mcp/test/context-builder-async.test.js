@@ -231,9 +231,11 @@ async function settleWithin(promise, timeoutMs = 500) {
 
 test("rp runs Context Builder through the asynchronous start and wait protocol", async () => {
   const originalHome = process.env.HOME;
+  const originalCacheRetention = process.env.PI_CACHE_RETENTION;
   const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-context-builder-home-"));
   const repoRoot = mkdtempSync(path.join(os.tmpdir(), "rp-context-builder-root-"));
   process.env.HOME = tempHome;
+  process.env.PI_CACHE_RETENTION = "long";
 
   const originalConnect = RpClient.prototype.connect;
   const originalClose = RpClient.prototype.close;
@@ -251,16 +253,15 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
 
   try {
     mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
-    writeFileSync(
-      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({
-        activeApp: "ce",
-        apps: { ce: { command: "fake-rp", args: [] } },
-        autoBindOnStart: false,
-        autoSelectReadSlices: false,
-        suppressHostDisconnectedLog: false,
-      }),
-    );
+    const extensionConfigPath = path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json");
+    const extensionConfig = {
+      activeApp: "ce",
+      apps: { ce: { command: "fake-rp", args: [] } },
+      autoBindOnStart: false,
+      autoSelectReadSlices: false,
+      suppressHostDisconnectedLog: false,
+    };
+    writeFileSync(extensionConfigPath, JSON.stringify(extensionConfig));
 
     await resetRpClient();
     clearBinding();
@@ -346,14 +347,21 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       onAppendEntry?.(customType, data);
     };
     const manager = new ContextBuilderJobManager({
-      waitTimeoutMs: 5,
       createJobId: (() => {
         let id = 1;
         return () => `cb_integration_${id++}`;
       })(),
       warn: () => {},
     });
-    repopromptMcp(pi, { contextBuilderJobs: manager });
+    const waitPolicyInputs = [];
+    let currentWaitPolicy = { kind: "bounded", timeoutMs: 5 };
+    repopromptMcp(pi, {
+      contextBuilderJobs: manager,
+      resolveBackgroundWaitPolicy: (input) => {
+        waitPolicyInputs.push(structuredClone(input));
+        return currentWaitPolicy;
+      },
+    });
     const config = {
       activeApp: "ce",
       apps: { ce: {} },
@@ -363,6 +371,12 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
 
     const rpTool = pi.getTool("rp");
     const ctx = createContext(repoRoot, pi.entries);
+    ctx.model = {
+      provider: "openai",
+      api: "openai-responses",
+      id: "gpt-5.6-sol",
+      baseUrl: "https://api.openai.com/v1",
+    };
     const renderedError = rpTool.renderResult(
       { content: [{ type: "text", text: "[context_builder_job_not_found] missing" }], details: {} },
       { expanded: false, isPartial: false },
@@ -487,7 +501,25 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       ctx,
     );
     assert.equal(running.details.contextBuilderJob.status, "running");
+    assert.deepEqual(waitPolicyInputs.at(-1), {
+      heartbeatEnabled: true,
+      cacheTtlMsByModel: {},
+      model: ctx.model,
+      processCacheRetention: "long",
+    });
 
+    writeFileSync(extensionConfigPath, JSON.stringify({
+      ...extensionConfig,
+      backgroundWaitHeartbeatEnabled: false,
+      backgroundWaitCacheTtlMsByModel: { "anthropic/*": 420_000 },
+    }));
+    const connectsBeforeConfigReloadWait = connectCalls;
+    ctx.model = {
+      provider: "anthropic",
+      api: "anthropic-messages",
+      id: "claude-sonnet-4-5",
+      baseUrl: "https://api.anthropic.com",
+    };
     builderWork.resolve({
       content: [
         { type: "text", text: "builder result" },
@@ -509,6 +541,14 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       { type: "text", text: "builder result" },
       { type: "image", data: "abc", mimeType: "image/png" },
     ]);
+    assert.deepEqual(waitPolicyInputs.at(-1), {
+      heartbeatEnabled: false,
+      cacheTtlMsByModel: { "anthropic/*": 420_000 },
+      model: ctx.model,
+      processCacheRetention: "long",
+    });
+    assert.equal(connectCalls, connectsBeforeConfigReloadWait);
+    assert.equal(contextBuilderCalls, 1);
 
     await expectRpError(
       rpTool.execute(
@@ -602,7 +642,9 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       undefined,
       ctx,
     );
-    assert.match(described.content[0].text, /210 seconds/u);
+    assert.match(described.content[0].text, /prompt-cache deadline/u);
+    assert.match(described.content[0].text, /next action/u);
+    assert.doesNotMatch(described.content[0].text, /210 seconds/u);
     assert.match(described.content[0].text, /job_id/u);
 
     const searched = await rpTool.execute(
@@ -661,6 +703,20 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
     );
     assert.equal(lifecycleStart.details.contextBuilderJob.jobId, "cb_integration_5");
     await new Promise((resolve) => setImmediate(resolve));
+    currentWaitPolicy = { kind: "until_settled" };
+    const lifecycleWait = rpTool.execute(
+      "builder-lifecycle-wait",
+      { call: "context_builder_wait", args: { job_id: "cb_integration_5" } },
+      undefined,
+      undefined,
+      ctx,
+    );
+    let lifecycleWaitSettled = false;
+    void lifecycleWait.finally(() => {
+      lifecycleWaitSettled = true;
+    }).catch(() => {});
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(lifecycleWaitSettled, false);
 
     persistBinding(pi, { app: "ce", windowId: 8, workspace: "other" }, config);
     tabCreated = false;
@@ -682,6 +738,7 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       "context_builder_start_cancelled",
     );
     await shutdownPromise;
+    await expectRpError(lifecycleWait, "context_builder_job_cancelled");
     assert.equal(contextBuilderCalls, 5);
     assert.deepEqual(lifecycleEvents.slice(-2), ["abort", "close"]);
     lifecycleWork.reject(new Error("cancelled"));
@@ -690,6 +747,11 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
     RpClient.prototype.close = originalClose;
     RpClient.prototype.callTool = originalCallTool;
     process.env.HOME = originalHome;
+    if (originalCacheRetention === undefined) {
+      delete process.env.PI_CACHE_RETENTION;
+    } else {
+      process.env.PI_CACHE_RETENTION = originalCacheRetention;
+    }
     await resetRpClient();
     clearBinding();
     rmSync(tempHome, { recursive: true, force: true });

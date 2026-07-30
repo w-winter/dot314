@@ -164,3 +164,88 @@ test("inferAppPath prefers explicit per-target app path", withTempHome("rp-confi
   assert.equal(inferAppPath(config, "ce"), "/tmp/Explicit CE.app");
   assert.equal(inferAppPath(config, "classic"), "/tmp/Explicit Classic.app");
 }));
+
+test("loadConfig enables background wait heartbeats by default", withTempHome("rp-config-wait-default-", () => {
+  const config = loadConfig();
+
+  assert.equal(config.backgroundWaitHeartbeatEnabled, true);
+  assert.deepEqual(config.backgroundWaitCacheTtlMsByModel, {});
+}));
+
+test("loadConfig preserves an explicit background wait heartbeat opt out", withTempHome(
+  "rp-config-wait-disabled-",
+  (home) => {
+    writeExtensionConfig(home, { backgroundWaitHeartbeatEnabled: false });
+
+    assert.equal(loadConfig().backgroundWaitHeartbeatEnabled, false);
+  },
+));
+
+test("loadConfig normalizes background wait cache ttl overrides", withTempHome(
+  "rp-config-wait-overrides-",
+  (home) => {
+    writeExtensionConfig(home, {
+      backgroundWaitCacheTtlMsByModel: {
+        "openai/gpt-5.6": 1_800_000.9,
+        "anthropic/*": 60_000,
+        "*": 300_000,
+        "custom/model": 90_000_000,
+        "mistral/*": null,
+        "": 300_000,
+        invalid: "300000",
+        infinite: null,
+      },
+    });
+
+    const config = loadConfig();
+    assert.deepEqual(config.backgroundWaitCacheTtlMsByModel, {
+      "openai/gpt-5.6": 1_800_000,
+      "anthropic/*": 120_000,
+      "*": 300_000,
+      "custom/model": 86_400_000,
+      "mistral/*": null,
+      infinite: null,
+    });
+  },
+));
+
+test("loadConfig discards invalid background wait policy values", withTempHome(
+  "rp-config-wait-invalid-",
+  (home) => {
+    writeExtensionConfig(home, {
+      backgroundWaitHeartbeatEnabled: "false",
+      backgroundWaitCacheTtlMsByModel: [300_000],
+    });
+
+    const config = loadConfig();
+    assert.equal(config.backgroundWaitHeartbeatEnabled, true);
+    assert.deepEqual(config.backgroundWaitCacheTtlMsByModel, {});
+    assert.deepEqual(loadConfig({
+      backgroundWaitCacheTtlMsByModel: {
+        nan: Number.NaN,
+        positiveInfinity: Number.POSITIVE_INFINITY,
+        negativeInfinity: Number.NEGATIVE_INFINITY,
+      },
+    }).backgroundWaitCacheTtlMsByModel, {});
+  },
+));
+
+test("loadConfig shallowly replaces background wait override catalogs", withTempHome(
+  "rp-config-wait-merge-",
+  (home) => {
+    writeExtensionConfig(home, {
+      backgroundWaitCacheTtlMsByModel: {
+        "anthropic/*": 300_000,
+      },
+    });
+
+    const config = loadConfig({
+      backgroundWaitCacheTtlMsByModel: {
+        "openai/*": 1_800_000,
+      },
+    });
+    assert.deepEqual(config.backgroundWaitCacheTtlMsByModel, {
+      "openai/*": 1_800_000,
+    });
+  },
+));

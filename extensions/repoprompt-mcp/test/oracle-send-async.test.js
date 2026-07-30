@@ -128,6 +128,7 @@ async function createHarness({
   tools,
   connect,
   callTool,
+  resolveBackgroundWaitPolicy = () => ({ kind: "bounded", timeoutMs: 5 }),
 } = {}) {
   const originalHome = process.env.HOME;
   const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-oracle-send-home-"));
@@ -145,18 +146,20 @@ async function createHarness({
 
   process.env.HOME = tempHome;
   mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
-  writeFileSync(
-    path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-    JSON.stringify({
-      activeApp,
-      apps: {
-        ce: { command: "fake-rp", args: [] },
-        classic: { command: "fake-rp-classic", args: [] },
-      },
-      autoBindOnStart: false,
-      autoSelectReadSlices: false,
-    }),
-  );
+  const extensionConfigPath = path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json");
+  const extensionConfig = {
+    activeApp,
+    apps: {
+      ce: { command: "fake-rp", args: [] },
+      classic: { command: "fake-rp-classic", args: [] },
+    },
+    autoBindOnStart: false,
+    autoSelectReadSlices: false,
+  };
+  const writeExtensionConfig = (overrides = {}) => {
+    writeFileSync(extensionConfigPath, JSON.stringify({ ...extensionConfig, ...overrides }));
+  };
+  writeExtensionConfig();
   await resetRpClient();
   clearBinding();
 
@@ -190,11 +193,10 @@ async function createHarness({
   const pi = createMockPi();
   let nextId = 1;
   const oracleSendJobs = new OracleSendJobManager({
-    waitTimeoutMs: 5,
     createJobId: () => `oracle_integration_${nextId++}`,
     warn: () => {},
   });
-  repopromptMcp(pi, { oracleSendJobs });
+  repopromptMcp(pi, { oracleSendJobs, resolveBackgroundWaitPolicy });
   const config = { activeApp, apps: { [activeApp]: {} }, persistBinding: true };
   if (binding) {
     persistBinding(pi, binding, config);
@@ -210,6 +212,7 @@ async function createHarness({
     pi,
     rpTool: pi.getTool("rp"),
     config,
+    writeExtensionConfig,
     async cleanup() {
       RpClient.prototype.connect = originalConnect;
       RpClient.prototype.close = originalClose;
@@ -347,6 +350,102 @@ test("rp starts waits and consumes one Oracle request without losing result cont
     );
   } finally {
     oracleWork.resolve(textResult("cleanup"));
+    await harness.cleanup();
+  }
+});
+
+test("rp reloads Oracle wait policy config without resending retained work", async () => {
+  const originalCacheRetention = process.env.PI_CACHE_RETENTION;
+  process.env.PI_CACHE_RETENTION = "long";
+  const oracleWork = deferred();
+  const policyInputs = [];
+  let oracleSignal;
+  const harness = await createHarness({
+    callTool: ({ signal }) => {
+      oracleSignal = signal;
+      return oracleWork.promise;
+    },
+    resolveBackgroundWaitPolicy: (input) => {
+      policyInputs.push(structuredClone(input));
+      return input.heartbeatEnabled
+        ? { kind: "bounded", timeoutMs: 5 }
+        : { kind: "until_settled" };
+    },
+  });
+
+  try {
+    harness.ctx.model = {
+      provider: "openai",
+      api: "openai-responses",
+      id: "gpt-5.6-sol",
+      baseUrl: "https://api.openai.com/v1",
+    };
+    const started = await harness.rpTool.execute(
+      "oracle-indefinite-start",
+      { call: "oracle_send", args: { message: "Review", mode: "review" } },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const running = await harness.rpTool.execute(
+      "oracle-bounded-running",
+      { call: "oracle_send_wait", args: { job_id: started.details.oracleSendJob.jobId } },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    assert.equal(running.details.oracleSendJob.status, "running");
+    assert.equal(oracleSignal.aborted, false);
+    assert.deepEqual(policyInputs.at(-1), {
+      heartbeatEnabled: true,
+      cacheTtlMsByModel: {},
+      model: harness.ctx.model,
+      processCacheRetention: "long",
+    });
+
+    harness.writeExtensionConfig({
+      backgroundWaitHeartbeatEnabled: false,
+      backgroundWaitCacheTtlMsByModel: { "anthropic/*": 420_000 },
+    });
+    const connectsBeforeConfigReloadWait = harness.connectCalls;
+    harness.ctx.model = {
+      provider: "anthropic",
+      api: "anthropic-messages",
+      id: "claude-sonnet-4-5",
+      baseUrl: "https://api.anthropic.com",
+    };
+    let settled = false;
+    const completionWait = harness.rpTool.execute(
+      "oracle-indefinite-complete",
+      { call: "oracle_send_wait", args: { job_id: started.details.oracleSendJob.jobId } },
+      undefined,
+      undefined,
+      harness.ctx,
+    ).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.deepEqual(policyInputs.at(-1), {
+      heartbeatEnabled: false,
+      cacheTtlMsByModel: { "anthropic/*": 420_000 },
+      model: harness.ctx.model,
+      processCacheRetention: "long",
+    });
+    assert.equal(harness.connectCalls, connectsBeforeConfigReloadWait);
+
+    oracleWork.resolve(textResult("done"));
+    assert.equal((await completionWait).content[0].text, "done");
+    assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, 1);
+  } finally {
+    oracleWork.resolve(textResult("cleanup"));
+    if (originalCacheRetention === undefined) {
+      delete process.env.PI_CACHE_RETENTION;
+    } else {
+      process.env.PI_CACHE_RETENTION = originalCacheRetention;
+    }
     await harness.cleanup();
   }
 });
@@ -596,7 +695,9 @@ test("rp discovery preserves Oracle schema and shadows server wait tools", async
       harness.ctx,
     );
     assert.equal(waitSearch.details.matches.filter((name) => name === "oracle_send_wait").length, 1);
-    assert.match(waitSearch.content[0].text, /210 seconds/u);
+    assert.match(waitSearch.content[0].text, /prompt-cache deadline/u);
+    assert.match(waitSearch.content[0].text, /next action/u);
+    assert.doesNotMatch(waitSearch.content[0].text, /210 seconds/u);
     assert.doesNotMatch(waitSearch.content[0].text, /Server wait/u);
 
     const client = getRpClient();
@@ -968,6 +1069,7 @@ test("rp lifecycle reset aborts Oracle work and invalidates its job ID", async (
       oracleSignal = signal;
       return oracleWork.promise;
     },
+    resolveBackgroundWaitPolicy: () => ({ kind: "until_settled" }),
   });
 
   try {
