@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -16,6 +16,51 @@ export type StartupAction =
 const SESSION_FLAG = "--session";
 const CONSUMED_BOOL_FLAGS = new Set(["--switch-session", "--resume", "-r", "--continue", "-c", "--no-session"]);
 const CONSUMED_VALUE_FLAGS = new Set(["--session", "--fork"]);
+const FIRST_LINE_CHUNK_SIZE = 4 * 1024;
+const MAX_FIRST_LINE_BYTES = 1024 * 1024;
+
+export interface BoundedFirstLineReaderDependencies {
+	open: (filePath: string, flags: "r") => number;
+	read: (fileDescriptor: number, buffer: Buffer, offset: number, length: number, position: null) => number;
+	close: (fileDescriptor: number) => void;
+}
+
+export function readBoundedFirstLine(
+	filePath: string,
+	dependencies: Partial<BoundedFirstLineReaderDependencies> = {},
+): string {
+	const openFile = dependencies.open ?? openSync;
+	const readFile = dependencies.read ?? readSync;
+	const closeFile = dependencies.close ?? closeSync;
+	const fileDescriptor = openFile(filePath, "r");
+	const chunks: Buffer[] = [];
+	let retainedBytes = 0;
+
+	try {
+		while (retainedBytes < MAX_FIRST_LINE_BYTES) {
+			const readSize = Math.min(FIRST_LINE_CHUNK_SIZE, MAX_FIRST_LINE_BYTES - retainedBytes);
+			const buffer = Buffer.allocUnsafe(readSize);
+			const bytesRead = readFile(fileDescriptor, buffer, 0, readSize, null);
+			if (bytesRead === 0) return Buffer.concat(chunks, retainedBytes).toString("utf8");
+			const newlineIndex = buffer.subarray(0, bytesRead).indexOf(0x0a);
+			if (newlineIndex !== -1) {
+				chunks.push(buffer.subarray(0, newlineIndex));
+				return Buffer.concat(chunks, retainedBytes + newlineIndex).toString("utf8");
+			}
+			chunks.push(buffer.subarray(0, bytesRead));
+			retainedBytes += bytesRead;
+		}
+
+		const probe = Buffer.allocUnsafe(1);
+		const probeBytes = readFile(fileDescriptor, probe, 0, 1, null);
+		if (probeBytes > 0 && probe[0] !== 0x0a) {
+			throw new Error(`Session header exceeds ${MAX_FIRST_LINE_BYTES} bytes`);
+		}
+		return Buffer.concat(chunks, retainedBytes).toString("utf8");
+	} finally {
+		closeFile(fileDescriptor);
+	}
+}
 
 export function buildStartupRelaunchArgs(argvTokens: string[], sessionPath: string): string[] {
 	const preserved: string[] = [];
@@ -37,9 +82,9 @@ export function buildStartupRelaunchArgs(argvTokens: string[], sessionPath: stri
 
 function readRecordedSessionCwd(
 	sessionPath: string,
-	readFile: (path: string, encoding: "utf8") => string,
+	readFirstLine: (path: string) => string,
 ): string | undefined {
-	const firstLine = readFile(sessionPath, "utf8").split("\n", 1)[0];
+	const firstLine = readFirstLine(sessionPath);
 	if (!firstLine) {
 		return undefined;
 	}
@@ -51,17 +96,17 @@ function readRecordedSessionCwd(
 export function resolveStartupSessionTarget(
 	sessionPath: string,
 	deps: {
-		readFile?: typeof readFileSync;
+		readFirstLine?: (path: string) => string;
 		exists?: typeof existsSync;
 		stat?: typeof statSync;
 	} = {},
 ): { cwd: string } | { warning: string } {
-	const readFile = deps.readFile ?? readFileSync;
+	const readFirstLine = deps.readFirstLine ?? readBoundedFirstLine;
 	const pathExists = deps.exists ?? existsSync;
 	const pathStat = deps.stat ?? statSync;
 
 	try {
-		const sessionCwd = readRecordedSessionCwd(sessionPath, readFile);
+		const sessionCwd = readRecordedSessionCwd(sessionPath, readFirstLine);
 		if (!sessionCwd) {
 			return {
 				warning: "Selected session does not have a recorded cwd. Use `/switch-session` or native `pi --resume` instead.",
@@ -113,9 +158,7 @@ function teardownTerminalForExit(): void {
 	process.stdout.write("\x1b[?25h");
 	process.stdout.write("\r\n");
 
-	if (process.stdin.isTTY && process.stdin.setRawMode) {
-		process.stdin.setRawMode(false);
-	}
+	if (process.stdin.isTTY) process.stdin.setRawMode(false);
 }
 
 export function executeStartupAction(
