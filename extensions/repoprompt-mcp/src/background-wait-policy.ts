@@ -1,6 +1,7 @@
 import type { RetainedMcpJobWaitPolicy } from "./mcp-tool-jobs.js";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const OPENAI_CODEX_GPT_56_ASSUMED_CACHE_TTL_MS = 20 * 60 * 1000;
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
@@ -84,6 +85,10 @@ function isGpt55(version: GptVersion | undefined): boolean {
   return version?.major === 5 && version.minor === 5;
 }
 
+function isGpt56(version: GptVersion | undefined): boolean {
+  return version?.major === 5 && version.minor === 6;
+}
+
 function usesLongRetention(input: ResolveBackgroundWaitPolicyInput): boolean {
   return input.processCacheRetention?.trim().toLowerCase() === "long";
 }
@@ -142,6 +147,16 @@ function resolveAutomaticPolicy(
   ) {
     const explicitPromptCacheMode = readBooleanProperty(model.compat, "supportsExplicitPromptCacheMode") === true;
     return resolveOpenAiPolicy(input, model.id, supportsLongCacheRetention, explicitPromptCacheMode);
+  }
+
+  if (
+    model.provider === "openai-codex" &&
+    model.api === "openai-codex-responses" &&
+    model.baseUrl === "https://chatgpt.com/backend-api"
+  ) {
+    return isGpt56(parseGptVersion(model.id))
+      ? boundedForCacheTtl(OPENAI_CODEX_GPT_56_ASSUMED_CACHE_TTL_MS)
+      : untilSettled();
   }
 
   if (

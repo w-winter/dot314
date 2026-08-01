@@ -5,6 +5,7 @@ import { resolveBackgroundWaitPolicy } from "../dist/background-wait-policy.js";
 
 const UNTIL_SETTLED = { kind: "until_settled" };
 const FIVE_MINUTE_POLICY = { kind: "bounded", timeoutMs: 240_000 };
+const OPENAI_CODEX_GPT_56_POLICY = { kind: "bounded", timeoutMs: 1_080_000 };
 const THIRTY_MINUTE_POLICY = { kind: "bounded", timeoutMs: 1_620_000 };
 const ONE_HOUR_POLICY = { kind: "bounded", timeoutMs: 3_240_000 };
 
@@ -106,6 +107,26 @@ test("resolveBackgroundWaitPolicy resolves direct OpenAI model families", () => 
   }), FIVE_MINUTE_POLICY);
 });
 
+test("resolveBackgroundWaitPolicy uses the empirical heartbeat for canonical GPT-5.6 Codex models", () => {
+  const openAiCodex = (id) => model({
+    provider: "openai-codex",
+    api: "openai-codex-responses",
+    id,
+    baseUrl: "https://chatgpt.com/backend-api",
+  });
+
+  for (const id of ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+    assert.deepEqual(resolve({ model: openAiCodex(id) }), OPENAI_CODEX_GPT_56_POLICY);
+  }
+  for (const id of ["gpt-5.4", "gpt-5.5", "gpt-5.10", "gpt-6", "gpt-5.6preview"]) {
+    assert.deepEqual(resolve({ model: openAiCodex(id) }), UNTIL_SETTLED);
+  }
+  assert.deepEqual(resolve({
+    model: openAiCodex("gpt-5.6-sol"),
+    processCacheRetention: "long",
+  }), OPENAI_CODEX_GPT_56_POLICY);
+});
+
 test("resolveBackgroundWaitPolicy uses the conservative Azure policy", () => {
   const azure = model({
     provider: "azure-openai-responses",
@@ -179,15 +200,21 @@ test("resolveBackgroundWaitPolicy rejects conflicting custom and malformed route
       baseUrl: "https://openrouter.ai/api/v1",
     }),
   }), UNTIL_SETTLED);
+  for (const baseUrl of [
+    "https://proxy.example.com",
+    "https://chatgpt.com/backend-api/codex",
+    "https://codex.chatgpt.com/backend-api",
+  ]) {
+    assert.deepEqual(resolve({
+      model: model({ provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.6-sol", baseUrl }),
+    }), UNTIL_SETTLED);
+  }
 });
 
 test("resolveBackgroundWaitPolicy leaves providers without a verified TTL indefinite", () => {
   assert.deepEqual(resolve({ model: undefined }), UNTIL_SETTLED);
   assert.deepEqual(resolve({
     model: model({ provider: "mistral", api: "mistral-conversations", id: "mistral-large", baseUrl: "https://api.mistral.ai" }),
-  }), UNTIL_SETTLED);
-  assert.deepEqual(resolve({
-    model: model({ provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.6", baseUrl: "https://chatgpt.com" }),
   }), UNTIL_SETTLED);
 });
 
