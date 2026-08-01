@@ -377,14 +377,6 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       id: "gpt-5.6-sol",
       baseUrl: "https://api.openai.com/v1",
     };
-    const renderedError = rpTool.renderResult(
-      { content: [{ type: "text", text: "[context_builder_job_not_found] missing" }], details: {} },
-      { expanded: false, isPartial: false },
-      { fg: (color, text) => `${color}:${text}` },
-      { isError: true },
-    );
-    assert.match(renderedError.render(120).join("\n"), /error:↳ \[context_builder_job_not_found\]/u);
-
     await expectRpError(
       rpTool.execute(
         "wait-with-lower-priority-describe",

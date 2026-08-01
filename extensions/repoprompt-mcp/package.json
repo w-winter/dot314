@@ -16,14 +16,14 @@
     "diff": "^7.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.1",
+    "@earendil-works/pi-coding-agent": "0.83.0",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.15.21",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-tui": "^0.83.0"
   },
   "pi": {
     "extensions": ["./src/index.ts"]

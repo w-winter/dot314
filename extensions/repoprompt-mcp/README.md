@@ -49,6 +49,7 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - When a wait returns `running`, repeat it with the same job ID as the next action. This gives the next Pi model request an opportunity to reuse or refresh its prompt cache, but does not guarantee a provider cache hit
 - Starting a job sends exactly one request to RepoPrompt; wait calls observe that same background request and never resend it. A `running` response or cancelled wait leaves the job running and its eventual result available
 - A finished job's result or failure can be retrieved only once. The RepoPrompt request remains bounded by `toolCallTimeoutMs`, independently of cache-aware wait scheduling
+- Pending and `running` waits render no rows, so repeated waits do not crowd the transcript; they still appear in the session record and in HTML exports, and only the settled result is displayed
 - A bound RepoPrompt tab can run one Context Builder job and one Oracle job at the same time; different tabs can also run jobs concurrently
 - Reconnecting, switching RepoPrompt apps, reloading the extension, or ending the Pi session cancels outstanding Context Builder and Oracle jobs and invalidates their IDs
 - `/rp oracle` runs synchronously, `agent_run` uses session-based execution, and other RepoPrompt tool calls return their results directly
@@ -61,6 +62,7 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 
 ## Requirements
 
+- Pi 0.83.x
 - [RepoPrompt CE](https://github.com/repoprompt/repoprompt-ce) or [RepoPrompt Classic](https://github.com/repoprompt/repoprompt-classic) with the bundled `repoprompt-mcp` server reachable over stdio
   - CE is the default target; Classic is selectable with `/rp app classic`
   - If the selected target is not configured/auto-detected, the extension will still load, but `rp(...)` will error until you configure it or switch targets

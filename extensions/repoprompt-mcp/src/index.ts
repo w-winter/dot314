@@ -17,7 +17,7 @@ import type {
   ToolRenderResultOptions,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Text, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, Container, Text, matchesKey, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import type {
@@ -627,6 +627,133 @@ const ORACLE_SEND_WAIT_TOOL: RpToolMeta = {
     additionalProperties: false,
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Self-Rendered Tool Shell
+//
+// `rp` owns its tool shell (renderShell: "self") so that a wrapper-owned wait which is
+// still running occupies no rows at all. Pi renders no lines - and no separator - for a
+// self-rendered tool whose components produce no lines, so hiding a row means leaving the
+// shell box childless. Every visible row must therefore recreate the framing Pi supplies
+// by default: one Box(1, 1, background) whose background tracks pending/error/success.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type LocalWaitToolName = typeof CONTEXT_BUILDER_WAIT_TOOL_NAME | typeof ORACLE_SEND_WAIT_TOOL_NAME;
+
+/** Renderer state for one tool execution. Owned by Pi via the render context. */
+interface RpRenderState {
+  shell?: Box;
+}
+
+/** Render context fields this extension reads. Pi passes a wider context. */
+interface RpRenderCallContext {
+  state: RpRenderState;
+  argsComplete: boolean;
+}
+
+interface RpRenderResultContext {
+  state: RpRenderState;
+  args: Record<string, unknown>;
+  isError: boolean;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function localWaitToolName(value: unknown): LocalWaitToolName | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = normalizeToolName(value);
+  return normalized === CONTEXT_BUILDER_WAIT_TOOL_NAME || normalized === ORACLE_SEND_WAIT_TOOL_NAME
+    ? normalized
+    : null;
+}
+
+/**
+ * A wait call row is hidden only when its arguments satisfy the same invariant the wait
+ * executors enforce: exactly one non-empty job_id. Arguments stream in, so before they are
+ * complete the job_id is not yet present; hide on the tool name alone during that window so
+ * a valid wait never flashes a row that then disappears. Once arguments are complete, an
+ * invalid wait stays visible so its validation error is diagnosable.
+ */
+function isHiddenWaitCall(args: Record<string, unknown>, argsComplete: boolean): boolean {
+  if (!localWaitToolName(args.call)) {
+    return false;
+  }
+  if (!argsComplete) {
+    return true;
+  }
+  const callArgs = asRecord(args.args);
+  if (!callArgs) {
+    return false;
+  }
+  const keys = Object.keys(callArgs);
+  if (keys.length !== 1 || keys[0] !== "job_id") {
+    return false;
+  }
+  return typeof callArgs.job_id === "string" && callArgs.job_id.trim().length > 0;
+}
+
+/**
+ * Hide only the two wrapper-owned running states: a wait's own partial update, and the
+ * cache-aware heartbeat whose nested job belongs to the wait that produced it. Background
+ * start results also carry a running job, and mismatched or malformed job metadata is not
+ * evidence of a heartbeat, so both stay visible. Any error is always visible.
+ */
+function isHiddenWaitResult(
+  args: Record<string, unknown>,
+  details: Record<string, unknown>,
+  isPartial: boolean,
+  isError: boolean,
+): boolean {
+  if (isError) {
+    return false;
+  }
+  const waitTool = localWaitToolName(details.tool);
+  if (!waitTool || localWaitToolName(args.call) !== waitTool) {
+    return false;
+  }
+  const callArgs = asRecord(args.args);
+  const expectedJobId = callArgs?.job_id;
+  if (typeof expectedJobId !== "string" || expectedJobId.trim().length === 0) {
+    return false;
+  }
+  if (isPartial) {
+    return details.status === "running" && details.jobId === expectedJobId;
+  }
+  const jobField = waitTool === CONTEXT_BUILDER_WAIT_TOOL_NAME ? "contextBuilderJob" : "oracleSendJob";
+  const job = asRecord(details[jobField]);
+  return job?.status === "running" && job.jobId === expectedJobId;
+}
+
+function shellBackground(theme: Theme, isPartial: boolean, isError: boolean): (text: string) => string {
+  const slot = isPartial ? "toolPendingBg" : isError ? "toolErrorBg" : "toolSuccessBg";
+  return (text: string) => theme.bg(slot, text);
+}
+
+/**
+ * Rebuild the row's shell from the current snapshot. Rebuilding rather than appending keeps
+ * repeated partials, duplicate final renders, expansion toggles, and theme invalidation
+ * idempotent, and guarantees hidden heartbeat content cannot survive into a later row.
+ */
+function rebuildRpShell(
+  state: RpRenderState,
+  background: (text: string) => string,
+  children: Component[],
+): Box {
+  const shell = state.shell ?? new Box(1, 1, background);
+  state.shell = shell;
+  shell.setBgFn(background);
+  shell.clear();
+  for (const child of children) {
+    shell.addChild(child);
+  }
+  return shell;
+}
 
 class BackgroundJobExecutionError extends Error {
   constructor(code: string, message: string) {
@@ -2339,7 +2466,52 @@ Mode priority: call > describe > search > windows > bind > status`,
       return executeStatus(_ctx as ExtensionContext | undefined);
     },
 
-    renderCall(args: Record<string, unknown>, theme: Theme) {
+    renderShell: "self",
+
+    renderCall(args: Record<string, unknown>, theme: Theme, context: RpRenderCallContext) {
+      // Always return the shell: a childless Box renders zero lines, so hiding a running
+      // wait means declining to give the shell content rather than swapping components.
+      return rebuildRpShell(
+        context.state,
+        shellBackground(theme, true, false),
+        isHiddenWaitCall(args, context.argsComplete) ? [] : [createRpCallContent(args, theme)],
+      );
+    },
+
+    renderResult(
+      result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
+      options: ToolRenderResultOptions,
+      theme: Theme,
+      context: RpRenderResultContext,
+    ) {
+      const details = asRecord(result.details) ?? {};
+      const isPartial = options.isPartial === true;
+      const isError = context.isError || result.isError === true || details.isError === true;
+
+      // renderCall already ran this pass, so leaving the shell as it left it keeps a hidden
+      // wait childless and prevents stale result content from surviving.
+      if (!isHiddenWaitResult(context.args, details, isPartial, isError)) {
+        // The shell is mounted from renderCall, so this renderer mutates it in place and adds
+        // nothing of its own. A settled wait first becomes visible here, which is why the call
+        // header is added unconditionally rather than reusing the call-row predicate.
+        rebuildRpShell(context.state, shellBackground(theme, isPartial, isError), [
+          createRpCallContent(context.args, theme),
+          createRpResultContent(result, options, theme, isError),
+        ]);
+      }
+
+      return new Container();
+    },
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Tool Row Content
+  //
+  // Foreground content only. The self-rendered shell owns padding and background, so these
+  // must not add a Box, spacer, or background of their own.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  function createRpCallContent(args: Record<string, unknown>, theme: Theme): Component {
       let text = theme.fg("toolTitle", theme.bold("rp"));
       const summarizedCall = summarizeRpCall(args);
 
@@ -2379,14 +2551,14 @@ Mode priority: call > describe > search > windows > bind > status`,
       }
 
       return new Text(text, 0, 0);
-    },
+  }
 
-    renderResult(
+  function createRpResultContent(
       result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean },
       options: ToolRenderResultOptions,
       theme: Theme,
-      context: { isError: boolean },
-    ) {
+      isError: boolean,
+  ): Component {
       const details = (result.details ?? {}) as Record<string, unknown>;
 
       const textContent = result.content
@@ -2398,7 +2570,6 @@ Mode priority: call > describe > search > windows > bind > status`,
         return new Text(theme.fg("warning", "Running…"), 0, 0);
       }
 
-      const isError = context.isError || result.isError === true || details.isError === true;
       if (isError) {
         return new Text(theme.fg("error", "↳ " + textContent), 0, 0);
       }
@@ -2481,10 +2652,9 @@ Mode priority: call > describe > search > windows > bind > status`,
 
       const highlighted = renderRpOutput(textContent, theme);
       return new Text(`${successPrefix}\n${highlighted}`, 0, 0);
-    },
-  });
+  }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
   // Helper Functions
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -3694,7 +3864,7 @@ Mode priority: call > describe > search > windows > bind > status`,
   }
 
   function isLocalWaitTool(toolName: string): boolean {
-    return toolName === CONTEXT_BUILDER_WAIT_TOOL_NAME || toolName === ORACLE_SEND_WAIT_TOOL_NAME;
+    return localWaitToolName(toolName) !== null;
   }
 
   function throwContextBuilderError(code: string, message: string): never {
