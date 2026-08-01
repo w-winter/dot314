@@ -34,6 +34,7 @@ import { fileURLToPath } from "url";
 
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
 import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
+import { buildNodeOrder } from "./tree-order.ts";
 import {
 	ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
 	createFoldStateEntryData,
@@ -366,20 +367,6 @@ const buildNodeMap = (roots: SessionTreeNode[]): Map<string, SessionTreeNode> =>
 		for (const child of node.children) stack.push(child);
 	}
 	return map;
-};
-
-/** Pre-order DFS index for chronological sorting of selected nodes */
-const buildNodeOrder = (roots: SessionTreeNode[]): Map<string, number> => {
-	const order = new Map<string, number>();
-	let idx = 0;
-	const visit = (nodes: SessionTreeNode[]) => {
-		for (const node of nodes) {
-			order.set(node.entry.id, idx++);
-			visit(node.children);
-		}
-	};
-	visit(roots);
-	return order;
 };
 
 const getTreeListInternals = (treeList: anycopyTreeList): anycopyTreeListInternals => {
