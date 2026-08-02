@@ -68,6 +68,19 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
 - Markdown-aware styling for headings and lists
 
+### Asynchronous Context Builder and Oracle jobs
+
+- Calls to `context_builder` and `oracle_send` through `rp` start in the background and immediately return opaque job IDs
+- Use `context_builder_wait` for Context Builder jobs and `oracle_send_wait` for Oracle jobs. A wait normally remains pending until the job finishes or fails. With heartbeats enabled and a known or configured prompt-cache time-to-live (TTL), it may instead return `running` shortly before the cache expires
+- When a wait returns `running`, repeat it with the same job ID as the next action. This gives the next Pi model request an opportunity to reuse or refresh its prompt cache, but does not guarantee a provider cache hit
+- Heartbeats are scheduled late in each known cache window rather than at a fixed polling interval. This aims to avoid the higher cost of reprocessing the full prompt after cache expiration while avoiding unnecessary intermediate model turns and cache reads; provider cache behavior and billing remain authoritative, so the schedule is a cost-saving heuristic rather than a guarantee
+- Starting a job sends exactly one request to RepoPrompt; wait calls observe that same background request and never resend it. A `running` response or cancelled wait leaves the job running and its eventual result available
+- A finished job's result or failure can be retrieved only once. The RepoPrompt request remains bounded by `toolCallTimeoutMs`, independently of cache-aware wait scheduling
+- Pending and `running` waits render no rows, so repeated waits do not crowd the transcript; they still appear in the session record and in HTML exports, and only the settled result is displayed
+- A bound RepoPrompt tab can run one Context Builder job and one Oracle job at the same time; different tabs can also run jobs concurrently
+- Reconnecting, switching RepoPrompt apps, reloading the extension, or ending the Pi session cancels outstanding Context Builder and Oracle jobs and invalidates their IDs
+- `/rp oracle` runs synchronously, `agent_run` uses session-based execution, and other RepoPrompt tool calls return their results directly
+
 ### Safety checks
 
 - Delete operations are blocked unless you pass `allowDelete: true`
@@ -76,6 +89,7 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 
 ## Requirements
 
+- Pi 0.83.x
 - RepoPrompt CE or RepoPrompt Classic with the bundled `repoprompt-mcp` server reachable over stdio
   - CE is the default target; Classic is selectable with `/rp app classic`
   - If the selected target is not configured/auto-detected, the extension will still load, but `rp(...)` will error until you configure it or switch targets
@@ -139,6 +153,24 @@ rp({ describe: "apply_edits" })
 // Call a RepoPrompt tool (binding args are injected automatically)
 rp({ call: "read_file", args: { path: "src/main.ts" } })
 
+// Start Context Builder asynchronously and save the returned job ID
+rp({
+  call: "context_builder",
+  args: { instructions: "Explore the implementation and produce a plan", response_type: "plan" }
+})
+
+// Wait for the result; if it returns running, repeat this as the next action
+rp({ call: "context_builder_wait", args: { job_id: "cb_..." } })
+
+// Start an Oracle request asynchronously
+rp({
+  call: "oracle_send",
+  args: { message: "Review the selected changes", mode: "review", export_response: true }
+})
+
+// Wait for the same Oracle request; if it returns running, repeat this as the next action
+rp({ call: "oracle_send_wait", args: { job_id: "oracle_..." } })
+
 // Edit confirmation gate (only required if confirmEdits=true in config)
 rp({
   call: "apply_edits",
@@ -174,6 +206,11 @@ Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
 
   "autoBindOnStart": true,
   "persistBinding": true,
+  "backgroundWaitHeartbeatEnabled": true,
+  "backgroundWaitCacheTtlMsByModel": {
+    "my-provider/my-model": 1800000,
+    "openrouter/*": null
+  },
 
   "confirmDeletes": true,
   "confirmEdits": false,
@@ -209,6 +246,8 @@ Options:
 | `toolCallTimeoutMs` | `5400000` | MCP tool call timeout in milliseconds for RepoPrompt tools like `context_builder` and `oracle_send` (90 minutes by default) |
 | `autoBindOnStart` | `true` | Auto-detect and bind on session start, then reconcile the branch-safe tab for the chosen window |
 | `persistBinding` | `true` | Persist window and tab bindings in Pi session history for branch-safe replay |
+| `backgroundWaitHeartbeatEnabled` | `true` | Allow Context Builder and Oracle waits to return `running` near known or configured prompt-cache deadlines; `false` keeps waits pending until the job finishes or fails |
+| `backgroundWaitCacheTtlMsByModel` | `{}` | Cache TTL assumptions in milliseconds keyed by exact `provider/model`, provider-wide `provider/*`, or global `*`; `null` keeps matching waits pending until the job finishes or fails |
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |
 | `confirmEdits` | `false` | Block edit-like operations unless `confirmEdits: true` |
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
@@ -219,15 +258,19 @@ Options:
 | `diffSplitMinWidth` | `120` | Minimum render width before `diffViewMode: "auto"` uses split diff layout |
 | `suppressHostDisconnectedLog` | `true` | Filter noisy stderr from macOS `repoprompt-mcp` (disconnect/retry bootstrap logs) |
 
+Override keys use the provider and model ID reported by Pi. An exact `provider/model` entry takes precedence over `provider/*`, which takes precedence over the global `*` entry. Model IDs may contain `/`; for example, `openrouter/anthropic/claude-sonnet-4.5` is an exact OpenRouter key, while `openrouter/*` covers every OpenRouter model. Numeric TTLs are floored and clamped from two minutes to 24 hours, then reduced by a safety margin of 10% or at least 60 seconds; `null` keeps matching waits pending until the job finishes or fails.
+
+Built-in scheduling uses 4-minute waits for supported 5-minute cache routes (including Anthropic's default cache retention), an 18-minute empirical wait for GPT-5.6 variants on Pi's OpenAI Codex route, 27-minute waits for GPT-5.6+ on supported OpenAI, OpenRouter, and Bedrock routes, and 54-minute waits for supported one-hour Anthropic caching. GPT-5.5 waits until the job finishes or fails. Other recognized OpenAI GPT families before GPT-5.6 use four-minute waits with short/default retention and wait until completion when Pi is started with `PI_CACHE_RETENTION=long`. Routes without a known cache lifetime wait until completion unless configured explicitly.
+
+The policy is recalculated from the Pi model handling the current agent turn on every wait. Explicit overrides are authoritative for proxies, private deployments, and newly released models. Setting `backgroundWaitHeartbeatEnabled` to `false` keeps waits pending until completion while jobs continue to run asynchronously.
+
 Command resolution for each app target checks `apps.<target>.command`, then app-specific MCP config entries (`repoprompt-ce` / `rpce` for CE, `repoprompt-classic` / `rpclassic` for Classic), then the target app bundle command, then the fixed target CLI (`rpce-cli` or `rp-cli`). Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 
-Note: when `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under
-`<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded,
-but this is best-effort
+## Readcache
 
-## Readcache gotchas
+When `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under `<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded, but this is best-effort.
 
-- Need full content? use `bypass_cache: true` in `read_file` args
+- If you need full content, use `bypass_cache: true` in `read_file` args
 - Multi-root: use absolute or specific relative paths (MCP `read_file` has no `RootName:` disambiguation)
 
 ## Troubleshooting

@@ -20,6 +20,42 @@ MCP tools operate directly against this state, but in Pi you invoke them through
 
 **Mandatory routing check:** Do not infer availability of any repo of interest from workspace/window titles; workspaces may have more roots available than the title implies. Before any repo-scoped work, confirm the target repo/root is (or isn't) present by checking workspace roots (e.g. `get_file_tree`). If it's not confirmed, pause and resolve routing (bind the right window/tab or open the repo).
 
+### Parallel RepoPrompt calls
+
+After RepoPrompt routing, binding, and target-root confirmation are complete, inspect the ready set before every repository exploration call.
+
+- If two or more RepoPrompt operations are independent and read-only with respect to both files and RepoPrompt session state, invoke them together through `multi_tool_use.parallel` as separate `functions.rp` calls.
+- Do not issue consecutive model turns containing one independent `rp` read/search call each.
+- Typical parallel candidates include `read_file`, `file_search`, `get_file_tree`, `get_code_structure`, and independent read-only `git` queries.
+- Do not parallelize routing or binding changes, selection mutations, workspace or tab lifecycle operations, edits, file actions, approvals, or calls whose inputs depend on another result.
+- Complete routing or state mutations before launching reads that depend on the resulting state.
+
+For example:
+
+```json
+{
+  "tool_uses": [
+    {
+      "recipient_name": "functions.rp",
+      "parameters": {
+        "call": "read_file",
+        "args": { "path": "src/a.ts" }
+      }
+    },
+    {
+      "recipient_name": "functions.rp",
+      "parameters": {
+        "call": "file_search",
+        "args": {
+          "pattern": "Example",
+          "path": "src"
+        }
+      }
+    }
+  ]
+}
+```
+
 ### Workspace Hygiene (Session Start Priority)
 
 When a task involves a repository that isn't loaded in any existing RepoPrompt window:
@@ -51,18 +87,17 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 | API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | default `max_results` is now 10; wider scans are opt-in |
 | Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives oracle/review context |
 | Snapshot/export | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` or `workspace_context op="export"` | verify or export current context |
-| Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
+| Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120-200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
-| File ops | `file_actions action="create\|move\|delete" path="..."` | absolute paths only for `path` / `new_path` |
-| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | uses the current tab/context; exporting returns `oracle_export_path` + `oracle_export_instruction` |
+| File ops | `file_actions action="create\|move\|delete" path="..."` | absolute path for delete |
+| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | uses the current tab/context; exporting returns `oracle_export_path` |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
 | Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use `working_dirs` when you want RepoPrompt to route to a workspace by roots (exact match first, repo_paths superset fallback) |
 | Window routing bootstrap | `rp({ windows: true })` then `rp({ bind: { window: N } })` | only for initial window selection before using `bind_context` |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing/context discovery |
 | Agent runs | `agent_run op="start\|poll\|wait\|cancel\|steer\|respond"` | advanced, session-based Agent Mode control; `poll`/`wait` accept `session_id` or `session_ids` |
-| Agent/session management | `agent_manage op="list_agents\|list_sessions\|get_log\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows" [roles_only=true]` | inspect durable session/workflow state; `roles_only=true` with `list_agents` returns just the role labels (explore, engineer, pair, design) and their default models |
+| Agent/session management | `agent_manage op="list_agents\|list_sessions\|extract_handoff\|create_session\|resume_session\|stop_session\|cleanup_sessions\|list_workflows"` | inspect durable session/workflow state and export agent handoff transcript; `list_sessions` uses MCP-facing states and `list_workflows` includes `orchestrate` |
 | Auto context | `context_builder instructions="..." [response_type="clarify\|question\|plan\|review"]` | token-costly, invoke explicitly |
-| App settings | `app_settings op="list\|get\|set\|options" [group="..."] [key="..."]` | read/update allowlisted RepoPrompt app-wide preferences |
 | Git operations | `git op="status\|diff\|log\|show\|blame" [compare="..."] [detail="..."]` | worktree support via `main`/`trunk` aliases and merge-base comparisons, `@main:<branch>` |
 
 ### Paths and roots
@@ -73,7 +108,6 @@ If a relative path could match multiple loaded roots, use `RootName:rel/path`.
 Notes:
 - `file_search path="..."` is an alias for `file_search filter.paths=["..."]`
 - `file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
-- `file_actions` is stricter than most RP tools: `path` / `new_path` must be absolute
 - `get_code_structure` line numbers match `read_file` and refresh after edits
 
 ### Routing
@@ -99,38 +133,33 @@ RepoPrompt only operates within workspace root folders.
 
 `agent_run` + `agent_manage` are RepoPrompt's external control plane for Agent Mode: use them when you need to drive a long-running per-tab subagent session, not just make one-off MCP file/chat calls.
 
-- Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`; `start` defaults to `pair` when `model_id` is omitted
-- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, read transcripts
-- Use `agent_manage op="list_agents" roles_only=true` when you only need which model each role label (explore, engineer, pair, design) resolves to; `design` produces markdown docs under `docs/`
-- Use `agent_manage op="get_log" session_id="..."` to read session transcript XML; supports `offset`/`limit` paging
+- Use `agent_run` for run lifecycle: `start`, `wait`/`poll`, `respond`, `steer`, `cancel`
+- Use `agent_manage` for durable metadata: discover agents/workflows, list sessions, and export handoff transcript
+- Use `agent_manage op="extract_handoff"` to pull into your context a handoff transcript of the subagent's context. It exports a `<forked_session ...>` payload; set `output_path` to write a file, or omit it for inline XML.
 - Session state uses MCP-facing values such as `running`, `waiting_for_input`, `completed`, and `failed`; `waiting_for_input` means reply with `agent_run op="respond"`
 - `agent_manage op="list_workflows"` includes `orchestrate` for planning, decomposition, and sub-agent dispatch
 - `agent_run op="wait"` / `op="poll"` accept either `session_id` or `session_ids`; multi-wait wakes on the first interesting session
 - If you start sub-agents, do not end your turn while any started session is still unattended; always `wait`/`poll` and handle pending input first
 - MCP-started `orchestrate` runs may spawn sub-agents, but nested sub-agents cannot recursively start more agent runs
 
-### Context Builder
+### Asynchronous Context Builder and Oracle
+
+Through `rp`, `context_builder` and generic `oracle_send` are asynchronous: the start call returns a `job_id`; call the matching `context_builder_wait` or `oracle_send_wait`, and if it returns `running`, repeat that same wait as the next action. Waits observe the original request and never resubmit it; `/rp oracle` remains synchronous.
 
 `context_builder instructions="..." [response_type="clarify|question|plan|review"]`
 
-Runs an agent to explore the codebase and curate file selection automatically.
+Context Builder explores the codebase and curates file selection automatically.
 
-- `response_type="clarify"` (default): Returns context only—for handoff or manual refinement
-- `response_type="question"`: Answers using built context, returns `chat_id`
-- `response_type="plan"`: Generates implementation plan, returns `chat_id`
-- `response_type="review"`: Generates a code review with git diff context, returns `chat_id`
+- `response_type="clarify"` (default): Returns context for handoff or manual refinement
+- `response_type="question"`: Answers using built context
+- `response_type="plan"`: Generates an implementation plan
+- `response_type="review"`: Generates a code review with git diff context
 
-Use returned `chat_id` with `oracle_send new_chat=false chat_id="..."` for followup.
+For question, plan, and review responses, use the `chat_id` from the terminal wait result with `oracle_send new_chat=false chat_id="..."` for follow-up.
 
-When you need a shareable handoff artifact, `context_builder` and `oracle_send` can export generated responses with `export_response=true`, returning `oracle_export_path` plus `oracle_export_instruction`. To hand an export to a child agent, include `oracle_export_path` in your next delegation message.
+For a shareable handoff artifact, set `export_response=true`; the terminal wait result includes `oracle_export_path`.
 
-Token-costly—invoke explicitly when user requests or during planning phases, not automatically.
-
-### App Settings
-
-`app_settings op="list|get|set|options" ...`
-
-Use this for allowlisted app-wide RepoPrompt preferences. `get` accepts exactly one of `key`, `keys`, or `group`; `set` and `options` take one `key`. Current groups: `ui`, `prompt_packaging`, `models`, `context_builder`, `mcp`, `code_maps`, `file_system`, `agent_mode`.
+These operations are token-costly; invoke them explicitly when the user requests them or during planning phases, not automatically.
 
 ### Edit Discipline
 

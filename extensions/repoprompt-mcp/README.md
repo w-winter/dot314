@@ -47,6 +47,7 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - Calls to `context_builder` and `oracle_send` through `rp` start in the background and immediately return opaque job IDs
 - Use `context_builder_wait` for Context Builder jobs and `oracle_send_wait` for Oracle jobs. A wait normally remains pending until the job finishes or fails. With heartbeats enabled and a known or configured prompt-cache time-to-live (TTL), it may instead return `running` shortly before the cache expires
 - When a wait returns `running`, repeat it with the same job ID as the next action. This gives the next Pi model request an opportunity to reuse or refresh its prompt cache, but does not guarantee a provider cache hit
+- Heartbeats are scheduled late in each known cache window rather than at a fixed polling interval. This aims to avoid the higher cost of reprocessing the full prompt after cache expiration while avoiding unnecessary intermediate model turns and cache reads; provider cache behavior and billing remain authoritative, so the schedule is a cost-saving heuristic rather than a guarantee
 - Starting a job sends exactly one request to RepoPrompt; wait calls observe that same background request and never resend it. A `running` response or cancelled wait leaves the job running and its eventual result available
 - A finished job's result or failure can be retrieved only once. The RepoPrompt request remains bounded by `toolCallTimeoutMs`, independently of cache-aware wait scheduling
 - Pending and `running` waits render no rows, so repeated waits do not crowd the transcript; they still appear in the session record and in HTML exports, and only the settled result is displayed
@@ -300,19 +301,17 @@ Options:
 
 Override keys use the provider and model ID reported by Pi. An exact `provider/model` entry takes precedence over `provider/*`, which takes precedence over the global `*` entry. Model IDs may contain `/`; for example, `openrouter/anthropic/claude-sonnet-4.5` is an exact OpenRouter key, while `openrouter/*` covers every OpenRouter model. Numeric TTLs are floored and clamped from two minutes to 24 hours, then reduced by a safety margin of 10% or at least 60 seconds; `null` keeps matching waits pending until the job finishes or fails.
 
-Built-in scheduling uses four-minute waits for supported five-minute cache routes, an 18-minute empirical wait for GPT-5.6 variants on Pi's OpenAI Codex route, 27-minute waits for GPT-5.6+ on supported OpenAI, OpenRouter, and Bedrock routes, and 54-minute waits for supported one-hour Anthropic caching. GPT-5.5 waits until the job finishes or fails. Other recognized OpenAI GPT families before GPT-5.6 use four-minute waits with short/default retention and wait until completion when Pi is started with `PI_CACHE_RETENTION=long`. Routes without a known cache lifetime wait until completion unless configured explicitly.
+Built-in scheduling uses 4-minute waits for supported 5-minute cache routes (including Anthropic's default cache retention), an 18-minute empirical wait for GPT-5.6 variants on Pi's OpenAI Codex route, 27-minute waits for GPT-5.6+ on supported OpenAI, OpenRouter, and Bedrock routes, and 54-minute waits for supported one-hour Anthropic caching. GPT-5.5 waits until the job finishes or fails. Other recognized OpenAI GPT families before GPT-5.6 use four-minute waits with short/default retention and wait until completion when Pi is started with `PI_CACHE_RETENTION=long`. Routes without a known cache lifetime wait until completion unless configured explicitly.
 
 The policy is recalculated from the Pi model handling the current agent turn on every wait. Explicit overrides are authoritative for proxies, private deployments, and newly released models. Setting `backgroundWaitHeartbeatEnabled` to `false` keeps waits pending until completion while jobs continue to run asynchronously.
 
 Command resolution for each app target checks `apps.<target>.command`, then app-specific MCP config entries (`repoprompt-ce` / `rpce` for CE, `repoprompt-classic` / `rpclassic` for Classic), then the target app bundle command, then the fixed target CLI (`rpce-cli` or `rp-cli`). Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 
-Note: when `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under
-`<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded,
-but this is best-effort
+## Readcache
 
-## Readcache gotchas
+When `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapshots to an on-disk content-addressed store under `<repo-root>/.pi/readcache/objects` to compute diffs/unchanged markers across calls. Common secret filenames (e.g. `.env*`, `*.pem`) are excluded, but this is best-effort.
 
-- Need full content? use `bypass_cache: true` in `read_file` args
+- If you need full content, use `bypass_cache: true` in `read_file` args
 - Multi-root: use absolute or specific relative paths (MCP `read_file` has no `RootName:` disambiguation)
 
 ## Troubleshooting
