@@ -41,7 +41,11 @@ function createManager(options = {}) {
 }
 
 function wait(manager, jobId, signal, timeoutMs = 5) {
-  return manager.wait(jobId, { kind: "bounded", timeoutMs }, signal);
+  return manager.wait(
+    jobId,
+    { kind: "bounded", timeoutMs },
+    signal ? { callerSignal: signal } : undefined,
+  );
 }
 
 async function expectJobError(promise, code) {
@@ -325,7 +329,7 @@ test("ContextBuilderJobManager aborting a waiter leaves the background job runni
     },
   });
   const controller = new AbortController();
-  const waiting = manager.wait(jobId, { kind: "until_settled" }, controller.signal);
+  const waiting = manager.wait(jobId, { kind: "until_settled" }, { callerSignal: controller.signal });
   controller.abort();
 
   await assert.rejects(waiting, (error) => {
@@ -400,4 +404,111 @@ test("ContextBuilderJobManager reset aborts jobs, wakes waiters, and clears occu
   const next = manager.start({ descriptor: descriptor(), run: async () => textResult("new") });
   oldWork.reject(new Error("late rejection"));
   assert.deepEqual((await wait(manager, next.jobId)).result, textResult("new"));
+});
+
+test("ContextBuilderJobManager steering interruption preserves the job and occupancy", async () => {
+  const manager = createManager();
+  const work = deferred();
+  const steering = new AbortController();
+  let jobSignal;
+  const { jobId } = manager.start({
+    descriptor: descriptor(),
+    run: (signal) => {
+      jobSignal = signal;
+      return work.promise;
+    },
+  });
+  const waiting = manager.wait(
+    jobId,
+    { kind: "until_settled" },
+    { steeringSignal: steering.signal },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  steering.abort();
+
+  assert.deepEqual(await waiting, {
+    status: "interrupted_by_steering",
+    jobId,
+    descriptor: descriptor(),
+  });
+  assert.equal(jobSignal.aborted, false);
+  assert.throws(
+    () => manager.start({ descriptor: descriptor(), run: async () => textResult("unexpected") }),
+    (error) => error.code === "context_builder_already_running",
+  );
+
+  work.resolve(textResult("done"));
+  assert.deepEqual((await wait(manager, jobId)).result, textResult("done"));
+  await expectJobError(wait(manager, jobId), "context_builder_job_consumed");
+});
+
+test("ContextBuilderJobManager terminal caller and reset outcomes outrank steering", async () => {
+  const terminalManager = createManager();
+  const terminalWork = deferred();
+  const terminalSteering = new AbortController();
+  const terminalJob = terminalManager.start({ descriptor: descriptor(), run: () => terminalWork.promise });
+  const terminalWait = terminalManager.wait(
+    terminalJob.jobId,
+    { kind: "until_settled" },
+    { steeringSignal: terminalSteering.signal },
+  );
+  terminalWork.resolve(textResult("terminal"));
+  terminalSteering.abort();
+  assert.deepEqual((await terminalWait).result, textResult("terminal"));
+
+  const callerManager = createManager();
+  const callerWork = deferred();
+  const caller = new AbortController();
+  const callerSteering = new AbortController();
+  const callerJob = callerManager.start({ descriptor: descriptor(), run: () => callerWork.promise });
+  const callerWait = callerManager.wait(
+    callerJob.jobId,
+    { kind: "until_settled" },
+    { callerSignal: caller.signal, steeringSignal: callerSteering.signal },
+  );
+  callerSteering.abort();
+  caller.abort();
+  await expectJobError(callerWait, "context_builder_wait_aborted");
+  callerManager.reset("reconnect");
+
+  const resetManager = createManager();
+  const resetWork = deferred();
+  const resetSteering = new AbortController();
+  const resetJob = resetManager.start({ descriptor: descriptor(), run: () => resetWork.promise });
+  const resetWait = resetManager.wait(
+    resetJob.jobId,
+    { kind: "until_settled" },
+    { steeringSignal: resetSteering.signal },
+  );
+  resetSteering.abort();
+  resetManager.reset("reconnect");
+  await expectJobError(resetWait, "context_builder_job_cancelled");
+});
+
+test("ContextBuilderJobManager steering signals affect only their owning waiter", async () => {
+  const manager = createManager();
+  const work = deferred();
+  const firstSteering = new AbortController();
+  const secondSteering = new AbortController();
+  const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
+  const firstWait = manager.wait(
+    jobId,
+    { kind: "until_settled" },
+    { steeringSignal: firstSteering.signal },
+  );
+  let secondSettled = false;
+  const secondWait = manager.wait(
+    jobId,
+    { kind: "until_settled" },
+    { steeringSignal: secondSteering.signal },
+  ).finally(() => {
+    secondSettled = true;
+  });
+
+  firstSteering.abort();
+  assert.equal((await firstWait).status, "interrupted_by_steering");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(secondSettled, false);
+  work.resolve(textResult("done"));
+  assert.deepEqual((await secondWait).result, textResult("done"));
 });

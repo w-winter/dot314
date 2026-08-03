@@ -49,11 +49,21 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - When a wait returns `running`, repeat it with the same job ID as the next action. This gives the next Pi model request an opportunity to reuse or refresh its prompt cache, but does not guarantee a provider cache hit
 - Heartbeats are scheduled late in each known cache window rather than at a fixed polling interval. This aims to avoid the higher cost of reprocessing the full prompt after cache expiration while avoiding unnecessary intermediate model turns and cache reads; provider cache behavior and billing remain authoritative, so the schedule is a cost-saving heuristic rather than a guarantee
 - Starting a job sends exactly one request to RepoPrompt; wait calls observe that same background request and never resend it. A `running` response or cancelled wait leaves the job running and its eventual result available
+- Typing a message while a wait is in flight (steering) ends that wait early, so you can redirect the agent without losing the job; it picks the same job back up afterwards
+- A wait is interrupted only when your message arrives while nothing else is queued; if a message was already pending, the wait continues until the job settles or a heartbeat returns `running`
 - A finished job's result or failure can be retrieved only once. The RepoPrompt request remains bounded by `toolCallTimeoutMs`, independently of cache-aware wait scheduling
-- Pending and `running` waits render no rows, so repeated waits do not crowd the transcript; they still appear in the session record and in HTML exports, and only the settled result is displayed
+- Pending and ordinary `running` heartbeat waits render no rows, so repeated waits do not crowd the transcript; they still appear in the session record and in HTML exports, and only the settled result is displayed. A wait ended by steering does render a row, since its job is still running
 - A bound RepoPrompt tab can run one Context Builder job and one Oracle job at the same time; different tabs can also run jobs concurrently
 - Reconnecting, switching RepoPrompt apps, reloading the extension, or ending the Pi session cancels outstanding Context Builder and Oracle jobs and invalidates their IDs
-- `/rp oracle` runs synchronously, `agent_run` uses session-based execution, and other RepoPrompt tool calls return their results directly
+- `/rp oracle` runs synchronously and other RepoPrompt tool calls return their results directly
+
+### Steerable RepoPrompt CE Agent Mode waits
+
+RepoPrompt CE can run sub-agent sessions of its own. Your agent launches one and then blocks while it works, and when `/rp app` targets CE, steering ends that block just as it ends a Context Builder or Oracle wait.
+
+- Steering never cancels a sub-agent; it ends only your agent's wait. Nothing you type costs you work in progress, and the session can be picked back up afterwards
+- A single sub-agent or a whole batch can be waited on at once, in which case the wait ends as soon as any one of them has something to report
+- Two cases still hold the turn until RepoPrompt returns: launching a sub-agent inline rather than in the background, and sending an existing sub-agent a follow-up while waiting for its reply
 
 ### Safety checks
 
@@ -174,7 +184,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 
 ### Tool: `rp`
 
-Examples:
+Your agent drives everything above through a single `rp` tool; you never call it yourself. These shapes are listed so you can recognize the calls in your transcript and see what the extension exposes.
 
 ```ts
 // Status (connection + binding)

@@ -81,6 +81,14 @@ import {
   OracleSendJobError,
   OracleSendJobManager,
 } from "./oracle-send-jobs.js";
+import {
+  QUEUE_STEER_ACCEPTED_EVENT,
+  ObserverInterruptControlError,
+  SteeringWaitCoordinator,
+  classifyAgentRunCall,
+  runObserverInterruptibleCall,
+  supportsObserverInterruptibleAgentWait,
+} from "./steerable-waits.js";
 
 import { readFileWithCache } from "./readcache/read-file.js";
 import { RP_READCACHE_CUSTOM_TYPE, SCOPE_FULL, scopeRange } from "./readcache/constants.js";
@@ -588,8 +596,9 @@ const CONTEXT_BUILDER_WAIT_TOOL: RpToolMeta = {
     "A wait may return running shortly before a known or configured prompt-cache deadline; otherwise it " +
     "remains pending until the job settles. If it returns running, repeat the same wait as your next action. " +
     "The terminal result can be consumed once; cancelling a wait or reaching a cache deadline does not cancel " +
-    "the job. Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
-    `Oracle sends use the separate ${ORACLE_SEND_WAIT_TOOL_NAME} protocol.`
+    "the job. Accepted Pi steering can interrupt only the current observation; Pi delivers the message, the job " +
+    "continues, and the same job_id remains usable. Reconnects, app switches, extension reloads, and session " +
+    `shutdown invalidate the job ID. Oracle sends use the separate ${ORACLE_SEND_WAIT_TOOL_NAME} protocol.`
   ),
   inputSchema: {
     type: "object",
@@ -611,8 +620,9 @@ const ORACLE_SEND_WAIT_TOOL: RpToolMeta = {
     "A wait may return running shortly before a known or configured prompt-cache deadline; otherwise it " +
     "remains pending until the job settles. If it returns running, repeat the same wait as your next action. " +
     "The terminal result can be consumed once; cancelling a wait or reaching a cache deadline does not cancel " +
-    "the job. Reconnects, app switches, extension reloads, and session shutdown invalidate the job ID. " +
-    `Context Builder uses the separate ${CONTEXT_BUILDER_WAIT_TOOL_NAME} protocol.`
+    "the job. Accepted Pi steering can interrupt only the current observation; Pi delivers the message, the job " +
+    "continues, and the same job_id remains usable. Reconnects, app switches, extension reloads, and session " +
+    `shutdown invalidate the job ID. Context Builder uses the separate ${CONTEXT_BUILDER_WAIT_TOOL_NAME} protocol.`
   ),
   inputSchema: {
     type: "object",
@@ -725,6 +735,10 @@ function isHiddenWaitResult(
   if (isPartial) {
     return details.status === "running" && details.jobId === expectedJobId;
   }
+  const waitObservation = asRecord(details.waitObservation);
+  if (waitObservation?.result === "interrupted_by_steering") {
+    return false;
+  }
   const jobField = waitTool === CONTEXT_BUILDER_WAIT_TOOL_NAME ? "contextBuilderJob" : "oracleSendJob";
   const job = asRecord(details[jobField]);
   return job?.status === "running" && job.jobId === expectedJobId;
@@ -783,6 +797,7 @@ interface AppSwitchHandover {
 interface RepoPromptMcpDependencies {
   contextBuilderJobs?: ContextBuilderJobManager;
   oracleSendJobs?: OracleSendJobManager;
+  steeringWaitCoordinator?: SteeringWaitCoordinator;
   resolveBackgroundWaitPolicy?: BackgroundWaitPolicyResolver;
   launchApp?: (appPath: string) => Promise<boolean>;
 }
@@ -794,6 +809,7 @@ interface RepoPromptMcpDependencies {
 export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPromptMcpDependencies = {}) {
   const contextBuilderJobs = dependencies.contextBuilderJobs ?? new ContextBuilderJobManager();
   const oracleSendJobs = dependencies.oracleSendJobs ?? new OracleSendJobManager();
+  const steeringWaitCoordinator = dependencies.steeringWaitCoordinator ?? new SteeringWaitCoordinator();
   const backgroundWaitPolicyResolver = dependencies.resolveBackgroundWaitPolicy ?? resolveBackgroundWaitPolicy;
   const launchApp = dependencies.launchApp ?? tryLaunchApp;
   let config: RpConfig = loadConfig();
@@ -806,6 +822,10 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   let connectionLifecycleController = new AbortController();
   let connectionTransition: Promise<void> | null = null;
   let connectionRecovery: { signal: AbortSignal; promise: Promise<void> } | null = null;
+
+  pi.events.on(QUEUE_STEER_ACCEPTED_EVENT, (payload: unknown) => {
+    steeringWaitCoordinator.observeQueueSteerAccepted(payload);
+  });
 
   function resolveCurrentBackgroundWaitPolicy(ctx?: ExtensionContext) {
     const waitConfig = loadConfig({ activeApp });
@@ -960,6 +980,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   }
 
   async function resetClientAndBackgroundJobs(reason: RepoPromptJobResetReason): Promise<void> {
+    steeringWaitCoordinator.invalidateActiveObservers();
     backgroundJobLifecycleGeneration += 1;
     contextBuilderJobs.reset(reason);
     oracleSendJobs.reset(reason);
@@ -1936,8 +1957,20 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     }
   }
 
+  pi.on("input", (event, ctx) => {
+    if (event.source === "interactive" && event.streamingBehavior === "steer") {
+      steeringWaitCoordinator.observeStockSteerCandidate({
+        sessionId: ctx.sessionManager.getSessionId(),
+        pendingMessagesBefore: ctx.hasPendingMessages(),
+        hasPendingMessages: () => ctx.hasPendingMessages(),
+      });
+    }
+    return { action: "continue" };
+  });
+
   pi.on("session_start", async (event, ctx) => {
     shutdownRequested = false;
+    steeringWaitCoordinator.beginSession(ctx.sessionManager.getSessionId());
     const lifecycleSignal = beginConnectionLifecycle("session_start");
     extensionPaused = false;
     connectedApp = null;
@@ -2005,6 +2038,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     clearRootsCache();
     resetAutoSelectionRuntimeState();
     await resetClientAndBackgroundJobs("session_shutdown");
+    steeringWaitCoordinator.shutdown();
     connectedApp = null;
   });
 
@@ -2392,7 +2426,10 @@ Usage:
                                           → Wait for completion or a cache-aware running heartbeat
 
 Context Builder and generic Oracle sends use asynchronous start/wait protocols with one-shot terminal results.
-Agent runs remain session-based. Other forwarded RepoPrompt tools return their results directly.
+Accepted Pi steering can release their current wait observation while the underlying job continues.
+For steerable RepoPrompt CE Agent Mode, start with detach:true, retain the session_id, then use an explicit wait with an omitted or positive timeout.
+Explicit agent waits are observer-interruptible; attached starts and wait-enabled steer calls are not.
+Other forwarded RepoPrompt tools return their results directly.
 
 Common tools: read_file, get_file_tree, get_code_structure, file_search,
 apply_edits, manage_selection, workspace_context
@@ -3607,6 +3644,19 @@ Mode priority: call > describe > search > windows > bind > status`,
         ),
       };
     }
+    // Advertise steerability only where the forwarding path below will actually honor it.
+    if (normalized === "agent_run" && supportsObserverInterruptibleAgentWait(activeApp)) {
+      return {
+        ...tool,
+        description: (
+          `${tool.description || "Run RepoPrompt agents."} ` +
+          "For a steerable workflow on RepoPrompt CE, start with detach:true, retain the session_id, then use an explicit wait " +
+          "with an omitted or positive timeout. Accepted Pi steering interrupts only that wait request; it does " +
+          "not cancel the child, and the same session IDs remain usable. timeout:0 is polling. Attached starts " +
+          "and wait-enabled steer calls are forwarded but are not locally observer-interruptible."
+        ),
+      };
+    }
     return tool;
   }
 
@@ -3964,9 +4014,13 @@ Mode priority: call > describe > search > windows > bind > status`,
     });
 
     const waitPolicy = resolveCurrentBackgroundWaitPolicy(ctx);
+    const observer = steeringWaitCoordinator.registerObserver();
 
     try {
-      const outcome = await contextBuilderJobs.wait(jobId, waitPolicy, signal);
+      const outcome = await contextBuilderJobs.wait(jobId, waitPolicy, {
+        callerSignal: signal,
+        steeringSignal: observer.signal,
+      });
       if (outcome.status === "running") {
         return {
           content: [{
@@ -3980,6 +4034,28 @@ Mode priority: call > describe > search > windows > bind > status`,
             mode: "call",
             tool: CONTEXT_BUILDER_WAIT_TOOL_NAME,
             contextBuilderJob: { jobId, status: "running", target: outcome.descriptor.target },
+          },
+        };
+      }
+      if (outcome.status === "interrupted_by_steering") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: (
+              `Observation of Context Builder job "${jobId}" was interrupted by accepted steering. ` +
+              "The job was not cancelled or consumed; Pi will deliver the accepted message. " +
+              `Respond to it, then wait again with the same job_id when appropriate.`
+            ),
+          }],
+          details: {
+            mode: "call",
+            tool: CONTEXT_BUILDER_WAIT_TOOL_NAME,
+            contextBuilderJob: { jobId, status: "running", target: outcome.descriptor.target },
+            waitObservation: {
+              result: "interrupted_by_steering",
+              owner: "repoprompt-mcp",
+              scope: "observer",
+            },
           },
         };
       }
@@ -4004,6 +4080,8 @@ Mode priority: call > describe > search > windows > bind > status`,
         throwContextBuilderError(error.code, error.message);
       }
       throw error;
+    } finally {
+      observer.dispose();
     }
   }
 
@@ -4031,10 +4109,18 @@ Mode priority: call > describe > search > windows > bind > status`,
     });
 
     const waitPolicy = resolveCurrentBackgroundWaitPolicy(ctx);
+    const observer = steeringWaitCoordinator.registerObserver();
 
     try {
-      const outcome = await oracleSendJobs.wait(jobId, waitPolicy, signal);
-      const oracleSendJob = { jobId, status: outcome.status, target: outcome.descriptor.target };
+      const outcome = await oracleSendJobs.wait(jobId, waitPolicy, {
+        callerSignal: signal,
+        steeringSignal: observer.signal,
+      });
+      const oracleSendJob = {
+        jobId,
+        status: outcome.status === "interrupted_by_steering" ? "running" : outcome.status,
+        target: outcome.descriptor.target,
+      };
       if (outcome.status === "running") {
         return {
           content: [{
@@ -4045,6 +4131,28 @@ Mode priority: call > describe > search > windows > bind > status`,
             ),
           }],
           details: { mode: "call", tool: ORACLE_SEND_WAIT_TOOL_NAME, oracleSendJob },
+        };
+      }
+      if (outcome.status === "interrupted_by_steering") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: (
+              `Observation of Oracle send job "${jobId}" was interrupted by accepted steering. ` +
+              "The job was not cancelled or consumed; Pi will deliver the accepted message. " +
+              "Respond to it, then wait again with the same job_id when appropriate."
+            ),
+          }],
+          details: {
+            mode: "call",
+            tool: ORACLE_SEND_WAIT_TOOL_NAME,
+            oracleSendJob,
+            waitObservation: {
+              result: "interrupted_by_steering",
+              owner: "repoprompt-mcp",
+              scope: "observer",
+            },
+          },
         };
       }
       if (outcome.status === "failed") {
@@ -4068,6 +4176,8 @@ Mode priority: call > describe > search > windows > bind > status`,
         throwOracleSendError(error.code, error.message);
       }
       throw error;
+    } finally {
+      observer.dispose();
     }
   }
 
@@ -4337,7 +4447,54 @@ Mode priority: call > describe > search > windows > bind > status`,
     let rpReadcache: RpReadcacheMetaV1 | null = null;
 
     try {
-      let result = await client.callTool(tool.name, mergedArgs);
+      const agentRunClassification = normalizedTool === "agent_run" && supportsObserverInterruptibleAgentWait(activeApp)
+        ? classifyAgentRunCall(userArgs)
+        : null;
+      let result: McpToolResult;
+      if (agentRunClassification?.kind === "steerable_wait") {
+        const observer = steeringWaitCoordinator.registerObserver();
+        const lifecycleSignal = connectionLifecycleController.signal;
+        try {
+          const observed = await runObserverInterruptibleCall({
+            run: (requestSignal) => client.callTool(tool.name, mergedArgs, undefined, requestSignal),
+            steeringSignal: observer.signal,
+            callerSignal: signal,
+            lifecycleSignal,
+          });
+          if (observed.kind === "interrupted_by_steering") {
+            const sessionIds = agentRunClassification.target.kind === "single"
+              ? [agentRunClassification.target.sessionId]
+              : [...agentRunClassification.target.sessionIds];
+            return {
+              content: [{
+                type: "text" as const,
+                text: (
+                  "Observation of the explicit RepoPrompt agent wait was interrupted by accepted steering. " +
+                  "No agent_run cancel operation was sent; Pi will deliver the accepted message. " +
+                  "Respond to it, then repeat the same explicit wait with these session IDs when appropriate: " +
+                  sessionIds.join(", ")
+                ),
+              }],
+              details: {
+                mode: "call",
+                tool: tool.name,
+                toolCatalogFreshness,
+                waitObservation: {
+                  result: "interrupted_by_steering",
+                  owner: "repoprompt-mcp",
+                  scope: "observer",
+                  sessionIds,
+                },
+              },
+            };
+          }
+          result = observed.value;
+        } finally {
+          observer.dispose();
+        }
+      } else {
+        result = await client.callTool(tool.name, mergedArgs);
+      }
 
       const pathArg = typeof userArgs.path === "string" ? (userArgs.path as string) : null;
       const startLine = parseNumber(userArgs.start_line);
@@ -4402,6 +4559,25 @@ Mode priority: call > describe > search > windows > bind > status`,
         fileActionDeleteSnapshot,
       });
     } catch (error) {
+      if (error instanceof ObserverInterruptControlError) {
+        const message = error.code === "caller_aborted"
+          ? "The current agent wait request was cancelled; no child cancellation was requested."
+          : "The RepoPrompt connection lifecycle changed during the agent wait; no child cancellation was requested.";
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: {
+            mode: "call",
+            error: error.code,
+            tool: tool.name,
+            waitObservation: {
+              result: error.code,
+              owner: "repoprompt-mcp",
+              scope: "observer",
+            },
+          },
+          isError: true,
+        };
+      }
       return buildToolCallFailureResponse({
         toolName: tool.name,
         message: error instanceof Error ? error.message : String(error),

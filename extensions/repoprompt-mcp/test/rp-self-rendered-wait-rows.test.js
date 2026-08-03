@@ -33,6 +33,7 @@ function createTheme() {
 function createMockPi() {
   const tools = new Map();
   return {
+    events: { on() {}, emit() {} },
     on() {},
     registerCommand() {},
     registerTool(tool) {
@@ -356,6 +357,21 @@ test("running classification is exact and every other shape stays visible", asyn
           jobId: "cb_2",
         }),
         background: BG.toolPendingBg,
+      },
+      {
+        why: "steering-interrupted wait remains visible while the job runs",
+        args: waitArgs(WAIT_PROTOCOLS[0]),
+        result: hostResult("interrupted by steering", {
+          mode: "call",
+          tool: "context_builder_wait",
+          contextBuilderJob: { jobId: "cb_1", status: "running" },
+          waitObservation: {
+            result: "interrupted_by_steering",
+            owner: "repoprompt-mcp",
+            scope: "observer",
+          },
+        }),
+        background: BG.toolSuccessBg,
       },
       {
         why: "running heartbeat without a job ID",

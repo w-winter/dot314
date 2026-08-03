@@ -7,6 +7,7 @@ import {
   type RepoPromptJobTarget,
   type RetainedMcpJobFailure,
   type RetainedMcpJobWaitPolicy,
+  type RetainedMcpJobWaitSignals,
 } from "./mcp-tool-jobs.js";
 import type { McpToolResult, ToolCatalogFreshness } from "./types.js";
 
@@ -31,6 +32,11 @@ export interface StartOracleSendJobRequest {
 export type OracleSendJobWaitOutcome =
   | {
       readonly status: "running";
+      readonly jobId: string;
+      readonly descriptor: OracleSendJobDescriptor;
+    }
+  | {
+      readonly status: "interrupted_by_steering";
       readonly jobId: string;
       readonly descriptor: OracleSendJobDescriptor;
     }
@@ -179,10 +185,10 @@ export class OracleSendJobManager {
   async wait(
     jobId: string,
     policy: RetainedMcpJobWaitPolicy,
-    signal?: AbortSignal,
+    signals?: RetainedMcpJobWaitSignals,
   ): Promise<OracleSendJobWaitOutcome> {
     try {
-      return await this.registry.wait(jobId, policy, signal);
+      return await this.registry.wait(jobId, policy, signals);
     } catch (error) {
       if (error instanceof RetainedMcpJobError) {
         throw oracleSendError(error.failure);

@@ -28,9 +28,19 @@ export type RetainedMcpJobWaitPolicy =
       readonly timeoutMs: number;
     };
 
+export interface RetainedMcpJobWaitSignals {
+  readonly callerSignal?: AbortSignal;
+  readonly steeringSignal?: AbortSignal;
+}
+
 export type RetainedMcpJobWaitOutcome<TDescriptor> =
   | {
       readonly status: "running";
+      readonly jobId: string;
+      readonly descriptor: TDescriptor;
+    }
+  | {
+      readonly status: "interrupted_by_steering";
       readonly jobId: string;
       readonly descriptor: TDescriptor;
     }
@@ -244,9 +254,9 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
   async wait(
     jobId: string,
     policy: RetainedMcpJobWaitPolicy,
-    signal?: AbortSignal,
+    signals: RetainedMcpJobWaitSignals = {},
   ): Promise<RetainedMcpJobWaitOutcome<TDescriptor>> {
-    if (signal?.aborted) {
+    if (signals.callerSignal?.aborted) {
       throw this.waitAborted(jobId);
     }
 
@@ -258,51 +268,63 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
     if (initial.status !== "running") {
       return this.consume(jobId, initial);
     }
+    if (signals.steeringSignal?.aborted) {
+      return {
+        status: "interrupted_by_steering",
+        jobId,
+        descriptor: this.options.cloneDescriptor(initial.descriptor),
+      };
+    }
 
     type WaitWake =
       | { kind: "settled" }
       | { kind: "reset"; reason: RepoPromptJobResetReason }
       | { kind: "timeout" }
-      | { kind: "aborted" };
+      | { kind: "caller_aborted" }
+      | { kind: "steering" };
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let abortListener: (() => void) | undefined;
+    const listenerCleanup: Array<() => void> = [];
     const wakePromises: Array<Promise<WaitWake>> = [initial.changed];
+    const addAbortWake = (
+      signal: AbortSignal,
+      kind: "caller_aborted" | "steering",
+    ): void => {
+      wakePromises.push(new Promise((resolve) => {
+        if (signal.aborted) {
+          resolve({ kind });
+          return;
+        }
+        const listener = () => resolve({ kind });
+        signal.addEventListener("abort", listener, { once: true });
+        listenerCleanup.push(() => signal.removeEventListener("abort", listener));
+      }));
+    };
+
     if (policy.kind === "bounded") {
       wakePromises.push(new Promise<{ kind: "timeout" }>((resolve) => {
         timeoutId = setTimeout(() => resolve({ kind: "timeout" }), policy.timeoutMs);
       }));
     }
-    if (signal) {
-      wakePromises.push(new Promise<{ kind: "aborted" }>((resolve) => {
-        abortListener = () => resolve({ kind: "aborted" });
-        signal.addEventListener("abort", abortListener, { once: true });
-      }));
+    if (signals.callerSignal) {
+      addAbortWake(signals.callerSignal, "caller_aborted");
+    }
+    if (signals.steeringSignal) {
+      addAbortWake(signals.steeringSignal, "steering");
     }
 
     try {
       const wake = await Promise.race(wakePromises);
-      if (wake.kind === "reset") {
-        throw new RetainedMcpJobError({
-          reason: "cancelled",
-          target: { ...initial.descriptor.target },
-          jobId,
-          resetReason: wake.reason,
-        });
-      }
-      if (wake.kind === "aborted") {
-        throw this.waitAborted(jobId, initial.descriptor.target);
-      }
-
       if (this.resetGeneration !== waitGeneration) {
-        if (!this.lastResetReason) {
+        const resetReason = wake.kind === "reset" ? wake.reason : this.lastResetReason;
+        if (!resetReason) {
           throw new Error("Retained MCP reset generation invariant violated");
         }
         throw new RetainedMcpJobError({
           reason: "cancelled",
           target: { ...initial.descriptor.target },
           jobId,
-          resetReason: this.lastResetReason,
+          resetReason,
         });
       }
 
@@ -310,23 +332,33 @@ export class RetainedMcpJobRegistry<TDescriptor extends { readonly target: RepoP
       if (!current) {
         throw this.unavailableJobError(jobId);
       }
-      if (current.status === "running") {
-        if (wake.kind !== "timeout") {
-          throw new Error(`Retained MCP job ${jobId} woke without settlement or a bounded timeout`);
-        }
+      if (current.status !== "running") {
+        return this.consume(jobId, current);
+      }
+      if (signals.callerSignal?.aborted) {
+        throw this.waitAborted(jobId, current.descriptor.target);
+      }
+      if (signals.steeringSignal?.aborted) {
+        return {
+          status: "interrupted_by_steering",
+          jobId,
+          descriptor: this.options.cloneDescriptor(current.descriptor),
+        };
+      }
+      if (wake.kind === "timeout") {
         return {
           status: "running",
           jobId,
           descriptor: this.options.cloneDescriptor(current.descriptor),
         };
       }
-      return this.consume(jobId, current);
+      throw new Error(`Retained MCP job ${jobId} woke without an authoritative outcome`);
     } finally {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
-      if (signal && abortListener) {
-        signal.removeEventListener("abort", abortListener);
+      for (const removeListener of listenerCleanup) {
+        removeListener();
       }
     }
   }

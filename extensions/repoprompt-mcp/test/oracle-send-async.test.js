@@ -8,6 +8,7 @@ import repopromptMcp from "../dist/index.js";
 import { clearBinding, persistBinding } from "../dist/binding.js";
 import { getRpClient, RpClient, resetRpClient } from "../dist/client.js";
 import { OracleSendJobManager } from "../dist/oracle-send-jobs.js";
+import { SteeringWaitCoordinator } from "../dist/steerable-waits.js";
 
 function deferred() {
   let resolve;
@@ -30,12 +31,20 @@ async function expectRpError(promise, code) {
   });
 }
 
+function registerRepoPromptMcp(pi, dependencies = {}) {
+  const steeringWaitCoordinator = new SteeringWaitCoordinator();
+  steeringWaitCoordinator.beginSession("session-id");
+  pi.steeringWaitCoordinator = steeringWaitCoordinator;
+  repopromptMcp(pi, { ...dependencies, steeringWaitCoordinator });
+}
+
 function createMockPi() {
   const handlers = new Map();
   const commands = new Map();
   const tools = new Map();
   const entries = [];
   return {
+    events: { on() {}, emit() {} },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);
@@ -196,7 +205,7 @@ async function createHarness({
     createJobId: () => `oracle_integration_${nextId++}`,
     warn: () => {},
   });
-  repopromptMcp(pi, { oracleSendJobs, resolveBackgroundWaitPolicy });
+  registerRepoPromptMcp(pi, { oracleSendJobs, resolveBackgroundWaitPolicy });
   const config = { activeApp, apps: { [activeApp]: {} }, persistBinding: true };
   if (binding) {
     persistBinding(pi, binding, config);
@@ -1092,6 +1101,7 @@ test("rp lifecycle reset aborts Oracle work and invalidates its job ID", async (
     await harness.pi.emit("session_shutdown", harness.ctx);
     assert.equal(oracleSignal.aborted, true);
     await expectRpError(waiting, "oracle_send_job_cancelled");
+    harness.pi.steeringWaitCoordinator.beginSession("session-id");
     await expectRpError(
       harness.rpTool.execute(
         "oracle-after-reset",

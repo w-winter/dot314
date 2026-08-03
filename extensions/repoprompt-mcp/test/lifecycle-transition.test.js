@@ -65,6 +65,7 @@ function createMockPi(entries, session = {}) {
   const tools = new Map();
 
   return {
+    events: { on() {}, emit() {} },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);
@@ -2222,6 +2223,92 @@ test("/rp app keeps failed target active and marks status paused", async () => {
     assert.ok(notifications.some((item) => item.level === "error" && item.message.includes("Failed to connect")));
     assert.ok(notifications.some((item) => item.message.includes("App: RepoPrompt Classic (classic)")));
     assert.ok(notifications.some((item) => item.message.includes("Extension: ⏸ paused")));
+  } finally {
+    restoreClient();
+    process.env.HOME = originalHome;
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("agent_run steering guidance is advertised only while RepoPrompt CE is the active target", async () => {
+  const originalHome = process.env.HOME;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-agent-run-desc-home-"));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "rp-agent-run-desc-root-"));
+  process.env.HOME = tempHome;
+
+  const upstreamDescription = "Spawn and control Agent Mode sessions.";
+  const agentRunCatalog = [
+    { name: "agent_run", description: upstreamDescription },
+    { name: "bind_context", description: "" },
+    { name: "manage_workspaces", description: "" },
+  ];
+  const state = {
+    failConnect: false,
+    calls: [],
+    connects: [],
+    failAddByTab: new Map(),
+    tabsByWindow: new Map(),
+    liveSelectionByTab: new Map(),
+    forwardedTools: new Set(["agent_run"]),
+    toolsByCommand: new Map([
+      ["ce-mcp", agentRunCatalog],
+      ["classic-mcp", agentRunCatalog],
+    ]),
+  };
+  const restoreClient = installMockRpClient(state);
+
+  try {
+    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
+    writeFileSync(
+      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
+      JSON.stringify(makeTestConfig({
+        activeApp: "ce",
+        autoBindOnStart: false,
+        apps: {
+          ce: { command: "ce-mcp", args: [] },
+          classic: { command: "classic-mcp", args: [] },
+        },
+      }))
+    );
+
+    await resetRpClient();
+    clearBinding();
+    await clearPendingTransitionState();
+
+    const entries = [];
+    const pi = createMockPi(entries);
+    repopromptMcp(pi);
+    const ctx = createContext(entries, tempRoot, false);
+    ctx.ui.notify = () => {};
+    const command = pi.getCommand("rp");
+    const rpTool = pi.getTool("rp");
+
+    await pi.emit("session_start", ctx, { reason: "startup" });
+    await drainLifecycle();
+
+    const ceDescribe = await rpTool.execute("ce-describe", { describe: "agent_run" }, undefined, () => {}, ctx);
+    const ceText = ceDescribe.content[0].text;
+    assert.match(ceText, /steerable workflow on RepoPrompt CE/u);
+    assert.match(ceText, /does not cancel the child/u);
+
+    await command.handler("app classic", ctx);
+    await drainLifecycle();
+
+    const classicDescribe = await rpTool.execute(
+      "classic-describe",
+      { describe: "agent_run" },
+      undefined,
+      () => {},
+      ctx
+    );
+    const classicText = classicDescribe.content[0].text;
+    assert.match(classicText, /Spawn and control Agent Mode sessions\./u);
+    assert.doesNotMatch(classicText, /steerable workflow/u);
+    assert.doesNotMatch(classicText, /observer-interruptible/u);
   } finally {
     restoreClient();
     process.env.HOME = originalHome;

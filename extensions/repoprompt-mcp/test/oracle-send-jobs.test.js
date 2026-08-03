@@ -42,7 +42,11 @@ function createManager(options = {}) {
 }
 
 function wait(manager, jobId, signal, timeoutMs = 5) {
-  return manager.wait(jobId, { kind: "bounded", timeoutMs }, signal);
+  return manager.wait(
+    jobId,
+    { kind: "bounded", timeoutMs },
+    signal ? { callerSignal: signal } : undefined,
+  );
 }
 
 async function expectJobError(promise, code) {
@@ -225,7 +229,7 @@ test("OracleSendJobManager timeout and waiter abort do not cancel or consume", a
 
   assert.equal((await wait(manager, jobId)).status, "running");
   const controller = new AbortController();
-  const waiting = manager.wait(jobId, { kind: "until_settled" }, controller.signal);
+  const waiting = manager.wait(jobId, { kind: "until_settled" }, { callerSignal: controller.signal });
   controller.abort();
   await expectJobError(waiting, "oracle_send_wait_aborted");
   assert.equal(jobSignal.aborted, false);
@@ -399,4 +403,105 @@ test("OracleSendJobManager bounds consumed tombstones", async () => {
 
   await expectJobError(wait(manager, firstJobId), "oracle_send_job_not_found");
   await expectJobError(wait(manager, latestJobId), "oracle_send_job_consumed");
+});
+
+test("OracleSendJobManager steering interruption preserves the job and occupancy", async () => {
+  const manager = createManager();
+  const work = deferred();
+  const steering = new AbortController();
+  let jobSignal;
+  const { jobId } = manager.start({
+    descriptor: descriptor(),
+    run: (signal) => {
+      jobSignal = signal;
+      return work.promise;
+    },
+  });
+  const waiting = manager.wait(
+    jobId,
+    { kind: "until_settled" },
+    { steeringSignal: steering.signal },
+  );
+  steering.abort();
+
+  assert.equal((await waiting).status, "interrupted_by_steering");
+  assert.equal(jobSignal.aborted, false);
+  assert.throws(
+    () => manager.start({ descriptor: descriptor(), run: async () => textResult("unexpected") }),
+    (error) => error.code === "oracle_send_already_running",
+  );
+  work.resolve(textResult("done"));
+  assert.deepEqual((await wait(manager, jobId)).result, textResult("done"));
+  await expectJobError(wait(manager, jobId), "oracle_send_job_consumed");
+});
+
+test("OracleSendJobManager retained failure and caller reset outcomes outrank steering", async () => {
+  const failureManager = createManager();
+  const failureWork = deferred();
+  const failureSteering = new AbortController();
+  const failedJob = failureManager.start({ descriptor: descriptor(), run: () => failureWork.promise });
+  const failedWait = failureManager.wait(
+    failedJob.jobId,
+    { kind: "until_settled" },
+    { steeringSignal: failureSteering.signal },
+  );
+  failureWork.reject(new Error("provider failed"));
+  failureSteering.abort();
+  assert.equal((await failedWait).status, "failed");
+
+  const callerManager = createManager();
+  const callerWork = deferred();
+  const caller = new AbortController();
+  const callerSteering = new AbortController();
+  const callerJob = callerManager.start({ descriptor: descriptor(), run: () => callerWork.promise });
+  const callerWait = callerManager.wait(
+    callerJob.jobId,
+    { kind: "until_settled" },
+    { callerSignal: caller.signal, steeringSignal: callerSteering.signal },
+  );
+  callerSteering.abort();
+  caller.abort();
+  await expectJobError(callerWait, "oracle_send_wait_aborted");
+  callerManager.reset("reconnect");
+
+  const resetManager = createManager();
+  const resetWork = deferred();
+  const resetSteering = new AbortController();
+  const resetJob = resetManager.start({ descriptor: descriptor(), run: () => resetWork.promise });
+  const resetWait = resetManager.wait(
+    resetJob.jobId,
+    { kind: "until_settled" },
+    { steeringSignal: resetSteering.signal },
+  );
+  resetSteering.abort();
+  resetManager.reset("reconnect");
+  await expectJobError(resetWait, "oracle_send_job_cancelled");
+});
+
+test("OracleSendJobManager steering signals affect only their owning waiter", async () => {
+  const manager = createManager();
+  const work = deferred();
+  const firstSteering = new AbortController();
+  const secondSteering = new AbortController();
+  const { jobId } = manager.start({ descriptor: descriptor(), run: () => work.promise });
+  const firstWait = manager.wait(
+    jobId,
+    { kind: "until_settled" },
+    { steeringSignal: firstSteering.signal },
+  );
+  let secondSettled = false;
+  const secondWait = manager.wait(
+    jobId,
+    { kind: "until_settled" },
+    { steeringSignal: secondSteering.signal },
+  ).finally(() => {
+    secondSettled = true;
+  });
+
+  firstSteering.abort();
+  assert.equal((await firstWait).status, "interrupted_by_steering");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(secondSettled, false);
+  work.resolve(textResult("done"));
+  assert.deepEqual((await secondWait).result, textResult("done"));
 });

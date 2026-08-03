@@ -53,6 +53,7 @@ function createMockPi(entries) {
   const handlers = new Map();
 
   return {
+    events: { on() {}, emit() {} },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);

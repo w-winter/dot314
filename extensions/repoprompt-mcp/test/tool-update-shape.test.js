@@ -19,6 +19,7 @@ function createMockPi() {
   const tools = new Map();
 
   return {
+    events: { on() {}, emit() {} },
     on() {},
     registerCommand() {},
     registerTool(tool) {

@@ -8,6 +8,7 @@ import repopromptMcp from "../dist/index.js";
 import { clearBinding, persistBinding } from "../dist/binding.js";
 import { getRpClient, RpClient, resetRpClient } from "../dist/client.js";
 import { ContextBuilderJobManager } from "../dist/context-builder-jobs.js";
+import { SteeringWaitCoordinator } from "../dist/steerable-waits.js";
 import { AUTO_SELECTION_ENTRY_TYPE } from "../dist/types.js";
 
 function deferred() {
@@ -31,12 +32,19 @@ async function expectRpError(promise, code) {
   });
 }
 
+function registerRepoPromptMcp(pi, dependencies = {}) {
+  const steeringWaitCoordinator = new SteeringWaitCoordinator();
+  steeringWaitCoordinator.beginSession("session-id");
+  repopromptMcp(pi, { ...dependencies, steeringWaitCoordinator });
+}
+
 function createMockPi() {
   const handlers = new Map();
   const commands = new Map();
   const tools = new Map();
   const entries = [];
   return {
+    events: { on() {}, emit() {} },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);
@@ -172,7 +180,7 @@ async function createBlockedLazyRecoveryHarness({
   };
 
   const pi = createMockPi();
-  repopromptMcp(pi, launchApp ? { launchApp } : {});
+  registerRepoPromptMcp(pi, launchApp ? { launchApp } : {});
   persistBinding(
     pi,
     { app: "ce", windowId: 7, tab: "TAB-1", workspace: "repo" },
@@ -355,7 +363,7 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
     });
     const waitPolicyInputs = [];
     let currentWaitPolicy = { kind: "bounded", timeoutMs: 5 };
-    repopromptMcp(pi, {
+    registerRepoPromptMcp(pi, {
       contextBuilderJobs: manager,
       resolveBackgroundWaitPolicy: (input) => {
         waitPolicyInputs.push(structuredClone(input));
@@ -801,7 +809,7 @@ test("superseded session startup cannot pause a successful reconnect", async () 
     };
 
     const pi = createMockPi();
-    repopromptMcp(pi);
+    registerRepoPromptMcp(pi);
     persistBinding(
       pi,
       { app: "ce", windowId: 7, tab: "TAB-1", workspace: "repo" },
@@ -893,7 +901,7 @@ test("session shutdown prevents a blocked reconnect from reconnecting", async ()
     };
 
     const pi = createMockPi();
-    repopromptMcp(pi);
+    registerRepoPromptMcp(pi);
     persistBinding(
       pi,
       { app: "ce", windowId: 7, tab: "TAB-1", workspace: "repo" },
@@ -992,7 +1000,7 @@ test("blocked post-connect recovery does not delay a later reconnect", async () 
     };
 
     const pi = createMockPi();
-    repopromptMcp(pi);
+    registerRepoPromptMcp(pi);
     persistBinding(
       pi,
       { app: "ce", windowId: 7, tab: "TAB-1", workspace: "repo" },
@@ -1474,7 +1482,7 @@ test("a call queued behind a failed reconnect observes the paused state", async 
     };
 
     const pi = createMockPi();
-    repopromptMcp(pi);
+    registerRepoPromptMcp(pi);
     persistBinding(
       pi,
       { app: "ce", windowId: 7, tab: "TAB-1", workspace: "repo" },
