@@ -1,45 +1,75 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import os from "node:os";
-import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 
 import {
+  autoDetectAndBind,
   bindToTab,
-  clearBinding,
+  bindToWindow,
   createAndBindTab,
   ensureBindingHasTab,
+  establishRoutingInventoryContract,
+  executeRoutingMutation,
+  fetchWindowTabs,
   fetchWindows,
-  findRecoveryWindowBySelectionPaths,
   findMatchingWindow,
-  parseRootList,
-  parseTabList,
-  parseWindowList,
+  getRouteSelectorDecision,
+  getRouteState,
+  getVerifiedBinding,
   persistBinding,
+  reconcileObservedInventoryRoute,
+  resetBindingStateForTests,
   restoreBinding,
 } from "../dist/binding.js";
-import { getRpClient, resetRpClient } from "../dist/client.js";
-import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "../dist/types.js";
-
-const HOME = os.homedir();
+import { ROUTING_OBSERVATION_TIMEOUT_MS } from "../dist/routing-inventory.js";
+import { BINDING_ENTRY_TYPE, AUTO_SELECTION_ENTRY_TYPE } from "../dist/types.js";
+import {
+  catalog as ceCatalog,
+  inventoryScenarios as ceScenarios,
+} from "./fixtures/ce-1.2/evidence.js";
+import {
+  catalog as classicCatalog,
+  inventoryScenarios as classicScenarios,
+} from "./fixtures/classic-2.1.32/evidence.js";
 
 function makeTestConfig(overrides = {}) {
   return {
     activeApp: "ce",
-    apps: {
-      ce: {},
-      classic: {},
-    },
+    apps: { ce: {}, classic: {} },
     persistBinding: true,
     ...overrides,
   };
 }
 
-function makeMockSession(branchEntries = []) {
+function makeTextResult(value, isError = false) {
+  return {
+    content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }],
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function currentSelectorArgs() {
+  const decision = getRouteSelectorDecision({});
+  assert.equal(decision.kind, "selectors");
+  return decision.args;
+}
+
+function makeMockSession(branchEntries = [], appendError = null) {
   const entries = [...branchEntries];
   const pi = {
     appendEntry(customType, data) {
+      if (appendError) {
+        throw appendError;
+      }
       entries.push({ type: "custom", customType, data });
     },
   };
@@ -50,1131 +80,830 @@ function makeMockSession(branchEntries = []) {
       },
     },
   };
-
   return { pi, ctx, entries };
 }
 
-function makeTextResult(text) {
+function rawTab({ id, name, roots = ["/fixtures/repo"], active = false, bound = false, files = 0 }) {
   return {
-    isError: false,
-    content: [{ type: "text", text }],
+    context_id: id,
+    name,
+    repo_paths: roots,
+    is_active: active,
+    is_bound: bound,
+    selected_file_count: files,
   };
 }
 
-function makeChatListResult(count, tabId) {
-  return makeTextResult([
-    "## Chats ✅",
-    `- **Count**: ${count}`,
-    "- **Scope**: tab",
-    `- **Tab**: \`${tabId}\``,
-  ].join("\n"));
+function rawInventory({ windowId = 5, workspace = "agent", tabs = [], binding = { kind: "unbound" } }) {
+  const rawBinding = binding.kind === "bound"
+    ? { binding_kind: "tab_context", context_id: binding.contextId }
+    : binding.kind === "window"
+      ? { binding_kind: "window", window_id: windowId }
+      : { binding_kind: "unbound" };
+  return {
+    windows: [{ window_id: windowId, workspace: { name: workspace }, tabs }],
+    binding: rawBinding,
+  };
 }
 
-function renderContexts(tabs) {
-  return tabs
-    .map((tab) => {
-      const states = [];
-      if (tab.active) states.push("active");
-      if (tab.bound) states.push("bound");
-      const stateText = states.length > 0 ? ` [${states.join(", ")}]` : "";
-      return `- ${tab.name}${stateText} — context_id: \`${tab.id}\``;
-    })
-    .join("\n");
-}
-
-function isTabListCall(name, args) {
-  return args?.action === "list_tabs" || (name === "bind_context" && args?.op === "list");
-}
-
-function isTabBindCall(name, args) {
-  return args?.action === "select_tab" || (name === "bind_context" && args?.op === "bind");
-}
-
-function makeTabLookupResult(name, args, text) {
-  if (name !== "bind_context" || args?.op !== "list") {
-    return makeTextResult(text);
-  }
-
-  const tabs = parseTabList(text).map((tab) => ({
-    id: tab.id,
-    name: tab.name,
-    active: tab.isActive === true,
-    bound: tab.isBound === true,
-    selectedFileCount: tab.selectedFileCount,
-  }));
-  return makeTextResult([
-    "```json",
-    JSON.stringify({ tabs }, null, 2),
-    "```",
-  ].join("\n"));
-}
-
-function getBindContextCalls(calls) {
-  return calls.filter((call) => call.name === "bind_context" && call.args?.op === "bind");
+async function createMutableInventoryClient(options = {}) {
+  const state = {
+    windowId: options.windowId ?? 5,
+    workspace: options.workspace ?? "agent",
+    tabs: structuredClone(options.tabs ?? []),
+    binding: structuredClone(options.binding ?? { kind: "unbound" }),
+    calls: [],
+    createCount: 0,
+    inventoryFailure: null,
+  };
+  const client = {
+    isConnected: true,
+    tools: options.tools ?? [
+      ...structuredClone(ceCatalog.tools),
+      { name: "manage_selection" },
+      { name: "oracle_utils" },
+    ],
+    async callTool(name, args, _timeout, signal) {
+      state.calls.push({ name, args, signal });
+      if (name === "bind_context" && args.op === "list") {
+        if (state.inventoryFailure) {
+          return state.inventoryFailure;
+        }
+        return makeTextResult(rawInventory(state));
+      }
+      if (name === "bind_context" && args.op === "bind") {
+        const target = state.tabs.find((tab) => tab.context_id === args.context_id);
+        if (!target) {
+          return makeTextResult(`Missing context ${args.context_id}`, true);
+        }
+        if (options.bindOutcome === "throw") {
+          throw new Error("bind transport failed");
+        }
+        if (options.bindOutcome === "isError") {
+          const observedContextId = options.bindErrorObservedContextId;
+          if (observedContextId) {
+            state.binding = { kind: "bound", contextId: observedContextId };
+            for (const tab of state.tabs) {
+              tab.is_bound = tab.context_id === observedContextId;
+            }
+          }
+          return makeTextResult("bind rejected", true);
+        }
+        if (options.bindOutcome !== "mismatch") {
+          state.binding = { kind: "bound", contextId: target.context_id };
+          for (const tab of state.tabs) {
+            tab.is_bound = tab.context_id === target.context_id;
+          }
+        }
+        return makeTextResult({ bound: target.context_id });
+      }
+      if (name === "manage_workspaces" && args.action === "create_tab") {
+        state.createCount += 1;
+        if (options.createOutcome === "throw") {
+          throw new Error("create transport failed");
+        }
+        if (options.createOutcome === "isError") {
+          const observedContextId = options.createErrorObservedContextId;
+          if (observedContextId) {
+            state.binding = { kind: "bound", contextId: observedContextId };
+            for (const tab of state.tabs) {
+              tab.is_bound = tab.context_id === observedContextId;
+            }
+          }
+          return makeTextResult("create rejected", true);
+        }
+        const created = rawTab({
+          id: `TAB-CREATED-${state.createCount}`,
+          name: "Created",
+          bound: true,
+          files: 0,
+        });
+        for (const tab of state.tabs) {
+          tab.is_bound = false;
+        }
+        state.tabs.push(created);
+        state.binding = { kind: "bound", contextId: created.context_id };
+        return makeTextResult({ created_context_id: created.context_id });
+      }
+      if (name === "manage_selection") {
+        const tab = state.tabs.find((candidate) => candidate.context_id === args.context_id);
+        return makeTextResult(`${tab?.selected_file_count ?? 0} total tokens`);
+      }
+      if (name === "oracle_utils") {
+        if (options.blockOracleSessions) {
+          return await new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        }
+        return makeTextResult(options.oracleSessions ?? "No Oracle sessions");
+      }
+      throw new Error(`Unexpected call ${name} ${JSON.stringify(args)}`);
+    },
+  };
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+  state.calls.length = 0;
+  state.inventoryFailure = options.inventoryFailure ?? null;
+  return { client, state };
 }
 
 test.afterEach(() => {
-  clearBinding();
+  resetBindingStateForTests();
 });
 
-test.afterEach(async () => {
-  await resetRpClient();
+test("WI3A canonical inventory is not masked by incomplete workspace inference", async () => {
+  const calls = [];
+  const client = {
+    isConnected: true,
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name, args) {
+      calls.push({ name, args });
+      if (name === "manage_workspaces") {
+        return makeTextResult({ showing_window_ids: [2, 10] });
+      }
+      return makeTextResult(ceScenarios.multiWindow);
+    },
+  };
+
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+  calls.length = 0;
+  const windows = await fetchWindows(undefined, makeTestConfig(), client);
+
+  // Old failure reason retained from the red gate: non-empty workspace inference returned [2, 10]
+  assert.deepEqual(windows.map((window) => window.id), [2, 10, 11]);
+  assert.deepEqual(calls, [{ name: "bind_context", args: { op: "list", _rawJSON: true } }]);
 });
 
-test("parseWindowList parses workspaces with suffixes and instances", () => {
-  const input = [
-    "- Window `1` • WS: chat-tree (5) • Roots: 1 • instance=1",
-    "- Window `3` • WS: dot314 • Roots: 2 • instance=4",
-    "- Window `4` • WS: wave-metrics (4) • Roots: 1",
-  ].join("\n");
+test("fetchWindowTabs filters one global inventory locally without window_id", async () => {
+  const calls = [];
+  const client = {
+    isConnected: true,
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name, args) {
+      calls.push({ name, args });
+      return makeTextResult(ceScenarios.multiWindow);
+    },
+  };
 
-  const windows = parseWindowList(input);
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+  calls.length = 0;
+  const tabs = await fetchWindowTabs(11, client, makeTestConfig());
+  assert.deepEqual(tabs.map((tab) => tab.name), ["Tab Eleven"]);
+  assert.deepEqual(calls, [{ name: "bind_context", args: { op: "list", _rawJSON: true } }]);
+});
 
-  assert.equal(windows.length, 3);
+test("inventory call failure and malformed success fail closed while valid empty stays empty", async () => {
+  async function establishedClientFor(result) {
+    let callCount = 0;
+    const client = {
+      isConnected: true,
+      tools: structuredClone(ceCatalog.tools),
+      callTool: async () => {
+        callCount += 1;
+        return callCount === 1 ? makeTextResult(ceScenarios.validEmpty) : result;
+      },
+    };
+    await establishRoutingInventoryContract(makeTestConfig(), client);
+    return client;
+  }
+
+  const failedClient = await establishedClientFor(makeTextResult("inventory failed", true));
+  await assert.rejects(
+    fetchWindows(undefined, makeTestConfig(), failedClient),
+    /routing inventory unavailable: inventory failed/u
+  );
+
+  const malformedClient = await establishedClientFor(makeTextResult("not-json"));
+  await assert.rejects(
+    fetchWindows(undefined, makeTestConfig(), malformedClient),
+    /did not return JSON content/u
+  );
+
+  const emptyClient = await establishedClientFor(makeTextResult(ceScenarios.validEmpty));
+  assert.deepEqual(await fetchWindows(undefined, makeTestConfig(), emptyClient), []);
+});
+
+test("root observation failure keeps the window visible and blocks no-match auto detection", async () => {
+  const client = {
+    isConnected: true,
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name) {
+      return name === "bind_context"
+        ? makeTextResult(ceScenarios.rootUnavailable)
+        : makeTextResult("root probe failed", true);
+    },
+  };
+
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+  const windows = await fetchWindows(undefined, makeTestConfig(), client);
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].id, 12);
+  assert.deepEqual(windows[0].roots, []);
+  assert.equal(windows[0].rootsUnavailableDiagnostic, "root probe failed");
+  assert.deepEqual(findMatchingWindow(windows, "/fixtures/unknown").rootsUnavailableWindowIds, [12]);
+});
+
+test("both persisted entry families restore intent only and cannot authorize selectors", () => {
+  const { ctx } = makeMockSession([
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "agent" },
+    },
+    {
+      type: "custom",
+      customType: AUTO_SELECTION_ENTRY_TYPE,
+      data: {
+        app: "ce",
+        windowId: 5,
+        workspace: "agent",
+        tab: "TAB-MISSING",
+        fullPaths: [],
+        slicePaths: [],
+      },
+    },
+  ]);
+
+  const restored = restoreBinding(ctx, makeTestConfig());
+
+  assert.equal(restored.tab, "TAB-MISSING");
+  assert.equal(getRouteState().kind, "intent");
+  assert.equal(getVerifiedBinding(), null);
+  assert.equal(getRouteSelectorDecision({}).kind, "blocked");
+});
+
+test("explicit tab bind uses target contract args and publishes only after confirming observation", async () => {
+  const { pi, entries } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "TAB-OLD", name: "Old", bound: true }),
+      rawTab({ id: "TAB-NEW", name: "New" }),
+    ],
+    binding: { kind: "bound", contextId: "TAB-OLD" },
+  });
+
+  const binding = await bindToTab(pi, 5, "New", makeTestConfig(), client);
+
+  assert.equal(binding.tab, "TAB-NEW");
   assert.deepEqual(
-    windows.map((w) => ({ id: w.id, workspace: w.workspace, instance: w.instance })),
-    [
-      { id: 1, workspace: "chat-tree (5)", instance: 1 },
-      { id: 3, workspace: "dot314", instance: 4 },
-      { id: 4, workspace: "wave-metrics (4)", instance: undefined },
-    ]
+    state.calls.find((call) => call.name === "bind_context" && call.args.op === "bind").args,
+    { op: "bind", context_id: "TAB-NEW" }
+  );
+  assert.equal(entries.at(-1).data.tab, "TAB-NEW");
+  assert.equal(getRouteState().kind, "verified");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-NEW" });
+});
+
+test("explicit window bind selects an observed safe tab and publishes verified tab authority", async () => {
+  const { pi } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "TAB-DIRTY", name: "Dirty", bound: true, files: 2 }),
+      rawTab({ id: "TAB-SAFE", name: "Safe", files: 0 }),
+    ],
+    binding: { kind: "bound", contextId: "TAB-DIRTY" },
+  });
+
+  const binding = await bindToWindow(pi, 5, undefined, makeTestConfig(), client);
+
+  assert.equal(binding.tab, "TAB-SAFE");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-SAFE" });
+  assert.equal(getRouteState().route.kind, "tab");
+  assert.equal(state.calls.filter((call) => call.args.op === "bind").length, 1);
+  assert.equal(state.createCount, 0);
+});
+
+test("explicit window bind reverse-scans binding history for the requested window before safe-tab fallback", async () => {
+  const { pi, ctx } = makeMockSession([
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "agent", tab: "TAB-A" },
+    },
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 6, workspace: "other", tab: "TAB-B" },
+    },
+  ]);
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "TAB-A", name: "Historical", files: 2 }),
+      rawTab({ id: "TAB-SAFE", name: "Safe", files: 0 }),
+    ],
+    binding: { kind: "unbound" },
+  });
+
+  const binding = await bindToWindow(
+    pi,
+    5,
+    undefined,
+    makeTestConfig(),
+    client,
+    undefined,
+    ctx
+  );
+
+  assert.equal(binding.tab, "TAB-A");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-A" });
+  assert.equal(state.createCount, 0);
+  assert.equal(
+    state.calls.filter((call) => call.name === "bind_context" && call.args.op === "bind").length,
+    1
   );
 });
 
-test("parseRootList handles bullets, file:// URIs, and ~", () => {
-  const absPath = path.join(HOME, "dot314");
-  const fileUriPath = path.join(HOME, "pi-mono");
-  const fileUri = pathToFileURL(fileUriPath).toString();
-
-  const input = [
-    `- ${absPath}`,
-    `• ${fileUri}`,
-    "~/.config",
-  ].join("\n");
-
-  const roots = parseRootList(input);
-
-  assert.ok(roots.includes(absPath));
-  assert.ok(roots.includes(fileUriPath));
-  assert.ok(roots.includes(path.join(HOME, ".config")));
-});
-
-test("findMatchingWindow prefers the most specific matching root per window", () => {
-  const dot314Root = path.join(HOME, "dot314");
-  const piMonoRoot = path.join(HOME, "pi-mono");
-
-  const windows = [
-    {
-      id: 1,
-      workspace: "A",
-      roots: [HOME, dot314Root],
-    },
-    {
-      id: 2,
-      workspace: "B",
-      roots: [piMonoRoot],
-    },
-  ];
-
-  const result = findMatchingWindow(windows, path.join(dot314Root, "agent", "extensions"));
-
-  assert.equal(result.ambiguous, false);
-  assert.equal(result.window?.id, 1);
-  assert.equal(result.root, dot314Root);
-});
-
-test("findMatchingWindow matches when cwd equals the root", () => {
-  const dot314Root = path.join(HOME, "dot314");
-
-  const windows = [
-    {
-      id: 1,
-      workspace: "A",
-      roots: [dot314Root],
-    },
-  ];
-
-  const result = findMatchingWindow(windows, dot314Root);
-
-  assert.equal(result.ambiguous, false);
-  assert.equal(result.window?.id, 1);
-  assert.equal(result.root, dot314Root);
-});
-
-test("findMatchingWindow resolves symlinked roots before matching cwd", () => {
-  const tempDir = mkdtempSync(path.join(os.tmpdir(), "rp-binding-"));
-
-  try {
-    const realRoot = path.join(tempDir, "real-root");
-    const symlinkRoot = path.join(tempDir, "symlink-root");
-    const realCwd = path.join(realRoot, "agent");
-
-    mkdirSync(realCwd, { recursive: true });
-    symlinkSync(realRoot, symlinkRoot);
-
-    const windows = [
-      {
-        id: 5,
-        workspace: "pi-agent",
-        roots: [symlinkRoot],
-      },
-    ];
-
-    const result = findMatchingWindow(windows, realCwd);
-
-    assert.equal(result.ambiguous, false);
-    assert.equal(result.window?.id, 5);
-    assert.equal(result.root, symlinkRoot);
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test("findMatchingWindow returns null when cwd is outside all roots", () => {
-  const dot314Root = path.join(HOME, "dot314");
-
-  const windows = [
-    {
-      id: 1,
-      workspace: "A",
-      roots: [dot314Root],
-    },
-  ];
-
-  const result = findMatchingWindow(windows, path.join(HOME, "somewhere-else"));
-
-  assert.equal(result.ambiguous, false);
-  assert.equal(result.window, null);
-  assert.equal(result.root, null);
-  assert.equal(result.matches.length, 0);
-});
-
-test("findRecoveryWindowBySelectionPaths reports ambiguity when multiple windows contain required paths", async () => {
-  const tempDir = mkdtempSync(path.join(os.tmpdir(), "rp-recovery-ambiguous-"));
-
-  try {
-    const rootA = path.join(tempDir, "workspace-a", "chat-tree");
-    const rootB = path.join(tempDir, "workspace-b", "chat-tree");
-    mkdirSync(path.join(rootA, "src"), { recursive: true });
-    mkdirSync(path.join(rootB, "src"), { recursive: true });
-    writeFileSync(path.join(rootA, "src", "App.tsx"), "export const app = 1\n");
-    writeFileSync(path.join(rootB, "src", "App.tsx"), "export const app = 1\n");
-
-    const result = await findRecoveryWindowBySelectionPaths(
-      [
-        { id: 1, workspace: "A", roots: [rootA] },
-        { id: 2, workspace: "B", roots: [rootB] },
-      ],
-      ["chat-tree/src/App.tsx"],
-      tempDir
-    );
-
-    assert.equal(result.window, null);
-    assert.equal(result.ambiguous, true);
-    assert.deepEqual(result.matches.map((window) => window.id), [1, 2]);
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-test("findMatchingWindow returns ambiguous when best match is tied across windows", () => {
-  const dot314Root = path.join(HOME, "dot314");
-
-  const windows = [
-    {
-      id: 1,
-      workspace: "A",
-      roots: [dot314Root],
-    },
-    {
-      id: 2,
-      workspace: "B",
-      roots: [dot314Root],
-    },
-  ];
-
-  const result = findMatchingWindow(windows, path.join(dot314Root, "agent"));
-
-  assert.equal(result.ambiguous, true);
-  assert.equal(result.window, null);
-  assert.equal(result.root, null);
-  assert.equal(result.matches.length, 2);
-});
-
-test("parseTabList parses active and bound flags", () => {
-  const tabs = parseTabList([
-    "- `TAB-1` • Alpha [active] [bound]",
-    "- `TAB-2` • Beta",
-  ].join("\n"));
-
-  assert.deepEqual(tabs, [
-    { id: "TAB-1", name: "Alpha", isActive: true, isBound: true },
-    { id: "TAB-2", name: "Beta", isActive: undefined, isBound: undefined },
-  ]);
-});
-
-test("parseTabList strips combined state annotations from tab names", () => {
-  const tabs = parseTabList([
-    "- `TAB-1` • T3 [active, bound]",
-    "- `TAB-2` • T4 [bound, out-of-focus]",
-    "- `TAB-3` • T5 [bound, in-focus]",
-  ].join("\n"));
-
-  assert.deepEqual(tabs, [
-    { id: "TAB-1", name: "T3", isActive: true, isBound: true },
-    { id: "TAB-2", name: "T4", isActive: false, isBound: true },
-    { id: "TAB-3", name: "T5", isActive: true, isBound: true },
-  ]);
-});
-
-test("parseTabList leaves missing focus markers as unknown", () => {
-  const tabs = parseTabList([
-    "- `TAB-1` • T3 [bound]",
-    "- `TAB-2` • T4",
-  ].join("\n"));
-
-  assert.deepEqual(tabs, [
-    { id: "TAB-1", name: "T3", isActive: undefined, isBound: true },
-    { id: "TAB-2", name: "T4", isActive: undefined, isBound: undefined },
-  ]);
-});
-
-test("parseTabList captures per-tab selected file counts from detail rows", () => {
-  const tabs = parseTabList([
-    "- `TAB-1` • T1 [active] [bound]",
-    "  • 0 files",
-    "- `TAB-2` • T2",
-    "  • 2 files: binding.ts, types.ts",
-  ].join("\n"));
-
-  assert.deepEqual(tabs, [
-    { id: "TAB-1", name: "T1", isActive: true, isBound: true, selectedFileCount: 0 },
-    { id: "TAB-2", name: "T2", isActive: undefined, isBound: undefined, selectedFileCount: 2 },
-  ]);
-});
-
-test("bindToTab selects a live tab by name and persists its concrete id", async () => {
-  const { pi, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (name === "list_windows") {
-        return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
-      }
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `UUID-T1` • T1 [active]\n- `UUID-T2` • T2 [bound]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `UUID-T1`");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await bindToTab(pi, 5, "T1", config, client);
-
-  assert.equal(binding.tab, "UUID-T1");
-  assert.equal(binding.workspace, "pi-agent");
-  assert.deepEqual(getBindContextCalls(calls)[0]?.args, {
-    op: "bind",
-    window_id: 5,
-    context_id: "UUID-T1",
-  });
-  assert.equal(entries.at(-1)?.data?.tab, "UUID-T1");
-});
-
-test("createAndBindTab persists the created bound tab id", async () => {
-  const { pi, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  let listTabsCount = 0;
-  const client = {
-    isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      if (name === "list_windows") {
-        return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `UUID-T3` • T3 [bound]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `UUID-T3`");
-      }
-      if (isTabListCall(name, args)) {
-        listTabsCount += 1;
-        return listTabsCount === 1
-          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `UUID-T3` • T3 [bound]")
-          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `UUID-T3` • T3 [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await createAndBindTab(pi, 5, config, client);
-
-  assert.equal(binding.tab, "UUID-T3");
-  assert.equal(binding.workspace, "pi-agent");
-  assert.equal(entries.at(-1)?.data?.tab, "UUID-T3");
-});
-
-test("createAndBindTab prefers the created tab when list_tabs still reports the old bound tab", async () => {
-  const { pi, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (name === "list_windows") {
-        return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `UUID-T14` • T14 [bound]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `UUID-T14`");
-      }
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, [
-          "## Tabs ✅",
-          "",
-          "- `UUID-T1` • T1 [active] [bound]",
-          "- `UUID-T14` • T14",
-        ].join("\n"));
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await createAndBindTab(pi, 5, config, client);
-
-  assert.equal(binding.tab, "UUID-T14");
-  assert.equal(entries.at(-1)?.data?.tab, "UUID-T14");
-  assert.deepEqual(getBindContextCalls(calls)[0]?.args, {
-    op: "bind",
-    window_id: 5,
-    context_id: "UUID-T14",
-  });
-});
-
-test("createAndBindTab identifies the new tab from list_tabs delta when create_tab output is unparseable", async () => {
-  const { pi, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  let listTabsCount = 0;
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (name === "list_windows") {
-        return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created new tab");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `UUID-T14`");
-      }
-      if (isTabListCall(name, args)) {
-        listTabsCount += 1;
-        return listTabsCount === 1
-          ? makeTabLookupResult(name, args, [
-              "## Tabs ✅",
-              "",
-              "- `UUID-T1` • T1 [active] [bound]",
-            ].join("\n"))
-          : makeTabLookupResult(name, args, [
-              "## Tabs ✅",
-              "",
-              "- `UUID-T1` • T1 [active] [bound]",
-              "- `UUID-T14` • T14",
-            ].join("\n"));
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await createAndBindTab(pi, 5, config, client);
-
-  assert.equal(binding.tab, "UUID-T14");
-  assert.equal(entries.at(-1)?.data?.tab, "UUID-T14");
-  assert.deepEqual(getBindContextCalls(calls)[0]?.args, {
-    op: "bind",
-    window_id: 5,
-    context_id: "UUID-T14",
-  });
-});
-
-test("createAndBindTab fails closed when create_tab output is unparseable and no unique new tab appears", async () => {
+test("explicit window bind provisions exactly one background tab when no observed tab is safe", async () => {
   const { pi } = makeMockSession();
-  const config = makeTestConfig();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-DIRTY", name: "Dirty", bound: true, files: 2 })],
+    binding: { kind: "bound", contextId: "TAB-DIRTY" },
+  });
 
-  const client = {
-    isConnected: true,
-    tools: [{ name: "list_windows" }, { name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      if (name === "list_windows") {
-        return makeTextResult("- Window `5` • WS: pi-agent • Roots: 1");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created new tab");
-      }
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, [
-          "## Tabs ✅",
-          "",
-          "- `UUID-T1` • T1 [active] [bound]",
-        ].join("\n"));
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
+  const binding = await bindToWindow(pi, 5, undefined, makeTestConfig(), client);
+
+  assert.equal(binding.tab, "TAB-CREATED-1");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-CREATED-1" });
+  assert.equal(state.createCount, 1);
+  assert.deepEqual(
+    state.calls.find((call) => call.name === "manage_workspaces").args,
+    { action: "create_tab", window_id: 5, bind: true, focus: false }
+  );
+});
+
+test("explicit window bind preserves a prior verified route when the requested window is absent", async () => {
+  const { pi } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-LIVE", name: "Live", bound: true })],
+    binding: { kind: "bound", contextId: "TAB-LIVE" },
+  });
+  await bindToTab(pi, 5, "TAB-LIVE", makeTestConfig(), client);
+  const mutationCallsBefore = state.calls.filter(
+    (call) => call.args.op === "bind" || call.args.action === "create_tab"
+  ).length;
 
   await assert.rejects(
-    () => createAndBindTab(pi, 5, config, client),
-    /did not report the created tab unambiguously/
+    bindToWindow(pi, 99, undefined, makeTestConfig(), client),
+    /window 99 not found/u
+  );
+
+  assert.equal(getRouteState().kind, "verified");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-LIVE" });
+  assert.equal(
+    state.calls.filter((call) => call.args.op === "bind" || call.args.action === "create_tab").length,
+    mutationCallsBefore
   );
 });
 
-test("restoreBinding falls back to the most recent auto-selection tab", () => {
-  const { ctx } = makeMockSession([
-    {
-      type: "custom",
-      customType: AUTO_SELECTION_ENTRY_TYPE,
-      data: {
-        app: "ce",
-        windowId: 5,
-        workspace: "pi-agent",
-        tab: "TAB-AUTO",
-        fullPaths: [],
-        slicePaths: [],
-      },
-    },
-  ]);
-
-  const binding = restoreBinding(ctx, makeTestConfig());
-
-  assert.deepEqual(binding, {
-    app: "ce",
-    windowId: 5,
-    workspace: "pi-agent",
-    tab: "TAB-AUTO",
+test("explicit tab bind quarantines when fresh observation does not match the requested context", async () => {
+  const { pi } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "TAB-OLD", name: "Old", bound: true }),
+      rawTab({ id: "TAB-NEW", name: "New" }),
+    ],
+    binding: { kind: "bound", contextId: "TAB-OLD" },
+    bindOutcome: "mismatch",
   });
+
+  await assert.rejects(
+    bindToTab(pi, 5, "New", makeTestConfig(), client),
+    /did not confirm bound context TAB-NEW/u
+  );
+  assert.equal(state.calls.filter((call) => call.args.op === "bind").length, 1);
+  assert.equal(getRouteState().kind, "quarantined");
 });
 
-test("restoreBinding fills a missing binding tab from auto-selection history", () => {
-  const { ctx } = makeMockSession([
+test("clean explicit bind error never adopts or persists an unrelated observed sticky tab", async () => {
+  const { pi, entries } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "TAB-OLD", name: "Old", bound: true }),
+      rawTab({ id: "TAB-A", name: "Requested" }),
+      rawTab({ id: "TAB-B", name: "Unrelated" }),
+    ],
+    binding: { kind: "bound", contextId: "TAB-OLD" },
+    bindOutcome: "isError",
+    bindErrorObservedContextId: "TAB-B",
+  });
+  await bindToTab(pi, 5, "TAB-OLD", makeTestConfig(), client);
+  const persistedBefore = entries.length;
+
+  await assert.rejects(
+    bindToTab(pi, 5, "TAB-A", makeTestConfig(), client),
+    /bind rejected/u
+  );
+
+  assert.equal(state.calls.filter((call) => call.args.op === "bind").length, 1);
+  assert.equal(entries.length, persistedBefore);
+  assert.equal(entries.some((entry) => entry.data?.tab === "TAB-B"), false);
+  assert.equal(getRouteState().kind, "quarantined");
+  assert.equal(getRouteSelectorDecision({}).kind, "blocked");
+});
+
+test("clean explicit create error never adopts or persists an unrelated observed sticky tab", async () => {
+  const { pi, entries } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "TAB-OLD", name: "Old", bound: true, files: 2 }),
+      rawTab({ id: "TAB-B", name: "Unrelated" }),
+    ],
+    binding: { kind: "bound", contextId: "TAB-OLD" },
+    createOutcome: "isError",
+    createErrorObservedContextId: "TAB-B",
+  });
+  await bindToTab(pi, 5, "TAB-OLD", makeTestConfig(), client);
+  const persistedBefore = entries.length;
+
+  await assert.rejects(
+    createAndBindTab(pi, 5, makeTestConfig(), client),
+    /create rejected/u
+  );
+
+  assert.equal(state.createCount, 1);
+  assert.equal(entries.length, persistedBefore);
+  assert.equal(entries.some((entry) => entry.data?.tab === "TAB-B"), false);
+  assert.equal(getRouteState().kind, "quarantined");
+  assert.equal(getRouteSelectorDecision({}).kind, "blocked");
+});
+
+test("explicit create quarantines an ambiguous thrown mutation without replay", async () => {
+  const { pi } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-OLD", name: "Old", bound: true })],
+    binding: { kind: "bound", contextId: "TAB-OLD" },
+    createOutcome: "throw",
+  });
+
+  await assert.rejects(
+    createAndBindTab(pi, 5, makeTestConfig(), client),
+    /create transport failed/u
+  );
+  assert.equal(state.createCount, 1);
+  assert.equal(getRouteState().kind, "quarantined");
+  assert.equal(getRouteState().cause, "ambiguous_mutation_result");
+});
+
+test("explicit create binds one background tab and confirms it from fresh inventory", async () => {
+  const { pi, entries } = makeMockSession();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-OLD", name: "Old", bound: true, files: 2 })],
+    binding: { kind: "bound", contextId: "TAB-OLD" },
+  });
+
+  const binding = await createAndBindTab(pi, 5, makeTestConfig(), client);
+
+  assert.equal(binding.tab, "TAB-CREATED-1");
+  assert.equal(state.createCount, 1);
+  assert.deepEqual(
+    state.calls.find((call) => call.name === "manage_workspaces").args,
+    { action: "create_tab", window_id: 5, bind: true, focus: false }
+  );
+  assert.equal(entries.at(-1).data.tab, "TAB-CREATED-1");
+});
+
+test("stale persisted UUID is never adopted when inventory observation fails", async () => {
+  const { pi, ctx } = makeMockSession([
     {
       type: "custom",
       customType: BINDING_ENTRY_TYPE,
-      data: { app: "ce", windowId: 5, workspace: "pi-agent" },
-    },
-    {
-      type: "custom",
-      customType: AUTO_SELECTION_ENTRY_TYPE,
-      data: {
-        app: "ce",
-        windowId: 5,
-        workspace: "pi-agent",
-        tab: "TAB-AUTO",
-        fullPaths: [],
-        slicePaths: [],
-      },
+      data: { app: "ce", windowId: 5, workspace: "agent", tab: "TAB-MISSING" },
     },
   ]);
-
-  const binding = restoreBinding(ctx, makeTestConfig());
-
-  assert.deepEqual(binding, {
-    app: "ce",
-    windowId: 5,
-    workspace: "pi-agent",
-    tab: "TAB-AUTO",
-    autoDetected: false,
+  restoreBinding(ctx, makeTestConfig());
+  const { client, state } = await createMutableInventoryClient({
+    inventoryFailure: makeTextResult("observation unavailable", true),
   });
+
+  await assert.rejects(
+    ensureBindingHasTab(pi, ctx, makeTestConfig(), client),
+    /observation unavailable/u
+  );
+  assert.equal(state.calls.some((call) => call.args.op === "bind"), false);
+  assert.equal(state.calls.some((call) => call.args.action === "create_tab"), false);
+  assert.equal(getRouteState().kind, "intent");
+  assert.equal(getRouteSelectorDecision({}).kind, "blocked");
 });
 
-test("restoreBinding ignores binding and auto-selection entries for other apps", () => {
-  const { ctx } = makeMockSession([
-    {
-      type: "custom",
-      customType: BINDING_ENTRY_TYPE,
-      data: { app: "classic", windowId: 9, workspace: "classic-workspace", tab: "TAB-CLASSIC" },
-    },
-    {
-      type: "custom",
-      customType: AUTO_SELECTION_ENTRY_TYPE,
-      data: {
-        app: "classic",
-        windowId: 9,
-        workspace: "classic-workspace",
-        tab: "TAB-CLASSIC-AUTO",
-        fullPaths: ["src/Classic.ts"],
-        slicePaths: [],
-      },
-    },
-    {
-      type: "custom",
-      customType: BINDING_ENTRY_TYPE,
-      data: { app: "ce", windowId: 5, workspace: "ce-workspace" },
-    },
-    {
-      type: "custom",
-      customType: AUTO_SELECTION_ENTRY_TYPE,
-      data: {
-        app: "ce",
-        windowId: 5,
-        workspace: "ce-workspace",
-        tab: "TAB-CE-AUTO",
-        fullPaths: ["src/Ce.ts"],
-        slicePaths: [],
-      },
-    },
-  ]);
-
-  assert.deepEqual(restoreBinding(ctx, { activeApp: "ce" }), {
-    app: "ce",
-    windowId: 5,
-    workspace: "ce-workspace",
-    tab: "TAB-CE-AUTO",
-    autoDetected: false,
-  });
-  assert.deepEqual(restoreBinding(ctx, { activeApp: "classic" }), {
-    app: "classic",
-    windowId: 9,
-    workspace: "classic-workspace",
-    tab: "TAB-CLASSIC",
-    autoDetected: false,
-  });
-});
-
-test("fetchWindows CLI fallback uses the selected app default command", async () => {
-  const client = getRpClient();
-  client.client = {};
-  client.transport = {};
-  client._status = "connected";
-  client._tools = [];
-
-  const calls = [];
-  const pi = {
-    async exec(command, args) {
-      calls.push({ command, args });
-      return {
-        stdout: "- Window `7` • WS: ce-workspace • Roots: 1\n",
-        stderr: "",
-      };
-    },
-  };
-
-  const windows = await fetchWindows(pi, makeTestConfig());
-
-  assert.deepEqual(windows, [{ id: 7, workspace: "ce-workspace", roots: [], instance: undefined }]);
-  assert.deepEqual(calls, [{ command: "rpce-cli", args: ["-e", "windows"] }]);
-});
-
-test("ensureBindingHasTab reuses the most recent branch tab when it is explicitly blank and chat-free", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-1" }, config);
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-1` • Alpha [bound]\n  • 0 files\n- `TAB-2` • Beta [active]");
-      }
-      if (name === "chats") {
-        return makeChatListResult(0, args.tab_id);
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-1`");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client);
-
-  assert.equal(binding?.tab, "TAB-1");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 0);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-1");
-});
-
-test("ensureBindingHasTab reuses the most recent auto-selection tab when it is explicitly blank and chat-free", async () => {
+test("stale persisted UUID recovers only through an observed safe candidate", async () => {
   const { pi, ctx, entries } = makeMockSession([
     {
       type: "custom",
-      customType: AUTO_SELECTION_ENTRY_TYPE,
-      data: {
-        app: "ce",
-        windowId: 5,
-        workspace: "pi-agent",
-        tab: "TAB-AUTO",
-        fullPaths: [],
-        slicePaths: [],
-      },
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "agent", tab: "TAB-MISSING" },
     },
   ]);
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-AUTO` • T3 [bound]\n  • 0 files\n- `TAB-OTHER` • T4 [active]");
-      }
-      if (name === "chats") {
-        return makeChatListResult(0, args.tab_id);
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-AUTO`");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client);
-
-  assert.equal(binding?.tab, "TAB-AUTO");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 0);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-AUTO");
-});
-
-test("ensureBindingHasTab skips tab creation during replay when createIfMissing is false", async () => {
-  const { pi, ctx } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OLD` • Existing [active]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-OLD`");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, { createIfMissing: false });
-
-  assert.equal(binding?.tab, undefined);
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 0);
-});
-
-test("ensureBindingHasTab reuses a safe blank tab instead of a dirty active tab for a window-only binding", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, [
-          "## Tabs ✅",
-          "",
-          "- `TAB-1` • T1 [active]",
-          "  • 3 files: package.json, ConversationTree.tsx, constants.ts",
-          "- `TAB-2` • T2 [bound]",
-          "  • 0 files",
-        ].join("\n"));
-      }
-      if (name === "chats") {
-        return makeChatListResult(0, args.tab_id);
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-2`");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-3` • T3 [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    reuseSoleEmptyTab: true,
+  restoreBinding(ctx, makeTestConfig());
+  const { client } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-SAFE", name: "Safe", files: 0 })],
   });
 
-  assert.equal(binding?.tab, "TAB-2");
-  assert.equal(calls.filter((call) => call.name === "chats").length, 0);
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 0);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-2");
-});
-
-test("ensureBindingHasTab creates a new tab when window-only binding finds no safe reusable tab", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "ABCDEF-0001" }, config);
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  let listTabsCount = 0;
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "oracle_utils" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        listTabsCount += 1;
-        return listTabsCount === 1
-          ? makeTabLookupResult(name, args, [
-              "## Tabs ✅",
-              "",
-              "- `FEDCBA-0001` • T2 [active]",
-              "  • 3 files: package.json, ConversationTree.tsx, constants.ts",
-              "- `ABCDEF-0001` • T1 [bound]",
-              "  • 0 files",
-            ].join("\n"))
-          : makeTabLookupResult(name, args, [
-              "## Tabs ✅",
-              "",
-              "- `FEDCBA-0001` • T2 [active]",
-              "  • 3 files: package.json, ConversationTree.tsx, constants.ts",
-              "- `ABCDEF-0001` • T1 [bound]",
-              "  • 0 files",
-              "- `ABCDEF-9999` • T3 [bound]",
-              "  • 0 files",
-            ].join("\n"));
-      }
-      if (name === "oracle_utils") {
-        return makeTextResult("session-1 tab=ABCDEF…");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `ABCDEF-9999`");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `ABCDEF-9999` • T3 [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    reuseSoleEmptyTab: true,
-  });
-
-  assert.equal(binding?.tab, "ABCDEF-9999");
-  assert.equal(calls.filter((call) => call.name === "oracle_utils").length, 1);
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 1);
-  assert.equal(entries.at(-1)?.data?.tab, "ABCDEF-9999");
-});
-
-test("ensureBindingHasTab reuses the sole empty tab instead of creating a new tab", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, [
-          "## Tabs ✅",
-          "",
-          "- `TAB-1` • T1 [active]",
-          "  • 0 files",
-        ].join("\n"));
-      }
-      if (name === "chats") {
-        return makeChatListResult(0, args.tab_id);
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-1`");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-2` • T2 [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    reuseSoleEmptyTab: true,
-  });
-
-  assert.equal(binding?.tab, "TAB-1");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 1);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-1");
-});
-
-test("ensureBindingHasTab reuses an already bound empty tab before creating a new tab", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, [
-          "## Tabs ✅",
-          "",
-          "- `TAB-1` • T1 [active]",
-          "  • 0 files",
-          "- `TAB-2` • T2 [bound]",
-          "  • 0 files",
-        ].join("\n"));
-      }
-      if (name === "chats") {
-        return makeChatListResult(0, args.tab_id);
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-2`");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-3` • T3 [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    reuseSoleEmptyTab: true,
-  });
-
-  assert.equal(binding?.tab, "TAB-2");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 0);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-2");
-});
-
-test("ensureBindingHasTab reuses an existing empty tab when multiple blank tabs are available", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }, { name: "chats" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, [
-          "## Tabs ✅",
-          "",
-          "- `TAB-1` • T1 [active]",
-          "  • 0 files",
-          "- `TAB-2` • T2",
-          "  • 0 files",
-        ].join("\n"));
-      }
-      if (name === "chats") {
-        return makeChatListResult(0, args.tab_id);
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-1`");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-3` • T3 [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    reuseSoleEmptyTab: true,
-  });
-
-  assert.equal(binding?.tab, "TAB-1");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-  assert.equal(getBindContextCalls(calls).length, 1);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-1");
-});
-
-test("ensureBindingHasTab does not create a new tab during passive replay when the prior tab is stale and there is no recoverable state", async () => {
-  const { pi, ctx } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
-
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        return makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 3 files: a.ts, b.ts, c.ts");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    createIfMissing: false,
-    recoverIfMissing: false,
-    reuseSoleEmptyTab: true,
-  });
-
-  assert.equal(binding?.tab, "TAB-OLD");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 0);
-});
-
-test("ensureBindingHasTab reserves replay tab creation for true recovery", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
-
-  let listTabsCount = 0;
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        listTabsCount += 1;
-        return listTabsCount === 1
-          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 2 files: a.ts, b.ts")
-          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n  • 2 files: a.ts, b.ts\n- `TAB-NEW` • Pi Session [bound]\n  • 0 files");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-NEW`");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
-    },
-  };
-
-  const binding = await ensureBindingHasTab(pi, ctx, config, client, {
-    createIfMissing: false,
+  const binding = await ensureBindingHasTab(pi, ctx, makeTestConfig(), client, {
     recoverIfMissing: true,
-    reuseSoleEmptyTab: true,
   });
 
-  assert.equal(binding?.tab, "TAB-NEW");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 1);
-  assert.equal(entries.at(-1)?.data?.tab, "TAB-NEW");
+  assert.equal(binding.tab, "TAB-SAFE");
+  assert.equal(entries.at(-1).data.tab, "TAB-SAFE");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-SAFE" });
 });
 
-test("ensureBindingHasTab provisions exactly one tab when the branch has none", async () => {
-  const { pi, ctx, entries } = makeMockSession();
-  const config = makeTestConfig();
-
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent" }, config);
-
-  let listTabsCount = 0;
-  const calls = [];
-  const client = {
-    isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
-    async callTool(name, args) {
-      calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        listTabsCount += 1;
-        return listTabsCount === 1
-          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OLD` • Existing [active]")
-          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OLD` • Existing [active]\n- `TAB-NEW` • Pi Session [bound]");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-NEW`");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
+test("abbreviated Oracle tab IDs prevent protected tab reuse", async () => {
+  const { pi, ctx } = makeMockSession([
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "agent", tab: "TAB-MISSING" },
     },
-  };
+  ]);
+  restoreBinding(ctx, makeTestConfig());
+  const { client } = await createMutableInventoryClient({
+    tabs: [
+      rawTab({ id: "ABCDEF-0001", name: "Oracle", files: 0 }),
+      rawTab({ id: "TAB-SAFE", name: "Safe", files: 0 }),
+    ],
+    oracleSessions: "session tab=ABCDEF…",
+  });
 
-  const firstBinding = await ensureBindingHasTab(pi, ctx, config, client);
-  const secondBinding = await ensureBindingHasTab(pi, ctx, config, client);
+  const binding = await ensureBindingHasTab(pi, ctx, makeTestConfig(), client, {
+    recoverIfMissing: true,
+  });
 
-  assert.equal(firstBinding?.tab, "TAB-NEW");
-  assert.equal(secondBinding?.tab, "TAB-NEW");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 1);
-  assert.equal(entries.filter((entry) => entry.data?.tab === "TAB-NEW").length, 1);
+  assert.equal(binding.tab, "TAB-SAFE");
 });
 
-test("ensureBindingHasTab reprovisions when the stored tab is stale", async () => {
+test("aborting an in-flight safety probe releases the route coordinator", async () => {
+  const { pi, ctx } = makeMockSession([
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "agent", tab: "TAB-MISSING" },
+    },
+  ]);
+  restoreBinding(ctx, makeTestConfig());
+  const blocked = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-SAFE", name: "Safe", files: 0 })],
+    blockOracleSessions: true,
+  });
+  const controller = new AbortController();
+  const recovery = ensureBindingHasTab(
+    pi,
+    ctx,
+    makeTestConfig(),
+    blocked.client,
+    { recoverIfMissing: true },
+    controller.signal,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(recovery, (error) => error?.name === "AbortError");
+  assert.equal(
+    blocked.state.calls.find((call) => call.name === "oracle_utils").signal,
+    controller.signal,
+  );
+
+  const healthy = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-LIVE", name: "Live" })],
+    binding: { kind: "unbound" },
+  });
+  const rebound = await bindToWindow(pi, 5, undefined, makeTestConfig(), healthy.client);
+  assert.equal(rebound.windowId, 5);
+});
+
+test("recovery creates at most one background tab across repeated calls", async () => {
   const { pi, ctx } = makeMockSession();
-  const config = makeTestConfig();
+  const { client, state } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-DIRTY", name: "Dirty", files: 2 })],
+    binding: { kind: "unbound" },
+  });
+  await bindToWindow(pi, 5, undefined, makeTestConfig(), client);
 
-  persistBinding(pi, { windowId: 5, workspace: "pi-agent", tab: "TAB-OLD" }, config);
+  const first = await ensureBindingHasTab(pi, ctx, makeTestConfig(), client);
+  const second = await ensureBindingHasTab(pi, ctx, makeTestConfig(), client);
 
-  let listTabsCount = 0;
+  assert.equal(first.tab, "TAB-CREATED-1");
+  assert.equal(second.tab, "TAB-CREATED-1");
+  assert.equal(state.createCount, 1);
+});
+
+test("auto-bind applies deterministic partial-root precedence", () => {
+  const windows = [
+    { id: 2, workspace: "observed", roots: ["/fixtures/repo"] },
+    {
+      id: 3,
+      workspace: "unknown",
+      roots: [],
+      rootsUnavailableDiagnostic: "probe failed",
+    },
+  ];
+
+  assert.equal(findMatchingWindow(windows, "/fixtures/repo/src").window.id, 2);
+  assert.deepEqual(findMatchingWindow(windows, "/fixtures/other").rootsUnavailableWindowIds, [3]);
+});
+
+test("Classic ordinary observation requires one successful explicit per-connection probe", async () => {
   const calls = [];
   const client = {
     isConnected: true,
-    tools: [{ name: "manage_workspaces" }, { name: "bind_context" }],
+    tools: classicCatalog.tools,
     async callTool(name, args) {
       calls.push({ name, args });
-      if (isTabListCall(name, args)) {
-        listTabsCount += 1;
-        return listTabsCount === 1
-          ? makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]")
-          : makeTabLookupResult(name, args, "## Tabs ✅\n\n- `TAB-OTHER` • Existing [active]\n- `TAB-NEW` • Pi Session [bound]");
-      }
-      if (args.action === "create_tab") {
-        return makeTextResult("Created tab `TAB-NEW` • Pi Session [bound]");
-      }
-      if (isTabBindCall(name, args)) {
-        return makeTextResult("Selected tab `TAB-NEW`");
-      }
-      throw new Error(`Unexpected action: ${args.action}`);
+      return makeTextResult(classicScenarios.multiWindow);
+    },
+  };
+  const config = makeTestConfig({ activeApp: "classic" });
+
+  await assert.rejects(fetchWindows(undefined, config, client), /unestablished for this connection/u);
+  assert.equal(calls.length, 0);
+
+  await establishRoutingInventoryContract(config, client);
+  assert.equal(calls.length, 1);
+  assert.deepEqual((await fetchWindows(undefined, config, client)).map((window) => window.id), [2, 10, 11]);
+  assert.equal(calls.length, 2);
+});
+
+test("failed Classic explicit probe leaves ordinary observation fail-closed", async () => {
+  let calls = 0;
+  const client = {
+    isConnected: true,
+    tools: classicCatalog.tools,
+    async callTool() {
+      calls += 1;
+      return makeTextResult("malformed output");
+    },
+  };
+  const config = makeTestConfig({ activeApp: "classic" });
+
+  await assert.rejects(
+    establishRoutingInventoryContract(config, client),
+    /did not return JSON content/u
+  );
+  await assert.rejects(fetchWindows(undefined, config, client), /unestablished for this connection/u);
+  assert.equal(calls, 1);
+});
+
+test("autoDetectAndBind reports root observation failure instead of treating it as no match", async () => {
+  const originalCwd = process.cwd();
+  const { pi } = makeMockSession();
+  const client = {
+    isConnected: true,
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name) {
+      return name === "bind_context"
+        ? makeTextResult(ceScenarios.rootUnavailable)
+        : makeTextResult("root lookup failed", true);
     },
   };
 
-  const binding = await ensureBindingHasTab(pi, ctx, config, client);
+  try {
+    process.chdir("/tmp");
+    await establishRoutingInventoryContract(makeTestConfig(), client);
+    const result = await autoDetectAndBind(pi, makeTestConfig(), undefined, client);
+    assert.deepEqual(result.rootsUnavailableWindowIds, [12]);
+    assert.equal(result.binding, null);
+  } finally {
+    process.chdir(originalCwd);
+  }
+});
 
-  assert.equal(binding?.tab, "TAB-NEW");
-  assert.equal(calls.filter((call) => call.args.action === "create_tab").length, 1);
+test("clean mutation error observes independently after caller cancellation", async () => {
+  resetBindingStateForTests();
+  const controller = new AbortController();
+  const observationCalls = [];
+  const client = {
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name, args, timeoutMs, signal) {
+      observationCalls.push({ name, args, timeoutMs, signal });
+      if (signal?.aborted) {
+        throw signal.reason ?? new Error("caller aborted");
+      }
+      return makeTextResult(ceScenarios.multiWindow);
+    },
+  };
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+  observationCalls.length = 0;
+
+  const execution = await executeRoutingMutation({
+    operationLabel: "bind_context bind",
+    operationClass: "routing_mutation",
+    config: makeTestConfig(),
+    client,
+    signal: controller.signal,
+    async dispatch() {
+      controller.abort(new Error("caller cancelled after result"));
+      return makeTextResult("bind rejected", true);
+    },
+    reconcile() {
+      throw new Error("failed mutation must not use success reconciliation");
+    },
+  });
+
+  assert.equal(execution.kind, "failed");
+  assert.equal(observationCalls.length, 1);
+  assert.equal(observationCalls[0].timeoutMs, ROUTING_OBSERVATION_TIMEOUT_MS);
+  assert.equal(observationCalls[0].signal, undefined);
+  resetBindingStateForTests();
+});
+
+test("successful mutation observation cannot reconcile after a newer route publication", async () => {
+  resetBindingStateForTests();
+  const { pi, entries } = makeMockSession();
+  const config = makeTestConfig();
+  persistBinding(pi, {
+    app: "ce",
+    windowId: 5,
+    workspace: "agent",
+    tab: "TAB-OLD",
+  }, config);
+  const observationEntered = deferred();
+  const releaseObservation = deferred();
+  let contractEstablished = false;
+  const client = {
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name, args) {
+      assert.equal(name, "bind_context");
+      assert.equal(args.op, "list");
+      if (!contractEstablished) {
+        return makeTextResult(ceScenarios.multiWindow);
+      }
+      const captured = makeTextResult(rawInventory({
+        tabs: [
+          rawTab({ id: "TAB-A", name: "Requested", bound: true }),
+          rawTab({ id: "TAB-NEWER", name: "Newer" }),
+        ],
+        binding: { kind: "bound", contextId: "TAB-A" },
+      }));
+      observationEntered.resolve();
+      await releaseObservation.promise;
+      return captured;
+    },
+  };
+  await establishRoutingInventoryContract(config, client);
+  contractEstablished = true;
+  let reconciled = false;
+
+  const pending = executeRoutingMutation({
+    operationLabel: "bind_context bind for TAB-A",
+    operationClass: "routing_mutation",
+    config,
+    client,
+    async dispatch() {
+      return makeTextResult("Bound context `TAB-A`");
+    },
+    reconcile(inventory) {
+      reconciled = true;
+      return reconcileObservedInventoryRoute(pi, config, inventory);
+    },
+  });
+  await observationEntered.promise;
+  persistBinding(pi, {
+    app: "ce",
+    windowId: 5,
+    workspace: "agent",
+    tab: "TAB-NEWER",
+  }, config);
+  const persistedBeforeCompletion = entries.length;
+  releaseObservation.resolve();
+
+  const execution = await pending;
+
+  assert.equal(execution.kind, "superseded");
+  assert.equal(execution.cause, "superseded");
+  assert.equal(execution.possiblePartialSuccess, true);
+  assert.equal(reconciled, false);
+  assert.equal(entries.length, persistedBeforeCompletion);
+  assert.equal(getVerifiedBinding()?.tab, "TAB-NEWER");
+  resetBindingStateForTests();
+});
+
+test("successful routing mutation ending window-only publishes non-dispatchable intent", async () => {
+  resetBindingStateForTests();
+  const { pi, entries } = makeMockSession();
+  const { client } = await createMutableInventoryClient({
+    tabs: [rawTab({ id: "TAB-SAFE", name: "Safe", files: 0 })],
+    binding: { kind: "window" },
+  });
+
+  const execution = await executeRoutingMutation({
+    operationLabel: "workspace mutation",
+    operationClass: "workspace_routing_mutation",
+    config: makeTestConfig(),
+    client,
+    async dispatch() {
+      return makeTextResult("mutation completed");
+    },
+    reconcile(inventory) {
+      return reconcileObservedInventoryRoute(pi, makeTestConfig(), inventory);
+    },
+  });
+
+  assert.equal(execution.kind, "reconciled");
+  assert.equal(execution.result.isError, undefined);
+  assert.equal(execution.value.tab, undefined);
+  assert.equal(getRouteState().kind, "intent");
+  assert.equal(getVerifiedBinding(), null);
+  assert.equal(getRouteSelectorDecision({}).kind, "blocked");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].data.windowId, 5);
+  assert.equal(entries[0].data.tab, undefined);
+  resetBindingStateForTests();
 });

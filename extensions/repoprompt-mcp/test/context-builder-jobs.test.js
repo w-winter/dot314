@@ -80,6 +80,36 @@ test("ContextBuilderJobManager rejects duplicate running jobs for one target", (
   assert.equal(secondRunnerCalled, false);
 });
 
+test("ContextBuilderJobManager keeps a republished physical tab occupied across generations", () => {
+  const manager = createManager();
+  const work = deferred();
+  const base = descriptor("TAB-1");
+  const first = manager.start({
+    descriptor: {
+      ...base,
+      target: { ...base.target, publicationGeneration: 1 },
+    },
+    run: () => work.promise,
+  });
+
+  assert.throws(
+    () => manager.start({
+      descriptor: {
+        ...base,
+        target: { ...base.target, publicationGeneration: 2 },
+      },
+      run: async () => textResult("unexpected"),
+    }),
+    (error) => {
+      assert.ok(error instanceof ContextBuilderJobError);
+      assert.equal(error.code, "context_builder_already_running");
+      assert.equal(error.jobId, first.jobId);
+      assert.equal(error.target.publicationGeneration, 2);
+      return true;
+    },
+  );
+});
+
 test("ContextBuilderJobManager preserves live collision wording and permits consumed ID reuse", async () => {
   const manager = createManager({ createJobId: () => "cb_reused" });
   const firstWork = deferred();

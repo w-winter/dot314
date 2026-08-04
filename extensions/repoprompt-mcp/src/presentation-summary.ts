@@ -54,6 +54,26 @@ function summarizePathList(paths: string[]): string | undefined {
   return `${paths.length} paths`;
 }
 
+function summarizeCodeStructureArgs(callArgs: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  const pathSummary = summarizePathList(asStringArray(callArgs.paths));
+  const scope = asString(callArgs.scope);
+  const maxResults = asNumber(callArgs.max_results);
+  const expand = asString(callArgs.expand);
+  const depth = asNumber(callArgs.depth);
+  const size = asString(callArgs.size);
+
+  if (pathSummary) parts.push(`paths ${pathSummary}`);
+  if (scope) parts.push(`scope ${scope}`);
+  if (maxResults !== undefined) parts.push(`max_results ${maxResults}`);
+  if (expand) parts.push(`expand ${expand}`);
+  if (depth !== undefined) parts.push(`depth ${depth}`);
+  if (typeof callArgs.signatures === "boolean") parts.push(`signatures ${callArgs.signatures}`);
+  if (size) parts.push(`size ${size}`);
+
+  return parts.length > 0 ? parts.join(" • ") : undefined;
+}
+
 function summarizeManageWorkspacesCall(callArgs: Record<string, unknown>): string {
   const action = asString(callArgs.action);
   const name = asString(callArgs.name);
@@ -140,9 +160,8 @@ export function summarizeRpCall(args: Record<string, unknown>): string | null {
         return path ? `File Tree • ${path}` : "File Tree";
       }
       case "get_code_structure": {
-        const paths = asStringArray(callArgs.paths);
-        const pathSummary = summarizePathList(paths);
-        return pathSummary ? `Code Structure • ${pathSummary}` : "Code Structure";
+        const argumentSummary = summarizeCodeStructureArgs(callArgs);
+        return argumentSummary ? `Code Structure • ${argumentSummary}` : "Code Structure";
       }
       case "workspace_context": {
         return "Workspace Context";
@@ -280,9 +299,8 @@ export function summarizeRpResult(details: Record<string, unknown>): Presentatio
       };
     }
     case "get_code_structure": {
-      const scope = asString(callArgs.scope);
       return {
-        primary: scope ? `scope ${scope}` : "structure loaded",
+        primary: summarizeCodeStructureArgs(callArgs) ?? "structure loaded",
       };
     }
     case "workspace_context": {

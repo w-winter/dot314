@@ -8,8 +8,11 @@ import repopromptMcp from "../dist/index.js";
 import { clearBinding, persistBinding } from "../dist/binding.js";
 import { getRpClient, RpClient, resetRpClient } from "../dist/client.js";
 import { ContextBuilderJobManager } from "../dist/context-builder-jobs.js";
+import { routeStore } from "../dist/route-state.js";
 import { SteeringWaitCoordinator } from "../dist/steerable-waits.js";
 import { AUTO_SELECTION_ENTRY_TYPE } from "../dist/types.js";
+import { catalog as ceCatalog } from "./fixtures/ce-1.2/evidence.js";
+import { catalog as classicCatalog } from "./fixtures/classic-2.1.32/evidence.js";
 
 function deferred() {
   let resolve;
@@ -23,6 +26,43 @@ function deferred() {
 
 function textResult(text) {
   return { content: [{ type: "text", text }], isError: false };
+}
+
+function withRoutingContractTools(tools, app = "ce") {
+  const catalog = app === "classic" ? classicCatalog : ceCatalog;
+  const routingTools = catalog.tools
+    .filter((tool) => tool.name === "bind_context" || tool.name === "manage_workspaces")
+    .map((tool) => structuredClone(tool));
+  return [
+    ...routingTools,
+    ...tools.filter((tool) => !["bind_context", "manage_workspaces"].includes(tool.name)),
+  ];
+}
+
+function routingInventoryResult({
+  windows = [{ id: 7, workspace: "repo", root: "/fixtures/repo", tabs: [{ id: "TAB-1", bound: true }] }],
+  boundContextId = "TAB-1",
+} = {}) {
+  return textResult(JSON.stringify({
+    windows: windows.map((window) => ({
+      window_id: window.id,
+      workspace: { id: `workspace-${window.id}`, name: window.workspace },
+      ...(window.tabs.find((tab) => tab.active !== false)
+        ? { active_context_id: window.tabs.find((tab) => tab.active !== false).id }
+        : {}),
+      tabs: window.tabs.map((tab) => ({
+        context_id: tab.id,
+        name: tab.name ?? "Pi Session",
+        is_active: tab.active !== false,
+        is_bound: tab.bound === true,
+        selected_file_count: tab.files ?? 0,
+        repo_paths: window.root ? [window.root] : [],
+      })),
+    })),
+    binding: boundContextId
+      ? { binding_kind: "tab_context", context_id: boundContextId }
+      : { binding_kind: "unbound" },
+  }));
 }
 
 async function expectRpError(promise, code) {
@@ -112,6 +152,8 @@ async function createBlockedLazyRecoveryHarness({
   let blockedBinding;
   const forwardedCalls = [];
   let connectCalls = 0;
+  let connectedApp = "ce";
+  let inventoryCallsSinceConnect = 0;
 
   process.env.HOME = tempHome;
   mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
@@ -130,22 +172,21 @@ async function createBlockedLazyRecoveryHarness({
   await resetRpClient();
   clearBinding();
 
-  RpClient.prototype.connect = async function connect() {
+  RpClient.prototype.connect = async function connect(command) {
     connectCalls += 1;
+    connectedApp = command.includes("classic") ? "classic" : "ce";
     if ((failInitialConnect && connectCalls === 1) || (failReconnect && connectCalls > 1)) {
       throw new Error("RepoPrompt is unavailable");
     }
+    inventoryCallsSinceConnect = 0;
     this.client = {};
     this.transport = {};
     this._status = "connected";
-    this._tools = [
+    this._tools = withRoutingContractTools([
       { name: "context_builder", description: "Build context", inputSchema: { type: "object" } },
       { name: "read_file", description: "Read", inputSchema: { type: "object" } },
-      { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
-      { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
-      { name: "manage_workspaces", description: "Manage workspaces", inputSchema: { type: "object" } },
       { name: "get_file_tree", description: "Get tree", inputSchema: { type: "object" } },
-    ];
+    ], command.includes("classic") ? "classic" : "ce");
     this.publishedToolListGeneration = 0;
     this.toolListInvalidationGeneration = 0;
   };
@@ -157,15 +198,28 @@ async function createBlockedLazyRecoveryHarness({
     this.publishedToolListGeneration = null;
   };
   RpClient.prototype.callTool = async function callTool(name, args = {}, _onUpdate, signal) {
-    if (name === "list_windows") {
-      return blockedWindows.promise;
-    }
     if (name === "bind_context") {
       if (args.op === "list") {
-        if (blockedBinding) {
-          return blockedBinding.promise;
+        inventoryCallsSinceConnect += 1;
+        if (inventoryCallsSinceConnect > 1) {
+          await blockedWindows.promise;
         }
-        return textResult("## Tabs ✅\n\n- `TAB-1` • Pi Session [bound]");
+        if (blockedBinding) {
+          await blockedBinding.promise;
+        }
+        return connectedApp === "classic" && failRootRecovery
+          ? routingInventoryResult({
+              windows: [{ id: 8, workspace: "classic", tabs: [] }],
+              boundContextId: null,
+            })
+          : routingInventoryResult({
+              windows: [{
+                id: 7,
+                workspace: "repo",
+                root: repoRoot,
+                tabs: [{ id: "TAB-1", bound: true }],
+              }],
+            });
       }
       return textResult(`called ${name}`);
     }
@@ -255,8 +309,11 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
   let connectCalls = 0;
   let contextBuilderCalls = 0;
   let tabCreated = false;
+  let createdWindowId = 7;
+  let raceBindingActive = false;
   let pendingClose;
   let onAppendEntry;
+  let onInventoryCall;
   let shutdownPromise;
 
   try {
@@ -281,17 +338,14 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       this._status = "connected";
       this.toolListInvalidationGeneration = 0;
       this.publishedToolListGeneration = 0;
-      this._tools = [
+      this._tools = withRoutingContractTools([
         {
           name: "context_builder",
           description: "Build repository context",
           inputSchema: { type: "object", properties: { instructions: { type: "string" } } },
         },
         { name: "read_file", description: "Read a file", inputSchema: { type: "object" } },
-        { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
-        { name: "manage_workspaces", description: "Manage workspaces", inputSchema: { type: "object" } },
-        { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
-      ];
+      ]);
     };
 
     RpClient.prototype.close = async function close() {
@@ -312,20 +366,43 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
 
     RpClient.prototype.callTool = async function callTool(name, args = {}, _timeout, signal) {
       calls.push({ name, args, signal });
-      if (name === "list_windows") {
-        return textResult("- Window `7` • WS: repo • Roots: 1\n- Window `8` • WS: other • Roots: 1");
-      }
       if (name === "read_file") {
         return textResult(`read ${args.path}`);
       }
       if (name === "bind_context" && args.op === "list") {
-        return textResult(tabCreated ? "## Tabs ✅\n\n- `TAB-NEW` • Pi Session [bound]" : "## Tabs ✅");
+        const inventoryCallback = onInventoryCall;
+        onInventoryCall = undefined;
+        inventoryCallback?.();
+        return routingInventoryResult({
+          windows: [
+            {
+              id: 7,
+              workspace: "repo",
+              root: repoRoot,
+              tabs: tabCreated && createdWindowId === 7
+                ? [{ id: "TAB-NEW", bound: !raceBindingActive }]
+                : [],
+            },
+            {
+              id: 8,
+              workspace: "other",
+              root: path.join(repoRoot, "other"),
+              tabs: raceBindingActive
+                ? [{ id: "TAB-RACE", bound: true }]
+                : tabCreated && createdWindowId === 8
+                  ? [{ id: "TAB-NEW", bound: true }]
+                  : [{ id: "TAB-RACE", bound: false }],
+            },
+          ],
+          boundContextId: raceBindingActive ? "TAB-RACE" : tabCreated ? "TAB-NEW" : null,
+        });
       }
       if (name === "bind_context" && args.op === "bind") {
         return textResult(`Selected tab \`${args.context_id}\``);
       }
       if (name === "manage_workspaces" && args.action === "create_tab") {
         tabCreated = true;
+        createdWindowId = args.window_id;
         return textResult("Created tab `TAB-NEW` • Pi Session [bound]");
       }
       if (name === "context_builder") {
@@ -375,7 +452,7 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       apps: { ce: {} },
       persistBinding: true,
     };
-    persistBinding(pi, { app: "ce", windowId: 7, workspace: "repo" }, config);
+    routeStore.restoreIntent({ app: "ce", windowId: 7, workspace: "repo" });
 
     const rpTool = pi.getTool("rp");
     const ctx = createContext(repoRoot, pi.entries);
@@ -448,11 +525,17 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       }
       onAppendEntry = undefined;
       persistBinding(pi, { app: "ce", windowId: 8, tab: "TAB-RACE", workspace: "other" }, config);
+      raceBindingActive = true;
     };
+
+    await pi.getCommand("rp").handler("bind 7", ctx);
 
     const start = await rpTool.execute(
       "builder-1",
-      { call: "context_builder", args: { instructions: "Plan it", _windowID: 999 } },
+      {
+        call: "context_builder",
+        args: { instructions: "Plan it", _windowID: 8, context_id: "TAB-RACE" },
+      },
       undefined,
       undefined,
       ctx,
@@ -460,17 +543,27 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
     assert.ok(start.details.contextBuilderJob, JSON.stringify({ start, calls }));
     assert.equal(start.details.contextBuilderJob.jobId, "cb_integration_1");
     assert.equal(start.details.contextBuilderJob.status, "running");
-    assert.deepEqual(start.details.contextBuilderJob.target, { app: "ce", windowId: 7, tab: "TAB-NEW" });
+    assert.deepEqual(start.details.contextBuilderJob.target, {
+      app: "ce",
+      windowId: 8,
+      tab: "TAB-RACE",
+      publicationGeneration: start.details.contextBuilderJob.target.publicationGeneration,
+    });
+    assert.equal(
+      Number.isInteger(start.details.contextBuilderJob.target.publicationGeneration),
+      true
+    );
+    const retainedPublicationGeneration =
+      start.details.contextBuilderJob.target.publicationGeneration;
     assert.match(start.content[0].text, /context_builder_wait/u);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(calls.at(-1).args, {
       instructions: "Plan it",
-      _windowID: 7,
-      context_id: "TAB-NEW",
+      _windowID: 8,
+      context_id: "TAB-RACE",
     });
     assert.ok(calls.at(-1).signal instanceof AbortSignal);
     start.details.contextBuilderJob.target.tab = "MUTATED-BY-TOOL-RESULT-HOOK";
-    persistBinding(pi, { app: "ce", windowId: 7, tab: "TAB-NEW", workspace: "repo" }, config);
 
     const ordinary = await rpTool.execute(
       "read-1",
@@ -535,7 +628,12 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       ctx,
     );
     assert.equal(completed.details.contextBuilderJob.status, "completed");
-    assert.deepEqual(completed.details.contextBuilderJob.target, { app: "ce", windowId: 7, tab: "TAB-NEW" });
+    assert.deepEqual(completed.details.contextBuilderJob.target, {
+      app: "ce",
+      windowId: 8,
+      tab: "TAB-RACE",
+      publicationGeneration: retainedPublicationGeneration,
+    });
     assert.equal(completed.details.tool, "context_builder");
     assert.deepEqual(completed.content, [
       { type: "text", text: "builder result" },
@@ -597,6 +695,7 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
       ctx,
     );
     assert.equal(reconnectResult.content[0].text, "builder after reconnect");
+    raceBindingActive = false;
     persistBinding(pi, { app: "ce", windowId: 7, tab: "TAB-NEW", workspace: "repo" }, config);
 
     await expectRpError(
@@ -718,25 +817,7 @@ test("rp runs Context Builder through the asynchronous start and wait protocol",
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(lifecycleWaitSettled, false);
 
-    persistBinding(pi, { app: "ce", windowId: 8, workspace: "other" }, config);
-    tabCreated = false;
-    onAppendEntry = (_customType, data) => {
-      if (data?.windowId !== 8 || data?.tab !== "TAB-NEW") {
-        return;
-      }
-      onAppendEntry = undefined;
-      shutdownPromise = pi.emit("session_shutdown", ctx);
-    };
-    await expectRpError(
-      rpTool.execute(
-        "builder-reset-during-binding",
-        { call: "context_builder", args: { instructions: "Must not start" } },
-        undefined,
-        undefined,
-        ctx,
-      ),
-      "context_builder_start_cancelled",
-    );
+    shutdownPromise = pi.emit("session_shutdown", ctx);
     await shutdownPromise;
     await expectRpError(lifecycleWait, "context_builder_job_cancelled");
     assert.equal(contextBuilderCalls, 5);
@@ -792,7 +873,9 @@ test("superseded session startup cannot pause a successful reconnect", async () 
       this.client = {};
       this.transport = {};
       this._status = "connected";
-      this._tools = [{ name: "read_file", description: "Read", inputSchema: { type: "object" } }];
+      this._tools = withRoutingContractTools([
+        { name: "read_file", description: "Read", inputSchema: { type: "object" } },
+      ]);
       this.publishedToolListGeneration = 0;
       this.toolListInvalidationGeneration = 0;
     };
@@ -803,7 +886,12 @@ test("superseded session startup cannot pause a successful reconnect", async () 
       this._tools = [];
       this.publishedToolListGeneration = null;
     };
-    RpClient.prototype.callTool = async function callTool(name) {
+    RpClient.prototype.callTool = async function callTool(name, args = {}) {
+      if (name === "bind_context" && args.op === "list") {
+        return routingInventoryResult({
+          windows: [{ id: 7, workspace: "repo", root: repoRoot, tabs: [{ id: "TAB-1", bound: true }] }],
+        });
+      }
       assert.equal(name, "read_file");
       return textResult("read after reconnect");
     };
@@ -881,7 +969,9 @@ test("session shutdown prevents a blocked reconnect from reconnecting", async ()
       this.client = {};
       this.transport = {};
       this._status = "connected";
-      this._tools = [{ name: "read_file", description: "Read", inputSchema: { type: "object" } }];
+      this._tools = withRoutingContractTools([
+        { name: "read_file", description: "Read", inputSchema: { type: "object" } },
+      ]);
       this.publishedToolListGeneration = 0;
       this.toolListInvalidationGeneration = 0;
     };
@@ -895,7 +985,12 @@ test("session shutdown prevents a blocked reconnect from reconnecting", async ()
       this._tools = [];
       this.publishedToolListGeneration = null;
     };
-    RpClient.prototype.callTool = async function callTool(name) {
+    RpClient.prototype.callTool = async function callTool(name, args = {}) {
+      if (name === "bind_context" && args.op === "list") {
+        return routingInventoryResult({
+          windows: [{ id: 7, workspace: "repo", root: repoRoot, tabs: [{ id: "TAB-1", bound: true }] }],
+        });
+      }
       assert.equal(name, "read_file");
       return textResult("read result");
     };
@@ -953,6 +1048,7 @@ test("blocked post-connect recovery does not delay a later reconnect", async () 
   const originalCallTool = RpClient.prototype.callTool;
   const blockedWindows = deferred();
   let connectCalls = 0;
+  let inventoryCalls = 0;
 
   process.env.HOME = tempHome;
   try {
@@ -974,11 +1070,9 @@ test("blocked post-connect recovery does not delay a later reconnect", async () 
       this.client = {};
       this.transport = {};
       this._status = "connected";
-      this._tools = [
+      this._tools = withRoutingContractTools([
         { name: "read_file", description: "Read", inputSchema: { type: "object" } },
-        { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
-        { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
-      ];
+      ]);
       this.publishedToolListGeneration = 0;
       this.toolListInvalidationGeneration = 0;
     };
@@ -990,11 +1084,14 @@ test("blocked post-connect recovery does not delay a later reconnect", async () 
       this.publishedToolListGeneration = null;
     };
     RpClient.prototype.callTool = async function callTool(name, args = {}) {
-      if (name === "list_windows") {
-        return blockedWindows.promise;
-      }
       if (name === "bind_context" && args.op === "list") {
-        return textResult("## Tabs \u2705\n\n- `TAB-1` \u2022 Pi Session [bound]");
+        inventoryCalls += 1;
+        if (inventoryCalls > 1) {
+          await blockedWindows.promise;
+        }
+        return routingInventoryResult({
+          windows: [{ id: 7, workspace: "repo", root: repoRoot, tabs: [{ id: "TAB-1", bound: true }] }],
+        });
       }
       return textResult(`called ${name}`);
     };
@@ -1181,7 +1278,7 @@ test("app-switch root recovery failures are reported", async () => {
     await switchPromise;
 
     assert.ok(notifications.some(({ message, level }) => (
-      level === "warning" && message.includes("handover failed: root lookup failed")
+      level === "warning" && message.includes("handover failed:")
     )));
     assert.equal(notifications.some(({ message }) => message.includes("selected and bound")), false);
   } finally {
@@ -1230,7 +1327,7 @@ test("Context Builder start aborts promptly during connection recovery", async (
   }
 });
 
-test("Context Builder start aborts promptly during tab recovery", async () => {
+test("Context Builder start rejects window intent without beginning tab recovery", async () => {
   const harness = await createBlockedLazyRecoveryHarness();
   const pending = [];
   try {
@@ -1247,11 +1344,7 @@ test("Context Builder start aborts promptly during tab recovery", async () => {
     harness.blockedWindows.resolve(textResult("- Window `7` • WS: repo • Roots: 1"));
     await initialCall;
 
-    persistBinding(
-      harness.pi,
-      { app: "ce", windowId: 7, workspace: "repo" },
-      { activeApp: "ce", apps: { ce: {} }, persistBinding: true },
-    );
+    routeStore.restoreIntent({ app: "ce", windowId: 7, workspace: "repo" });
     harness.blockNextBindingCall();
     const controller = new AbortController();
     const startPromise = rpTool.execute(
@@ -1266,7 +1359,7 @@ test("Context Builder start aborts promptly during tab recovery", async () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     controller.abort();
-    await assert.rejects(settleWithin(startPromise), /\[context_builder_start_aborted\]/u);
+    await assert.rejects(settleWithin(startPromise), /\[missing_tab_binding\]/u);
     assert.equal(harness.forwardedCalls.some(({ name }) => name === "context_builder"), false);
 
     harness.blockedBinding.resolve(textResult("## Tabs ✅\n\n- `TAB-1` • Pi Session [bound]"));
@@ -1453,11 +1546,9 @@ test("a call queued behind a failed reconnect observes the paused state", async 
       this.client = {};
       this.transport = {};
       this._status = "connected";
-      this._tools = [
+      this._tools = withRoutingContractTools([
         { name: "read_file", description: "Read", inputSchema: { type: "object" } },
-        { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
-        { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
-      ];
+      ]);
       this.publishedToolListGeneration = 0;
       this.toolListInvalidationGeneration = 0;
     };
@@ -1472,11 +1563,10 @@ test("a call queued behind a failed reconnect observes the paused state", async 
       this.publishedToolListGeneration = null;
     };
     RpClient.prototype.callTool = async function callTool(name, args = {}) {
-      if (name === "list_windows") {
-        return textResult("- Window `7` \u2022 WS: repo \u2022 Roots: 1");
-      }
       if (name === "bind_context" && args.op === "list") {
-        return textResult("## Tabs \u2705\n\n- `TAB-1` \u2022 Pi Session [bound]");
+        return routingInventoryResult({
+          windows: [{ id: 7, workspace: "repo", root: repoRoot, tabs: [{ id: "TAB-1", bound: true }] }],
+        });
       }
       return textResult(`called ${name}`);
     };

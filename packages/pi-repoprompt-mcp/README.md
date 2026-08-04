@@ -1,10 +1,13 @@
 # RepoPrompt MCP for Pi (`pi-repoprompt-mcp`)
+> **Supported versions:** Pi 0.83.0 or newer; RepoPrompt CE 1.2.0 or newer with the required routing tools; RepoPrompt Classic 2.1.29.
+
+Classic support targets RepoPrompt Classic 2.1.29. Before forwarding tools that act on a workspace or tab, the extension verifies that Classic can report live windows, tabs, and the current connection binding. If that check fails, those tools remain blocked and `/rp status` reports the problem.
 
 This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools to Pi, includes branch-safe window and tab binding (auto-detect and bind to window by `cwd`, auto-bind to safe tab, persist and restore across sessions and session tree nodes, and interactive selection of windows and tabs) and batches of read files (automatically selected as context in the RepoPrompt desktop app), renders RepoPrompt tool outputs (syntax + diff highlighting), and applies guardrails for destructive operations.
 
 The extension's window- and tab-related management features allow a workflow where new Pi sessions automatically attach to the required workspace and tab without clobbering your, or other agents', parallel usage of RepoPrompt.  Because it recovers the window, tab, and auto-selected read-files context when you rewind via `/tree` or restore a session, all the context the agent has built up (and automatically selected in the RepoPrompt app) by reading files and slices up to that point always remains available in the app for RP Chat (see `/rp oracle` below) or external "oracle" (e.g. GPT-x Pro) use cases.  Recovery is based on the required root(s) of the saved selection state, so it can reattach to any open workspace that already contains those roots rather than requiring the original workspace name; if multiple open workspaces satisfy that requirement and `cwd` does not disambiguate them, then you should re-bind with `/rp bind`.
 
-Both RepoPrompt Classic and RepoPrompt CE are supported because Classic's Compose UI affords visibility over and user-guided refinement of Context Builder's selections, while CE's architecture is substantially faster and better suited to parallel agents, implementation execution, and closed-loop planning/review.  You can switch targets mid-session with `/rp app` (e.g., curate context and obtain a plan in Classic, then execute the plan in CE).
+RepoPrompt Classic and RepoPrompt CE are supported targets. Classic's Compose UI affords visibility over and user-guided refinement of Context Builder's selections, while CE is better suited to parallel agents, implementation execution, and closed-loop planning and review. You can switch targets mid-session with `/rp app` (for example, curate context and obtain a plan in Classic, then execute the plan in CE).
 
 ## Installation
 
@@ -99,31 +102,29 @@ RepoPrompt CE can run sub-agent sessions of its own. Your agent launches one and
 
 ## Requirements
 
-- Pi 0.83.x
-- RepoPrompt CE or RepoPrompt Classic with the bundled `repoprompt-mcp` server reachable over stdio
-  - CE is the default target; Classic is selectable with `/rp app classic`
-  - If the selected target is not configured/auto-detected, the extension will still load, but `rp(...)` will error until you configure it or switch targets
-- `rpce-cli` for RepoPrompt CE or `rp-cli` for RepoPrompt Classic available in `PATH` is recommended for window discovery fallback
+- Pi 0.83.0 or newer
+- RepoPrompt CE 1.2.0 or newer with the required MCP contract capabilities, or RepoPrompt Classic 2.1.29
+- The selected target's bundled `repoprompt-mcp` server reachable over stdio; CE is the default target and Classic is selectable with `/rp app classic`
 
-### Compatibility notes
+### Compatibility and routing contract
 
-This extension tries to be tolerant of **tool name prefixing** (e.g. `RepoPrompt_list_windows` vs `list_windows`), but it is still dependent on a small set of capabilities and their semantics remaining reasonably stable across RepoPrompt versions:
+When it connects, the extension checks that the selected target provides the MCP operations needed for window and tab routing. If a required operation is missing or incompatible, tools that act on a workspace or tab remain blocked and `/rp status` explains what is unavailable. `/rp status`, `/rp app`, `/rp reconnect`, tool search, and tool descriptions remain available for diagnosis. Other tools advertised by the selected target appear automatically.
 
-- **Window discovery**: `list_windows`
-  - If `list_windows` is not exposed by the MCP server, the extension falls back to the selected target's CLI (`rpce-cli -e 'windows'` for CE, `rp-cli -e 'windows'` for Classic)
-  - If neither is available, window listing/binding features will be limited
-- **Workspace root discovery (auto-bind by cwd)**: `get_file_tree` with `{ type: "roots" }` (scoped by `_windowID`)
-  - If unavailable (or if parameters/semantics change), auto-binding may be disabled or less accurate
-- Selection summary: `manage_selection` with `{ op: "get", view: "files" }` and `{ op: "get", view: "summary" }`
-  - If these are unavailable (or if parameters/semantics change), the status output may omit file/token counts
+Auto-binding matches the Pi working directory against the roots of open RepoPrompt workspaces. Saved window and tab bindings are checked against the current connection before they are used. If a routing operation may have succeeded but its result cannot be confirmed, the route is quarantined until `/rp reconnect` or an explicit `/rp bind` establishes it again.
 
-If RepoPrompt renames/removes these tools or changes their required parameters/output formats, this extension may need updates
+`/rp status` reports `verified tab`, `stale/missing`, `restored but unverified`, `quarantined`, `unverified (observation failed)`, `unsupported contract`, or `unbound`. Only a verified tab can receive tools that act on a workspace or tab. A matched window or restored selection remains unverified until the extension binds and confirms a tab. If the live tab is verified but its binding cannot be saved to Pi session history, status reports the persistence problem while keeping the live tab usable.
+
+### Target-specific tools
+
+- RepoPrompt CE Oracle supports `chat`, `plan`, and `review`. RepoPrompt Classic Oracle also supports `edit`. `/rp oracle` help and validation follow the selected target.
+- RepoPrompt CE `get_code_structure` uses optional `paths` plus `expand`, `depth`, `signatures`, and `size`; omitting `paths` uses the current selection. RepoPrompt Classic uses `scope`, `paths`, and `max_results`. Call summaries reflect the arguments sent to the selected target.
+- Selection summaries use `manage_selection` with `op: "get"`; unavailable selection-summary capabilities affect counts in status rather than routing authority.
 
 ## Usage
 
 ### Commands
 
-- `/rp status` — show status (connection + binding), including the currently bound tab name and a label like `[bound, in-focus]` or `[bound, out-of-focus]`, plus current selected file counts and estimated token counts
+- `/rp status` — observe connection, catalog freshness, and route state; verified tabs include window, workspace, tab, focus, and context identity
 
 <p align="center">
   <img width="210" alt="Status display" src="https://raw.githubusercontent.com/w-winter/dot314/main/packages/pi-repoprompt-mcp/docs/images/status.png" />
@@ -136,7 +137,7 @@ If RepoPrompt renames/removes these tools or changes their required parameters/o
 - `/rp tab` — interactive tab picker for the current bound window, with `Create new tab` as the first option followed by existing tab names
 - `/rp tab new` — create and bind a fresh tab on the current bound window
 - `/rp tab <name-or-id>` — bind an existing tab on the current bound window by name or id
-- `/rp oracle [--mode <chat|plan|edit|review>] [--name <chat name>] [--continue|--chat-id <id>] <message>` — ask RepoPrompt chat with current selection context.  If `--mode` not specified, uses `oracleDefaultMode` config.
+- `/rp oracle [--mode <mode>] [--name <chat name>] [--continue|--chat-id <id>] <message>` — ask RepoPrompt Oracle with current selection context. `<mode>` is `chat|plan|review` for CE and `chat|plan|edit|review` for Classic; omitting it uses `oracleDefaultMode` after target-specific validation.
 - `/rp reconnect` — reconnect to RepoPrompt
 
 ### Tool: `rp`
@@ -147,7 +148,7 @@ Your agent drives everything above through a single `rp` tool; you never call it
 // Status (connection + binding)
 rp({ })
 
-// List windows (best-effort; uses MCP tool if available, otherwise the selected app's CLI)
+// List windows for the selected RepoPrompt target
 rp({ windows: true })
 
 // Bind to a specific window (does not change RepoPrompt active window)
@@ -261,8 +262,8 @@ Options:
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |
 | `confirmEdits` | `false` | Block edit-like operations unless `confirmEdits: true` |
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
-| `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `chat_send` (or a manually created chat in the RP app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
-| `oracleDefaultMode` | `"chat"` | Default mode for `/rp oracle` when `--mode` is omitted (`chat`, `plan`, `edit`, or `review`) |
+| `autoSelectReadSlices` | `true` | Automatically track `read_file` calls by adding slices/full-file selection via `manage_selection`, so `oracle_send` (or a manually created Oracle chat in the RepoPrompt app) uses everything the agent has read as context; these file/slice selections are **branch-safe** across `/tree` rewinds and `/fork`ed session branches via extension-owned snapshot replay |
+| `oracleDefaultMode` | `"chat"` | Default mode for `/rp oracle` when `--mode` is omitted; CE accepts `chat`, `plan`, or `review`, while Classic also accepts `edit` |
 | `collapsedMaxLines` | `3` | Lines shown in collapsed view |
 | `diffViewMode` | `"auto"` | Diff layout for RepoPrompt `git` / `apply_edits` fenced diff output (`auto`, `split`, `unified`) |
 | `diffSplitMinWidth` | `120` | Minimum render width before `diffViewMode: "auto"` uses split diff layout |
@@ -288,7 +289,7 @@ When `readcacheReadFile` is enabled, the extension may persist UTF-8 file snapsh
 ### "Not connected to RepoPrompt"
 - Check `/rp status` for the selected app target
 - Ensure the selected RepoPrompt app is running, or switch with `/rp app ce` / `/rp app classic`
-- Verify the selected target's `command` override or `appPath` in config; the fallback CLI name is fixed by the selected target
+- Verify the selected target's MCP server executable resolution: `apps.<target>.command`, MCP config, `appPath`, or the target CLI executable (`rpce-cli` / `rp-cli`)
 - Run `/rp reconnect`
 
 ### Pi becomes unresponsive after closing/restarting RepoPrompt
@@ -301,17 +302,35 @@ If `apps.<target>.autoLaunchApp` is enabled, the extension will try to open that
 ### Switching between CE and Classic
 Use `/rp app ce` or `/rp app classic` to switch the active target for the current Pi session. The switch resets the MCP connection and recovers extension-owned read selection through workspace root matching in the newly selected app; manual selections are not copied between apps. If no unique matching window exists, use `/rp bind` after switching.
 
-The extension follows MCP tool-list change notifications and automatically refreshes the catalog used by search, describe, status, validation, and tool calls. Status identifies the catalog as fresh, stale, or unavailable. When a refresh fails, search and describe label last-successful results as stale, known tools remain callable, and tools absent from the stale catalog are reported as indeterminate until a later notification refresh succeeds. `/rp reconnect` forces a fresh connection and catalog on demand.
+The extension follows MCP tool-list change notifications and automatically refreshes the tools used by search, describe, status, and tool calls. Status identifies the tool list as fresh, stale, or unavailable. If a refresh fails, search and describe continue to show cached results marked as stale. Tools that act on a workspace or tab pause until a fresh compatible tool list is available. `/rp reconnect` forces a fresh connection and tool refresh.
 
 ### "No matching window found"
 - Your `cwd` may not match any RepoPrompt workspace root
 - Use `/rp windows` to list windows
 - Use `/rp bind` to pick one
 
-### Window listing doesn't work
-- If the MCP server does not expose a `list_windows` tool, this extension uses `rpce-cli -e 'windows'` for CE or `rp-cli -e 'windows'` for Classic
-- Make sure the selected target's CLI is installed and on your `PATH`
-- If RepoPrompt is in single-window mode, the CLI may report single-window mode
+### Unsupported contract
+- Read the diagnostic in `/rp status`; it names the selected target and the missing or incompatible routing operation
+- Upgrade RepoPrompt or this package to a compatible version, then run `/rp reconnect`
+- Cached search and description results remain available for diagnosis; tools that act on a workspace or tab remain blocked until a fresh compatible tool list is available
+
+### Stale, unverified, or quarantined route
+- Run `/rp reconnect` to establish the route from current live inventory
+- Use `/rp bind` when you need to select the intended window or tab explicitly
+- A quarantined diagnostic means the preceding routing mutation may have partially succeeded; inspect `/rp status` before binding
+
+### Window listing or auto-bind fails
+- Check `/rp status` for a routing-tool or window-inventory diagnostic
+- Confirm the intended workspace is open in the selected RepoPrompt target
+- If root observation is unavailable for a zero-tab window, create or open a tab in that workspace and run `/rp reconnect`
+
+### Upgrade
+
+```bash
+pi update npm:pi-repoprompt-mcp
+```
+
+Restart Pi after upgrading so the updated package starts with a fresh RepoPrompt connection.
 
 ### Delete operation blocked
 - Pass `allowDelete: true` on the `rp` call

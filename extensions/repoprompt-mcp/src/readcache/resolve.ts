@@ -6,24 +6,21 @@ import * as path from "node:path";
 import type { RpBinding } from "../types.js";
 import { fetchWindowRoots } from "../binding.js";
 
-const ROOTS_CACHE = new Map<number, string[]>();
+const ROOTS_CACHE = new Map<string, string[]>();
 
-export function clearRootsCache(windowId?: number): void {
-  if (windowId !== undefined) {
-    ROOTS_CACHE.delete(windowId);
-    return;
-  }
+export function clearRootsCache(): void {
   ROOTS_CACHE.clear();
 }
 
-async function getWindowRootsCached(windowId: number): Promise<string[]> {
-  const cached = ROOTS_CACHE.get(windowId);
+async function getWindowRootsCached(binding: RpBinding): Promise<string[]> {
+  const cacheKey = `${binding.app}:${binding.windowId}`;
+  const cached = ROOTS_CACHE.get(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const roots = await fetchWindowRoots(windowId);
-  ROOTS_CACHE.set(windowId, roots);
+  const roots = await fetchWindowRoots(binding.windowId, { activeApp: binding.app });
+  ROOTS_CACHE.set(cacheKey, roots);
   return roots;
 }
 
@@ -110,7 +107,7 @@ export async function resolveReadFilePath(
     };
   }
 
-  const roots = binding ? await getWindowRootsCached(binding.windowId) : [];
+  const roots = binding ? await getWindowRootsCached(binding) : [];
 
   // rootHint:relPath or rootHint/relPath
   const rootPrefixed = parseRootPrefixedPath(inputPath);

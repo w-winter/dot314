@@ -9,6 +9,7 @@ import { clearBinding } from "../dist/binding.js";
 import { RpClient, resetRpClient } from "../dist/client.js";
 import { ContextBuilderJobManager } from "../dist/context-builder-jobs.js";
 import { OracleSendJobManager } from "../dist/oracle-send-jobs.js";
+import { catalog as ceCatalog } from "./fixtures/ce-1.2/evidence.js";
 import {
   QUEUE_STEER_ACCEPTED_EVENT,
   SteeringWaitCoordinator,
@@ -340,7 +341,9 @@ test("registered explicit agent_run wait aborts only its request and remains re-
       this._status = "connected";
       this.toolListInvalidationGeneration = 0;
       this.publishedToolListGeneration = 0;
-      this._tools = [{ name: "agent_run", description: "Run agents", inputSchema: { type: "object" } }];
+      this._tools = ceCatalog.tools
+        .filter((tool) => ["agent_run", "bind_context", "manage_workspaces"].includes(tool.name))
+        .map((tool) => structuredClone(tool));
     };
     RpClient.prototype.close = async function close() {
       this.client = null;
@@ -350,6 +353,24 @@ test("registered explicit agent_run wait aborts only its request and remains re-
       this.publishedToolListGeneration = null;
     };
     RpClient.prototype.callTool = function callTool(name, args, _timeout, signal) {
+      if (name === "bind_context" && args.op === "list") {
+        return Promise.resolve(textResult(JSON.stringify({
+          windows: [{
+            window_id: 7,
+            workspace: { id: "workspace-7", name: "repo" },
+            active_context_id: "TAB-1",
+            tabs: [{
+              context_id: "TAB-1",
+              name: "Pi Session",
+              is_active: true,
+              is_bound: true,
+              selected_file_count: 0,
+              repo_paths: ["/tmp/steerable-waits-integration"],
+            }],
+          }],
+          binding: { binding_kind: "tab_context", context_id: "TAB-1" },
+        })));
+      }
       assert.equal(name, "agent_run");
       if (args.op !== "wait" || "prompt" in args) {
         forwardedSignals.push(signal);
@@ -397,7 +418,6 @@ test("registered explicit agent_run wait aborts only its request and remains re-
     assert.equal(childActive, false);
 
     const unwrappedCalls = [
-      { op: "start", prompt: "attached" },
       { op: "wait", session_id: "child-a", prompt: "invalid start-only field" },
       { op: "poll", session_id: "child-a" },
       { op: "cancel", session_id: "child-a" },

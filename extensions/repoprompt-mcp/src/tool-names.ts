@@ -22,8 +22,8 @@ export function normalizeToolName(name: string): string {
 /**
  * Resolve the actual tool name exposed by the MCP server
  *
- * The RepoPrompt server may expose prefixed names like "RepoPrompt_list_windows"
- * instead of "list_windows". This helper picks the correct concrete name
+ * The RepoPrompt server may expose prefixed names like "RepoPrompt_read_file"
+ * instead of "read_file". This helper picks the correct concrete name
  */
 export function resolveToolName(tools: Array<{ name: string }>, desired: string): string | null {
   const desiredLower = desired.toLowerCase();

@@ -299,6 +299,30 @@ test("RpClient registers tool-list notifications before connecting and refreshes
   assert.equal(client.toolCatalogFreshness, "fresh");
 });
 
+test("RpClient catalog revision tokens are immutable and invalidated by freshness or publication changes", async () => {
+  const connection = createConnectionControl([
+    catalog("app_settings"),
+    catalog("app_settings", "get_file_tree"),
+  ]);
+  const client = createClientWithConnections(connection);
+  await client.connect("fake-rp", []);
+
+  const initial = client.captureToolCatalogRevision();
+  assert.equal(Object.isFrozen(initial), true);
+  assert.equal(client.ownsToolCatalogRevision(initial), true);
+
+  connection.notifyToolListChanged();
+  assert.equal(client.ownsToolCatalogRevision(initial), false);
+  const stale = client.captureToolCatalogRevision();
+  assert.equal(stale.freshness, "stale");
+
+  await client.refreshTools();
+  const refreshed = client.captureToolCatalogRevision();
+  assert.equal(refreshed.freshness, "fresh");
+  assert.equal(client.ownsToolCatalogRevision(stale), false);
+  assert.notDeepEqual(refreshed, initial);
+});
+
 test("RpClient discards a tool list invalidated in flight and coalesces refresh callers", async () => {
   const staleResponse = deferred();
   const connection = createConnectionControl([

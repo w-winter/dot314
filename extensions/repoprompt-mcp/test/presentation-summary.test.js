@@ -56,6 +56,44 @@ test("summarizeRpCall condenses common tool calls", () => {
 });
 
 
+test("get_code_structure summaries use the arguments actually sent for Classic and CE", () => {
+  const classicArgs = {
+    paths: ["src/a.ts", "src/b.ts"],
+    scope: "paths",
+    max_results: 25,
+  };
+  const ceArgs = {
+    paths: ["src"],
+    expand: "both",
+    depth: 2,
+    signatures: false,
+    size: "large",
+  };
+
+  assert.equal(
+    summarizeRpCall({ call: "get_code_structure", args: classicArgs }),
+    "Code Structure • paths src/a.ts, src/b.ts • scope paths • max_results 25"
+  );
+  assert.deepEqual(
+    summarizeRpResult({ mode: "call", tool: "get_code_structure", args: classicArgs }),
+    { primary: "paths src/a.ts, src/b.ts • scope paths • max_results 25" }
+  );
+  assert.equal(
+    summarizeRpCall({ call: "get_code_structure", args: ceArgs }),
+    "Code Structure • paths src • expand both • depth 2 • signatures false • size large"
+  );
+  assert.deepEqual(
+    summarizeRpResult({ mode: "call", tool: "get_code_structure", args: ceArgs }),
+    { primary: "paths src • expand both • depth 2 • signatures false • size large" }
+  );
+  assert.equal(summarizeRpCall({ call: "get_code_structure", args: {} }), "Code Structure");
+  assert.deepEqual(
+    summarizeRpResult({ mode: "call", tool: "get_code_structure", args: {} }),
+    { primary: "structure loaded" }
+  );
+});
+
+
 test("summarizeRpResult condenses read and search tool results", () => {
   assert.deepEqual(
     summarizeRpResult({

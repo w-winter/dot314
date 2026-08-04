@@ -5,6 +5,7 @@ export interface RepoPromptJobTarget {
   readonly app: RpAppId;
   readonly windowId: number;
   readonly tab: string;
+  readonly publicationGeneration: number;
 }
 
 export type RepoPromptJobResetReason =
@@ -152,7 +153,11 @@ export interface RetainedMcpJobRegistryOptions<TDescriptor> {
 }
 
 function targetKey(target: RepoPromptJobTarget): string {
-  return JSON.stringify([target.app, target.windowId, target.tab]);
+  return JSON.stringify([
+    target.app,
+    target.windowId,
+    target.tab,
+  ]);
 }
 
 function errorMessage(error: unknown): string {

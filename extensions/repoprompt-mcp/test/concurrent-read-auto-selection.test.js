@@ -7,7 +7,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import repopromptMcp from "../dist/index.js";
 import { clearBinding } from "../dist/binding.js";
 import { getRpClient, resetRpClient } from "../dist/client.js";
+import { routeStore } from "../dist/route-state.js";
 import { AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE } from "../dist/types.js";
+import { catalog as ceCatalog } from "./fixtures/ce-1.2/evidence.js";
 
 function makeTextResult(text) {
   return {
@@ -153,12 +155,13 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
       client.transport = {};
       client._status = "connected";
       client._tools = [
-        { name: "list_windows", description: "" },
-        { name: "manage_workspaces", description: "" },
-        { name: "bind_context", description: "" },
+        ...ceCatalog.tools
+          .filter((tool) => tool.name === "bind_context" || tool.name === "manage_workspaces")
+          .map((tool) => structuredClone(tool)),
         { name: "manage_selection", description: "" },
         { name: "read_file", description: "" },
       ];
+      client.publishedToolListGeneration = client.toolListInvalidationGeneration;
     };
     client.close = async () => {
       client.client = null;
@@ -167,14 +170,23 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
       client._tools = [];
     };
     client.callTool = async (name, args = {}) => {
-      if (name === "list_windows") {
-        return makeTextResult("- Window `19` • WS: chat-tree • Roots: 1");
-      }
-
       if (name === "bind_context" && args.op === "list") {
-        return makeTextResult(renderContexts([
-          { id: "TAB-1", name: "T1", active: true, bound: true, files: selectionState.fullPaths.size + selectionState.slicePaths.size },
-        ]));
+        return makeTextResult(JSON.stringify({
+          windows: [{
+            window_id: 19,
+            workspace: { id: "workspace-19", name: "chat-tree" },
+            active_context_id: "TAB-1",
+            tabs: [{
+              context_id: "TAB-1",
+              name: "T1",
+              is_active: true,
+              is_bound: true,
+              selected_file_count: selectionState.fullPaths.size + selectionState.slicePaths.size,
+              repo_paths: [repoRoot],
+            }],
+          }],
+          binding: { binding_kind: "tab_context", window_id: 19, context_id: "TAB-1" },
+        }));
       }
 
       if (name === "bind_context" && args.op === "bind") {
@@ -256,61 +268,69 @@ test("concurrent rp read_file calls persist cumulative auto-selection state", as
 
     const rpTool = pi.getTool("rp");
     assert.ok(rpTool, "rp tool should be registered");
+    const dispatchGeneration = routeStore.snapshotPublicationGeneration();
 
-    await Promise.all([
+    const readResponses = await Promise.all([
       rpTool.execute("call-1", { call: "read_file", args: { path: "src/App.tsx", start_line: 1, limit: 160 } }, undefined, () => {}, ctx),
       rpTool.execute("call-2", { call: "read_file", args: { path: "src/main.tsx", start_line: 1, limit: 120 } }, undefined, () => {}, ctx),
       rpTool.execute("call-3", { call: "read_file", args: { path: "src/hooks/useConversationTree.ts", start_line: 1, limit: 180 } }, undefined, () => {}, ctx),
       rpTool.execute("call-4", { call: "read_file", args: { path: "src/components/ConversationTree.tsx", start_line: 1, limit: 180 } }, undefined, () => {}, ctx),
     ]);
 
+    assert.deepEqual(readResponses.map((response) => response.isError), [false, false, false, false]);
+    assert.equal(
+      routeStore.snapshotPublicationGeneration(),
+      dispatchGeneration,
+      "parallel reads must not publish replacement route authority",
+    );
+
     const autoSelectionEntries = branchEntries.filter(
       (entry) => entry.type === "custom" && entry.customType === AUTO_SELECTION_ENTRY_TYPE
     );
 
     assert.equal(autoSelectionEntries.length, 4);
-      assert.deepEqual(autoSelectionEntries.map((entry) => entry.data), [
-        {
-          app: "ce",
-          windowId: 19,
-          tab: "TAB-1",
+    assert.deepEqual(autoSelectionEntries.map((entry) => entry.data), [
+      {
+        app: "ce",
+        windowId: 19,
+        tab: "TAB-1",
         workspace: "chat-tree",
-        fullPaths: ["src/App.tsx"],
+        fullPaths: ["chat-tree/src/App.tsx"],
         slicePaths: [],
-        },
-        {
-          app: "ce",
-          windowId: 19,
-          tab: "TAB-1",
+      },
+      {
+        app: "ce",
+        windowId: 19,
+        tab: "TAB-1",
         workspace: "chat-tree",
-        fullPaths: ["src/App.tsx", "src/main.tsx"],
+        fullPaths: ["chat-tree/src/App.tsx", "chat-tree/src/main.tsx"],
         slicePaths: [],
-        },
-        {
-          app: "ce",
-          windowId: 19,
-          tab: "TAB-1",
+      },
+      {
+        app: "ce",
+        windowId: 19,
+        tab: "TAB-1",
         workspace: "chat-tree",
         fullPaths: [
-          "src/App.tsx",
-          "src/hooks/useConversationTree.ts",
-          "src/main.tsx",
+          "chat-tree/src/App.tsx",
+          "chat-tree/src/hooks/useConversationTree.ts",
+          "chat-tree/src/main.tsx",
         ],
         slicePaths: [],
-        },
-        {
-          app: "ce",
-          windowId: 19,
-          tab: "TAB-1",
+      },
+      {
+        app: "ce",
+        windowId: 19,
+        tab: "TAB-1",
         workspace: "chat-tree",
         fullPaths: [
-          "src/App.tsx",
-          "src/hooks/useConversationTree.ts",
-          "src/main.tsx",
+          "chat-tree/src/App.tsx",
+          "chat-tree/src/hooks/useConversationTree.ts",
+          "chat-tree/src/main.tsx",
         ],
         slicePaths: [
           {
-            path: "src/components/ConversationTree.tsx",
+            path: "chat-tree/src/components/ConversationTree.tsx",
             ranges: [{ start_line: 1, end_line: 180 }],
           },
         ],

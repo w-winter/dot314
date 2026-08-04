@@ -11,6 +11,7 @@ export interface RpWindow {
   id: number;
   workspace: string;
   roots: string[];
+  rootsUnavailableDiagnostic?: string;
   instance?: number;
 }
 
@@ -148,7 +149,7 @@ export interface RpConfig {
   readcacheReadFile?: boolean;     // When true, wrap read_file with hash/diff/unchanged caching (default: false)
 
   // Optional context UX: automatically update RepoPrompt selection based on read_file calls
-  // (tracks read slices/full files so chat_send/"Oracle" has context without manual selection)
+  // (tracks read slices/full files so Oracle has context without manual selection)
   autoSelectReadSlices?: boolean;  // When true, read_file calls add slices/full selection (default: true)
 
   // /rp oracle behavior

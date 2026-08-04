@@ -8,7 +8,10 @@ import repopromptMcp from "../dist/index.js";
 import { clearBinding, persistBinding } from "../dist/binding.js";
 import { getRpClient, RpClient, resetRpClient } from "../dist/client.js";
 import { OracleSendJobManager } from "../dist/oracle-send-jobs.js";
+import { routeStore } from "../dist/route-state.js";
 import { SteeringWaitCoordinator } from "../dist/steerable-waits.js";
+import { catalog as ceCatalog } from "./fixtures/ce-1.2/evidence.js";
+import { catalog as classicCatalog } from "./fixtures/classic-2.1.32/evidence.js";
 
 function deferred() {
   let resolve;
@@ -22,6 +25,49 @@ function deferred() {
 
 function textResult(text) {
   return { content: [{ type: "text", text }], isError: false };
+}
+
+function withRoutingContractTools(tools, app) {
+  const catalog = app === "classic" ? classicCatalog : ceCatalog;
+  return [
+    ...catalog.tools
+      .filter((tool) => tool.name === "bind_context" || tool.name === "manage_workspaces")
+      .map((tool) => structuredClone(tool)),
+    ...tools.filter((tool) => !["bind_context", "manage_workspaces"].includes(tool.name)),
+  ];
+}
+
+function canonicalInventoryResult(binding, repoRoot, activeApp) {
+  if (!binding) {
+    return textResult(JSON.stringify({
+      windows: [],
+      binding: { binding_kind: "unbound" },
+    }));
+  }
+  const tabs = binding.tab
+    ? [{
+        context_id: binding.tab,
+        name: "Pi Session",
+        is_active: true,
+        is_bound: true,
+        selected_file_count: 0,
+        repo_paths: [repoRoot],
+      }]
+    : [];
+  return textResult(JSON.stringify({
+    windows: [{
+      window_id: binding.windowId,
+      workspace: { id: `workspace-${binding.windowId}`, name: binding.workspace ?? "repo" },
+      ...(binding.tab ? { active_context_id: binding.tab } : {}),
+      tabs,
+    }],
+    binding: binding.tab
+      ? {
+          binding_kind: activeApp === "classic" ? "context" : "tab_context",
+          context_id: binding.tab,
+        }
+      : { binding_kind: "window", window_id: binding.windowId },
+  }));
 }
 
 async function expectRpError(promise, code) {
@@ -137,6 +183,9 @@ async function createHarness({
   tools,
   connect,
   callTool,
+  observeRoutingInventory,
+  oracleDefaultMode,
+  catalogFreshness = "fresh",
   resolveBackgroundWaitPolicy = () => ({ kind: "bounded", timeoutMs: 5 }),
 } = {}) {
   const originalHome = process.env.HOME;
@@ -147,11 +196,13 @@ async function createHarness({
   const originalCallTool = RpClient.prototype.callTool;
   const calls = [];
   let connectCalls = 0;
-  const availableTools = tools ?? [{
+  let observedBinding = binding ? { ...binding } : null;
+  const baseTools = tools ?? [{
     name: "oracle_send",
     description: "Consult Oracle",
     inputSchema: oracleSchema(activeApp === "classic" ? ["chat", "plan", "edit", "review"] : undefined),
   }];
+  const availableTools = withRoutingContractTools(baseTools, activeApp);
 
   process.env.HOME = tempHome;
   mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
@@ -164,6 +215,7 @@ async function createHarness({
     },
     autoBindOnStart: false,
     autoSelectReadSlices: false,
+    oracleDefaultMode,
   };
   const writeExtensionConfig = (overrides = {}) => {
     writeFileSync(extensionConfigPath, JSON.stringify({ ...extensionConfig, ...overrides }));
@@ -180,8 +232,8 @@ async function createHarness({
     this.client = {};
     this.transport = {};
     this._status = "connected";
-    this.toolListInvalidationGeneration = 0;
-    this.publishedToolListGeneration = 0;
+    this.toolListInvalidationGeneration = catalogFreshness === "stale" ? 1 : 0;
+    this.publishedToolListGeneration = catalogFreshness === "unavailable" ? null : 0;
     this._tools = availableTools;
   };
   RpClient.prototype.close = async function closeClient() {
@@ -193,6 +245,25 @@ async function createHarness({
   };
   RpClient.prototype.callTool = async function callToolClient(name, args = {}, _timeout, signal) {
     calls.push({ name, args, signal });
+    if (name === "bind_context" && args.op === "list") {
+      await observeRoutingInventory?.({ args, calls, observedBinding });
+      return canonicalInventoryResult(observedBinding, repoRoot, activeApp);
+    }
+    if (name === "bind_context" && args.op === "bind") {
+      observedBinding = observedBinding
+        ? { ...observedBinding, tab: args.context_id }
+        : { app: activeApp, windowId: args.window_id ?? 7, workspace: "repo", tab: args.context_id };
+      return textResult(`Selected tab \`${args.context_id}\``);
+    }
+    if (name === "manage_workspaces" && args.action === "create_tab") {
+      observedBinding = {
+        app: activeApp,
+        windowId: args.window_id,
+        workspace: observedBinding?.workspace ?? "repo",
+        tab: "TAB-NEW",
+      };
+      return textResult("Created tab `TAB-NEW` • Pi Session [bound]");
+    }
     if (callTool) {
       return callTool({ name, args, signal, calls });
     }
@@ -222,6 +293,9 @@ async function createHarness({
     rpTool: pi.getTool("rp"),
     config,
     writeExtensionConfig,
+    setObservedBinding(nextBinding) {
+      observedBinding = nextBinding ? { ...nextBinding } : null;
+    },
     async cleanup() {
       RpClient.prototype.connect = originalConnect;
       RpClient.prototype.close = originalClose;
@@ -271,7 +345,8 @@ test("rp starts waits and consumes one Oracle request without losing result cont
           model: "Review",
           new_chat: false,
           export_response: true,
-          _windowID: 999,
+          _windowID: 7,
+          context_id: "TAB-1",
         },
       },
       startController.signal,
@@ -282,10 +357,17 @@ test("rp starts waits and consumes one Oracle request without losing result cont
     assert.match(start.content[0].text, /oracle_send_wait/u);
     assert.equal(start.details.oracleSendJob.jobId, "oracle_integration_1");
     assert.equal(start.details.oracleSendJob.status, "running");
-    assert.deepEqual(start.details.oracleSendJob.target, { app: "ce", windowId: 7, tab: "TAB-1" });
+    assert.deepEqual(start.details.oracleSendJob.target, {
+      app: "ce",
+      windowId: 7,
+      tab: "TAB-1",
+      publicationGeneration: start.details.oracleSendJob.target.publicationGeneration,
+    });
+    assert.equal(Number.isInteger(start.details.oracleSendJob.target.publicationGeneration), true);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(oracleCalls, 1);
-    assert.deepEqual(harness.calls[0].args, {
+    const forwardedOracleCall = harness.calls.find((call) => call.name === "oracle_send");
+    assert.deepEqual(forwardedOracleCall.args, {
       message: "Review this",
       mode: "review",
       chat_id: "chat-1",
@@ -295,9 +377,9 @@ test("rp starts waits and consumes one Oracle request without losing result cont
       _windowID: 7,
       context_id: "TAB-1",
     });
-    assert.ok(harness.calls[0].signal instanceof AbortSignal);
+    assert.ok(forwardedOracleCall.signal instanceof AbortSignal);
     startController.abort();
-    assert.equal(harness.calls[0].signal.aborted, false);
+    assert.equal(forwardedOracleCall.signal.aborted, false);
 
     await expectRpError(
       harness.rpTool.execute(
@@ -606,7 +688,7 @@ test("rp starts omitted chat plan and review Oracle modes asynchronously", async
       );
       assert.equal(completed.content[0].text, oracleCase.message);
     }
-    assert.equal(harness.calls.length, cases.length);
+    assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, cases.length);
   } finally {
     for (const work of workByMessage.values()) {
       work.resolve(textResult("cleanup"));
@@ -781,7 +863,7 @@ test("rp lazy same-app reconnection resets the Oracle job epoch", async () => {
       harness.ctx,
     );
     assert.equal(oldSignal.aborted, true);
-    assert.equal(harness.calls.length, 2);
+    assert.equal(harness.calls.filter((entry) => entry.name === "oracle_send").length, 2);
     assert.notEqual(newStart.details.oracleSendJob.jobId, oldStart.details.oracleSendJob.jobId);
     await expectRpError(
       harness.rpTool.execute(
@@ -830,10 +912,10 @@ test("rp Oracle start abort during connection recovery prevents dispatch", async
     await new Promise((resolve) => setImmediate(resolve));
     controller.abort();
     await expectRpError(settleWithin(start), "oracle_send_start_aborted");
-    assert.equal(harness.calls.length, 0);
+    assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, 0);
     connectWork.resolve();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(harness.calls.length, 0);
+    assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, 0);
   } finally {
     connectWork.resolve();
     await harness.cleanup();
@@ -868,7 +950,7 @@ test("rp snapshots Oracle invocation before connection recovery", async () => {
     const started = await startPromise;
     assert.equal(started.details.tool, "oracle_send");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(harness.calls[0].args, {
+    assert.deepEqual(harness.calls.find((call) => call.name === "oracle_send").args, {
       message: "Original",
       mode: "review",
       options: { paths: ["src/original.ts"] },
@@ -881,42 +963,35 @@ test("rp snapshots Oracle invocation before connection recovery", async () => {
   }
 });
 
-test("rp Oracle start abort during tab recovery preserves the Oracle abort code", async () => {
-  const windowsWork = deferred();
+test("rp Oracle start rejects window intent without beginning tab recovery", async () => {
   const bindingWork = deferred();
   let blockBinding = false;
   const harness = await createHarness({
     tools: [
       { name: "oracle_send", description: "Consult Oracle", inputSchema: oracleSchema() },
       { name: "read_file", description: "Read", inputSchema: { type: "object" } },
-      { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
       { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
       { name: "manage_workspaces", description: "Manage workspaces", inputSchema: { type: "object" } },
       { name: "get_file_tree", description: "Get tree", inputSchema: { type: "object" } },
     ],
-    callTool: ({ name, args }) => {
-      if (name === "list_windows") return windowsWork.promise;
-      if (name === "bind_context" && args.op === "list" && blockBinding) return bindingWork.promise;
-      return textResult(`called ${name}`);
+    callTool: ({ name }) => textResult(`called ${name}`),
+    observeRoutingInventory: async () => {
+      if (blockBinding) {
+        await bindingWork.promise;
+      }
     },
   });
 
   try {
-    const initialRead = harness.rpTool.execute(
+    await harness.rpTool.execute(
       "oracle-tab-initial-read",
       { call: "read_file", args: { path: "src/initial.ts" } },
       undefined,
       undefined,
       harness.ctx,
     );
-    await new Promise((resolve) => setImmediate(resolve));
-    windowsWork.resolve(textResult("- Window `7` • WS: repo • Roots: 1"));
-    await initialRead;
-    persistBinding(
-      harness.pi,
-      { app: "ce", windowId: 7, workspace: "repo" },
-      harness.config,
-    );
+    routeStore.restoreIntent({ app: "ce", windowId: 7, workspace: "repo" });
+    harness.setObservedBinding({ app: "ce", windowId: 7, workspace: "repo" });
     blockBinding = true;
 
     const controller = new AbortController();
@@ -930,139 +1005,9 @@ test("rp Oracle start abort during tab recovery preserves the Oracle abort code"
     start.catch(() => {});
     await new Promise((resolve) => setImmediate(resolve));
     controller.abort();
-    await expectRpError(settleWithin(start), "oracle_send_start_aborted");
+    await expectRpError(settleWithin(start), "oracle_send_missing_tab_binding");
     bindingWork.resolve(textResult("## Tabs ✅\n\n- `TAB-1` • Pi Session [bound]"));
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, 0);
-  } finally {
-    bindingWork.resolve(textResult("## Tabs ✅"));
-    await harness.cleanup();
-  }
-});
-
-test("rp snapshots Oracle catalog identity before tab recovery", async () => {
-  const bindingWork = deferred();
-  let blockBinding = false;
-  const oracleTool = { name: "oracle_send", description: "Consult Oracle", inputSchema: oracleSchema() };
-  const harness = await createHarness({
-    tools: [
-      oracleTool,
-      { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
-      { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
-      { name: "manage_workspaces", description: "Manage workspaces", inputSchema: { type: "object" } },
-      { name: "get_file_tree", description: "Get tree", inputSchema: { type: "object" } },
-    ],
-    callTool: ({ name, args }) => {
-      if (name === "list_windows") return textResult("- Window `7` • WS: repo • Roots: 1");
-      if (name === "bind_context" && args.op === "list" && blockBinding) return bindingWork.promise;
-      if (name === "bind_context" && args.op === "bind") {
-        return textResult(`Selected tab \`${args.context_id}\``);
-      }
-      if (name === "manage_workspaces" && args.action === "create_tab") {
-        return textResult("Created tab `TAB-NEW` • Pi Session [bound]");
-      }
-      if (name === "oracle_send") throw new Error("provider rejected");
-      return textResult(`called ${name}`);
-    },
-  });
-
-  try {
-    await harness.rpTool.execute(
-      "oracle-connect-before-catalog-snapshot",
-      { describe: "oracle_send" },
-      undefined,
-      undefined,
-      harness.ctx,
-    );
-    persistBinding(
-      harness.pi,
-      { app: "ce", windowId: 7, workspace: "repo" },
-      harness.config,
-    );
-    blockBinding = true;
-
-    const startPromise = harness.rpTool.execute(
-      "oracle-catalog-snapshot",
-      { call: "oracle_send", args: { message: "Review", mode: "review" } },
-      undefined,
-      undefined,
-      harness.ctx,
-    );
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    oracleTool.name = "mutated_oracle_send";
-    oracleTool.inputSchema = {
-      type: "object",
-      properties: { mutated_field: { type: "string" } },
-      required: ["mutated_field"],
-    };
-    bindingWork.resolve(textResult("## Tabs ✅\n\n- `TAB-1` • Pi Session [bound]"));
-
-    const started = await startPromise;
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, 1);
-    const failed = await harness.rpTool.execute(
-      "oracle-catalog-snapshot-wait",
-      { call: "oracle_send_wait", args: { job_id: started.details.oracleSendJob.jobId } },
-      undefined,
-      undefined,
-      harness.ctx,
-    );
-    assert.match(failed.content[0].text, /chat_id/u);
-    assert.doesNotMatch(failed.content[0].text, /mutated_field/u);
-  } finally {
-    bindingWork.resolve(textResult("## Tabs ✅"));
-    await harness.cleanup();
-  }
-});
-
-test("rp lifecycle reset during failing tab recovery reports start cancellation", async () => {
-  const bindingWork = deferred();
-  let blockBinding = false;
-  const harness = await createHarness({
-    tools: [
-      { name: "oracle_send", description: "Consult Oracle", inputSchema: oracleSchema() },
-      { name: "list_windows", description: "List windows", inputSchema: { type: "object" } },
-      { name: "bind_context", description: "Bind context", inputSchema: { type: "object" } },
-      { name: "manage_workspaces", description: "Manage workspaces", inputSchema: { type: "object" } },
-      { name: "get_file_tree", description: "Get tree", inputSchema: { type: "object" } },
-    ],
-    callTool: ({ name, args }) => {
-      if (name === "list_windows") return textResult("- Window `7` • WS: repo • Roots: 1");
-      if (name === "bind_context" && args.op === "list" && blockBinding) return bindingWork.promise;
-      return textResult(`called ${name}`);
-    },
-  });
-
-  try {
-    await harness.rpTool.execute(
-      "oracle-connect-before-failing-tab-recovery",
-      { describe: "oracle_send" },
-      undefined,
-      undefined,
-      harness.ctx,
-    );
-    persistBinding(
-      harness.pi,
-      { app: "ce", windowId: 7, workspace: "repo" },
-      harness.config,
-    );
-    blockBinding = true;
-
-    const start = harness.rpTool.execute(
-      "oracle-reset-failing-tab-recovery",
-      { call: "oracle_send", args: { message: "Review", mode: "review" } },
-      undefined,
-      undefined,
-      harness.ctx,
-    );
-    start.catch(() => {});
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    await harness.pi.emit("session_shutdown", harness.ctx);
-    bindingWork.reject(new Error("binding unavailable after reset"));
-
-    await expectRpError(settleWithin(start), "oracle_send_start_cancelled");
     assert.equal(harness.calls.filter((call) => call.name === "oracle_send").length, 0);
   } finally {
     bindingWork.resolve(textResult("## Tabs ✅"));
@@ -1134,6 +1079,136 @@ test("slash rp oracle remains synchronous and does not expose a job ID", async (
     assert.equal(harness.ctx.notifications.some(({ message }) => /oracle_/u.test(message)), false);
   } finally {
     oracleWork.resolve(textResult("cleanup"));
+    await harness.cleanup();
+  }
+});
+
+test("slash rp oracle help and edit behavior follow the selected target contract", async () => {
+  const ceHarness = await createHarness();
+  try {
+    await ceHarness.pi.getCommand("rp").handler("oracle", ceHarness.ctx);
+    const ceHelp = ceHarness.ctx.notifications.at(-1).message;
+    assert.match(ceHelp, /RepoPrompt CE \(ce\) target ce-1\.2/u);
+    assert.match(ceHelp, /chat\|plan\|review/u);
+    assert.doesNotMatch(ceHelp, /edit/u);
+
+    await ceHarness.pi.getCommand("rp").handler("oracle --mode edit Change this", ceHarness.ctx);
+    const ceEditError = ceHarness.ctx.notifications.at(-1).message;
+    assert.match(ceEditError, /Oracle mode "edit" is not supported by RepoPrompt CE \(ce\) target ce-1\.2/u);
+    assert.match(ceEditError, /Supported modes: chat\|plan\|review/u);
+    assert.equal(ceHarness.calls.some((call) => call.name === "oracle_send"), false);
+  } finally {
+    await ceHarness.cleanup();
+  }
+
+  const classicHarness = await createHarness({ activeApp: "classic" });
+  try {
+    await classicHarness.pi.getCommand("rp").handler("oracle", classicHarness.ctx);
+    const classicHelp = classicHarness.ctx.notifications.at(-1).message;
+    assert.match(classicHelp, /RepoPrompt Classic \(classic\) target classic-2\.1\.32/u);
+    assert.match(classicHelp, /chat\|plan\|edit\|review/u);
+
+    await classicHarness.pi.getCommand("rp").handler("oracle --mode edit Change this", classicHarness.ctx);
+    assert.equal(classicHarness.calls.some((call) => call.name === "oracle_send" && call.args.mode === "edit"), true);
+  } finally {
+    await classicHarness.cleanup();
+  }
+});
+
+test("slash rp oracle names the target when the configured default mode is unsupported", async () => {
+  const harness = await createHarness({ oracleDefaultMode: "edit" });
+
+  try {
+    await harness.pi.getCommand("rp").handler("oracle Review this", harness.ctx);
+    const diagnostic = harness.ctx.notifications.at(-1).message;
+    assert.match(diagnostic, /Configured oracleDefaultMode "edit"/u);
+    assert.match(diagnostic, /RepoPrompt CE \(ce\) target ce-1\.2/u);
+    assert.match(diagnostic, /Supported modes: chat\|plan\|review/u);
+    assert.equal(harness.calls.some((call) => call.name === "oracle_send"), false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("Oracle schema drift blocks only slash Oracle while additive generic tools stay visible", async () => {
+  const harness = await createHarness({
+    tools: [
+      {
+        name: "oracle_send",
+        description: "Consult Oracle",
+        inputSchema: oracleSchema(["chat", "plan"]),
+      },
+      {
+        name: "future_tool",
+        description: "Additive generic tool",
+        inputSchema: { type: "object", properties: { value: { type: "integer" } } },
+      },
+    ],
+  });
+
+  try {
+    await harness.pi.getCommand("rp").handler("oracle --mode chat Ask", harness.ctx);
+    const diagnostic = harness.ctx.notifications.at(-1).message;
+    assert.match(diagnostic, /Oracle is unavailable for RepoPrompt CE \(ce\) target ce-1\.2/u);
+    assert.match(diagnostic, /oracle_send\.mode does not advertise review/u);
+    assert.equal(harness.calls.some((call) => call.name === "oracle_send"), false);
+
+    const search = await harness.rpTool.execute(
+      "search-additive",
+      { search: "future_tool" },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    assert.deepEqual(search.details.matches, ["future_tool"]);
+
+    const forwarded = await harness.rpTool.execute(
+      "call-additive",
+      { call: "future_tool", args: { value: 7 } },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    assert.equal(forwarded.content[0].text, "called future_tool");
+    assert.equal(harness.calls.some((call) => call.name === "future_tool" && call.args.value === 7), true);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("slash Oracle rejects stale capability evidence without hiding generic tools", async () => {
+  const harness = await createHarness({
+    catalogFreshness: "stale",
+    tools: [
+      {
+        name: "oracle_send",
+        description: "Consult Oracle",
+        inputSchema: oracleSchema(),
+      },
+      {
+        name: "future_tool",
+        description: "Additive generic tool",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ],
+  });
+
+  try {
+    await harness.pi.getCommand("rp").handler("oracle --mode plan Ask", harness.ctx);
+    const diagnostic = harness.ctx.notifications.at(-1).message;
+    assert.match(diagnostic, /RepoPrompt routing requires a fresh compatible tool catalog/u);
+    assert.match(diagnostic, /current catalog is stale/u);
+    assert.equal(harness.calls.some((call) => call.name === "oracle_send"), false);
+
+    const search = await harness.rpTool.execute(
+      "search-stale-additive",
+      { search: "future_tool" },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    assert.deepEqual(search.details.matches, ["future_tool"]);
+  } finally {
     await harness.cleanup();
   }
 });

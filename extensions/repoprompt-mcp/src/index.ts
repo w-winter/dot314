@@ -39,20 +39,40 @@ import type {
 import { ACTIVE_APP_ENTRY_TYPE, AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE, RP_APP_IDS } from "./types.js";
 import { getAppCliCommand, getAppLabel, getAppTargetConfig, getServerCommand, inferAppPath, loadConfig } from "./config.js";
 import { getRpClient, resetRpClient } from "./client.js";
+import type { ToolCatalogRevisionToken } from "./client.js";
 import {
   getBinding,
+  getVerifiedBinding,
+  getRouteSelectorDecision,
+  getRouteState,
+  getRouteStatusSnapshot,
   clearBinding,
   restoreBinding,
+  adoptObservedStickyRoute,
   autoDetectAndBind,
   bindToWindow,
   bindToTab,
   createAndBindTab,
   ensureBindingHasTab,
+  establishRoutingInventoryContract,
   fetchWindowTabs,
   fetchWindows,
+  executeLeasedRouteDependentCall,
+  executeRoutingMutation,
   findRecoveryWindowBySelectionPaths,
-  getBindingArgs,
+  issueLeasedRouteDispatch,
+  quarantineRoute,
+  reconcileObservedInventoryRoute,
+  routeDispatchLeaseBinding,
+  routeDispatchLeaseIsCurrent,
+  observeRouteStatus,
+  resetRoutingInventoryContractSession,
+  runRouteChange,
+  waitForRoutePublication,
+  RoutingMutationBlockedError,
 } from "./binding.js";
+import type { RouteStatusObservation, RoutingMutationIssuanceGuard } from "./binding.js";
+import { displayIdentityFor, routeStore, type RouteDispatchLease } from "./route-state.js";
 import {
   createAdaptiveDiffAwareOutputComponent,
   containsFencedDiffBlock,
@@ -61,11 +81,20 @@ import {
 } from "./render.js";
 import { checkGuards, normalizeToolName, isNoopEdit, isEditOperation } from "./guards.js";
 import { normalizeToolResultText } from "./result-normalization.js";
-import { buildForwardedUserArgs } from "./tool-forwarding-policy.js";
+import {
+  buildForwardedCallArgs,
+  buildForwardedUserArgs,
+  classifyForwardingOperation,
+  isRoutingMutationClass,
+  operationForTool,
+  type OperationClassification,
+} from "./tool-forwarding-policy.js";
 import { normalizeFileActionResult } from "./file-action-normalization.js";
 import { summarizeRpCall, summarizeRpResult } from "./presentation-summary.js";
 import { extractJsonContent, extractTextContent } from "./mcp-json.js";
 import { resolveToolName } from "./tool-names.js";
+import { targetContractForApp } from "./target-contract.js";
+import type { TargetCapabilities } from "./target-contract.js";
 import {
   ContextBuilderJobError,
   ContextBuilderJobManager,
@@ -115,6 +144,14 @@ import {
   setPendingTransitionTargetState,
 } from "./transition-state.js";
 import type { PendingTransitionRetryMode, PendingTransitionTargetIdentity } from "./transition-state.js";
+
+function requireVerifiedRouteArgs(): Readonly<Record<string, unknown>> {
+  const decision = getRouteSelectorDecision({});
+  if (decision.kind !== "selectors") {
+    throw new Error(decision.diagnostic);
+  }
+  return decision.args;
+}
 
 function parseSummaryCount(value: string | undefined): number | undefined {
   if (!value) {
@@ -532,22 +569,20 @@ export function planAutoSelectSliceUpdate(args: {
   };
 }
 
-async function resolveLiveBindingTabLabel(binding: RpBinding | null): Promise<string | null> {
+async function resolveLiveBindingTabLabel(
+  binding: RpBinding | null,
+  config: RpConfig
+): Promise<string | null> {
   const client = getRpClient();
-  if (!binding?.tab) {
+  if (!binding?.tab || !client.isConnected) {
     return null;
   }
 
-  const fallbackLabel = `${binding.tab} [bound]`;
-  if (!client.isConnected) {
-    return fallbackLabel;
-  }
-
   try {
-    const tabs = await fetchWindowTabs(binding.windowId, client);
+    const tabs = await fetchWindowTabs(binding.windowId, client, config);
     const liveTab = tabs.find((tab) => tab.id === binding.tab || tab.name === binding.tab);
     if (!liveTab) {
-      return fallbackLabel;
+      return null;
     }
 
     if (liveTab.isActive === true) {
@@ -558,7 +593,7 @@ async function resolveLiveBindingTabLabel(binding: RpBinding | null): Promise<st
     }
     return `${liveTab.name} [bound]`;
   } catch {
-    return fallbackLabel;
+    return null;
   }
 }
 
@@ -855,6 +890,84 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     return `${activeAppLabel(app)} (${app})`;
   }
 
+  type FreshRoutingContractDecision =
+    | {
+        readonly kind: "supported";
+        readonly capabilities: TargetCapabilities;
+        readonly toolCatalogFreshness: ToolCatalogFreshness;
+        readonly catalogRevision: ToolCatalogRevisionToken;
+      }
+    | {
+        readonly kind: "blocked";
+        readonly error: "catalog_changed" | "catalog_stale" | "unsupported_contract";
+        readonly message: string;
+        readonly toolCatalogFreshness: ToolCatalogFreshness;
+        readonly catalogRevision: ToolCatalogRevisionToken;
+      };
+
+  function inspectFreshRoutingContract(
+    expectedRevision?: ToolCatalogRevisionToken
+  ): FreshRoutingContractDecision {
+    const client = getRpClient();
+    if (expectedRevision && !client.ownsToolCatalogRevision(expectedRevision)) {
+      return {
+        kind: "blocked",
+        error: "catalog_changed",
+        message:
+          "RepoPrompt tool catalog changed after routing classification; restart the call against the new catalog",
+        toolCatalogFreshness: client.toolCatalogFreshness,
+        catalogRevision: expectedRevision,
+      };
+    }
+    const catalogRevision = expectedRevision ?? client.captureToolCatalogRevision();
+    const toolCatalogFreshness = catalogRevision.freshness;
+    if (toolCatalogFreshness !== "fresh") {
+      return {
+        kind: "blocked",
+        error: "catalog_stale",
+        message:
+          "RepoPrompt routing requires a fresh compatible tool catalog; current catalog is " +
+          toolCatalogFreshness,
+        toolCatalogFreshness,
+        catalogRevision,
+      };
+    }
+
+    const contract = targetContractForApp(activeApp);
+    const result = contract.inspectCapabilities(client.tools);
+    if (result.kind === "unsupported") {
+      const message =
+        `Unsupported ${activeAppLabel()} routing contract: ${result.diagnostics.join("; ")}`;
+      clearBinding();
+      extensionPaused = true;
+      return {
+        kind: "blocked",
+        error: "unsupported_contract",
+        message,
+        toolCatalogFreshness,
+        catalogRevision,
+      };
+    }
+
+    return {
+      kind: "supported",
+      capabilities: result.capabilities,
+      toolCatalogFreshness,
+      catalogRevision,
+    };
+  }
+
+  function routingMutationIssuanceGuard(expectedRevision: ToolCatalogRevisionToken) {
+    return {
+      validate() {
+        const decision = inspectFreshRoutingContract(expectedRevision);
+        return decision.kind === "blocked"
+          ? { kind: "blocked" as const, error: decision.error, diagnostic: decision.message }
+          : { kind: "allowed" as const };
+      },
+    };
+  }
+
   function findLatestSessionApp(ctx: ExtensionContext, fallback: RpAppId): RpAppId {
     const entries = ctx.sessionManager.getBranch();
 
@@ -984,6 +1097,8 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     backgroundJobLifecycleGeneration += 1;
     contextBuilderJobs.reset(reason);
     oracleSendJobs.reset(reason);
+    clearBinding();
+    resetRoutingInventoryContractSession();
     await resetRpClient();
   }
 
@@ -1654,6 +1769,8 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
 
   async function ensureBindingTargetsLiveWindow(
     ctx: ExtensionContext,
+    issuanceGuard: ReturnType<typeof routingMutationIssuanceGuard>,
+    signal: AbortSignal | undefined,
     options: {
       provisionTab?: boolean;
       recoverClosedTab?: boolean;
@@ -1669,18 +1786,14 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
 
     const client = getRpClient();
     if (!client.isConnected) {
-      return binding;
+      return getVerifiedBinding();
     }
 
-    let windows: RpWindow[];
-    try {
-      windows = await fetchWindows(pi, config);
-    } catch {
-      return binding;
-    }
-
+    const windows = await fetchWindows(pi, config, client, signal);
+    signal?.throwIfAborted();
     if (windows.length === 0) {
-      return binding;
+      clearBinding();
+      return null;
     }
 
     let liveBinding = binding;
@@ -1693,16 +1806,33 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
 
       const workspaceMatches = windows.filter((w) => w.workspace === binding.workspace);
       const rootRecovery = options.recoveryPaths && options.recoveryPaths.length > 0
-        ? await findRecoveryWindowBySelectionPaths(windows, options.recoveryPaths, ctx.cwd)
+        ? await findRecoveryWindowBySelectionPaths(windows, options.recoveryPaths, ctx.cwd, signal)
         : { window: null, ambiguous: false, matches: [] };
       const match = workspaceMatches.length === 1 ? workspaceMatches[0] : rootRecovery.window;
 
       if (match) {
         try {
-          liveBinding = await bindToWindow(pi, match.id, binding.tab, config);
-        } catch {
+          liveBinding = await bindToWindow(
+            pi,
+            match.id,
+            undefined,
+            config,
+            undefined,
+            signal,
+            ctx,
+            issuanceGuard
+          );
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (error instanceof RoutingMutationBlockedError) {
+            throw error;
+          }
           clearBinding();
-          return null;
+          const diagnostic = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `RepoPrompt failed to verify replacement window ${match.id} for workspace "${binding.workspace}": ${diagnostic}`,
+            { cause: error },
+          );
         }
       } else {
         clearBinding();
@@ -1740,24 +1870,30 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
         createIfMissing: options.provisionTab !== false,
         recoverIfMissing: options.recoverClosedTab === true && options.hasRecoverableState === true,
         reuseSoleEmptyTab: options.reuseSoleEmptyTab === true,
-      });
-    } catch {
-      if (ctx.hasUI && options.provisionTab !== false) {
-        ctx.ui.notify(
-          `RepoPrompt: failed to provision a safe tab for window ${liveBinding.windowId}; keeping current binding.`,
-          "warning"
-        );
-      }
-      return getBinding();
+      }, signal, issuanceGuard);
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw error;
     }
   }
 
   async function syncAutoSelectionToCurrentBranch(
     ctx: ExtensionContext,
     options: AutoSelectionSyncOptions = reconnectAutoSelectionSyncOptions(),
-    pendingTargetPolicy: "reuse" | "refresh" = "reuse"
+    pendingTargetPolicy: "reuse" | "refresh" = "reuse",
+    expectedRevision?: ToolCatalogRevisionToken,
+    signal?: AbortSignal
   ): Promise<RpBinding | null> {
+    const contractDecision = inspectFreshRoutingContract(expectedRevision);
+    if (contractDecision.kind === "blocked") {
+      if (ctx.hasUI) {
+        ctx.ui.notify(contractDecision.message, "warning");
+      }
+      return null;
+    }
+
     return await runAutoSelectionUpdate(async () => {
+      signal?.throwIfAborted();
       const transitionTargetIdentity = getPendingTransitionTargetIdentity(ctx);
       const pendingTransitionState = getPendingTransitionState();
       const pendingTargetMatchesCurrentSession = samePendingTransitionTargetIdentity(
@@ -1786,11 +1922,17 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
 
       const recoveryPaths = desiredStateBeforeRecovery ? autoSelectionManagedPaths(desiredStateBeforeRecovery) : [];
       const hasRecoverableState = recoveryPaths.length > 0;
-      const liveBinding = await ensureBindingTargetsLiveWindow(ctx, {
-        ...options,
-        hasRecoverableState,
-        recoveryPaths,
-      });
+      const liveBinding = await ensureBindingTargetsLiveWindow(
+        ctx,
+        routingMutationIssuanceGuard(contractDecision.catalogRevision),
+        signal,
+        {
+          ...options,
+          hasRecoverableState,
+          recoveryPaths,
+        }
+      );
+      signal?.throwIfAborted();
 
       if (config.autoSelectReadSlices !== true) {
         clearPendingTransitionSelectionState();
@@ -1827,6 +1969,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
       await reconcileAutoSelectionStates(sourceState, desiredState, {
         preserveSourceSelection: options.preserveSourceSelection,
       });
+      signal?.throwIfAborted();
 
       if (recoveredState && desiredState) {
         persistAutoSelectionState(desiredState);
@@ -1876,7 +2019,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
-   * Finish a freshly established connection: bind a window, then reconcile branch selection
+   * Finish a freshly established connection: observe routing state, then reconcile branch selection
    *
    * Runs outside the serialized connection transition so a slow RepoPrompt window or selection
    * operation cannot delay an explicit reconnect, app switch, or shutdown
@@ -1886,26 +2029,82 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     syncOptions: AutoSelectionSyncOptions,
     pendingTargetPolicy: "reuse" | "refresh",
     lifecycleSignal: AbortSignal,
+    allowTabRecovery: boolean,
   ): Promise<void> {
+    const contractDecision = inspectFreshRoutingContract();
+    if (contractDecision.kind === "blocked") {
+      if (ctx.hasUI) {
+        ctx.ui.notify(contractDecision.message, "warning");
+      }
+      return;
+    }
+
+    let observedWindowOnly = false;
     try {
-      await autoBindAfterConnect(pi, ctx, config, lifecycleSignal);
-    } catch {
+      const stickyRoute = await adoptObservedStickyRoute(
+        pi,
+        config,
+        getRpClient(),
+        lifecycleSignal
+      );
+      lifecycleSignal.throwIfAborted();
+      observedWindowOnly = stickyRoute.kind === "intent";
+      if (stickyRoute.kind === "conflict" && ctx.hasUI) {
+        ctx.ui.notify(
+          `${activeAppLabel()}: ${stickyRoute.diagnostic}. Restoring this branch's route explicitly.`,
+          "warning"
+        );
+      }
+      await autoBindAfterConnect(
+        pi,
+        ctx,
+        config,
+        lifecycleSignal,
+        routingMutationIssuanceGuard(contractDecision.catalogRevision)
+      );
+    } catch (error) {
       if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
         return;
       }
+      const diagnostic = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[repoprompt-mcp] app=${activeApp} route=intent operation_class=routing_observation ` +
+        `cause=connection_recovery_failed: ${diagnostic.split(/\r?\n/u, 1)[0]}`
+      );
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `${activeAppLabel()}: route observation failed. Run /rp bind or /rp reconnect to retry.`,
+          "warning"
+        );
+      }
+      return;
+    }
+
+    if (!allowTabRecovery && observedWindowOnly) {
+      return;
     }
 
     try {
-      await syncAutoSelectionToCurrentBranch(ctx, syncOptions, pendingTargetPolicy);
+      await syncAutoSelectionToCurrentBranch(
+        ctx,
+        syncOptions,
+        pendingTargetPolicy,
+        contractDecision.catalogRevision,
+        lifecycleSignal
+      );
     } catch (err) {
       if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
         return;
       }
       // The pending transition target is retained by the sync itself, so the next reconnect retries it
+      const diagnostic = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[repoprompt-mcp] app=${activeApp} route=intent operation_class=selection_recovery ` +
+        `cause=recovery_failed: ${diagnostic.split(/\r?\n/u, 1)[0]}`
+      );
       if (ctx.hasUI) {
         ctx.ui.notify(
-          `${activeAppLabel()}: selection recovery failed (${err instanceof Error ? err.message : err}). ` +
-          "Run /rp reconnect to retry.",
+          `${activeAppLabel()}: selection recovery failed. Run /rp bind or /rp reconnect to retry.`,
           "warning"
         );
       }
@@ -1934,7 +2133,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
             clearRootsCache();
             await initializeExtension(pi, ctx, config, markConnectedApp, signal);
           });
-          await completeConnectionRecovery(ctx, syncOptions, "refresh", lifecycleSignal);
+          await completeConnectionRecovery(ctx, syncOptions, "refresh", lifecycleSignal, false);
           return;
         } catch {
           if (!connectionLifecycleIsCurrent(lifecycleSignal)) {
@@ -2010,7 +2209,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
             return;
           }
           initPromise = null;
-          await completeConnectionRecovery(ctx, syncOptions, "refresh", lifecycleSignal);
+          await completeConnectionRecovery(ctx, syncOptions, "refresh", lifecycleSignal, false);
         },
         async () => {
           if (initPromise !== pendingInit || !connectionLifecycleIsCurrent(lifecycleSignal)) {
@@ -2086,8 +2285,21 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
         return;
       }
 
+      let commandCatalogRevision: ToolCatalogRevisionToken | undefined;
       if (!alwaysAllowed.has(subcommand)) {
-        await ensureConnected(ctx, { syncAutoSelection: subcommand !== "tab" });
+        const routingContractSubcommand = subcommand === "windows"
+          || subcommand === "bind"
+          || subcommand === "tab"
+          || subcommand === "oracle";
+        await ensureConnected(ctx, { syncAutoSelection: !routingContractSubcommand });
+        if (routingContractSubcommand) {
+          const contractDecision = inspectFreshRoutingContract();
+          if (contractDecision.kind === "blocked") {
+            ctx.ui.notify(contractDecision.message, "error");
+            return;
+          }
+          commandCatalogRevision = contractDecision.catalogRevision;
+        }
       }
 
       switch (subcommand) {
@@ -2152,12 +2364,32 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
             windowId = parsed;
           }
 
+          if (!commandCatalogRevision) {
+            throw new Error("Routing contract revision was not captured for interactive bind");
+          }
+          const issuanceGuard = routingMutationIssuanceGuard(commandCatalogRevision);
           try {
             let binding = tab
-              ? await bindToTab(pi, windowId, tab, config)
-              : await bindToWindow(pi, windowId, undefined, config);
+              ? await bindToTab(pi, windowId, tab, config, undefined, undefined, issuanceGuard)
+              : await bindToWindow(
+                  pi,
+                  windowId,
+                  undefined,
+                  config,
+                  undefined,
+                  undefined,
+                  ctx,
+                  issuanceGuard
+                );
 
-            binding = (await syncAutoSelectionToCurrentBranch(ctx)) ?? binding;
+            binding = (
+              await syncAutoSelectionToCurrentBranch(
+                ctx,
+                reconnectAutoSelectionSyncOptions(),
+                "reuse",
+                commandCatalogRevision
+              )
+            ) ?? binding;
             const tabLabel = await resolveBindingTabLabel(binding);
             ctx.ui.notify(
               `Bound to window ${binding.windowId}` +
@@ -2176,6 +2408,10 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
           const rest = rawArgs.replace(/^tab\b/i, "").trim();
           const argv = splitCommandLine(rest);
           const requested = argv.join(" ").trim();
+          if (!commandCatalogRevision) {
+            throw new Error("Routing contract revision was not captured for interactive tab binding");
+          }
+          const issuanceGuard = routingMutationIssuanceGuard(commandCatalogRevision);
 
           try {
             const window = await resolveWindowForTabCommand(ctx, pi, config);
@@ -2192,7 +2428,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
                 return;
               }
 
-              const tabs = await fetchWindowTabs(window.id);
+              const tabs = await fetchWindowTabs(window.id, getRpClient(), config);
               const selected = await promptForTabSelection(ctx, tabs);
               if (!selected) {
                 ctx.ui.notify("Cancelled", "info");
@@ -2200,12 +2436,35 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
               }
 
               binding = selected.kind === "create"
-                ? await createAndBindTab(pi, window.id, config)
-                : await bindToTab(pi, window.id, selected.tab.id, config);
+                ? await createAndBindTab(pi, window.id, config, undefined, undefined, issuanceGuard)
+                : await bindToTab(
+                    pi,
+                    window.id,
+                    selected.tab.id,
+                    config,
+                    undefined,
+                    undefined,
+                    issuanceGuard
+                  );
             } else if (/^new$/i.test(requested)) {
-              binding = await createAndBindTab(pi, window.id, config);
+              binding = await createAndBindTab(
+                pi,
+                window.id,
+                config,
+                undefined,
+                undefined,
+                issuanceGuard
+              );
             } else {
-              binding = await bindToTab(pi, window.id, requested, config);
+              binding = await bindToTab(
+                pi,
+                window.id,
+                requested,
+                config,
+                undefined,
+                undefined,
+                issuanceGuard
+              );
             }
 
             binding = adoptAutoSelectionStateForBinding(ctx, binding);
@@ -2223,12 +2482,16 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
         }
 
         case "oracle": {
+          const targetContract = targetContractForApp(activeApp);
+          const targetName = `${activeAppDisplay()} target ${targetContract.id}`;
+          const expectedModeText = targetContract.oracleModes.join("|");
           const rawArgs = args.trim();
           const rest = rawArgs.replace(/^oracle\b/i, "").trim();
 
           if (!rest) {
             ctx.ui.notify(
-              "Usage: /rp oracle [--mode <chat|plan|edit|review>] [--name <chat name>] [--continue|--chat-id <id>] <message>",
+              `Usage for ${targetName}: /rp oracle [--mode <${expectedModeText}>] ` +
+                "[--name <chat name>] [--continue|--chat-id <id>] <message>",
               "error"
             );
             return;
@@ -2275,28 +2538,40 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
 
           const message = messageParts.join(" ").trim();
           if (!message) {
-            ctx.ui.notify("No message provided", "error");
-            return;
-          }
-
-          const resolvedMode = mode ?? config.oracleDefaultMode ?? "chat";
-          const allowedModes = new Set(["chat", "plan", "edit", "review"]);
-          if (!allowedModes.has(resolvedMode)) {
-            ctx.ui.notify(
-              `Invalid oracle mode "${resolvedMode}". Use chat|plan|edit|review (or set oracleDefaultMode accordingly).`,
-              "error"
-            );
+            ctx.ui.notify(`No Oracle message provided for ${targetName}`, "error");
             return;
           }
 
           const client = getRpClient();
+          const contractDecision = inspectFreshRoutingContract();
+          if (contractDecision.kind === "blocked") {
+            ctx.ui.notify(contractDecision.message, "error");
+            return;
+          }
+
+          const oracleCapability = contractDecision.capabilities.oracle;
+          if (oracleCapability.kind === "unavailable") {
+            ctx.ui.notify(`Oracle is unavailable for ${targetName}: ${oracleCapability.diagnostic}`, "error");
+            return;
+          }
+
+          const supportedModeText = oracleCapability.value.modes.join("|");
+          const resolvedMode = mode ?? config.oracleDefaultMode ?? "chat";
+          const allowedModes = new Set<string>(oracleCapability.value.modes);
+          if (!allowedModes.has(resolvedMode)) {
+            const modeDiagnostic = mode === undefined && config.oracleDefaultMode !== undefined
+              ? `Configured oracleDefaultMode "${resolvedMode}" is not supported by ${targetName}.`
+              : `Oracle mode "${resolvedMode}" is not supported by ${targetName}.`;
+            ctx.ui.notify(`${modeDiagnostic} Supported modes: ${supportedModeText}.`, "error");
+            return;
+          }
 
           try {
             await ensureTabScopedBinding(ctx, "RepoPrompt binding has no tab. Use /rp bind or /rp tab new first.");
 
             const oracleSendToolName = resolveToolName(client.tools, "oracle_send");
             if (!oracleSendToolName) {
-              ctx.ui.notify("RepoPrompt tool 'oracle_send' not available", "error");
+              ctx.ui.notify(`Oracle is unavailable for ${targetName}: oracle_send is no longer advertised`, "error");
               return;
             }
 
@@ -2304,14 +2579,42 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
               new_chat: newChat,
               message,
               mode: resolvedMode,
-              ...getBindingArgs(),
             };
 
             if (chatName) callArgs.chat_name = chatName;
             if (chatId) callArgs.chat_id = chatId;
 
-            const result = await client.callTool(oracleSendToolName, callArgs);
-
+            const issued = await issueLeasedRouteDispatch({}, (lease) => {
+              const issuanceDecision = inspectFreshRoutingContract(contractDecision.catalogRevision);
+              if (issuanceDecision.kind === "blocked") {
+                return { kind: "blocked" as const, decision: issuanceDecision };
+              }
+              return {
+                kind: "started" as const,
+                request: executeLeasedRouteDependentCall(
+                  lease,
+                  config,
+                  client,
+                  () => client.callTool(
+                    oracleSendToolName,
+                    buildForwardedCallArgs({
+                      forwardingClass: "route_dependent",
+                      userArgs: callArgs,
+                      verifiedSelectors: lease.selectors,
+                    })
+                  )
+                ),
+              };
+            });
+            if (issued.kind === "blocked" || issued.kind === "conflict") {
+              ctx.ui.notify(issued.diagnostic, "error");
+              return;
+            }
+            if (issued.request.kind === "blocked") {
+              ctx.ui.notify(issued.request.decision.message, "error");
+              return;
+            }
+            const result = await issued.request.request;
             const text = extractTextContent(result.content);
 
             if (result.isError) {
@@ -2351,7 +2654,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
               signal.throwIfAborted();
               registerConnectionRecovery(
                 signal,
-                completeConnectionRecovery(ctx, reconnectAutoSelectionSyncOptions(), "reuse", signal),
+                completeConnectionRecovery(ctx, reconnectAutoSelectionSyncOptions(), "reuse", signal, true),
               );
             });
             await awaitConnectionRecovery(lifecycleSignal);
@@ -2382,20 +2685,24 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
           break;
         }
 
-        default:
+        default: {
+          const targetContract = targetContractForApp(activeApp);
+          const oracleModes = targetContract.oracleModes.join("|");
           ctx.ui.notify(
-            "RepoPrompt commands:\n" +
+            `RepoPrompt commands for ${activeAppDisplay()} target ${targetContract.id}:\n` +
             "  /rp status                               - Show connection and binding status\n" +
             "  /rp app [ce|classic]                     - Show or switch the active RepoPrompt app\n" +
             "  /rp windows                              - List available windows\n" +
             "  /rp bind                                 - Open the interactive picker and bind\n" +
             "  /rp bind <id> [tab]                      - Direct/advanced bind when you already know the ids\n" +
-            "  /rp oracle [opts] <message>              - Start/continue a RepoPrompt chat with current selection\n" +
+            `  /rp oracle [--mode <${oracleModes}>] <message> - Start/continue Oracle with current selection\n` +
             "  /rp reconnect                            - Reconnect to RepoPrompt\n" +
             "  /rp readcache-status                     - Show read_file cache status\n" +
             "  /rp readcache-refresh <path> [start-end] - Invalidate cached trust for next read_file",
             "info"
           );
+          break;
+        }
       }
     },
   });
@@ -2451,15 +2758,38 @@ Mode priority: call > describe > search > windows > bind > status`,
                 ? "bind"
                 : "status";
       const normalizedCall = mode === "call" ? normalizeToolName(params.call ?? "") : "";
+      const preflightOperation = mode === "call"
+        ? operationForTool(normalizedCall, (params.args ?? {}) as Record<string, unknown>)
+        : undefined;
+      const preflightClassification = mode === "call"
+        ? classifyForwardingOperation(normalizedCall, preflightOperation)
+        : null;
+      if (preflightClassification?.kind === "rejected") {
+        return {
+          content: [{ type: "text" as const, text: preflightClassification.diagnostic }],
+          details: { mode: "call", error: "blocked", tool: normalizedCall },
+          isError: true,
+        };
+      }
+      const resolvedCallClassification = preflightClassification?.kind === "classified"
+        ? preflightClassification
+        : null;
+      const preflightForwardingClass = resolvedCallClassification?.forwardingClass ?? null;
+      const explicitRoutingBoundary = mode === "windows" || mode === "bind"
+        || preflightForwardingClass === "routing_observation"
+        || preflightForwardingClass === "routing_mutation"
+        || preflightForwardingClass === "workspace_observation"
+        || preflightForwardingClass === "workspace_routing_mutation";
       const backgroundProtocol = backgroundStartProtocolFor(normalizedCall);
       const executionParams = backgroundProtocol
         ? { ...params, args: structuredClone(params.args ?? {}) }
         : params;
       const waitingForBackgroundJob = isLocalWaitTool(normalizedCall);
+      const localDiagnosticMode = mode === "status" || mode === "search" || mode === "describe";
       if (backgroundProtocol && signal?.aborted) {
         throwBackgroundStartAborted(backgroundProtocol);
       }
-      if (extensionPaused && !waitingForBackgroundJob) {
+      if (extensionPaused && !waitingForBackgroundJob && !localDiagnosticMode) {
         throw new Error(
           `The rp tool is not currently available because ${activeAppDisplay()} is disconnected. ` +
           "The user can run /rp app or /rp reconnect when the selected app is running."
@@ -2469,10 +2799,16 @@ Mode priority: call > describe > search > windows > bind > status`,
       // Provide a no-op if onUpdate is undefined
       const safeOnUpdate = onUpdate ?? (() => {});
 
-      // Wrapper-owned wait operations read only extension runtime state
-      const requiresConnection = mode === "call" ? !waitingForBackgroundJob : mode !== "status";
+      // Wrapper-owned waits and paused diagnostics read only extension runtime state
+      const lazyCatalogDiagnostic = !extensionPaused && (mode === "search" || mode === "describe");
+      const requiresConnection = mode === "call"
+        ? !waitingForBackgroundJob
+        : mode === "windows" || mode === "bind" || lazyCatalogDiagnostic;
       if (requiresConnection) {
-        const connectionWork = ensureConnected(_ctx as ExtensionContext | undefined);
+        const connectionWork = ensureConnected(
+          _ctx as ExtensionContext | undefined,
+          { syncAutoSelection: !explicitRoutingBoundary && !lazyCatalogDiagnostic }
+        );
         if (backgroundProtocol) {
           await awaitBackgroundJobStartPhase(
             connectionWork,
@@ -2484,9 +2820,33 @@ Mode priority: call > describe > search > windows > bind > status`,
         }
       }
 
+      let explicitModeCatalogRevision: ToolCatalogRevisionToken | null = null;
+      if (mode === "windows" || mode === "bind") {
+        const contractDecision = inspectFreshRoutingContract();
+        if (contractDecision.kind === "blocked") {
+          return {
+            content: [{ type: "text" as const, text: contractDecision.message }],
+            details: {
+              mode,
+              error: contractDecision.error,
+              toolCatalogFreshness: contractDecision.toolCatalogFreshness,
+            },
+            isError: true,
+          };
+        }
+        explicitModeCatalogRevision = contractDecision.catalogRevision;
+      }
+
       // Mode resolution: call > describe > search > windows > bind > status
       if (mode === "call" && executionParams.call) {
-        return executeToolCall(executionParams, safeOnUpdate, signal, _ctx as ExtensionContext | undefined);
+        return executeToolCall(
+          executionParams,
+          preflightOperation,
+          resolvedCallClassification!,
+          safeOnUpdate,
+          signal,
+          _ctx as ExtensionContext | undefined
+        );
       }
       if (params.describe) {
         return executeDescribe(params.describe);
@@ -2498,7 +2858,16 @@ Mode priority: call > describe > search > windows > bind > status`,
         return executeListWindows();
       }
       if (params.bind) {
-        return executeBinding(pi, params.bind.window, params.bind.tab, _ctx as ExtensionContext | undefined);
+        if (!explicitModeCatalogRevision) {
+          throw new Error("Routing contract revision was not captured for tool-driven binding");
+        }
+        return executeBinding(
+          pi,
+          params.bind.window,
+          params.bind.tab,
+          _ctx as ExtensionContext | undefined,
+          explicitModeCatalogRevision
+        );
       }
       return executeStatus(_ctx as ExtensionContext | undefined);
     },
@@ -2713,6 +3082,7 @@ Mode priority: call > describe > search > windows > bind > status`,
         await runConnectionTransition(lifecycleSignal, async (signal) => {
           const connected = await ensureConnectedWithinTransition(signal);
           if (connected && ctx && options.syncAutoSelection !== false) {
+            restoreBinding(ctx, config);
             const recovery = (async () => {
               try {
                 await syncAutoSelectionToCurrentBranch(ctx, reconnectAutoSelectionSyncOptions());
@@ -2802,6 +3172,8 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     const targetConfig = getAppTargetConfig(config, activeApp);
     await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs, signal);
+    signal.throwIfAborted();
+    await establishRoutingInventoryContract(config, client, signal);
     signal.throwIfAborted();
     connectedApp = activeApp;
     return true;
@@ -2895,7 +3267,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
       const result = await client.callTool(workspaceContextToolName, {
         include: ["selection", "tokens"],
-        ...getBindingArgs(),
+        ...requireVerifiedRouteArgs(),
       });
 
       if (result.isError) {
@@ -2934,7 +3306,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       const result = await client.callTool(manageSelectionToolName, {
         op: "get",
         view: "files",
-        ...(bindingArgsOverride ?? getBindingArgs()),
+        ...(bindingArgsOverride ?? requireVerifiedRouteArgs()),
       });
 
       if (result.isError) {
@@ -3063,7 +3435,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     const sliceRange = computeSliceRangeFromReadArgs(startLine, limit, totalLines);
 
     if (sliceRange) {
-      const currentBindingArgs = bindingArgsOverride ?? getBindingArgs();
+      const currentBindingArgs = bindingArgsOverride ?? requireVerifiedRouteArgs();
       const plan = planAutoSelectSliceUpdate({
         selectionText,
         inputPath,
@@ -3122,11 +3494,11 @@ Mode priority: call > describe > search > windows > bind > status`,
   }
 
   async function resolveBindingTabLabel(binding: RpBinding | null): Promise<string | null> {
-    return await resolveLiveBindingTabLabel(binding);
+    return await resolveLiveBindingTabLabel(binding, config);
   }
 
   function capturedAutoSelectionForAppSwitch(ctx: ExtensionContext): AutoSelectionEntryData | null {
-    const binding = getBinding();
+    const binding = getVerifiedBinding();
     const state = ownsLiveAutoSelection && activeAutoSelectionState
       ? activeAutoSelectionState
       : binding?.tab
@@ -3203,6 +3575,8 @@ Mode priority: call > describe > search > windows > bind > status`,
           extensionPaused = false;
           await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs, signal);
           signal.throwIfAborted();
+          await establishRoutingInventoryContract(config, client, signal);
+          signal.throwIfAborted();
           connectedApp = activeApp;
         } catch (err) {
           signal.throwIfAborted();
@@ -3250,16 +3624,41 @@ Mode priority: call > describe > search > windows > bind > status`,
     signal: AbortSignal,
   ): Promise<void> {
     const { sourceState, recoveryPaths } = handover;
+    const contractDecision = inspectFreshRoutingContract();
+    if (contractDecision.kind === "blocked") {
+      ctx.ui.notify(contractDecision.message, "warning");
+      return;
+    }
 
     try {
+      const stickyRoute = await adoptObservedStickyRoute(pi, config, getRpClient(), signal);
+      signal.throwIfAborted();
+      if (stickyRoute.kind === "conflict") {
+        ctx.ui.notify(
+          `${activeAppDisplay()} selected, but ${stickyRoute.diagnostic}. Use /rp bind.`,
+          "warning"
+        );
+        return;
+      }
       if (recoveryPaths.length === 0) {
-        ctx.ui.notify(`${activeAppDisplay()} selected. Not bound; use /rp bind to choose a window.`, "info");
+        if (stickyRoute.kind === "adopted") {
+          const tabLabel = await resolveBindingTabLabel(stickyRoute.binding);
+          signal.throwIfAborted();
+          ctx.ui.notify(
+            `${activeAppDisplay()} selected and bound to window ${stickyRoute.binding.windowId}` +
+              (stickyRoute.binding.workspace ? ` (${stickyRoute.binding.workspace})` : "") +
+              (tabLabel ? `, tab "${tabLabel}"` : ""),
+            "info"
+          );
+        } else {
+          ctx.ui.notify(`${activeAppDisplay()} selected. Not bound; use /rp bind to choose a window.`, "info");
+        }
         return;
       }
 
       let windows: RpWindow[];
       try {
-        windows = await fetchWindows(pi, config);
+        windows = await fetchWindows(pi, config, undefined, signal);
         signal.throwIfAborted();
       } catch (err) {
         signal.throwIfAborted();
@@ -3271,7 +3670,12 @@ Mode priority: call > describe > search > windows > bind > status`,
         return;
       }
 
-      const recovery = await findRecoveryWindowBySelectionPaths(windows, recoveryPaths, ctx.cwd);
+      const recovery = await findRecoveryWindowBySelectionPaths(
+        windows,
+        recoveryPaths,
+        ctx.cwd,
+        signal
+      );
       signal.throwIfAborted();
       if (!recovery.window) {
         const reason = recovery.ambiguous
@@ -3281,12 +3685,22 @@ Mode priority: call > describe > search > windows > bind > status`,
         return;
       }
 
+      const issuanceGuard = routingMutationIssuanceGuard(contractDecision.catalogRevision);
       try {
-        const initialBinding = await bindToWindow(pi, recovery.window.id, undefined, config);
+        const initialBinding = await bindToWindow(
+          pi,
+          recovery.window.id,
+          undefined,
+          config,
+          undefined,
+          signal,
+          ctx,
+          issuanceGuard
+        );
         signal.throwIfAborted();
         const recoveredBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
           reuseSoleEmptyTab: true,
-        }) ?? initialBinding;
+        }, signal, issuanceGuard) ?? initialBinding;
         signal.throwIfAborted();
 
         if (sourceState && recoveredBinding.tab) {
@@ -3313,7 +3727,9 @@ Mode priority: call > describe > search > windows > bind > status`,
         );
       } catch (err) {
         signal.throwIfAborted();
-        clearBinding();
+        if (!(err instanceof RoutingMutationBlockedError)) {
+          clearBinding();
+        }
         ctx.ui.notify(
           `${activeAppDisplay()} selected, but handover failed: ${err instanceof Error ? err.message : err}. ` +
             "Use /rp bind.",
@@ -3373,12 +3789,103 @@ Mode priority: call > describe > search > windows > bind > status`,
     );
   }
 
+  function routeStatusWithoutObservation(): RouteStatusObservation {
+    const routeSnapshot = getRouteStatusSnapshot();
+    const state = routeSnapshot.state;
+    const displayIdentity = displayIdentityFor(routeSnapshot);
+    if (state.kind === "unbound") {
+      return { routeState: "unbound" };
+    }
+    if (state.kind === "intent") {
+      return {
+        routeState: "intent",
+        diagnostic: "Restored route intent cannot be verified while RepoPrompt is disconnected",
+        displayIdentity: displayIdentity!,
+      };
+    }
+    if (state.kind === "quarantined") {
+      return {
+        routeState: "quarantined",
+        diagnostic: state.diagnostic,
+        displayIdentity,
+      };
+    }
+    return {
+      routeState: "observation_failed",
+      diagnostic: "The last verified route cannot be observed while RepoPrompt is disconnected",
+      displayIdentity,
+    };
+  }
+
+  async function currentRouteStatus(): Promise<RouteStatusObservation> {
+    const client = getRpClient();
+    return client.isConnected ? await observeRouteStatus(config, client) : routeStatusWithoutObservation();
+  }
+
+  function formatRouteIdentity(identity: NonNullable<ReturnType<typeof displayIdentityFor>>): string {
+    const workspace = identity.workspace ? ` (${identity.workspace})` : "";
+    const context = identity.tabContextId ? `, context ${identity.tabContextId}` : "";
+    return `window ${identity.windowId}${workspace}${context}`;
+  }
+
+  function formatRouteStatus(route: RouteStatusObservation): string {
+    switch (route.routeState) {
+      case "verified_tab": {
+        const focus = route.tab.isActive === true
+          ? "in-focus"
+          : route.tab.isActive === false
+            ? "out-of-focus"
+            : "focus unknown";
+        return [
+          "Route: verified tab",
+          `  Window: ${route.window.id}`,
+          ...(route.window.workspace ? [`  Workspace: ${route.window.workspace}`] : []),
+          `  Tab: ${route.tab.name} [bound, ${focus}]`,
+          `  Context: ${route.tab.contextId}`,
+          ...(route.persistenceDiagnostic ? [`  Persistence: degraded — ${route.persistenceDiagnostic}`] : []),
+        ].join("\n");
+      }
+      case "stale":
+        return [
+          "Route: stale/missing",
+          ...(route.displayIdentity ? [`  Intent: ${formatRouteIdentity(route.displayIdentity)}`] : []),
+          `  Diagnostic: ${route.diagnostic}`,
+        ].join("\n");
+      case "intent":
+        return [
+          "Route: intent (unverified)",
+          `  Intent: ${formatRouteIdentity(route.displayIdentity)}`,
+          `  Diagnostic: ${route.diagnostic}`,
+        ].join("\n");
+      case "quarantined":
+        return [
+          "Route: quarantined (possible partial routing change)",
+          ...(route.displayIdentity ? [`  Intent: ${formatRouteIdentity(route.displayIdentity)}`] : []),
+          `  Diagnostic: ${route.diagnostic}`,
+          "  Recovery: run /rp reconnect or bind explicitly",
+        ].join("\n");
+      case "observation_failed":
+        return [
+          "Route: unverified (observation failed)",
+          ...(route.displayIdentity ? [`  Intent: ${formatRouteIdentity(route.displayIdentity)}`] : []),
+          `  Diagnostic: ${route.diagnostic}`,
+        ].join("\n");
+      case "unsupported":
+        return `Route: unsupported contract\n  Diagnostic: ${route.diagnostic}`;
+      case "unbound":
+        return [
+          "Route: unbound",
+          ...(route.diagnostic ? [`  Diagnostic: ${route.diagnostic}`] : []),
+          "  Use /rp bind to choose a window",
+        ].join("\n");
+    }
+  }
+
   async function showStatus(ctx: ExtensionContext): Promise<void> {
     const client = getRpClient();
     const toolCatalogFreshness = client.toolCatalogFreshness;
     const tools = client.tools;
-    const binding = client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
-    const tabLabel = await resolveBindingTabLabel(binding);
+    const routeStatus = await currentRouteStatus();
 
     let msg = `RepoPrompt Status\n`;
     msg += `─────────────────\n`;
@@ -3391,27 +3898,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     if (client.error) {
       msg += `Error: ${client.error}\n`;
     }
-
-    if (binding) {
-      msg += `\nBound to:\n`;
-      msg += `  Window: ${binding.windowId}\n`;
-      if (binding.workspace) msg += `  Workspace: ${binding.workspace}\n`;
-      if (tabLabel) msg += `  Tab: ${tabLabel}\n`;
-      if (binding.autoDetected) msg += `  (auto-detected from cwd)\n`;
-
-      const selectionSummary = await getSelectionSummary();
-      if (selectionSummary) {
-        msg += `\nSelection:\n`;
-        if (typeof selectionSummary.fileCount === "number") {
-          msg += `  Files: ${selectionSummary.fileCount}\n`;
-        }
-        if (typeof selectionSummary.tokens === "number") {
-          msg += `  Tokens: ~${selectionSummary.tokens}\n`;
-        }
-      }
-    } else {
-      msg += `\nNot bound to any window. Use /rp bind to open the interactive picker, or rp({ windows: true }) for the raw window list\n`;
-    }
+    msg += `\n${formatRouteStatus(routeStatus)}\n`;
 
     ctx.ui.notify(msg, "info");
   }
@@ -3473,7 +3960,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       scopeKey = scopeRange(start, end);
     }
 
-    const binding = getBinding();
+    const binding = getVerifiedBinding();
     const resolved = await resolveReadFilePath(pathInput, ctx.cwd, binding);
 
     if (!resolved.absolutePath) {
@@ -3500,7 +3987,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     let msg = `RepoPrompt Windows — ${activeAppDisplay()}\n`;
     msg += `──────────────────\n`;
 
-    const binding = getBinding();
+    const binding = getVerifiedBinding();
     for (const w of windows) {
       const isBound = binding?.windowId === w.id;
       const marker = isBound ? " ← bound" : "";
@@ -3516,14 +4003,22 @@ Mode priority: call > describe > search > windows > bind > status`,
   // Tool Execution Modes
   // ───────────────────────────────────────────────────────────────────────────
 
-  async function executeStatus(ctx?: ExtensionContext) {
+  async function executeStatus(_ctx?: ExtensionContext) {
     const client = getRpClient();
     const toolCatalogFreshness = client.toolCatalogFreshness;
     const tools = client.tools;
     const status = client.status;
     const clientError = client.error;
-    const binding = ctx && client.isConnected ? await syncAutoSelectionToCurrentBranch(ctx) : getBinding();
-    const tabLabel = await resolveBindingTabLabel(binding);
+    const route = await currentRouteStatus();
+    const binding: RpBinding | null = route.routeState === "verified_tab"
+      ? {
+          app: activeApp,
+          windowId: route.window.id,
+          tab: route.tab.contextId,
+          ...(route.window.workspace ? { workspace: route.window.workspace } : {}),
+        }
+      : null;
+    const tabLabel = route.routeState === "verified_tab" ? route.tab.name : null;
 
     const server = getServerCommand(config, activeApp);
 
@@ -3537,15 +4032,7 @@ Mode priority: call > describe > search > windows > bind > status`,
       text += `Server: (not configured / not auto-detected)\n`;
       text += `Hint: configure ~/.pi/agent/extensions/repoprompt-mcp.json for ${activeAppDisplay()}\n`;
     }
-
-    if (binding) {
-      text += `\nBound to window ${binding.windowId}`;
-      if (binding.workspace) text += ` (${binding.workspace})`;
-      if (tabLabel) text += `, tab ${JSON.stringify(tabLabel)}`;
-      if (binding.autoDetected) text += " [auto-detected]";
-    } else {
-      text += `\nNot bound. Human users should prefer /rp bind for the interactive picker; rp({ windows: true }) and rp({ bind: { window: <id> } }) remain available for direct/tool-driven routing`;
-    }
+    text += `\n${formatRouteStatus(route)}`;
 
     return {
       content: [{ type: "text" as const, text }],
@@ -3555,6 +4042,8 @@ Mode priority: call > describe > search > windows > bind > status`,
         appLabel: activeAppLabel(),
         status,
         error: clientError,
+        routeState: route.routeState,
+        route,
         binding,
         tabLabel,
         toolsCount: tools.length,
@@ -3575,7 +4064,7 @@ Mode priority: call > describe > search > windows > bind > status`,
 
     let text = `## RepoPrompt Windows — ${activeAppDisplay()}\n\n`;
 
-    const binding = getBinding();
+    const binding = getVerifiedBinding();
     for (const w of windows) {
       const isBound = binding?.windowId === w.id;
       const marker = isBound ? " ✓" : "";
@@ -3593,15 +4082,45 @@ Mode priority: call > describe > search > windows > bind > status`,
   async function executeBinding(
     extensionApi: ExtensionAPI,
     windowId: number,
-    tab?: string,
-    ctx?: ExtensionContext
+    tab: string | undefined,
+    ctx: ExtensionContext | undefined,
+    catalogRevision: ToolCatalogRevisionToken
   ) {
-    let binding = tab
-      ? await bindToTab(extensionApi, windowId, tab, config)
-      : await bindToWindow(extensionApi, windowId, undefined, config);
+    const issuanceGuard = routingMutationIssuanceGuard(catalogRevision);
+    let binding: RpBinding;
+    try {
+      binding = tab
+        ? await bindToTab(extensionApi, windowId, tab, config, undefined, undefined, issuanceGuard)
+        : await bindToWindow(
+            extensionApi,
+            windowId,
+            undefined,
+            config,
+            undefined,
+            undefined,
+            ctx,
+            issuanceGuard
+          );
 
-    if (ctx) {
-      binding = (await syncAutoSelectionToCurrentBranch(ctx)) ?? binding;
+      if (ctx) {
+        binding = (
+          await syncAutoSelectionToCurrentBranch(
+            ctx,
+            reconnectAutoSelectionSyncOptions(),
+            "reuse",
+            catalogRevision
+          )
+        ) ?? binding;
+      }
+    } catch (error) {
+      if (error instanceof RoutingMutationBlockedError) {
+        return {
+          content: [{ type: "text" as const, text: error.message }],
+          details: { mode: "bind", error: error.code },
+          isError: true,
+        };
+      }
+      throw error;
     }
 
     const tabLabel = await resolveBindingTabLabel(binding);
@@ -4183,6 +4702,8 @@ Mode priority: call > describe > search > windows > bind > status`,
 
   async function executeToolCall(
     params: RpToolParams,
+    operation: unknown,
+    operationClassification: Extract<OperationClassification, { kind: "classified" }>,
     onUpdate: (
       partialResult: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
     ) => void,
@@ -4263,83 +4784,137 @@ Mode priority: call > describe > search > windows > bind > status`,
     const toolInputSchema = backgroundProtocol ? structuredClone(tool.inputSchema) : tool.inputSchema;
     const backgroundStartGeneration = backgroundProtocol ? backgroundJobLifecycleGeneration : null;
     const backgroundUserArgs = backgroundProtocol ? structuredClone(userArgs) : null;
-    const binding = getBinding();
-    let backgroundTarget: RepoPromptJobTarget | null = backgroundProtocol && binding?.tab
-      ? { app: binding.app, windowId: binding.windowId, tab: binding.tab }
-      : null;
-    const tabBindingMessage =
-      "RepoPrompt binding has no tab. Re-bind with /rp bind before calling tab-scoped tools.";
-    const needsTabScopedBinding = backgroundProtocol
-      ? ctx === undefined || !binding?.tab
-      : binding !== null &&
-        !binding.tab &&
-        normalizedTool !== "manage_workspaces" &&
-        normalizedTool !== "list_windows" &&
-        normalizedTool !== "bind_context" &&
-        normalizedTool !== "agent_run" &&
-        normalizedTool !== "agent_manage";
-
-    if (needsTabScopedBinding) {
-      const message = backgroundProtocol ? backgroundProtocol.bindingMessage : tabBindingMessage;
-      if (!ctx) {
+    const forwardingClass = operationClassification.forwardingClass;
+    const routingContractRequired = forwardingClass !== "route_independent";
+    let routingCatalogRevision: ToolCatalogRevisionToken | null = null;
+    if (routingContractRequired) {
+      const contractDecision = inspectFreshRoutingContract();
+      if (contractDecision.kind === "blocked") {
         if (backgroundProtocol) {
-          backgroundProtocol.throwError(backgroundProtocol.missingTabCode, message);
+          backgroundProtocol.throwError(
+            contractDecision.error === "unsupported_contract" ? "blocked" : contractDecision.error,
+            contractDecision.message
+          );
         }
+        return {
+          content: [{ type: "text" as const, text: contractDecision.message }],
+          details: {
+            mode: "call",
+            error: contractDecision.error,
+            tool: tool.name,
+            toolCatalogFreshness: contractDecision.toolCatalogFreshness,
+          },
+          isError: true,
+        };
+      }
+      routingCatalogRevision = contractDecision.catalogRevision;
+    }
+    if (forwardingClass === "route_dependent") {
+      await waitForRoutePublication(signal);
+    }
+
+    let binding = getVerifiedBinding();
+    let backgroundTarget: RepoPromptJobTarget | null = null;
+    const tabBindingMessage =
+      "RepoPrompt binding has no verified tab. Re-bind with /rp bind before calling tab-scoped tools.";
+    const needsVerifiedRoute = forwardingClass === "route_dependent" && binding === null;
+    const needsTabScopedBinding = backgroundProtocol !== null && !binding?.tab;
+
+    if (needsVerifiedRoute || needsTabScopedBinding) {
+      const message = backgroundProtocol ? backgroundProtocol.bindingMessage : tabBindingMessage;
+      if (!backgroundProtocol) {
         return missingTabBindingResponse(tool.name, message);
+      }
+      if (!binding) {
+        backgroundProtocol.throwError(backgroundProtocol.missingTabCode, message);
+        throw new Error("Background start error helper returned unexpectedly");
+      }
+      if (!ctx) {
+        backgroundProtocol.throwError(backgroundProtocol.missingTabCode, message);
+        throw new Error("Background start error helper returned unexpectedly");
       }
 
       try {
-        const bindingWork = ensureTabScopedBinding(ctx, message);
-        const tabScopedBinding = backgroundProtocol
-          ? await awaitBackgroundJobStartPhase(
-              bindingWork,
-              signal,
-              () => backgroundStartAbortedError(backgroundProtocol),
-            )
-          : await bindingWork;
-        if (backgroundProtocol) {
-          backgroundTarget = {
-            app: tabScopedBinding.app,
-            windowId: tabScopedBinding.windowId,
-            tab: tabScopedBinding.tab,
-          };
-        }
+        const verifiedBinding = await awaitBackgroundJobStartPhase(
+          ensureTabScopedBinding(ctx, message),
+          signal,
+          () => backgroundStartAbortedError(backgroundProtocol),
+        );
+        binding = verifiedBinding;
       } catch (error) {
         if (error instanceof BackgroundJobExecutionError) {
           throw error;
         }
-        if (backgroundProtocol && backgroundStartGeneration !== backgroundJobLifecycleGeneration) {
+        if (backgroundStartGeneration !== backgroundJobLifecycleGeneration) {
           backgroundProtocol.throwError(
             backgroundProtocol.startCancelledCode,
             backgroundProtocol.startCancelledMessage,
           );
         }
-        if (backgroundProtocol && signal?.aborted) {
+        if (signal?.aborted) {
           throwBackgroundStartAborted(backgroundProtocol);
         }
         const errorMessage = error instanceof Error ? error.message : String(error);
-        if (backgroundProtocol) {
-          backgroundProtocol.throwError(backgroundProtocol.missingTabCode, errorMessage);
-        }
-        return missingTabBindingResponse(tool.name, errorMessage);
+        backgroundProtocol.throwError(backgroundProtocol.missingTabCode, errorMessage);
       }
     }
 
-    const resolvedBackgroundTarget = backgroundTarget;
-
-    // Background jobs use one resolved binding snapshot for job identity and forwarding
-    const bindingArgs = resolvedBackgroundTarget
-      ? { _windowID: resolvedBackgroundTarget.windowId, context_id: resolvedBackgroundTarget.tab }
-      : getBindingArgs();
-
     const bypassCache = normalizedTool === "read_file" && userArgs.bypass_cache === true;
-
     const forwardedUserArgs = buildForwardedUserArgs({
       toolName: normalizedTool,
       userArgs: backgroundUserArgs ?? userArgs,
     });
-
-    const mergedArgs = { ...forwardedUserArgs, ...bindingArgs };
+    let dispatchLease: RouteDispatchLease | null = null;
+    let backgroundIssuanceRevision: ToolCatalogRevisionToken | null = null;
+    let bindingArgs: Readonly<Record<string, unknown>> = {};
+    if (forwardingClass === "route_dependent" && backgroundProtocol) {
+      if (!routingCatalogRevision) {
+        throw new Error("Routing contract revision was not captured for background dispatch");
+      }
+      const issued = await issueLeasedRouteDispatch({
+        callerArgs: forwardedUserArgs,
+      }, (lease) => ({
+        lease,
+        contractDecision: inspectFreshRoutingContract(routingCatalogRevision),
+      }), signal);
+      if (issued.kind === "blocked" || issued.kind === "conflict") {
+        return {
+          content: [{ type: "text" as const, text: issued.diagnostic }],
+          details: { mode: "call", error: issued.kind, tool: tool.name },
+          isError: true,
+        };
+      }
+      if (issued.request.contractDecision.kind === "blocked") {
+        backgroundProtocol.throwError(
+          issued.request.contractDecision.error === "unsupported_contract"
+            ? "blocked"
+            : issued.request.contractDecision.error,
+          issued.request.contractDecision.message
+        );
+      }
+      const decision = issued.request.lease;
+      dispatchLease = decision;
+      backgroundIssuanceRevision = issued.request.contractDecision.catalogRevision;
+      binding = routeDispatchLeaseBinding(decision);
+      bindingArgs = decision.selectors;
+      if (binding.tab) {
+        backgroundTarget = {
+          app: binding.app,
+          windowId: binding.windowId,
+          tab: binding.tab,
+          publicationGeneration: decision.publicationGeneration,
+        };
+      }
+    }
+    const resolvedBackgroundTarget = backgroundTarget;
+    const resolvedBackgroundLease = backgroundProtocol ? dispatchLease : null;
+    const resolvedBackgroundConfig = backgroundProtocol ? structuredClone(config) : null;
+    const resolvedBackgroundCatalogRevision = backgroundProtocol ? backgroundIssuanceRevision : null;
+    const mergedArgs = buildForwardedCallArgs({
+      forwardingClass,
+      userArgs: forwardedUserArgs,
+      verifiedSelectors: bindingArgs,
+    });
 
     if (backgroundProtocol) {
       if (backgroundStartGeneration !== backgroundJobLifecycleGeneration) {
@@ -4351,9 +4926,25 @@ Mode priority: call > describe > search > windows > bind > status`,
       if (signal?.aborted) {
         throwBackgroundStartAborted(backgroundProtocol);
       }
-      if (!resolvedBackgroundTarget || !backgroundUserArgs) {
+      if (
+        !resolvedBackgroundTarget ||
+        !resolvedBackgroundLease ||
+        !resolvedBackgroundConfig ||
+        !resolvedBackgroundCatalogRevision ||
+        !backgroundUserArgs
+      ) {
         throw new Error("Background job start invariant violated");
       }
+      const backgroundStartContract = inspectFreshRoutingContract(resolvedBackgroundCatalogRevision);
+      if (backgroundStartContract.kind === "blocked") {
+        backgroundProtocol.throwError(
+          backgroundStartContract.error === "unsupported_contract"
+            ? "blocked"
+            : backgroundStartContract.error,
+          backgroundStartContract.message
+        );
+      }
+      const backgroundRunCatalogRevision = backgroundStartContract.catalogRevision;
 
       if (normalizedTool === CONTEXT_BUILDER_TOOL_NAME) {
         try {
@@ -4364,7 +4955,18 @@ Mode priority: call > describe > search > windows > bind > status`,
               userArgs: backgroundUserArgs,
               toolCatalogFreshness,
             },
-            run: (jobSignal) => client.callTool(concreteToolName, mergedArgs, undefined, jobSignal),
+            run: (jobSignal) => {
+              const runContract = inspectFreshRoutingContract(backgroundRunCatalogRevision);
+              if (runContract.kind === "blocked") {
+                throw new Error(runContract.message);
+              }
+              return executeLeasedRouteDependentCall(
+                resolvedBackgroundLease,
+                resolvedBackgroundConfig,
+                client,
+                () => client.callTool(concreteToolName, mergedArgs, undefined, jobSignal)
+              );
+            },
           });
           const jobId = started.jobId;
           return {
@@ -4400,7 +5002,18 @@ Mode priority: call > describe > search > windows > bind > status`,
             toolCatalogFreshness,
             toolInputSchema,
           },
-          run: (jobSignal) => client.callTool(concreteToolName, mergedArgs, undefined, jobSignal),
+          run: (jobSignal) => {
+            const runContract = inspectFreshRoutingContract(backgroundRunCatalogRevision);
+            if (runContract.kind === "blocked") {
+              throw new Error(runContract.message);
+            }
+            return executeLeasedRouteDependentCall(
+              resolvedBackgroundLease,
+              resolvedBackgroundConfig,
+              client,
+              () => client.callTool(concreteToolName, mergedArgs, undefined, jobSignal)
+            );
+          },
         });
         const jobId = started.jobId;
         return {
@@ -4492,8 +5105,177 @@ Mode priority: call > describe > search > windows > bind > status`,
         } finally {
           observer.dispose();
         }
+      } else if (isRoutingMutationClass(forwardingClass)) {
+        if (!routingCatalogRevision) {
+          throw new Error("Routing contract revision was not captured for mutation dispatch");
+        }
+        const expectedContextId = normalizedTool === "bind_context"
+          && operation === "bind"
+          && typeof userArgs.context_id === "string"
+          ? userArgs.context_id
+          : null;
+        const mutation = await executeRoutingMutation({
+          operationLabel: `${normalizedTool} ${String(operation)}`,
+          operationClass: forwardingClass,
+          config,
+          client,
+          signal,
+          issuanceGuard: routingMutationIssuanceGuard(routingCatalogRevision),
+          ...(expectedContextId
+            ? { expectedBoundContext: { contextId: expectedContextId } }
+            : {}),
+          dispatch: () => client.callTool(tool.name, mergedArgs, undefined, signal),
+          reconcile: (inventory) => reconcileObservedInventoryRoute(pi, config, inventory, signal),
+        });
+        if (mutation.kind === "blocked") {
+          return {
+            content: [{ type: "text" as const, text: mutation.diagnostic }],
+            details: { mode: "call", error: mutation.error, tool: tool.name },
+            isError: true,
+          };
+        }
+        if (mutation.kind === "failed") {
+          const failureResponse = buildToolCallResponse({
+            result: mutation.result,
+            toolName: tool.name,
+            userArgs,
+            originalArgs: params.args,
+            warning: guardResult.warning,
+            toolCatalogFreshness,
+          });
+          return {
+            ...failureResponse,
+            details: {
+              ...failureResponse.details,
+              error: "routing_mutation_failed",
+              routingReconciliation: {
+                cause: mutation.cause,
+                priorAuthorityPreserved: mutation.priorAuthorityPreserved,
+                upstreamIsError: true,
+              },
+            },
+          };
+        }
+        if (mutation.kind === "superseded") {
+          const failureResponse = buildToolCallResponse({
+            result: {
+              ...mutation.result,
+              isError: true,
+              content: [
+                ...mutation.result.content,
+                {
+                  type: "text",
+                  text:
+                    `${mutation.diagnostic}. The upstream mutation may have partially succeeded, ` +
+                    "but newer routing authority remains authoritative.",
+                },
+              ],
+            },
+            toolName: tool.name,
+            userArgs,
+            originalArgs: params.args,
+            warning: guardResult.warning,
+            toolCatalogFreshness,
+          });
+          return {
+            ...failureResponse,
+            details: {
+              ...failureResponse.details,
+              error: "routing_mutation_superseded",
+              routingReconciliation: {
+                cause: mutation.cause,
+                possiblePartialSuccess: mutation.possiblePartialSuccess,
+                upstreamIsError: false,
+              },
+            },
+          };
+        }
+        if (mutation.kind === "quarantined") {
+          const failureResponse = buildToolCallResponse({
+            result: {
+              ...mutation.result,
+              isError: true,
+              content: [
+                ...mutation.result.content,
+                {
+                  type: "text",
+                  text:
+                    "RepoPrompt routing state was quarantined because post-operation observation failed. " +
+                    `The requested operation could not be verified: ${mutation.diagnostic}. ` +
+                    "The upstream mutation may have partially succeeded. Run /rp reconnect or bind " +
+                    "explicitly before another route-dependent call.",
+                },
+              ],
+            },
+            toolName: tool.name,
+            userArgs,
+            originalArgs: params.args,
+            warning: guardResult.warning,
+            toolCatalogFreshness,
+          });
+          return {
+            ...failureResponse,
+            details: {
+              ...failureResponse.details,
+              error: "routing_reconciliation_failed",
+              routingReconciliation: {
+                cause: "post_mutation_observation_failed",
+                possiblePartialSuccess: true,
+                upstreamIsError: mutation.result.isError === true,
+              },
+            },
+          };
+        }
+        result = mutation.result;
+      } else if (forwardingClass === "route_dependent") {
+        if (!routingCatalogRevision) {
+          throw new Error("Routing contract revision was not captured for route-dependent dispatch");
+        }
+        const issued = await issueLeasedRouteDispatch({
+          callerArgs: forwardedUserArgs,
+        }, (lease) => {
+          const issuanceDecision = inspectFreshRoutingContract(routingCatalogRevision);
+          if (issuanceDecision.kind === "blocked") {
+            return { kind: "blocked" as const, decision: issuanceDecision };
+          }
+          const dispatchArgs = buildForwardedCallArgs({
+            forwardingClass,
+            userArgs: forwardedUserArgs,
+            verifiedSelectors: lease.selectors,
+          });
+          return {
+            kind: "started" as const,
+            request: executeLeasedRouteDependentCall(
+              lease,
+              config,
+              client,
+              () => client.callTool(tool.name, dispatchArgs, undefined, signal)
+            ),
+          };
+        }, signal);
+        if (issued.kind === "blocked" || issued.kind === "conflict") {
+          return {
+            content: [{ type: "text" as const, text: issued.diagnostic }],
+            details: { mode: "call", error: issued.kind, tool: tool.name },
+            isError: true,
+          };
+        }
+        if (issued.request.kind === "blocked") {
+          return {
+            content: [{ type: "text" as const, text: issued.request.decision.message }],
+            details: {
+              mode: "call",
+              error: issued.request.decision.error,
+              tool: tool.name,
+            },
+            isError: true,
+          };
+        }
+        dispatchLease = issued.lease;
+        bindingArgs = issued.lease.selectors;
+        result = await issued.request.request;
       } else {
-        result = await client.callTool(tool.name, mergedArgs);
+        result = await client.callTool(tool.name, mergedArgs, undefined, signal);
       }
 
       const pathArg = typeof userArgs.path === "string" ? (userArgs.path as string) : null;
@@ -4516,7 +5298,7 @@ Mode priority: call > describe > search > windows > bind > status`,
             ...(bypassCache ? { bypass_cache: true } : {}),
           },
           ctx,
-          getBinding(),
+          dispatchLease ? routeDispatchLeaseBinding(dispatchLease) : null,
           readcacheRuntimeState
         );
 
@@ -4530,17 +5312,24 @@ Mode priority: call > describe > search > windows > bind > status`,
         pathArg !== null &&
         ctx !== undefined;
 
-      if (shouldAutoSelectRead && !result.isError) {
-        const selectionBinding = getBinding();
+      if (shouldAutoSelectRead
+        && !result.isError
+        && dispatchLease
+        && routeDispatchLeaseIsCurrent(dispatchLease)) {
+        const selectionBinding = routeDispatchLeaseBinding(dispatchLease);
+        const selectionLease = dispatchLease;
         try {
           await runAutoSelectionUpdate(async () => {
+            if (!routeDispatchLeaseIsCurrent(selectionLease)) {
+              return;
+            }
             await autoSelectReadFileInRepoPromptSelection(
               ctx,
               selectionBinding,
               pathArg,
               startLine,
               limit,
-              bindingArgs
+              selectionLease.selectors
             );
           });
         } catch {
@@ -4615,13 +5404,16 @@ async function resolveWindowForTabCommand(
   const binding = getBinding();
   if (binding) {
     const windows = await fetchWindows(pi, config);
-    return (
-      windows.find((window) => window.id === binding.windowId) ?? {
-        id: binding.windowId,
-        workspace: binding.workspace ?? "",
-        roots: [],
-      }
-    );
+    const observedWindow = windows.find((window) => window.id === binding.windowId);
+    if (observedWindow) {
+      return observedWindow;
+    }
+    if (!ctx.hasUI) {
+      throw new Error(
+        `RepoPrompt window ${binding.windowId} is not present in the observed inventory. Re-bind before choosing a tab`
+      );
+    }
+    return windows.length > 0 ? await promptForWindowSelection(ctx, windows) : null;
   }
 
   if (!ctx.hasUI) {
@@ -4629,11 +5421,7 @@ async function resolveWindowForTabCommand(
   }
 
   const windows = await fetchWindows(pi, config);
-  if (windows.length === 0) {
-    return null;
-  }
-
-  return await promptForWindowSelection(ctx, windows);
+  return windows.length > 0 ? await promptForWindowSelection(ctx, windows) : null;
 }
 
 async function promptForTabSelection(
@@ -4857,6 +5645,8 @@ async function initializeExtension(
   const client = getRpClient();
   await client.connect(server.command, server.args, targetConfig.env, config.toolCallTimeoutMs, signal);
   signal.throwIfAborted();
+  await establishRoutingInventoryContract(config, client, signal);
+  signal.throwIfAborted();
   onConnected?.(app);
 
   // Notify connection
@@ -4871,58 +5661,106 @@ async function initializeExtension(
  * Runs outside the serialized connection transition because window and tab discovery are
  * long-running RepoPrompt operations that must never block an explicit reconnect or app switch
  */
+function guardRoutePublication(
+  issuanceGuard: RoutingMutationIssuanceGuard,
+  expectedPublicationGeneration: number
+): RoutingMutationIssuanceGuard {
+  return {
+    validate() {
+      const issuance = issuanceGuard.validate();
+      if (issuance.kind === "blocked") {
+        return issuance;
+      }
+      return routeStore.ownsPublicationGeneration(expectedPublicationGeneration)
+        ? { kind: "allowed" as const }
+        : {
+            kind: "blocked" as const,
+            error: "route_superseded",
+            diagnostic: "A newer RepoPrompt route superseded automatic startup binding",
+          };
+    },
+  };
+}
+
 async function autoBindAfterConnect(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   config: RpConfig,
   signal: AbortSignal,
+  issuanceGuard: RoutingMutationIssuanceGuard,
 ): Promise<void> {
   const app = config.activeApp;
   signal.throwIfAborted();
 
-  if (config.autoBindOnStart && !getBinding()) {
+  const existingBinding = getBinding();
+  if (config.autoBindOnStart && !getVerifiedBinding() && !existingBinding?.tab) {
     try {
-      const { binding, windows, ambiguity } = await autoDetectAndBind(pi, config);
+      const detectionGeneration = routeStore.snapshotPublicationGeneration();
+      const detection = await autoDetectAndBind(
+        pi,
+        config,
+        signal,
+        undefined,
+        detectionGeneration
+      );
       signal.throwIfAborted();
+      if (detection.kind === "superseded") {
+        return;
+      }
+      const { windows } = detection;
 
-      if (binding) {
-        const reconciledBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
-          reuseSoleEmptyTab: true,
-        });
+      if (detection.binding) {
+        const verifiedBinding = detection.binding.tab
+          ? detection.binding
+          : await ensureBindingHasTab(
+              pi,
+              ctx,
+              config,
+              undefined,
+              { reuseSoleEmptyTab: true },
+              signal,
+              guardRoutePublication(issuanceGuard, detection.publicationGeneration)
+            );
+        if (!verifiedBinding) {
+          throw new Error("Automatic startup binding did not produce a verified tab");
+        }
         signal.throwIfAborted();
-
         if (ctx.hasUI) {
-          const activeBinding = reconciledBinding ?? binding;
-          const tabLabel = await resolveLiveBindingTabLabel(activeBinding);
+          const tabLabel = await resolveLiveBindingTabLabel(verifiedBinding, config);
           signal.throwIfAborted();
           ctx.ui.notify(
-            `${getAppLabel(config, app)}: auto-bound to window ${activeBinding.windowId}` +
-            ` (${activeBinding.workspace ?? "unknown"})` +
-            (tabLabel ? `, tab "${tabLabel}"` : ""),
+            `${getAppLabel(config, app)}: auto-bound to window ${verifiedBinding.windowId}` +
+              ` (${verifiedBinding.workspace ?? "unknown"})` +
+              (tabLabel ? `, tab "${tabLabel}"` : ""),
             "info"
           );
         }
-      } else if (ambiguity && ambiguity.candidates.length > 0 && ctx.hasUI) {
-        const selected = await promptForWindowSelection(ctx, ambiguity.candidates);
+      } else if (detection.ambiguity && detection.ambiguity.candidates.length > 0 && ctx.hasUI) {
+        const selected = await promptForWindowSelection(ctx, detection.ambiguity.candidates);
         signal.throwIfAborted();
 
         if (selected) {
-          const chosenBinding = await bindToWindow(pi, selected.id, undefined, config);
+          const chosenBinding = await bindToWindow(
+            pi,
+            selected.id,
+            undefined,
+            config,
+            undefined,
+            signal,
+            ctx,
+            issuanceGuard
+          );
           signal.throwIfAborted();
-          const reconciledBinding = await ensureBindingHasTab(pi, ctx, config, undefined, {
-            reuseSoleEmptyTab: true,
-          });
-          signal.throwIfAborted();
-          const tabLabel = await resolveLiveBindingTabLabel(reconciledBinding ?? chosenBinding);
+          const tabLabel = await resolveLiveBindingTabLabel(chosenBinding, config);
           signal.throwIfAborted();
           ctx.ui.notify(
-            `${getAppLabel(config, app)}: bound to window ${(reconciledBinding ?? chosenBinding).windowId}` +
-            ` (${(reconciledBinding ?? chosenBinding).workspace ?? "unknown"})` +
+            `${getAppLabel(config, app)}: bound to window ${chosenBinding.windowId}` +
+            ` (${chosenBinding.workspace ?? "unknown"})` +
             (tabLabel ? `, tab "${tabLabel}"` : ""),
             "info"
           );
         } else {
-          const candidatesText = ambiguity.candidates
+          const candidatesText = detection.ambiguity.candidates
             .map((w) => `${w.id}: ${w.workspace}`)
             .join(", ");
 
@@ -4932,6 +5770,12 @@ async function autoBindAfterConnect(
             "warning"
           );
         }
+      } else if (detection.rootsUnavailableWindowIds && ctx.hasUI) {
+        ctx.ui.notify(
+          `${getAppLabel(config, app)}: cannot auto-bind because roots are unavailable for windows ` +
+            detection.rootsUnavailableWindowIds.join(", "),
+          "warning"
+        );
       } else if (windows.length > 0 && ctx.hasUI) {
         ctx.ui.notify(
           `${getAppLabel(config, app)}: ${windows.length} window(s) available. ` +
@@ -4941,8 +5785,20 @@ async function autoBindAfterConnect(
       }
     } catch (err) {
       signal.throwIfAborted();
-      // Auto-detect failed, not critical
-      console.error("RepoPrompt auto-detect failed:", err);
+      if (err instanceof RoutingMutationBlockedError && err.code === "route_superseded") {
+        return;
+      }
+      const diagnostic = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[repoprompt-mcp] app=${app} route=intent operation_class=startup_auto_bind ` +
+        `cause=bind_failed: ${diagnostic.split(/\r?\n/u, 1)[0]}`
+      );
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `${getAppLabel(config, app)}: automatic tab binding failed. Run /rp bind to choose a tab.`,
+          "warning"
+        );
+      }
     }
   }
 }

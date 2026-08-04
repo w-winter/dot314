@@ -27,6 +27,14 @@ export interface RpClientTransportOptions {
   env?: Record<string, string>;
 }
 
+export interface ToolCatalogRevisionToken {
+  readonly connectionEpoch: number;
+  readonly catalogRevision: number;
+  readonly invalidationGeneration: number;
+  readonly publishedGeneration: number | null;
+  readonly freshness: ToolCatalogFreshness;
+}
+
 /**
  * Creates the SDK resources owned by one RpClient connection attempt
  *
@@ -82,6 +90,7 @@ export class RpClient {
   private connectionEpoch = 0;
   private toolListInvalidationGeneration = 0;
   private publishedToolListGeneration: number | null = null;
+  private toolCatalogRevision = 0;
   private toolCatalogRefreshFlight: ToolCatalogRefreshFlight | null = null;
   private toolCallTimeoutMs = DEFAULT_TOOL_CALL_TIMEOUT_MS;
 
@@ -101,6 +110,25 @@ export class RpClient {
     }
 
     return this.publishedToolListGeneration === this.toolListInvalidationGeneration ? "fresh" : "stale";
+  }
+
+  captureToolCatalogRevision(): ToolCatalogRevisionToken {
+    return Object.freeze({
+      connectionEpoch: this.connectionEpoch,
+      catalogRevision: this.toolCatalogRevision,
+      invalidationGeneration: this.toolListInvalidationGeneration,
+      publishedGeneration: this.publishedToolListGeneration,
+      freshness: this.toolCatalogFreshness,
+    });
+  }
+
+  ownsToolCatalogRevision(token: ToolCatalogRevisionToken): boolean {
+    const current = this.captureToolCatalogRevision();
+    return current.connectionEpoch === token.connectionEpoch
+      && current.catalogRevision === token.catalogRevision
+      && current.invalidationGeneration === token.invalidationGeneration
+      && current.publishedGeneration === token.publishedGeneration
+      && current.freshness === token.freshness;
   }
 
   get error(): string | undefined {
@@ -139,6 +167,7 @@ export class RpClient {
     this.catalogRefreshError = undefined;
     this.toolListInvalidationGeneration = 0;
     this.publishedToolListGeneration = null;
+    this.toolCatalogRevision = 0;
     this.toolCatalogRefreshFlight = null;
     this.toolCallTimeoutMs = toolCallTimeoutMs;
 
@@ -266,6 +295,7 @@ export class RpClient {
         }));
         this._tools = tools;
         this.publishedToolListGeneration = requestGeneration;
+        this.toolCatalogRevision += 1;
         this.catalogRefreshError = undefined;
         return tools;
       }
@@ -321,6 +351,7 @@ export class RpClient {
     this._tools = [];
     this.toolListInvalidationGeneration = 0;
     this.publishedToolListGeneration = null;
+    this.toolCatalogRevision = 0;
     this.toolCatalogRefreshFlight = null;
     this.catalogRefreshError = undefined;
     this._error = error instanceof Error ? error.message : String(error);
@@ -391,6 +422,7 @@ export class RpClient {
     this._tools = [];
     this.toolListInvalidationGeneration = 0;
     this.publishedToolListGeneration = null;
+    this.toolCatalogRevision = 0;
     this.toolCatalogRefreshFlight = null;
     this.catalogRefreshError = undefined;
 
