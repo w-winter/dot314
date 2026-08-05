@@ -66,13 +66,13 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 |------|----------|-------|
 | Repo structure | `get_file_tree type="files" [mode="folders"] [path="..."] [max_depth=N]` | gitignore-aware |
 | Code search | `file_search pattern="..." [mode="both\|path\|content"] [filter={...}] [context_lines=N]` | regex auto-detected by default |
-| API signatures | `get_code_structure paths=["dir/"] [scope="selected"]` | default `max_results` is now 10; broader scans are opt-in |
+| API signatures | `get_code_structure [paths=["dir/"]] [expand="uses\|used_by\|both"] [depth=N] [signatures=true] [size="small\|medium\|large"]` | omit `paths` to inspect the current selection |
 | Context curation | `manage_selection op="get\|set\|add\|remove\|clear" [view="summary\|files\|content\|codemaps"]` | selection drives oracle/review context |
 | Snapshot/export | `workspace_context [include=["prompt","selection","code","tree","tokens"]]` or `workspace_context op="export"` | canonical context render/export tool |
 | Reading files | `read_file path="..." [start_line=N] [limit=N]` | 120–200 line chunks |
 | Code editing | `apply_edits path="..." search="..." replace="..." [all=true] [verbose=true]` | supports multi-edit, rewrite |
 | File ops | `file_actions action="create\|move\|delete" path="..."` | absolute paths only for `path` / `new_path` |
-| Planning/review | `oracle_send mode="chat\|plan\|edit\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | current selection is the input context; exporting returns `oracle_export_path` + `oracle_export_instruction` |
+| Planning/review | `oracle_send mode="chat\|plan\|review" [new_chat=true] [chat_id="..."] [export_response=true]` | current selection is the input context; exporting returns `oracle_export_path` + `oracle_export_instruction` |
 | Oracle helpers | `oracle_utils op="models\|sessions" [limit=N] [context_id="..."] [scope="workspace\|tab"]` | list models or existing Oracle conversations; `sessions` defaults to the current workspace and can filter to a specific context |
 | Sticky routing | `bind_context op="status\|bind\|list" [context_id="..."] [working_dirs="/abs/root[,/abs/root2]"]` | use `list` to discover windows and `context_id`s; prefer `bind context_id="..."` to pin a tab, or use `working_dirs` when you want RepoPrompt to route to a workspace by roots (exact match first, repo_paths superset fallback) |
 | Workspace inventory/tab lifecycle | `manage_workspaces action="list\|switch\|create\|delete\|add_folder\|remove_folder\|create_tab\|close_tab"` | inventory + lifecycle only; use `bind_context` for routing |
@@ -93,7 +93,7 @@ Notes:
 - `file_search path="..."` is an alias for `file_search filter.paths=["..."]`
 - `file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
 - `file_actions` is stricter than most RP tools: `path` / `new_path` must be absolute
-- `get_code_structure` line numbers match `read_file` and refresh after edits
+- `get_code_structure` reads RepoPrompt's committed code graph; use `read_file` when you need the latest file contents
 
 ## Routing
 
@@ -105,8 +105,8 @@ If results look wrong, assume routing first—not tool failure.
 4. `get_file_tree` — confirm workspace roots
 
 Notes:
-- `bind_context.list` is the per-window routing view
-- `manage_workspaces.list` is the workspace inventory
+- `bind_context op="list"` is the global window/tab routing view
+- `manage_workspaces action="list"` is workspace inventory
 - `bind_context op="bind" working_dirs="/abs/root[,/abs/root2]"` matches workspace roots, not descendant paths
 - Matching prefers an exact workspace `repo_paths` set; if none exists, RepoPrompt may fall back to a workspace whose roots are a strict superset
 
