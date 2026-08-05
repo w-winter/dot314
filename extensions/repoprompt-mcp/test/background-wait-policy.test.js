@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveBackgroundWaitPolicy } from "../dist/background-wait-policy.js";
+import {
+  REPOPROMPT_CE_AGENT_RUN_MAXIMUM_TIMEOUT_SECONDS,
+  resolveAgentRunObservationTimeoutSeconds,
+  resolveBackgroundWaitPolicy,
+} from "../dist/background-wait-policy.js";
 
 const UNTIL_SETTLED = { kind: "until_settled" };
 const FIVE_MINUTE_POLICY = { kind: "bounded", timeoutMs: 240_000 };
@@ -222,4 +226,56 @@ test("resolveBackgroundWaitPolicy reads only the long process retention conventi
   for (const value of [undefined, "short", "none", "", "unexpected"]) {
     assert.deepEqual(resolve({ processCacheRetention: value }), FIVE_MINUTE_POLICY);
   }
+});
+
+test("agent run observation converts bounded and until-settled policies to safe seconds", () => {
+  assert.equal(resolveAgentRunObservationTimeoutSeconds({
+    waitPolicy: OPENAI_CODEX_GPT_56_POLICY,
+    toolCallTimeoutMs: 90 * 60 * 1000,
+  }), 1_080);
+  assert.equal(resolveAgentRunObservationTimeoutSeconds({
+    waitPolicy: UNTIL_SETTLED,
+    toolCallTimeoutMs: 90 * 60 * 1000,
+  }), 5_340);
+  assert.equal(resolveAgentRunObservationTimeoutSeconds({
+    waitPolicy: { kind: "bounded", timeoutMs: 10 * 60 * 1000 },
+    toolCallTimeoutMs: 5 * 60 * 1000,
+  }), 294);
+});
+
+test("agent run observation keeps normalized configuration below the RepoPrompt CE limit", () => {
+  const maximumConfiguredTimeoutMs = 24 * 60 * 60 * 1000;
+  const timeoutSeconds = resolveAgentRunObservationTimeoutSeconds({
+    waitPolicy: UNTIL_SETTLED,
+    toolCallTimeoutMs: maximumConfiguredTimeoutMs,
+  });
+  assert.equal(timeoutSeconds, 86_340);
+  assert.ok(timeoutSeconds < REPOPROMPT_CE_AGENT_RUN_MAXIMUM_TIMEOUT_SECONDS);
+});
+
+test("agent run observation floors fractional policy milliseconds", () => {
+  assert.equal(resolveAgentRunObservationTimeoutSeconds({
+    waitPolicy: { kind: "bounded", timeoutMs: 1_999.9 },
+    toolCallTimeoutMs: 90 * 60 * 1000,
+  }), 1);
+});
+
+test("agent run observation rejects invalid or sub-second safe horizons", () => {
+  const expected = /positive whole-second observation horizon/u;
+  for (const toolCallTimeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1_000, 1_999]) {
+    assert.throws(() => resolveAgentRunObservationTimeoutSeconds({
+      waitPolicy: UNTIL_SETTLED,
+      toolCallTimeoutMs,
+    }), expected);
+  }
+  for (const timeoutMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 999.9]) {
+    assert.throws(() => resolveAgentRunObservationTimeoutSeconds({
+      waitPolicy: { kind: "bounded", timeoutMs },
+      toolCallTimeoutMs: 90 * 60 * 1000,
+    }), expected);
+  }
+  assert.equal(resolveAgentRunObservationTimeoutSeconds({
+    waitPolicy: UNTIL_SETTLED,
+    toolCallTimeoutMs: 2_000,
+  }), 1);
 });

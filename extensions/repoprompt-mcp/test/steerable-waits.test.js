@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AGENT_RUN_WAIT_GUIDANCE,
   QUEUE_STEER_ACCEPTED_EVENT,
   ObserverInterruptControlError,
   SteeringWaitCoordinator,
@@ -200,6 +201,16 @@ test("session transitions reject prior-session events", () => {
   const observer = harness.coordinator.registerObserver();
   harness.coordinator.observeQueueSteerAccepted(acceptedEvent(2));
   assert.equal(observer.signal.aborted, false);
+});
+
+test("agent_run guidance assigns RepoPrompt CE wait scheduling to the extension", () => {
+  assert.match(AGENT_RUN_WAIT_GUIDANCE, /RepoPrompt CE Agent Mode/u);
+  assert.match(AGENT_RUN_WAIT_GUIDANCE, /scheduled automatically/u);
+  assert.match(AGENT_RUN_WAIT_GUIDANCE, /current Pi parent model's prompt-cache policy/u);
+  assert.match(AGENT_RUN_WAIT_GUIDANCE, /child keeps running and remains re-waitable/u);
+  assert.match(AGENT_RUN_WAIT_GUIDANCE, /timeout:0 polls immediately/u);
+  assert.match(AGENT_RUN_WAIT_GUIDANCE, /Attached starts and wait-enabled steer calls/u);
+  assert.doesNotMatch(AGENT_RUN_WAIT_GUIDANCE, /timeout:\s*[1-9]\d*/u);
 });
 
 test("agent_run classifier wraps only canonical blocking explicit waits", () => {

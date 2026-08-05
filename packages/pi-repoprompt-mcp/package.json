@@ -30,10 +30,11 @@
     "prepack": "node ../../scripts/pi-package-prepack.mjs",
     "test:package": "node test/package-smoke.mjs"
   },
-  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "files": ["extensions/**", "README.md", "CHANGELOG.md", "LICENSE", "package.json"],
   "dot314Prepack": {
     "copy": [
       { "from": "../../extensions/repoprompt-mcp/src", "to": "extensions/repoprompt-mcp/src" },
+      { "from": "../../extensions/repoprompt-mcp/CHANGELOG.md", "to": "CHANGELOG.md" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ]
   }

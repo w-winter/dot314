@@ -1,7 +1,7 @@
 # RepoPrompt MCP for Pi (`pi-repoprompt-mcp`)
-> **Supported versions:** Pi 0.83.0 or newer; RepoPrompt CE 1.2.0 or newer with the required routing tools; RepoPrompt Classic 2.1.29.
+> **Supported versions:** Pi 0.83.0 or newer; RepoPrompt CE 1.2.0 or newer with the required routing tools; RepoPrompt Classic 2.1.32.
 
-Classic support targets RepoPrompt Classic 2.1.29. Before forwarding tools that act on a workspace or tab, the extension verifies that Classic can report live windows, tabs, and the current connection binding. If that check fails, those tools remain blocked and `/rp status` reports the problem.
+Classic support targets RepoPrompt Classic 2.1.32. Before forwarding tools that act on a workspace or tab, the extension verifies that Classic can report live windows, tabs, and the current connection binding. If that check fails, those tools remain blocked and `/rp status` reports the problem.
 
 This extension provides a single tool (`rp`) that exposes RepoPrompt MCP tools to Pi, includes branch-safe window and tab binding (auto-detect and bind to window by `cwd`, auto-bind to safe tab, persist and restore across sessions and session tree nodes, and interactive selection of windows and tabs) and batches of read files (automatically selected as context in the RepoPrompt desktop app), renders RepoPrompt tool outputs (syntax + diff highlighting), and applies guardrails for destructive operations.
 
@@ -88,11 +88,13 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 
 ### Steerable RepoPrompt CE Agent Mode waits
 
-RepoPrompt CE can run sub-agent sessions of its own. Your agent launches one and then blocks while it works, and when `/rp app` targets CE, steering ends that block just as it ends a Context Builder or Oracle wait.
+RepoPrompt CE can run sub-agent sessions of its own. A blocking wait for a sub-agent stays open until the sub-agent has something to report, you steer, or the extension reaches the cache-aware heartbeat horizon for the Pi model handling the current turn.
 
 - Steering never cancels a sub-agent; it ends only your agent's wait. Nothing you type costs you work in progress, and the session can be picked back up afterwards
+- These waits use the same provider-aware scheduling as Context Builder and Oracle waits
+- A `Running` heartbeat leaves the sub-agent active and can be followed by another wait
 - A single sub-agent or a whole batch can be waited on at once, in which case the wait ends as soon as any one of them has something to report
-- Two cases still hold the turn until RepoPrompt returns: launching a sub-agent inline rather than in the background, and sending an existing sub-agent a follow-up while waiting for its reply
+- Launching a sub-agent inline and sending a follow-up while waiting for its reply hold the turn until RepoPrompt returns
 
 ### Safety checks
 
@@ -103,7 +105,7 @@ RepoPrompt CE can run sub-agent sessions of its own. Your agent launches one and
 ## Requirements
 
 - Pi 0.83.0 or newer
-- RepoPrompt CE 1.2.0 or newer with the required MCP contract capabilities, or RepoPrompt Classic 2.1.29
+- RepoPrompt CE 1.2.0 or newer with the MCP operations needed for window and tab routing, or RepoPrompt Classic 2.1.32
 - The selected target's bundled `repoprompt-mcp` server reachable over stdio; CE is the default target and Classic is selectable with `/rp app classic`
 
 ### Compatibility and routing contract
@@ -254,11 +256,11 @@ Options:
 | `apps.<target>.env` | unset | Extra environment variables for that target's MCP server |
 | `apps.<target>.appPath` | app default | App bundle path; the MCP binary is derived as `<appPath>/Contents/MacOS/repoprompt-mcp` |
 | `apps.<target>.autoLaunchApp` | `true` | Auto-launch this app only when this target is selected and the MCP server is unreachable at startup |
-| `toolCallTimeoutMs` | `5400000` | MCP tool call timeout in milliseconds for RepoPrompt tools like `context_builder` and `oracle_send` (90 minutes by default) |
+| `toolCallTimeoutMs` | `5400000` | MCP tool-call deadline in milliseconds for RepoPrompt operations, including Context Builder, Oracle, and CE Agent Mode waits (90 minutes by default) |
 | `autoBindOnStart` | `true` | Auto-detect and bind on session start, then reconcile the branch-safe tab for the chosen window |
 | `persistBinding` | `true` | Persist window and tab bindings in Pi session history for branch-safe replay |
-| `backgroundWaitHeartbeatEnabled` | `true` | Allow Context Builder and Oracle waits to return `running` near known or configured prompt-cache deadlines; `false` keeps waits pending until the job finishes or fails |
-| `backgroundWaitCacheTtlMsByModel` | `{}` | Cache TTL assumptions in milliseconds keyed by exact `provider/model`, provider-wide `provider/*`, or global `*`; `null` keeps matching waits pending until the job finishes or fails |
+| `backgroundWaitHeartbeatEnabled` | `true` | Allow Context Builder, Oracle, and blocking CE Agent Mode waits to return `running` near known or configured prompt-cache deadlines; `false` keeps Context Builder and Oracle waits pending until the job finishes or fails, while CE waits can remain open until shortly before `toolCallTimeoutMs` |
+| `backgroundWaitCacheTtlMsByModel` | `{}` | Cache TTL assumptions in milliseconds keyed by exact `provider/model`, provider-wide `provider/*`, or global `*`; `null` keeps matching Context Builder and Oracle waits pending until the job finishes or fails, while matching CE waits can remain open until shortly before `toolCallTimeoutMs` |
 | `confirmDeletes` | `true` | Block delete operations unless `allowDelete: true` |
 | `confirmEdits` | `false` | Block edit-like operations unless `confirmEdits: true` |
 | `readcacheReadFile` | `false` | Enable [pi-readcache](https://github.com/Gurpartap/pi-readcache)-like caching for RepoPrompt `read_file` calls (returns unchanged markers/diffs on repeat reads to save on tokens and prevent context bloat) |
@@ -269,11 +271,11 @@ Options:
 | `diffSplitMinWidth` | `120` | Minimum render width before `diffViewMode: "auto"` uses split diff layout |
 | `suppressHostDisconnectedLog` | `true` | Filter noisy stderr from macOS `repoprompt-mcp` (disconnect/retry bootstrap logs) |
 
-Override keys use the provider and model ID reported by Pi. An exact `provider/model` entry takes precedence over `provider/*`, which takes precedence over the global `*` entry. Model IDs may contain `/`; for example, `openrouter/anthropic/claude-sonnet-4.5` is an exact OpenRouter key, while `openrouter/*` covers every OpenRouter model. Numeric TTLs are floored and clamped from two minutes to 24 hours, then reduced by a safety margin of 10% or at least 60 seconds; `null` keeps matching waits pending until the job finishes or fails.
+Override keys use the provider and model ID reported by Pi. An exact `provider/model` entry takes precedence over `provider/*`, which takes precedence over the global `*` entry. Model IDs may contain `/`; for example, `openrouter/anthropic/claude-sonnet-4.5` is an exact OpenRouter key, while `openrouter/*` covers every OpenRouter model. Numeric TTLs are floored and clamped from two minutes to 24 hours, then reduced by a safety margin of 10% or at least 60 seconds. A `null` override keeps matching Context Builder and Oracle waits pending until the job finishes or fails, while matching CE Agent Mode waits can remain open until shortly before `toolCallTimeoutMs`.
 
-Built-in scheduling uses 4-minute waits for supported 5-minute cache routes (including Anthropic's default cache retention), an 18-minute empirical wait for GPT-5.6 variants on Pi's OpenAI Codex route, 27-minute waits for GPT-5.6+ on supported OpenAI, OpenRouter, and Bedrock routes, and 54-minute waits for supported one-hour Anthropic caching. GPT-5.5 waits until the job finishes or fails. Other recognized OpenAI GPT families before GPT-5.6 use four-minute waits with short/default retention and wait until completion when Pi is started with `PI_CACHE_RETENTION=long`. Routes without a known cache lifetime wait until completion unless configured explicitly.
+Built-in scheduling uses 4-minute heartbeats for supported 5-minute cache routes (including Anthropic's default cache retention), an 18-minute empirical heartbeat for GPT-5.6 variants on Pi's OpenAI Codex route, 27-minute heartbeats for GPT-5.6+ on supported OpenAI, OpenRouter, and Bedrock routes, and 54-minute heartbeats for supported one-hour Anthropic caching. GPT-5.5, long-retention OpenAI families before GPT-5.6, and routes without a known cache lifetime use no cache heartbeat: Context Builder and Oracle waits stay pending until the job finishes or fails, while CE Agent Mode waits can remain open until shortly before `toolCallTimeoutMs`.
 
-The policy is recalculated from the Pi model handling the current agent turn on every wait. Explicit overrides are authoritative for proxies, private deployments, and newly released models. Setting `backgroundWaitHeartbeatEnabled` to `false` keeps waits pending until completion while jobs continue to run asynchronously.
+The policy is recalculated from the Pi model handling the current agent turn on every wait. Explicit overrides are authoritative for proxies, private deployments, and newly released models. With `backgroundWaitHeartbeatEnabled` set to `false`, Context Builder and Oracle waits remain pending until the job finishes or fails, while CE Agent Mode waits can remain open until shortly before `toolCallTimeoutMs`.
 
 Command resolution for each app target checks `apps.<target>.command`, then app-specific MCP config entries (`repoprompt-ce` / `rpce` for CE, `repoprompt-classic` / `rpclassic` for Classic), then the target app bundle command, then the fixed target CLI (`rpce-cli` or `rp-cli`). Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 

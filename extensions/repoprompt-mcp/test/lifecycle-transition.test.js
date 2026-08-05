@@ -2514,14 +2514,20 @@ test("agent_run steering guidance is advertised only while RepoPrompt CE is the 
     ctx.ui.notify = () => {};
     const command = pi.getCommand("rp");
     const rpTool = pi.getTool("rp");
+    assert.match(rpTool.description, /RepoPrompt CE Agent Mode/u);
+    assert.match(rpTool.description, /scheduled automatically/u);
+    assert.match(rpTool.description, /prompt-cache policy/u);
+    assert.doesNotMatch(rpTool.description, /timeout:\s*[1-9]\d*/u);
 
     await pi.emit("session_start", ctx, { reason: "startup" });
     await drainLifecycle();
 
     const ceDescribe = await rpTool.execute("ce-describe", { describe: "agent_run" }, undefined, () => {}, ctx);
     const ceText = ceDescribe.content[0].text;
-    assert.match(ceText, /steerable workflow on RepoPrompt CE/u);
-    assert.match(ceText, /does not cancel the child/u);
+    assert.match(ceText, /RepoPrompt CE Agent Mode/u);
+    assert.match(ceText, /scheduled automatically/u);
+    assert.match(ceText, /child keeps running and remains re-waitable/u);
+    assert.doesNotMatch(ceText, /timeout:\s*[1-9]\d*/u);
 
     await command.handler("app classic", ctx);
     await drainLifecycle();
@@ -2535,7 +2541,8 @@ test("agent_run steering guidance is advertised only while RepoPrompt CE is the 
     );
     const classicText = classicDescribe.content[0].text;
     assert.match(classicText, /Spawn and control Agent Mode sessions\./u);
-    assert.doesNotMatch(classicText, /steerable workflow/u);
+    assert.doesNotMatch(classicText, /scheduled automatically/u);
+    assert.doesNotMatch(classicText, /prompt-cache policy/u);
     assert.doesNotMatch(classicText, /observer-interruptible/u);
   } finally {
     restoreClient();

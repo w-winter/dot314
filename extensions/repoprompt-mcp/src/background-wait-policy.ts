@@ -4,6 +4,48 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const OPENAI_CODEX_GPT_56_ASSUMED_CACHE_TTL_MS = 20 * 60 * 1000;
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
+// Local MCP transport margin that keeps the upstream CE wait below RpClient's deadline
+// Distinct from boundedForCacheTtl's provider prompt-cache margin; do not unify
+const AGENT_RUN_OBSERVATION_MARGIN_FLOOR_MS = 1_000;
+const AGENT_RUN_OBSERVATION_MARGIN_CEILING_MS = 60_000;
+const AGENT_RUN_OBSERVATION_MARGIN_PROPORTION = 0.02;
+
+export const REPOPROMPT_CE_AGENT_RUN_MAXIMUM_TIMEOUT_SECONDS = 86_400;
+
+export interface ResolveAgentRunObservationTimeoutInput {
+  readonly waitPolicy: RetainedMcpJobWaitPolicy;
+  readonly toolCallTimeoutMs: number;
+}
+
+export function resolveAgentRunObservationTimeoutSeconds(
+  input: ResolveAgentRunObservationTimeoutInput,
+): number {
+  const { toolCallTimeoutMs, waitPolicy } = input;
+  if (
+    !Number.isFinite(toolCallTimeoutMs)
+    || toolCallTimeoutMs <= 0
+    || (waitPolicy.kind === "bounded" && (!Number.isFinite(waitPolicy.timeoutMs) || waitPolicy.timeoutMs <= 0))
+  ) {
+    throw new RangeError("RepoPrompt CE agent_run wait requires a positive whole-second observation horizon");
+  }
+
+  const localMarginMs = Math.min(
+    AGENT_RUN_OBSERVATION_MARGIN_CEILING_MS,
+    Math.max(
+      AGENT_RUN_OBSERVATION_MARGIN_FLOOR_MS,
+      Math.ceil(toolCallTimeoutMs * AGENT_RUN_OBSERVATION_MARGIN_PROPORTION),
+    ),
+  );
+  const safeLocalSeconds = Math.floor((toolCallTimeoutMs - localMarginMs) / 1_000);
+  const requestedPolicySeconds = waitPolicy.kind === "bounded"
+    ? Math.floor(waitPolicy.timeoutMs / 1_000)
+    : safeLocalSeconds;
+  const effectiveSeconds = Math.min(requestedPolicySeconds, safeLocalSeconds);
+  if (!Number.isSafeInteger(effectiveSeconds) || effectiveSeconds < 1) {
+    throw new RangeError("RepoPrompt CE agent_run wait requires a positive whole-second observation horizon");
+  }
+  return effectiveSeconds;
+}
 
 export interface BackgroundWaitModelSnapshot {
   readonly provider: string;

@@ -7,6 +7,14 @@ import type { RpAppId } from "./types.js";
 // as a published contract, and follow the producer's version suffix rather than reinterpreting v1.
 export const QUEUE_STEER_ACCEPTED_EVENT = "pi-queue-steer:accepted-steer:v1";
 
+export const AGENT_RUN_WAIT_GUIDANCE = (
+  "For attended RepoPrompt CE Agent Mode work, start detached and then use an explicit wait. "
+  + "Omitted and positive blocking timeouts are scheduled automatically around the current Pi parent model's "
+  + "prompt-cache policy. Follow a cache-aware Running result with the same wait. Accepted Pi steering releases "
+  + "only the observation; the child keeps running and remains re-waitable. timeout:0 polls immediately. "
+  + "Attached starts and wait-enabled steer calls are not locally observer-interruptible."
+);
+
 interface QueueSteerAcceptedEventV1 {
   readonly version: 1;
   readonly producer: "pi-queue-steer";

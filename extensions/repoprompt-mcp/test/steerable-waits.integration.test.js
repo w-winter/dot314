@@ -11,6 +11,10 @@ import { ContextBuilderJobManager } from "../dist/context-builder-jobs.js";
 import { OracleSendJobManager } from "../dist/oracle-send-jobs.js";
 import { catalog as ceCatalog } from "./fixtures/ce-1.2/evidence.js";
 import {
+  catalog as classicCatalog,
+  inventoryScenarios as classicInventoryScenarios,
+} from "./fixtures/classic-2.1.32/evidence.js";
+import {
   QUEUE_STEER_ACCEPTED_EVENT,
   SteeringWaitCoordinator,
 } from "../dist/steerable-waits.js";
@@ -314,24 +318,29 @@ test("one accepted steer releases every registered retained observer active at a
   oracleWork.resolve(textResult("oracle terminal"));
 });
 
-test("registered explicit agent_run wait aborts only its request and remains re-waitable", async () => {
+test("agent_run blocking wait does not forward the two-minute CE default", async () => {
   const originalHome = process.env.HOME;
   const originalConnect = RpClient.prototype.connect;
   const originalClose = RpClient.prototype.close;
   const originalCallTool = RpClient.prototype.callTool;
   const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-steerable-agent-home-"));
+  const configDirectory = path.join(tempHome, ".pi", "agent", "extensions");
+  const configPath = path.join(configDirectory, "repoprompt-mcp.json");
   process.env.HOME = tempHome;
-  let waitCalls = 0;
+  let holdFirstWait = true;
   let firstRequestSignal;
   let childActive = true;
-  const forwardedSignals = [];
+  const forwardedAgentCalls = [];
+
+  const writeConfig = (overrides = {}) => writeFileSync(configPath, JSON.stringify({
+    activeApp: "ce",
+    apps: { ce: { command: "fake-rp", args: [] } },
+    ...overrides,
+  }));
 
   try {
-    mkdirSync(path.join(tempHome, ".pi", "agent", "extensions"), { recursive: true });
-    writeFileSync(
-      path.join(tempHome, ".pi", "agent", "extensions", "repoprompt-mcp.json"),
-      JSON.stringify({ activeApp: "ce", apps: { ce: { command: "fake-rp", args: [] } } }),
-    );
+    mkdirSync(configDirectory, { recursive: true });
+    writeConfig();
     await resetRpClient();
     clearBinding();
 
@@ -352,7 +361,7 @@ test("registered explicit agent_run wait aborts only its request and remains re-
       this._tools = [];
       this.publishedToolListGeneration = null;
     };
-    RpClient.prototype.callTool = function callTool(name, args, _timeout, signal) {
+    RpClient.prototype.callTool = function callTool(name, args, timeoutMs, signal) {
       if (name === "bind_context" && args.op === "list") {
         return Promise.resolve(textResult(JSON.stringify({
           windows: [{
@@ -372,34 +381,49 @@ test("registered explicit agent_run wait aborts only its request and remains re-
         })));
       }
       assert.equal(name, "agent_run");
-      if (args.op !== "wait" || "prompt" in args) {
-        forwardedSignals.push(signal);
-        return Promise.resolve(textResult(`forwarded ${args.op}`));
+      forwardedAgentCalls.push({ args: structuredClone(args), timeoutMs, signal });
+      if (args.session_id === "timeout-error") {
+        return Promise.reject(new Error("MCP request timed out"));
       }
-      waitCalls += 1;
-      if (waitCalls === 1) {
+      if (holdFirstWait && args.op === "wait" && args.timeout !== 0 && !("prompt" in args)) {
+        holdFirstWait = false;
         firstRequestSignal = signal;
         return new Promise((_resolve, reject) => {
           signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
       }
-      childActive = false;
-      return Promise.resolve(textResult("child completed"));
+      if (args.op === "wait") childActive = false;
+      return Promise.resolve(textResult(`forwarded ${args.op}`));
     };
 
     const harness = createHarness();
+    harness.context.model = {
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      id: "gpt-5.6-sol",
+      baseUrl: "https://chatgpt.com/backend-api",
+    };
     const coordinator = new SteeringWaitCoordinator();
     repopromptMcp(harness.pi, { steeringWaitCoordinator: coordinator });
     coordinator.beginSession("pi-session-integration");
-    const args = { op: "wait", session_ids: ["child-a", "child-b"], timeout: 60 };
-    const firstWait = harness.rpTool.execute(
-      "agent-wait",
+    const executeAgentRun = (toolCallId, args) => harness.rpTool.execute(
+      toolCallId,
       { call: "agent_run", args },
       undefined,
       undefined,
       harness.context,
     );
+    const originalArgs = { op: "wait", session_ids: ["child-a", "child-b"], timeout: 120 };
+    const firstWait = executeAgentRun("agent-wait", originalArgs);
     await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(forwardedAgentCalls[0].args, {
+      op: "wait",
+      session_ids: ["child-a", "child-b"],
+      timeout: 1_080,
+    });
+    assert.equal(forwardedAgentCalls[0].timeoutMs, 90 * 60 * 1000);
+    assert.deepEqual(originalArgs, { op: "wait", session_ids: ["child-a", "child-b"], timeout: 120 });
+
     harness.emitAcceptedQueueSteer();
     const interrupted = await settleWithin(firstWait);
     assert.equal(interrupted.details.waitObservation.result, "interrupted_by_steering");
@@ -407,34 +431,134 @@ test("registered explicit agent_run wait aborts only its request and remains re-
     assert.equal(firstRequestSignal.aborted, true);
     assert.equal(childActive, true);
 
-    const terminal = await harness.rpTool.execute(
-      "agent-rewait",
-      { call: "agent_run", args },
-      undefined,
-      undefined,
-      harness.context,
-    );
-    assert.match(terminal.content[0].text, /child completed/u);
+    harness.context.model = {
+      provider: "unverified",
+      api: "unverified",
+      id: "unknown",
+      baseUrl: "https://example.com",
+    };
+    const terminal = await executeAgentRun("agent-rewait", originalArgs);
+    assert.match(terminal.content[0].text, /forwarded wait/u);
+    assert.equal(forwardedAgentCalls.at(-1).args.timeout, 5_340);
     assert.equal(childActive, false);
 
-    const unwrappedCalls = [
-      { op: "wait", session_id: "child-a", prompt: "invalid start-only field" },
+    harness.context.model = {
+      provider: "openai-codex",
+      api: "openai-codex-responses",
+      id: "gpt-5.6-sol",
+      baseUrl: "https://chatgpt.com/backend-api",
+    };
+    const canonicalCases = [
+      [{ op: "wait", session_id: "child-a" }, 1_080],
+      [{ op: "wait", session_id: "child-a", timeout: 999 }, 1_080],
+      [{ op: "wait", session_ids: ["child-b", "child-a"], timeout: 15 }, 1_080],
+    ];
+    for (const [args, expectedTimeout] of canonicalCases) {
+      await executeAgentRun(`canonical-${expectedTimeout}-${forwardedAgentCalls.length}`, args);
+      assert.equal(forwardedAgentCalls.at(-1).args.timeout, expectedTimeout);
+      assert.equal(forwardedAgentCalls.at(-1).timeoutMs, 90 * 60 * 1000);
+      if (args.session_ids) assert.deepEqual(forwardedAgentCalls.at(-1).args.session_ids, args.session_ids);
+    }
+
+    const passthroughCases = [
+      { op: "wait", session_id: "child-a", timeout: 0 },
+      { op: "wait", session_id: "child-a", timeout: 120, prompt: "invalid start-only field" },
       { op: "poll", session_id: "child-a" },
       { op: "cancel", session_id: "child-a" },
       { op: "respond", session_id: "child-a", response: "yes" },
       { op: "steer", session_id: "child-a", message: "next", wait: true },
       { op: "steer", session_id: "child-a", message: "next", wait: false },
     ];
-    for (const forwardedArgs of unwrappedCalls) {
-      await harness.rpTool.execute(
-        `agent-${forwardedArgs.op}`,
-        { call: "agent_run", args: forwardedArgs },
-        undefined,
-        undefined,
-        harness.context,
-      );
+    for (const args of passthroughCases) {
+      await executeAgentRun(`passthrough-${args.op}-${forwardedAgentCalls.length}`, args);
+      assert.deepEqual(forwardedAgentCalls.at(-1).args, args);
+      assert.equal(forwardedAgentCalls.at(-1).timeoutMs, undefined);
+      assert.equal(forwardedAgentCalls.at(-1).signal, undefined);
     }
-    assert.deepEqual(forwardedSignals, Array(unwrappedCalls.length).fill(undefined));
+
+    writeConfig({ backgroundWaitCacheTtlMsByModel: { "openai-codex/gpt-5.6-sol": 600_000 } });
+    await executeAgentRun("agent-override", { op: "wait", session_id: "child-a" });
+    assert.equal(forwardedAgentCalls.at(-1).args.timeout, 540);
+
+    writeConfig({ backgroundWaitHeartbeatEnabled: false });
+    await executeAgentRun("agent-heartbeats-disabled", { op: "wait", session_id: "child-a" });
+    assert.equal(forwardedAgentCalls.at(-1).args.timeout, 5_340);
+
+    const timeoutFailure = await executeAgentRun("agent-timeout-error", {
+      op: "wait",
+      session_id: "timeout-error",
+    });
+    assert.equal(timeoutFailure.isError, true);
+    assert.match(timeoutFailure.content[0].text, /MCP request timed out/u);
+  } finally {
+    RpClient.prototype.connect = originalConnect;
+    RpClient.prototype.close = originalClose;
+    RpClient.prototype.callTool = originalCallTool;
+    process.env.HOME = originalHome;
+    clearBinding();
+    await resetRpClient();
+    rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("RepoPrompt Classic agent_run wait preserves the caller timeout", async () => {
+  const originalHome = process.env.HOME;
+  const originalConnect = RpClient.prototype.connect;
+  const originalClose = RpClient.prototype.close;
+  const originalCallTool = RpClient.prototype.callTool;
+  const tempHome = mkdtempSync(path.join(os.tmpdir(), "rp-classic-agent-home-"));
+  process.env.HOME = tempHome;
+  let forwardedAgentCall;
+
+  try {
+    const configDirectory = path.join(tempHome, ".pi", "agent", "extensions");
+    mkdirSync(configDirectory, { recursive: true });
+    writeFileSync(
+      path.join(configDirectory, "repoprompt-mcp.json"),
+      JSON.stringify({ activeApp: "classic", apps: { classic: { command: "fake-classic", args: [] } } }),
+    );
+    await resetRpClient();
+    clearBinding();
+
+    RpClient.prototype.connect = async function connect() {
+      this.client = {};
+      this.transport = {};
+      this._status = "connected";
+      this.toolListInvalidationGeneration = 0;
+      this.publishedToolListGeneration = 0;
+      this._tools = classicCatalog.tools
+        .filter((tool) => ["agent_run", "bind_context", "manage_workspaces"].includes(tool.name))
+        .map((tool) => structuredClone(tool));
+    };
+    RpClient.prototype.close = async function close() {
+      this.client = null;
+      this.transport = null;
+      this._status = "disconnected";
+      this._tools = [];
+      this.publishedToolListGeneration = null;
+    };
+    RpClient.prototype.callTool = function callTool(name, args, timeoutMs, signal) {
+      if (name === "bind_context" && args.op === "list") {
+        return Promise.resolve(textResult(JSON.stringify(classicInventoryScenarios.multiWindow)));
+      }
+      assert.equal(name, "agent_run");
+      forwardedAgentCall = { args: structuredClone(args), timeoutMs, signal };
+      return Promise.resolve(textResult("classic wait"));
+    };
+
+    const harness = createHarness();
+    const coordinator = new SteeringWaitCoordinator();
+    repopromptMcp(harness.pi, { steeringWaitCoordinator: coordinator });
+    coordinator.beginSession("pi-session-integration");
+    const args = { op: "wait", session_id: "classic-child", timeout: 120 };
+    await harness.rpTool.execute(
+      "classic-agent-wait",
+      { call: "agent_run", args },
+      undefined,
+      undefined,
+      harness.context,
+    );
+    assert.deepEqual(forwardedAgentCall, { args, timeoutMs: undefined, signal: undefined });
   } finally {
     RpClient.prototype.connect = originalConnect;
     RpClient.prototype.close = originalClose;

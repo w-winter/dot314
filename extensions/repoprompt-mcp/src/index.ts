@@ -36,7 +36,13 @@ import type {
   RpAppId,
   ToolCatalogFreshness,
 } from "./types.js";
-import { ACTIVE_APP_ENTRY_TYPE, AUTO_SELECTION_ENTRY_TYPE, BINDING_ENTRY_TYPE, RP_APP_IDS } from "./types.js";
+import {
+  ACTIVE_APP_ENTRY_TYPE,
+  AUTO_SELECTION_ENTRY_TYPE,
+  BINDING_ENTRY_TYPE,
+  DEFAULT_TOOL_CALL_TIMEOUT_MS,
+  RP_APP_IDS,
+} from "./types.js";
 import { getAppCliCommand, getAppLabel, getAppTargetConfig, getServerCommand, inferAppPath, loadConfig } from "./config.js";
 import { getRpClient, resetRpClient } from "./client.js";
 import type { ToolCatalogRevisionToken } from "./client.js";
@@ -101,6 +107,7 @@ import {
 } from "./context-builder-jobs.js";
 import type { RepoPromptJobResetReason, RepoPromptJobTarget } from "./mcp-tool-jobs.js";
 import {
+  resolveAgentRunObservationTimeoutSeconds,
   resolveBackgroundWaitPolicy,
   type BackgroundWaitPolicyResolver,
 } from "./background-wait-policy.js";
@@ -111,6 +118,7 @@ import {
   OracleSendJobManager,
 } from "./oracle-send-jobs.js";
 import {
+  AGENT_RUN_WAIT_GUIDANCE,
   QUEUE_STEER_ACCEPTED_EVENT,
   ObserverInterruptControlError,
   SteeringWaitCoordinator,
@@ -2734,8 +2742,7 @@ Usage:
 
 Context Builder and generic Oracle sends use asynchronous start/wait protocols with one-shot terminal results.
 Accepted Pi steering can release their current wait observation while the underlying job continues.
-For steerable RepoPrompt CE Agent Mode, start with detach:true, retain the session_id, then use an explicit wait with an omitted or positive timeout.
-Explicit agent waits are observer-interruptible; attached starts and wait-enabled steer calls are not.
+${AGENT_RUN_WAIT_GUIDANCE}
 Other forwarded RepoPrompt tools return their results directly.
 
 Common tools: read_file, get_file_tree, get_code_structure, file_search,
@@ -4167,13 +4174,7 @@ Mode priority: call > describe > search > windows > bind > status`,
     if (normalized === "agent_run" && supportsObserverInterruptibleAgentWait(activeApp)) {
       return {
         ...tool,
-        description: (
-          `${tool.description || "Run RepoPrompt agents."} ` +
-          "For a steerable workflow on RepoPrompt CE, start with detach:true, retain the session_id, then use an explicit wait " +
-          "with an omitted or positive timeout. Accepted Pi steering interrupts only that wait request; it does " +
-          "not cancel the child, and the same session IDs remain usable. timeout:0 is polling. Attached starts " +
-          "and wait-enabled steer calls are forwarded but are not locally observer-interruptible."
-        ),
+        description: `${tool.description || "Run RepoPrompt agents."} ${AGENT_RUN_WAIT_GUIDANCE}`,
       };
     }
     return tool;
@@ -5065,11 +5066,15 @@ Mode priority: call > describe > search > windows > bind > status`,
         : null;
       let result: McpToolResult;
       if (agentRunClassification?.kind === "steerable_wait") {
+        const waitPolicy = resolveCurrentBackgroundWaitPolicy(ctx);
+        const toolCallTimeoutMs = config.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
+        const timeout = resolveAgentRunObservationTimeoutSeconds({ waitPolicy, toolCallTimeoutMs });
+        const agentRunArgs = { ...mergedArgs, timeout };
         const observer = steeringWaitCoordinator.registerObserver();
         const lifecycleSignal = connectionLifecycleController.signal;
         try {
           const observed = await runObserverInterruptibleCall({
-            run: (requestSignal) => client.callTool(tool.name, mergedArgs, undefined, requestSignal),
+            run: (requestSignal) => client.callTool(tool.name, agentRunArgs, toolCallTimeoutMs, requestSignal),
             steeringSignal: observer.signal,
             callerSignal: signal,
             lifecycleSignal,
