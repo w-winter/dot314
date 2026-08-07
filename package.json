@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -72,9 +72,9 @@
     "turndown-plugin-gfm": "^1.0.2"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-ai": ">=0.84.0",
     "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   }
