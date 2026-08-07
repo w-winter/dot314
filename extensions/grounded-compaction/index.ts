@@ -8,6 +8,7 @@ import {
     type AssistantMessage,
     type Message,
     type Model,
+    type ProviderHeaders,
 } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
@@ -58,7 +59,7 @@ export interface ParsedCompactInstructions {
 export interface ResolvedSummarizer {
     model: Model<any>;
     apiKey?: string;
-    headers?: Record<string, string>;
+    headers?: ProviderHeaders;
     reasoningLevel?: ThinkingLevel;
 }
 
@@ -91,7 +92,7 @@ type HookContext = {
     modelRegistry: {
         getAll(): Model<Api>[];
         getApiKeyAndHeaders(model: Model<Api>): Promise<
-            | { ok: true; apiKey?: string; headers?: Record<string, string> }
+            | { ok: true; apiKey?: string; headers?: ProviderHeaders }
             | { ok: false; error: string }
         >;
     };

@@ -17,7 +17,8 @@
     "extensions": ["extensions/grounded-compaction/index.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0"
+    "@earendil-works/pi-ai": ">=0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"

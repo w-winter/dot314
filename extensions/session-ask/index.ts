@@ -6,7 +6,15 @@
  *
  */
 
-import { complete, type AssistantMessage, type Message, type Model, type Tool, type ToolResultMessage } from "@earendil-works/pi-ai";
+import {
+    complete,
+    type AssistantMessage,
+    type Message,
+    type Model,
+    type ProviderHeaders,
+    type Tool,
+    type ToolResultMessage,
+} from "@earendil-works/pi-ai";
 import {
     BorderedLoader,
     parseFrontmatter as parseYamlFrontmatter,
@@ -1040,7 +1048,7 @@ async function runSessionAsk(params: RunSessionAskParams): Promise<string> {
     // Model selection
     let model: Model<any> | null = null;
     let apiKey: string | undefined;
-    let headers: Record<string, string> | undefined;
+    let headers: ProviderHeaders | undefined;
     let selectedThinkingLevel: ThinkingLevel = agent.thinkingLevel ?? config.thinkingLevel;
 
     const candidates: SessionAskModelConfig[] = [

@@ -20,7 +20,8 @@
     "just-bash": "^2.10.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-ai": ">=0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
