@@ -252,10 +252,6 @@
   - Adds just-bash AST-backed bash command inspection (requires `just-bash` >= 2; regex fallback if parse fails)
     - Covers `rp_exec`, `rp-cli -e ...`, `rpce-cli -e ...`, and `rp` (repoprompt-mcp)
 
-- ◐ [`oracle.ts`](oracle.ts) (upstream: [hjanuschka/shitty-extensions](https://github.com/hjanuschka/shitty-extensions/tree/main))
-  - `/oracle` queries an alternate model for a second opinion, with optional file inclusion (`-f`) and injection into the current conversation
-  - This version adds a thinking-level picker and fixes text-overflow crashes (CJK-safe wrapping)
-
 - ◐ [`session-switch/`](session-switch/) (upstream: [pi-thread-switcher](https://github.com/damianpdr/pi-thread-switcher))
   - Session switching via `/switch-session`, or the same picker after interactive startup via `pi --switch-session`, with a live preview of the highlighted session and its latest message time below the picker
   - `pi --switch-session` is an extension-driven relaunch workaround, not native pre-start `--resume`, so it does not provide native missing-cwd recovery or the normal in-process session-switch lifecycle / shutdown-hook cleanup semantics

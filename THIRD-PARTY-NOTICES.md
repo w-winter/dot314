@@ -65,7 +65,6 @@ text. This file provides a consolidated overview.
 - **License:** MIT (declared in package.json)
 - **Copyright:** © hjanuschka
 - **Used in:**
-  - `extensions/oracle.ts` (◐ modified — thinking picker, CJK-safe wrapping)
   - `extensions/usage-bar.ts` (◐ modified — multi-Codex, color scale, alignment)
 
 ### damianpdr/pi-thread-switcher
