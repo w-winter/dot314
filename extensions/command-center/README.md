@@ -18,6 +18,12 @@ A scrollable overview of available /commands (from extensions, prompts, skills, 
 2. Edit `config.json` to your preferences
 3. Run `/reload`
 
+### Pi skill commands
+
+Command Center follows Pi's `enableSkillCommands` setting. When **Skill commands** is disabled in `/settings` (or `enableSkillCommands` is `false` in `settings.json`), the `SKILLS` section is omitted.
+
+If you change this setting while Command Center is open, close and reopen the widget to refresh it.
+
 ### Recommended defaults
 
 #### Hide built-ins (†)
