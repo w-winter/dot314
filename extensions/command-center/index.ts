@@ -6,7 +6,13 @@
  * Keybindings are configured in ./config.json (relative to this file).
  */
 
-import type { ExtensionAPI, ExtensionContext, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import {
+    getAgentDir,
+    SettingsManager,
+    type ExtensionAPI,
+    type ExtensionContext,
+    type SlashCommandInfo,
+} from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import * as fs from "node:fs";
@@ -71,7 +77,13 @@ type ExtensionConfig = {
     display?: ExtensionDisplayConfig;
 };
 
-const DEFAULT_CONFIG: Required<ExtensionConfig> = {
+type ResolvedExtensionConfig = {
+    keybindings: Required<ExtensionKeybindingsConfig>;
+    layout: Required<ExtensionLayoutConfig>;
+    display: Required<ExtensionDisplayConfig>;
+};
+
+const DEFAULT_CONFIG: ResolvedExtensionConfig = {
     keybindings: {
         toggle: "ctrl+/",
         scrollUp: "shift+up",
@@ -87,7 +99,7 @@ const DEFAULT_CONFIG: Required<ExtensionConfig> = {
     },
 };
 
-function loadConfig(): Required<ExtensionConfig> {
+function loadConfig(): ResolvedExtensionConfig {
     const dir = path.dirname(fileURLToPath(import.meta.url));
     const configPath = path.join(dir, "config.json");
 
@@ -163,7 +175,11 @@ function sortCommandStrings(values: string[]): string[] {
     return [...values].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
-function buildAllLines(width: number, commands: SlashCommandInfo[], options: { includeBuiltins: boolean }): string[] {
+function buildAllLines(
+    width: number,
+    commands: SlashCommandInfo[],
+    options: { includeBuiltins: boolean; includeSkills: boolean },
+): string[] {
     const lines: string[] = [];
     const g = (s: string) => `\x1b[32m${s}\x1b[0m`; // green
     const c = (s: string) => `\x1b[36m${s}\x1b[0m`; // cyan
@@ -209,14 +225,16 @@ function buildAllLines(width: number, commands: SlashCommandInfo[], options: { i
     }
     lines.push("");
 
-    lines.push(y(b(`SKILLS (${skills.length})`)));
-    if (skills.length > 0) {
-        const maxItemLen = Math.max(...skills.map((s) => s.length));
-        const colWidth = clamp(maxItemLen + 2, 18, 40);
-        const cols = Math.max(1, Math.floor(usableWidth / colWidth));
-        const items = skills.map((s) => c(truncatePlain(s, colWidth - 1)));
-        for (const line of makeColumns(items, colWidth, cols)) {
-            lines.push("  " + line);
+    if (options.includeSkills) {
+        lines.push(y(b(`SKILLS (${skills.length})`)));
+        if (skills.length > 0) {
+            const maxItemLen = Math.max(...skills.map((s) => s.length));
+            const colWidth = clamp(maxItemLen + 2, 18, 40);
+            const cols = Math.max(1, Math.floor(usableWidth / colWidth));
+            const items = skills.map((s) => c(truncatePlain(s, colWidth - 1)));
+            for (const line of makeColumns(items, colWidth, cols)) {
+                lines.push("  " + line);
+            }
         }
     }
     if (options.includeBuiltins) {
@@ -267,17 +285,25 @@ class CommandCenterWidget {
     private tui: WidgetTui;
     private theme: WidgetTheme;
     private pi: ExtensionAPI;
-    private config: Required<ExtensionConfig>;
+    private config: ResolvedExtensionConfig;
+    private skillCommandsEnabled: boolean;
 
     private scroll: number = 0;
     private cachedWidth: number = 0;
     private cachedLines: string[] = [];
 
-    constructor(tui: WidgetTui, theme: WidgetTheme, pi: ExtensionAPI, config: Required<ExtensionConfig>) {
+    constructor(
+        tui: WidgetTui,
+        theme: WidgetTheme,
+        pi: ExtensionAPI,
+        config: ResolvedExtensionConfig,
+        skillCommandsEnabled: boolean,
+    ) {
         this.tui = tui;
         this.theme = theme;
         this.pi = pi;
         this.config = config;
+        this.skillCommandsEnabled = skillCommandsEnabled;
     }
 
     updateTheme(theme: WidgetTheme): void {
@@ -285,8 +311,14 @@ class CommandCenterWidget {
         this.invalidate();
     }
 
-    updateConfig(config: Required<ExtensionConfig>): void {
+    updateConfig(config: ResolvedExtensionConfig): void {
         this.config = config;
+        this.invalidate();
+    }
+
+    updateSkillCommandsEnabled(enabled: boolean): void {
+        if (enabled === this.skillCommandsEnabled) return;
+        this.skillCommandsEnabled = enabled;
         this.invalidate();
     }
 
@@ -313,8 +345,12 @@ class CommandCenterWidget {
         const innerHeight = Math.max(3, height - 4);
 
         if (width !== this.cachedWidth) {
-            this.cachedLines = buildAllLines(width, this.pi.getCommands(), {
+            const commands = this.pi
+                .getCommands()
+                .filter((command) => command.source !== "skill" || this.skillCommandsEnabled);
+            this.cachedLines = buildAllLines(width, commands, {
                 includeBuiltins: this.config.display.includeBuiltins,
+                includeSkills: this.skillCommandsEnabled,
             });
             this.cachedWidth = width;
         }
@@ -388,6 +424,9 @@ export default function commandCenterExtension(pi: ExtensionAPI): void {
 
     const show = (ctx: ExtensionContext) => {
         const config = readConfigAndUpdateWidget();
+        const skillCommandsEnabled = SettingsManager.create(ctx.cwd, getAgentDir(), {
+            projectTrusted: ctx.isProjectTrusted(),
+        }).getEnableSkillCommands();
 
         ctx.ui.setWidget(
             WIDGET_ID,
@@ -398,11 +437,12 @@ export default function commandCenterExtension(pi: ExtensionAPI): void {
                         theme as unknown as WidgetTheme,
                         pi,
                         config,
-                        () => hide(ctx),
+                        skillCommandsEnabled,
                     );
                 } else {
                     widget.updateTheme(theme as unknown as WidgetTheme);
                     widget.updateConfig(config);
+                    widget.updateSkillCommandsEnabled(skillCommandsEnabled);
                 }
                 return widget as any;
             },
