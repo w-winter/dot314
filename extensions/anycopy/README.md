@@ -35,6 +35,7 @@ Notes:
 - Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
 - When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
 - `Shift+A`/`Shift+C` multi-select copy behavior is unchanged by navigation support, while plain space remains available for search queries
+- In Pi fullscreen mode, `/anycopy` reserves Pi's sticky transcript/spacer/footer rows and keeps its own bounded preview scrolling, so the final lines remain reachable
 - `Shift+T` is configurable via `keys.toggleLabelTimestamps` in `config.json`
 - `Shift+T` shows timestamps for labeled nodes only, using the latest label-change time for each label
 - `Shift+Ctrl+T` is configurable via `keys.toggleEntryTimestamps` in `config.json`
