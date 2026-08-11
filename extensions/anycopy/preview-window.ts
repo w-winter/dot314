@@ -12,20 +12,20 @@ export function getPreviewWindow(lineCount: number, height: number, requestedOff
 
 	if (height === 1) {
 		const start = Math.max(0, Math.min(requestedOffset, lineCount - 1));
-		return { start, end: start + 1, above: start, below: lineCount - start - 1 };
+		return { start, end: start, above: start, below: lineCount - start };
 	}
 
-	// At the bottom, one row is reserved for the "above" indicator. Include
-	// that row in the maximum offset so the final content line remains reachable.
-	const maxOffset = Math.max(0, lineCount - (height - 1));
+	// The preview is framed by one top and one bottom divider. Overflow counts
+	// are rendered inside those dividers instead of consuming additional rows.
+	const contentRows = Math.max(0, height - 2);
+	const maxOffset = Math.max(0, lineCount - contentRows);
 	const start = Math.max(0, Math.min(requestedOffset, maxOffset));
-	const above = start;
-	// Report remaining scroll steps rather than raw hidden content rows. The
-	// bottom indicator disappears at maxOffset and releases its own row, so one
-	// final keypress can reveal more than one content row.
-	const below = maxOffset - start;
-	const contentRows = Math.max(0, height - (above > 0 ? 1 : 0) - (below > 0 ? 1 : 0));
 	const end = Math.min(lineCount, start + contentRows);
 
-	return { start, end, above, below };
+	return {
+		start,
+		end,
+		above: start,
+		below: maxOffset - start,
+	};
 }

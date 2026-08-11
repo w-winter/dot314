@@ -620,24 +620,28 @@ class anycopyOverlay implements Focusable {
 			);
 		}
 
-		// TreeSelectorComponent already renders the separator above this hint.
-		const previewHint =
-			`  ${formatKeyHint(this.keys.scrollUp)}/${formatKeyHint(this.keys.scrollDown)}: scroll` +
-			` • ${formatKeyHint(this.keys.pageUp)}/${formatKeyHint(this.keys.pageDown)}: page`;
-		lines.push(truncateToWidth(this.theme.fg("dim", previewHint), width));
+		const compactKey = (key: string): string =>
+			formatKeyHint(key)
+				.replace(/^Shift(?=\+)/i, "S")
+				.replace(/\+Ctrl(?=\+|$)/gi, "+C")
+				.replace(/\+Alt(?=\+|$)/gi, "+A");
+		const hint =
+			`  ${compactKey(this.keys.scrollUp)}/${compactKey(this.keys.scrollDown)}: scroll` +
+			` · ${compactKey(this.keys.pageUp)}/${compactKey(this.keys.pageDown)}: page` +
+			` · Enter: navigate` +
+			` · ${compactKey(this.keys.toggleSelect)}: select` +
+			` · ${compactKey(this.keys.copy)}: copy` +
+			` · ${compactKey(this.keys.clear)}: clear` +
+			` · ${compactKey(this.keys.toggleEntryTimestamps)}: entry time`;
+		lines.push(truncateToWidth(this.theme.fg("dim", hint), width));
 
 		return lines;
 	}
 
-	private renderTreeHeaderHint(width: number): string {
-		const hint =
-			`   │ Enter: navigate` +
-			` • ${formatKeyHint(this.keys.toggleSelect)}: select` +
-			` • ${formatKeyHint(this.keys.copy)}: copy` +
-			` • ${formatKeyHint(this.keys.clear)}: clear` +
-			` • ${formatKeyHint(this.keys.toggleEntryTimestamps)}: entry time` +
-			` • Esc: close`;
-		return truncateToWidth(this.theme.fg("dim", hint), width);
+	private renderPreviewDivider(width: number, message?: string): string {
+		const label = message ? ` ${message} ` : "";
+		const ruleWidth = Math.max(0, width - visibleWidth(label) - 1);
+		return truncateToWidth(this.theme.fg("dim", `─${label}${"─".repeat(ruleWidth)}`), width);
 	}
 
 	private getPreviewBody(width: number): { bodyLines: string[]; truncatedToMaxLines: boolean } | null {
@@ -688,20 +692,25 @@ class anycopyOverlay implements Focusable {
 		this.previewScrollOffset = window.start;
 
 		if (height === 1) {
-			return [bodyLines[window.start] ?? ""];
+			const hidden = Math.max(window.above, window.below);
+			return [this.renderPreviewDivider(width, hidden > 0 ? `… ${hidden} line(s)` : undefined)];
 		}
 
-		if (window.above > 0) {
-			lines.push(truncateToWidth(this.theme.fg("muted", `… ${window.above} line(s) above`), width));
-		}
-
+		lines.push(
+			this.renderPreviewDivider(
+				width,
+				window.above > 0 ? `… ${window.above} line(s) above` : undefined,
+			),
+		);
 		lines.push(...bodyLines.slice(window.start, window.end));
+		lines.push(
+			this.renderPreviewDivider(
+				width,
+				window.below > 0 ? `… ${window.below} line(s) below` : undefined,
+			),
+		);
 
-		if (window.below > 0) {
-			lines.push(truncateToWidth(this.theme.fg("muted", `… ${window.below} line(s) below`), width));
-		}
-
-		while (lines.length < height) lines.push("");
+		while (lines.length < height) lines.splice(lines.length - 1, 0, "");
 		if (lines.length > height) lines.length = height;
 		return lines;
 	}
@@ -711,20 +720,23 @@ class anycopyOverlay implements Focusable {
 		const output: string[] = [];
 
 		const selectorLines = this.selector.render(width);
-		const headerHint = this.renderTreeHeaderHint(width);
-
-		// Inject action hints near the tree header (above the list)
-		const insertAfter = Math.max(0, selectorLines.findIndex((l) => l.includes("Type to search")));
-		if (selectorLines.length > 0) {
-			const idx = insertAfter >= 0 ? insertAfter + 1 : 1;
-			selectorLines.splice(Math.min(idx, selectorLines.length), 0, headerHint);
+		const searchLineIndex = selectorLines.findIndex((line) => line.includes("Type to search"));
+		const listStartIndex = searchLineIndex >= 0 ? searchLineIndex + 2 : -1;
+		if (listStartIndex >= 0 && visibleWidth(selectorLines[listStartIndex] ?? "") === 0) {
+			selectorLines.splice(listStartIndex, 1);
+		}
+		while (selectorLines.length > 1 && visibleWidth(selectorLines.at(-2) ?? "") === 0) {
+			selectorLines.splice(selectorLines.length - 2, 1);
+		}
+		while (selectorLines.length > 0 && visibleWidth(selectorLines.at(-1) ?? "") === 0) {
+			selectorLines.pop();
 		}
 
 		output.push(...selectorLines);
 		output.push(...this.renderStatusBar(width));
 
-		const footerSeparatorHeight = 1;
-		const contentHeight = Math.max(0, height - footerSeparatorHeight);
+		const hostDividerHeight = 1;
+		const contentHeight = Math.max(0, height - hostDividerHeight);
 		const previewHeight = Math.max(0, contentHeight - output.length);
 		if (previewHeight > 0) {
 			output.push(...this.renderPreview(width, previewHeight));
@@ -732,7 +744,6 @@ class anycopyOverlay implements Focusable {
 
 		while (output.length < contentHeight) output.push("");
 		if (output.length > contentHeight) output.length = contentHeight;
-		output.push(truncateToWidth(this.theme.fg("dim", "─".repeat(width)), width));
 		return output;
 	}
 
@@ -925,15 +936,6 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 
 			tui.setFocus?.(overlay);
 			return overlay;
-		}, {
-			overlay: true,
-			overlayOptions: {
-				anchor: "top-left",
-				width: "100%",
-				maxHeight: "100%",
-				margin: 0,
-			},
-			onHandle: (handle) => handle.focus(),
 		});
 	};
 

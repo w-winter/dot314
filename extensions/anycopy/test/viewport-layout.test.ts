@@ -3,14 +3,14 @@ import test from "node:test";
 
 import { getAnycopyRenderHeight } from "../viewport-layout.ts";
 
-test("getAnycopyRenderHeight uses the terminal height as the overlay budget", () => {
-	assert.equal(getAnycopyRenderHeight(40), 40);
+test("getAnycopyRenderHeight preserves the component's final separator above Pi's footer", () => {
+	assert.equal(getAnycopyRenderHeight(40), 37);
 });
 
 test("getAnycopyRenderHeight floors fractional terminal heights", () => {
-	assert.equal(getAnycopyRenderHeight(40.9), 40);
+	assert.equal(getAnycopyRenderHeight(40.9), 37);
 });
 
 test("getAnycopyRenderHeight always leaves at least one component row", () => {
-	assert.equal(getAnycopyRenderHeight(0), 1);
+	assert.equal(getAnycopyRenderHeight(1), 1);
 });
