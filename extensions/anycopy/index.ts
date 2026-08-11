@@ -26,7 +26,6 @@ import {
 
 import {
 	getKeybindings,
-	isViewportTUI,
 	Markdown,
 	matchesKey,
 	truncateToWidth,
@@ -772,9 +771,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 		const skipSummaryPrompt = loadBranchSummarySkipPrompt(ctx.cwd);
 
 		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-			const viewportMode = isViewportTUI(tui);
-			const getRenderHeight = (): number =>
-				getAnycopyRenderHeight(tui.terminal?.rows ?? 40, viewportMode);
+			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
 			const treeTermHeight = Math.floor(getRenderHeight() * 0.65);
 			const nodeById = buildNodeMap(initialTree);
 			const validNodeIds = new Set(nodeById.keys());
@@ -928,6 +925,15 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 
 			tui.setFocus?.(overlay);
 			return overlay;
+		}, {
+			overlay: true,
+			overlayOptions: {
+				anchor: "top-left",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+			},
+			onHandle: (handle) => handle.focus(),
 		});
 	};
 

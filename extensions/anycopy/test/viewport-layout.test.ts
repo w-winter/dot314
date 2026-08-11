@@ -3,14 +3,14 @@ import test from "node:test";
 
 import { getAnycopyRenderHeight } from "../viewport-layout.ts";
 
-test("getAnycopyRenderHeight preserves the full terminal height in regular mode", () => {
-	assert.equal(getAnycopyRenderHeight(40, false), 40);
+test("getAnycopyRenderHeight uses the terminal height as the overlay budget", () => {
+	assert.equal(getAnycopyRenderHeight(40), 40);
 });
 
-test("getAnycopyRenderHeight reserves fullscreen transcript, spacer, and footer rows", () => {
-	assert.equal(getAnycopyRenderHeight(40, true), 36);
+test("getAnycopyRenderHeight floors fractional terminal heights", () => {
+	assert.equal(getAnycopyRenderHeight(40.9), 40);
 });
 
 test("getAnycopyRenderHeight always leaves at least one component row", () => {
-	assert.equal(getAnycopyRenderHeight(2, true), 1);
+	assert.equal(getAnycopyRenderHeight(0), 1);
 });
