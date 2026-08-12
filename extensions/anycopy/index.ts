@@ -735,8 +735,7 @@ class anycopyOverlay implements Focusable {
 		output.push(...selectorLines);
 		output.push(...this.renderStatusBar(width));
 
-		const hostDividerHeight = 1;
-		const contentHeight = Math.max(0, height - hostDividerHeight);
+		const contentHeight = height;
 		const previewHeight = Math.max(0, contentHeight - output.length);
 		if (previewHeight > 0) {
 			output.push(...this.renderPreview(width, previewHeight));
@@ -936,6 +935,15 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 
 			tui.setFocus?.(overlay);
 			return overlay;
+		}, {
+			overlay: true,
+			overlayOptions: {
+				anchor: "top-left",
+				width: "100%",
+				maxHeight: "100%",
+				margin: 0,
+			},
+			onHandle: (handle) => handle.focus(),
 		});
 	};
 

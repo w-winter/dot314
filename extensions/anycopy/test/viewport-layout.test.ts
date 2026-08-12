@@ -3,12 +3,12 @@ import test from "node:test";
 
 import { getAnycopyRenderHeight } from "../viewport-layout.ts";
 
-test("getAnycopyRenderHeight preserves the component's final separator above Pi's footer", () => {
-	assert.equal(getAnycopyRenderHeight(40), 37);
+test("getAnycopyRenderHeight leaves Pi's two-line footer below the overlay", () => {
+	assert.equal(getAnycopyRenderHeight(40), 38);
 });
 
 test("getAnycopyRenderHeight floors fractional terminal heights", () => {
-	assert.equal(getAnycopyRenderHeight(40.9), 37);
+	assert.equal(getAnycopyRenderHeight(40.9), 38);
 });
 
 test("getAnycopyRenderHeight always leaves at least one component row", () => {
