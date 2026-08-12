@@ -779,8 +779,16 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 		const getTree = () => ctx.sessionManager.getTree() as SessionTreeNode[];
 		const currentLeafId = ctx.sessionManager.getLeafId();
 		const skipSummaryPrompt = loadBranchSummarySkipPrompt(ctx.cwd);
+		let overlayHandle: { focus(): void; unfocus(): void } | undefined;
 
 		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			let closed = false;
+			const closeOverlay = (): void => {
+				if (closed) return;
+				closed = true;
+				overlayHandle?.unfocus();
+				done();
+			};
 			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
 			const treeTermHeight = Math.floor(getRenderHeight() * 0.65);
 			const nodeById = buildNodeMap(initialTree);
@@ -797,7 +805,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 					entryId,
 					currentLeafIdForNoop,
 					skipSummaryPrompt,
-					close: done,
+					close: closeOverlay,
 					reopen: (reopenOpts) => {
 						void openAnycopy(ctx, reopenOpts);
 					},
@@ -818,7 +826,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				currentLeafId,
 				treeTermHeight,
 				startEnterNavigation,
-				() => done(),
+				closeOverlay,
 				(entryId, label) => {
 					pi.setLabel(entryId, label);
 				},
@@ -933,7 +941,6 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				});
 			};
 
-			tui.setFocus?.(overlay);
 			return overlay;
 		}, {
 			overlay: true,
@@ -943,7 +950,10 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				maxHeight: "100%",
 				margin: 0,
 			},
-			onHandle: (handle) => handle.focus(),
+			onHandle: (handle) => {
+				overlayHandle = handle;
+				handle.focus();
+			},
 		});
 	};
 
