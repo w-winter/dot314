@@ -1,6 +1,6 @@
 {
   "name": "pi-anycopy",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Pi's /tree with a live syntax-highlighted preview, ability to copy any node(s) to the clipboard, and persistence of folded branches",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
@@ -18,8 +18,8 @@
     "image": "https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
+    "@earendil-works/pi-tui": ">=0.84.0"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
@@ -30,8 +30,10 @@
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
       { "from": "../../extensions/anycopy/enter-navigation.ts", "to": "extensions/anycopy/enter-navigation.ts" },
       { "from": "../../extensions/anycopy/fold-state.ts", "to": "extensions/anycopy/fold-state.ts" },
+      { "from": "../../extensions/anycopy/preview-window.ts", "to": "extensions/anycopy/preview-window.ts" },
       { "from": "../../extensions/anycopy/timestamps.ts", "to": "extensions/anycopy/timestamps.ts" },
       { "from": "../../extensions/anycopy/tree-order.ts", "to": "extensions/anycopy/tree-order.ts" },
+      { "from": "../../extensions/anycopy/viewport-layout.ts", "to": "extensions/anycopy/viewport-layout.ts" },
       { "from": "../../extensions/anycopy/config.json", "to": "extensions/anycopy/config.json" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ],
