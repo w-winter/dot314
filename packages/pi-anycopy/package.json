@@ -24,7 +24,7 @@
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
   },
-  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "files": ["extensions/**", "README.md", "CHANGELOG.md", "LICENSE", "package.json"],
   "dot314Prepack": {
     "copy": [
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
@@ -35,6 +35,7 @@
       { "from": "../../extensions/anycopy/tree-order.ts", "to": "extensions/anycopy/tree-order.ts" },
       { "from": "../../extensions/anycopy/viewport-layout.ts", "to": "extensions/anycopy/viewport-layout.ts" },
       { "from": "../../extensions/anycopy/config.json", "to": "extensions/anycopy/config.json" },
+      { "from": "../../extensions/anycopy/CHANGELOG.md", "to": "CHANGELOG.md" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ],
     "allowJson": ["extensions/anycopy/config.json"]
