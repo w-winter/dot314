@@ -39,10 +39,14 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
-import { getPreviewWindow } from "./preview-window.ts";
+import { getPreviewPageStep, getPreviewWindow } from "./preview-window.ts";
 import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
 import { buildNodeOrder } from "./tree-order.ts";
-import { getAnycopyRenderHeight } from "./viewport-layout.ts";
+import {
+	getAnycopyRenderHeight,
+	getAnycopyTreeHeight,
+	getAnycopyTreeVisibleLines,
+} from "./viewport-layout.ts";
 import {
 	ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
 	createFoldStateEntryData,
@@ -489,13 +493,13 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 		if (matchesKey(data, this.keys.pageDown as MatchesKeyId)) {
-			const step = Math.max(1, (this.lastPreviewHeight > 0 ? this.lastPreviewHeight : 10) - 1);
+			const step = getPreviewPageStep(this.lastPreviewHeight > 0 ? this.lastPreviewHeight : 10);
 			this.previewScrollOffset += step;
 			this.requestRender();
 			return;
 		}
 		if (matchesKey(data, this.keys.pageUp as MatchesKeyId)) {
-			const step = Math.max(1, (this.lastPreviewHeight > 0 ? this.lastPreviewHeight : 10) - 1);
+			const step = getPreviewPageStep(this.lastPreviewHeight > 0 ? this.lastPreviewHeight : 10);
 			this.previewScrollOffset -= step;
 			this.requestRender();
 			return;
@@ -719,7 +723,10 @@ class anycopyOverlay implements Focusable {
 		const height = this.getRenderHeight();
 		const output: string[] = [];
 
+		this.getTreeListInternals().maxVisibleLines = getAnycopyTreeVisibleLines(height);
 		const selectorLines = this.selector.render(width);
+
+		// Remove the selector's spacer after the search prompt and before its bottom border
 		const searchLineIndex = selectorLines.findIndex((line) => line.includes("Type to search"));
 		const listStartIndex = searchLineIndex >= 0 ? searchLineIndex + 2 : -1;
 		if (listStartIndex >= 0 && visibleWidth(selectorLines[listStartIndex] ?? "") === 0) {
@@ -735,14 +742,13 @@ class anycopyOverlay implements Focusable {
 		output.push(...selectorLines);
 		output.push(...this.renderStatusBar(width));
 
-		const contentHeight = height;
-		const previewHeight = Math.max(0, contentHeight - output.length);
+		const previewHeight = Math.max(0, height - output.length);
 		if (previewHeight > 0) {
 			output.push(...this.renderPreview(width, previewHeight));
 		}
 
-		while (output.length < contentHeight) output.push("");
-		if (output.length > contentHeight) output.length = contentHeight;
+		while (output.length < height) output.push("");
+		if (output.length > height) output.length = height;
 		return output;
 	}
 
@@ -790,7 +796,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				done();
 			};
 			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
-			const treeTermHeight = Math.floor(getRenderHeight() * 0.65);
+			const treeTermHeight = getAnycopyTreeHeight(getRenderHeight());
 			const nodeById = buildNodeMap(initialTree);
 			const validNodeIds = new Set(nodeById.keys());
 			const restoredFoldState = persistFoldState

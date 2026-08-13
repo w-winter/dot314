@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getPreviewWindow } from "../preview-window.ts";
+import { getPreviewPageStep, getPreviewWindow } from "../preview-window.ts";
 
 test("getPreviewWindow reserves fixed top and bottom divider rows", () => {
 	assert.deepEqual(getPreviewWindow(20, 10, 0), {
@@ -19,6 +19,13 @@ test("getPreviewWindow reports remaining scroll steps inside framed dividers", (
 		above: 1,
 		below: 11,
 	});
+});
+
+test("getPreviewPageStep advances to the next contiguous content window", () => {
+	const firstWindow = getPreviewWindow(20, 10, 0);
+	const secondWindow = getPreviewWindow(20, 10, getPreviewPageStep(10));
+
+	assert.equal(secondWindow.start, firstWindow.end);
 });
 
 test("getPreviewWindow reports one line below exactly one step before the end", () => {

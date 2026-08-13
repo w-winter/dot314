@@ -5,6 +5,12 @@ export type PreviewWindow = {
 	below: number;
 };
 
+const PREVIEW_DIVIDER_ROWS = 2;
+
+export function getPreviewPageStep(height: number): number {
+	return Math.max(1, height - PREVIEW_DIVIDER_ROWS);
+}
+
 export function getPreviewWindow(lineCount: number, height: number, requestedOffset: number): PreviewWindow {
 	if (lineCount <= 0 || height <= 0) {
 		return { start: 0, end: 0, above: 0, below: Math.max(0, lineCount) };
@@ -17,7 +23,7 @@ export function getPreviewWindow(lineCount: number, height: number, requestedOff
 
 	// The preview is framed by one top and one bottom divider. Overflow counts
 	// are rendered inside those dividers instead of consuming additional rows.
-	const contentRows = Math.max(0, height - 2);
+	const contentRows = Math.max(0, height - PREVIEW_DIVIDER_ROWS);
 	const maxOffset = Math.max(0, lineCount - contentRows);
 	const start = Math.max(0, Math.min(requestedOffset, maxOffset));
 	const end = Math.min(lineCount, start + contentRows);
