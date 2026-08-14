@@ -431,6 +431,13 @@ function installMockRpClient(state) {
         };
       }
 
+      if (args.op === "get" && state.blockNextSelectionGet) {
+        const blocker = state.blockNextSelectionGet;
+        state.blockNextSelectionGet = null;
+        blocker.entered.resolve();
+        await blocker.release.promise;
+      }
+
       const selection = state.liveSelectionByTab.get(tabId) ?? new Set();
 
       if (args.op === "remove") {
@@ -3889,6 +3896,183 @@ test("lazy routing observations and explicit slash binds connect without recover
       assert.ok(observationsBeforeMutation.length >= 2);
       assert.equal(getRouteState().kind, "verified");
     });
+  });
+});
+
+test("explicit binds adopt target branch selection without mutating the previously bound tab", async (t) => {
+  const bindCases = [
+    {
+      name: "slash bind",
+      invoke: async ({ pi, ctx }) => {
+        await pi.getCommand("rp").handler("bind 5 TAB-NEW", ctx);
+      },
+    },
+    {
+      name: "tool bind",
+      invoke: async ({ pi, ctx }) => {
+        const result = await pi.getTool("rp").execute(
+          "bind-new-tab",
+          { bind: { window: 5, tab: "TAB-NEW" } },
+          undefined,
+          () => {},
+          ctx
+        );
+        assert.notEqual(result.isError, true);
+      },
+    },
+  ];
+
+  for (const bindCase of bindCases) {
+    await t.test(bindCase.name, async () => {
+      const entries = [
+        {
+          type: "custom",
+          customType: BINDING_ENTRY_TYPE,
+          data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+        },
+        {
+          type: "custom",
+          customType: AUTO_SELECTION_ENTRY_TYPE,
+          data: {
+            app: "ce",
+            windowId: 5,
+            workspace: "chat-tree",
+            tab: "TAB-OLD",
+            fullPaths: ["src/Old.tsx"],
+            slicePaths: [],
+          },
+        },
+      ];
+
+      await withRoutingLifecycleHarness({
+        entries,
+        config: { autoSelectReadSlices: true },
+        state: {
+          boundContextId: "TAB-OLD",
+          enforceStickyContextBinding: true,
+          tabsByWindow: new Map([[5, [
+            { id: "TAB-OLD", name: "Old", active: true, bound: true, files: 1 },
+            { id: "TAB-NEW", name: "New", active: false, bound: false, files: 0 },
+          ]]]),
+          liveSelectionByTab: new Map([
+            ["TAB-OLD", new Set(["src/Old.tsx"])],
+            ["TAB-NEW", new Set()],
+          ]),
+        },
+      }, async ({ state, pi, ctx }) => {
+        state.calls.length = 0;
+
+        await bindCase.invoke({ pi, ctx });
+
+        assert.equal(getBinding()?.tab, "TAB-NEW");
+        assert.deepEqual(sortedSelection(state, "TAB-OLD"), ["src/Old.tsx"]);
+        assert.deepEqual(sortedSelection(state, "TAB-NEW"), []);
+        assert.deepEqual(state.calls.filter((call) => call.name === "manage_selection"), []);
+      });
+    });
+  }
+});
+
+test("explicit bind adopts target state after an in-flight old-route auto-selection update", async () => {
+  const selectionGetEntered = deferred();
+  const releaseSelectionGet = deferred();
+  const entries = [
+    {
+      type: "custom",
+      customType: BINDING_ENTRY_TYPE,
+      data: { app: "ce", windowId: 5, workspace: "chat-tree", tab: "TAB-OLD" },
+    },
+    {
+      type: "custom",
+      customType: AUTO_SELECTION_ENTRY_TYPE,
+      data: {
+        app: "ce",
+        windowId: 5,
+        workspace: "chat-tree",
+        tab: "TAB-OLD",
+        fullPaths: ["src/leased.ts"],
+        slicePaths: [],
+      },
+    },
+    {
+      type: "custom",
+      customType: AUTO_SELECTION_ENTRY_TYPE,
+      data: {
+        app: "ce",
+        windowId: 5,
+        workspace: "chat-tree",
+        tab: "TAB-NEW",
+        fullPaths: ["src/target.ts"],
+        slicePaths: [],
+      },
+    },
+  ];
+
+  await withRoutingLifecycleHarness({
+    entries,
+    config: { autoSelectReadSlices: true },
+    state: {
+      boundContextId: "TAB-OLD",
+      enforceStickyContextBinding: true,
+      forwardedTools: new Set(["read_file"]),
+      toolsByCommand: new Map([["fake-rp", [
+        { name: "bind_context", description: "" },
+        { name: "manage_workspaces", description: "" },
+        { name: "manage_selection", description: "" },
+        { name: "read_file", description: "" },
+      ]]]),
+      tabsByWindow: new Map([[5, [
+        { id: "TAB-OLD", name: "Old", active: true, bound: true, files: 1 },
+        { id: "TAB-NEW", name: "New", active: false, bound: false, files: 1 },
+      ]]]),
+      liveSelectionByTab: new Map([
+        ["TAB-OLD", new Set(["src/leased.ts"])],
+        ["TAB-NEW", new Set(["src/target.ts"])],
+      ]),
+    },
+  }, async ({ state, pi, ctx, tempRoot }) => {
+    mkdirSync(path.join(tempRoot, "src"), { recursive: true });
+    writeFileSync(path.join(tempRoot, "src", "leased.ts"), "export const leased = true\n");
+    for (const tab of state.tabsByWindow.get(5)) {
+      tab.repoPaths = [tempRoot];
+    }
+    state.calls.length = 0;
+    state.blockNextSelectionGet = {
+      entered: selectionGetEntered,
+      release: releaseSelectionGet,
+    };
+
+    const read = pi.getTool("rp").execute(
+      "old-route-read",
+      { call: "read_file", args: { path: "src/leased.ts" } },
+      undefined,
+      () => {},
+      ctx
+    );
+    await selectionGetEntered.promise;
+
+    const bind = pi.getTool("rp").execute(
+      "bind-target",
+      { bind: { window: 5, tab: "TAB-NEW" } },
+      undefined,
+      () => {},
+      ctx
+    );
+    while (state.boundContextId !== "TAB-NEW") {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    releaseSelectionGet.resolve();
+    const [readResult, bindResult] = await Promise.all([read, bind]);
+
+    assert.notEqual(readResult.isError, true);
+    assert.notEqual(bindResult.isError, true);
+    assert.equal(getBinding()?.tab, "TAB-NEW");
+
+    await pi.emit("session_shutdown", ctx, {});
+    const pendingState = await getPendingTransitionStateSnapshot();
+    assert.equal(pendingState?.sourceState?.tab, "TAB-NEW");
+    assert.deepEqual(pendingState?.sourceState?.fullPaths, ["src/target.ts"]);
   });
 });
 

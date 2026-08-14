@@ -1484,6 +1484,27 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
     return binding;
   }
 
+  async function adoptAutoSelectionStateForCurrentBinding(
+    ctx: ExtensionContext,
+    binding: RpBinding
+  ): Promise<RpBinding> {
+    return await runAutoSelectionUpdate(async () => {
+      const currentBinding = getVerifiedBinding();
+      if (
+        currentBinding?.app !== binding.app ||
+        currentBinding.windowId !== binding.windowId ||
+        currentBinding.tab !== binding.tab
+      ) {
+        throw new RoutingMutationBlockedError(
+          "route_superseded",
+          "A newer RepoPrompt route superseded explicit binding"
+        );
+      }
+
+      return adoptAutoSelectionStateForBinding(ctx, binding);
+    });
+  }
+
   function getPendingTransitionTargetIdentity(ctx: ExtensionContext): PendingTransitionTargetIdentity {
     return {
       app: activeApp,
@@ -2390,14 +2411,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
                   issuanceGuard
                 );
 
-            binding = (
-              await syncAutoSelectionToCurrentBranch(
-                ctx,
-                reconnectAutoSelectionSyncOptions(),
-                "reuse",
-                commandCatalogRevision
-              )
-            ) ?? binding;
+            binding = await adoptAutoSelectionStateForCurrentBinding(ctx, binding);
             const tabLabel = await resolveBindingTabLabel(binding);
             ctx.ui.notify(
               `Bound to window ${binding.windowId}` +
@@ -4110,14 +4124,7 @@ Mode priority: call > describe > search > windows > bind > status`,
           );
 
       if (ctx) {
-        binding = (
-          await syncAutoSelectionToCurrentBranch(
-            ctx,
-            reconnectAutoSelectionSyncOptions(),
-            "reuse",
-            catalogRevision
-          )
-        ) ?? binding;
+        binding = await adoptAutoSelectionStateForCurrentBinding(ctx, binding);
       }
     } catch (error) {
       if (error instanceof RoutingMutationBlockedError) {
