@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.3] - 2026-08-14
+
+### Fixed
+- Explicit `/rp bind` and `rp({ bind })` operations preserve the previous tab's managed selection instead of issuing a stale selection request after binding to a new tab
+- The target tab's saved selection remains authoritative when an explicit bind overlaps an in-flight auto-selection update
+
 ## [0.9.0] - 2026-08-05
 
 ### Added
