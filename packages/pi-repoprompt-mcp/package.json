@@ -1,6 +1,6 @@
 {
   "name": "pi-repoprompt-mcp",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "A token-efficient RepoPrompt integration for Pi with branch-safe workspace and tab management",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "repoprompt", "repoprompt-ce", "repoprompt-classic", "mcp"],
   "license": "MIT",
@@ -32,6 +32,7 @@
   },
   "files": ["extensions/**", "README.md", "CHANGELOG.md", "LICENSE", "package.json"],
   "dot314Prepack": {
+    "clean": ["extensions/repoprompt-mcp"],
     "copy": [
       { "from": "../../extensions/repoprompt-mcp/src", "to": "extensions/repoprompt-mcp/src" },
       { "from": "../../extensions/repoprompt-mcp/CHANGELOG.md", "to": "CHANGELOG.md" },

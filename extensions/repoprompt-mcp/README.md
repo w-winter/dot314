@@ -98,62 +98,89 @@ Auto-binding matches the Pi working directory against the roots of open RepoProm
 
 ## Installation
 
-1. Copy this extension into Pi’s extensions directory:
-   - `~/.pi/agent/extensions/repoprompt-mcp/`
+Install the standalone npm package:
 
-2. Install dependencies:
+```bash
+pi install npm:pi-repoprompt-mcp
+```
 
-   ```bash
-   cd ~/.pi/agent/extensions/repoprompt-mcp
-   npm install
-   ```
+Alternatively, install the dot314 Git package:
 
-   This extension is loaded from `./src/index.ts` via Pi's TypeScript loader, so a build step is not required for normal usage.
+```bash
+pi install git:github.com/w-winter/dot314
+```
 
-   Optional (useful for running tests or publishing):
+To load only this extension instead of every extension in dot314, use this package configuration in `~/.pi/agent/settings.json`. Replace any existing dot314 package entry rather than adding a second one:
 
-   ```bash
-   npm run build
-   ```
+```json
+{
+  "packages": [
+    {
+      "source": "git:github.com/w-winter/dot314",
+      "extensions": ["extensions/repoprompt-mcp/src/index.ts"],
+      "skills": [],
+      "themes": [],
+      "prompts": []
+    }
+  ]
+}
+```
 
-3. Configure RepoPrompt targets (if the defaults do not match your install):
+## Development
 
-   Create `~/.pi/agent/extensions/repoprompt-mcp.json`:
+Run the command for your task from the dot314 repository root:
 
-   ```json
-   {
-     "activeApp": "ce",
-     "apps": {
-       "ce": {
-         "appPath": "/Applications/RepoPrompt CE.app",
-         "autoLaunchApp": true
-       },
-       "classic": {
-         "appPath": "/Applications/Repo Prompt.app",
-         "autoLaunchApp": true
-       }
-     }
-   }
-   ```
+```bash
+# Build once
+npm run build:repoprompt-mcp
 
-   `autoLaunchApp` applies only when that target is selected. With `"activeApp": "ce"`, the extension launches CE; Classic is launchable only after switching to it with `/rp app classic`.
+# Build and run the test suite
+npm run test:repoprompt-mcp
 
-   Or add to `~/.pi/agent/mcp.json`:
+# Rebuild when source files change
+npm run watch:repoprompt-mcp
+```
 
-   ```json
-   {
-     "mcpServers": {
-       "repoprompt-ce": {
-         "command": "/Applications/RepoPrompt CE.app/Contents/MacOS/repoprompt-mcp"
-       },
-       "repoprompt-classic": {
-         "command": "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp"
-       }
-     }
-   }
-   ```
+These commands are for development; Pi loads the TypeScript source directly when the package is installed.
 
-4. If you already connect to RepoPrompt through another extension (e.g. a generic MCP adapter), avoid double-connecting.
+## Configuration
+
+If the defaults do not match your installation, create `~/.pi/agent/extensions/repoprompt-mcp.json`:
+
+```json
+{
+  "activeApp": "ce",
+  "apps": {
+    "ce": {
+      "appPath": "/Applications/RepoPrompt CE.app",
+      "autoLaunchApp": true
+    },
+    "classic": {
+      "appPath": "/Applications/Repo Prompt.app",
+      "autoLaunchApp": true
+    }
+  }
+}
+```
+
+`autoLaunchApp` applies only when that target is selected. With `"activeApp": "ce"`, the extension launches CE; Classic is launchable only after switching to it with `/rp app classic`.
+
+Alternatively, add the server commands to `~/.pi/agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "repoprompt-ce": {
+      "command": "/Applications/RepoPrompt CE.app/Contents/MacOS/repoprompt-mcp"
+    },
+    "repoprompt-classic": {
+      "command": "/Applications/Repo Prompt.app/Contents/MacOS/repoprompt-mcp"
+    }
+  }
+}
+```
+
+If another extension already connects Pi to RepoPrompt, disable one integration to avoid duplicate connections.
 
 ## Usage
 

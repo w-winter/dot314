@@ -18,6 +18,11 @@
     "url": "https://github.com/w-winter/dot314/issues"
   },
   "homepage": "https://github.com/w-winter/dot314#readme",
+  "scripts": {
+    "build:repoprompt-mcp": "tsc -p extensions/repoprompt-mcp/tsconfig.json",
+    "watch:repoprompt-mcp": "tsc -p extensions/repoprompt-mcp/tsconfig.json --watch",
+    "test:repoprompt-mcp": "npm run build:repoprompt-mcp && node --test extensions/repoprompt-mcp/test/*.test.js"
+  },
   "pi": {
     "extensions": [
       "./extensions/anycopy/index.ts",
@@ -69,6 +74,11 @@
     "nunjucks": "^3.2.4",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.0",

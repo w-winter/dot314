@@ -11,7 +11,8 @@ const RPC_REQUEST_ID = "package-smoke-get-commands";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const packageDirectory = resolve(scriptDirectory, "..");
-const canonicalSourceDirectory = resolve(packageDirectory, "../../extensions/repoprompt-mcp/src");
+const repositoryDirectory = resolve(packageDirectory, "../..");
+const canonicalSourceDirectory = resolve(repositoryDirectory, "extensions/repoprompt-mcp/src");
 
 function commandError(command, args, result, detail) {
   const renderedCommand = [command, ...args].join(" ");
@@ -281,7 +282,11 @@ async function main() {
       ["pack", "--json", "--pack-destination", temporaryRoot],
       {
         cwd: packageDirectory,
-        env: { ...process.env, npm_config_cache: npmCacheDirectory },
+        env: {
+          ...process.env,
+          npm_config_cache: npmCacheDirectory,
+          npm_config_ignore_scripts: "false",
+        },
       },
     );
     const packMetadata = JSON.parse(packResult.stdout);
@@ -301,11 +306,11 @@ async function main() {
     );
     await assertPackagedManifest(extractedPackageDirectory);
 
-    // Pi links absolute local packages; the source test install supplies their declared runtime dependencies
+    // Pi links absolute local packages; the repository install supplies their declared runtime dependencies
     const piEnvironment = {
       ...process.env,
       HOME: homeDirectory,
-      NODE_PATH: resolve(canonicalSourceDirectory, "..", "node_modules"),
+      NODE_PATH: resolve(repositoryDirectory, "node_modules"),
       npm_config_cache: npmCacheDirectory,
       PI_CODING_AGENT_DIR: agentDirectory,
       PI_OFFLINE: "1",
