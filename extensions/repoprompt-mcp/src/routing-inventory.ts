@@ -27,7 +27,7 @@ export interface NormalizedWindow {
 }
 
 export type ConnectionBindingObservation =
-  | { kind: "bound"; contextId: string }
+  | { kind: "bound"; windowId: number; contextId: string }
   | { kind: "window"; windowId: number }
   | { kind: "unbound" };
 
@@ -199,9 +199,15 @@ function parseConnectionBinding(
 
   if (binding.binding_kind === boundConnectionBindingKind) {
     const contextId = nonEmptyString(binding.context_id);
-    return contextId
-      ? { binding: { kind: "bound", contextId } }
-      : { diagnostic: `${boundConnectionBindingKind} binding has no context_id` };
+    if (!contextId) {
+      return { diagnostic: `${boundConnectionBindingKind} binding has no valid context_id` };
+    }
+    if (!Number.isInteger(binding.window_id) || (binding.window_id as number) < 0) {
+      return { diagnostic: `${boundConnectionBindingKind} binding has no valid window_id` };
+    }
+    return {
+      binding: { kind: "bound", windowId: binding.window_id as number, contextId },
+    };
   }
 
   switch (binding.binding_kind) {
@@ -230,7 +236,6 @@ export function parseRoutingInventory(
 
   const windows: NormalizedWindow[] = [];
   const windowIds = new Set<number>();
-  const contextIds = new Set<string>();
   for (const [index, value] of root.windows.entries()) {
     const parsed = parseWindow(value, index);
     if (!parsed.window) {
@@ -238,12 +243,6 @@ export function parseRoutingInventory(
     }
     if (windowIds.has(parsed.window.id)) {
       return { kind: "malformed", diagnostic: `window_id ${parsed.window.id} is duplicated` };
-    }
-    for (const tab of parsed.window.tabs) {
-      if (contextIds.has(tab.contextId)) {
-        return { kind: "malformed", diagnostic: `context_id ${tab.contextId} appears in multiple windows` };
-      }
-      contextIds.add(tab.contextId);
     }
     windowIds.add(parsed.window.id);
     windows.push(parsed.window);
@@ -256,24 +255,25 @@ export function parseRoutingInventory(
   if (!parsedBinding.binding) {
     return { kind: "malformed", diagnostic: parsedBinding.diagnostic ?? "binding is malformed" };
   }
-  if (parsedBinding.binding.kind === "bound" && !contextIds.has(parsedBinding.binding.contextId)) {
-    return {
-      kind: "malformed",
-      diagnostic: `Connection binding context ${parsedBinding.binding.contextId} is absent from the inventory`,
-    };
-  }
-  if (parsedBinding.binding.kind === "window" && !windowIds.has(parsedBinding.binding.windowId)) {
-    return {
-      kind: "malformed",
-      diagnostic: `Connection binding window ${parsedBinding.binding.windowId} is absent from the inventory`,
-    };
+  let connectionBinding = parsedBinding.binding;
+  if (connectionBinding.kind === "bound") {
+    const reportedBinding = connectionBinding;
+    const contextWindows = windows.filter((window) => (
+      window.tabs.some((tab) => tab.contextId === reportedBinding.contextId)
+    ));
+    const reportedWindowContainsContext = contextWindows.some((window) => (
+      window.id === reportedBinding.windowId
+    ));
+    if (!reportedWindowContainsContext && contextWindows.length === 1) {
+      connectionBinding = { ...reportedBinding, windowId: contextWindows[0].id };
+    }
   }
 
   return {
     kind: "observed",
     inventory: {
       windows: windows.sort((left, right) => left.id - right.id),
-      connectionBinding: parsedBinding.binding,
+      connectionBinding,
     },
   };
 }

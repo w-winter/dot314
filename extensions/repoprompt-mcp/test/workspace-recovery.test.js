@@ -184,7 +184,7 @@ test("session_start recovers selection into a different live workspace that cont
             })),
           })),
           binding: boundContextId
-            ? { binding_kind: "tab_context", context_id: boundContextId }
+            ? { binding_kind: "tab_context", window_id: 11, context_id: boundContextId }
             : { binding_kind: "unbound" },
         }));
       }

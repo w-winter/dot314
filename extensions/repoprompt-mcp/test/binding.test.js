@@ -16,6 +16,7 @@ import {
   getRouteState,
   getVerifiedBinding,
   persistBinding,
+  reconcileFailedRouteDependentCall,
   reconcileObservedInventoryRoute,
   resetBindingStateForTests,
   restoreBinding,
@@ -96,13 +97,31 @@ function rawTab({ id, name, roots = ["/fixtures/repo"], active = false, bound = 
 
 function rawInventory({ windowId = 5, workspace = "agent", tabs = [], binding = { kind: "unbound" } }) {
   const rawBinding = binding.kind === "bound"
-    ? { binding_kind: "tab_context", context_id: binding.contextId }
+    ? { binding_kind: "tab_context", window_id: windowId, context_id: binding.contextId }
     : binding.kind === "window"
       ? { binding_kind: "window", window_id: windowId }
       : { binding_kind: "unbound" };
   return {
     windows: [{ window_id: windowId, workspace: { name: workspace }, tabs }],
     binding: rawBinding,
+  };
+}
+
+function rawSharedContextInventory(boundWindowId = 6) {
+  return {
+    windows: [
+      {
+        window_id: 5,
+        workspace: { name: "first" },
+        tabs: [rawTab({ id: "TAB-SHARED", name: "First", bound: boundWindowId === 5 })],
+      },
+      {
+        window_id: 6,
+        workspace: { name: "second" },
+        tabs: [rawTab({ id: "TAB-SHARED", name: "Second", bound: boundWindowId === 6 })],
+      },
+    ],
+    binding: { binding_kind: "tab_context", window_id: boundWindowId, context_id: "TAB-SHARED" },
   };
 }
 
@@ -906,4 +925,152 @@ test("successful routing mutation ending window-only publishes non-dispatchable 
   assert.equal(entries[0].data.windowId, 5);
   assert.equal(entries[0].data.tab, undefined);
   resetBindingStateForTests();
+});
+
+test("observed bound pair reconciles deterministically without first-match context lookup", () => {
+  const { pi } = makeMockSession();
+  const binding = reconcileObservedInventoryRoute(pi, makeTestConfig(), {
+    windows: [
+      {
+        id: 5,
+        workspace: "first",
+        roots: { kind: "observed", paths: ["/fixtures/first"] },
+        tabs: [{ contextId: "TAB-SHARED", name: "First" }],
+      },
+      {
+        id: 6,
+        workspace: "second",
+        roots: { kind: "observed", paths: ["/fixtures/second"] },
+        tabs: [{ contextId: "TAB-SHARED", name: "Second" }],
+      },
+    ],
+    connectionBinding: { kind: "bound", windowId: 6, contextId: "TAB-SHARED" },
+  });
+
+  assert.equal(binding.windowId, 6);
+  assert.equal(binding.workspace, "second");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 6, context_id: "TAB-SHARED" });
+});
+
+test("normalized projected context publishes its live window identity", () => {
+  const { pi } = makeMockSession();
+  const binding = reconcileObservedInventoryRoute(pi, makeTestConfig(), {
+    windows: [
+      {
+        id: 5,
+        workspace: "shared-workspace",
+        roots: { kind: "observed", paths: ["/fixtures/shared"] },
+        tabs: [{ contextId: "TAB-SHARED", name: "Shared" }],
+      },
+      {
+        id: 6,
+        workspace: "other-active-workspace",
+        roots: { kind: "observed", paths: ["/fixtures/other"] },
+        tabs: [{ contextId: "TAB-OTHER", name: "Other" }],
+      },
+    ],
+    connectionBinding: { kind: "bound", windowId: 5, contextId: "TAB-SHARED" },
+  });
+
+  assert.equal(binding.windowId, 5);
+  assert.equal(binding.workspace, "shared-workspace");
+  assert.equal(binding.tab, "TAB-SHARED");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 5, context_id: "TAB-SHARED" });
+});
+
+test("failed mutation does not preserve prior authority when shared context is bound in another window", async () => {
+  const { pi } = makeMockSession();
+  persistBinding(pi, {
+    app: "ce",
+    windowId: 5,
+    workspace: "first",
+    tab: "TAB-SHARED",
+  }, makeTestConfig());
+  const client = {
+    tools: structuredClone(ceCatalog.tools),
+    async callTool() {
+      return makeTextResult(rawSharedContextInventory(6));
+    },
+  };
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+
+  const execution = await executeRoutingMutation({
+    operationLabel: "shared-context bind",
+    operationClass: "routing_mutation",
+    config: makeTestConfig(),
+    client,
+    async dispatch() {
+      return makeTextResult("bind rejected", true);
+    },
+    reconcile() {
+      throw new Error("failed mutation must not reconcile success");
+    },
+  });
+
+  assert.equal(execution.kind, "failed");
+  assert.equal(execution.cause, "mutation_failed_route_unproven");
+  assert.equal(execution.priorAuthorityPreserved, false);
+  assert.equal(getRouteState().kind, "quarantined");
+  assert.equal(getRouteState().cause, "route_conflict");
+});
+
+test("failed route-dependent reconciliation rejects shared context bound in another window", async () => {
+  const { pi } = makeMockSession();
+  const priorBinding = {
+    app: "ce",
+    windowId: 5,
+    workspace: "first",
+    tab: "TAB-SHARED",
+  };
+  persistBinding(pi, priorBinding, makeTestConfig());
+  const client = {
+    tools: structuredClone(ceCatalog.tools),
+    async callTool() {
+      return makeTextResult(rawSharedContextInventory(6));
+    },
+  };
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+
+  await reconcileFailedRouteDependentCall(priorBinding, makeTestConfig(), client);
+
+  assert.equal(getRouteState().kind, "quarantined");
+  assert.equal(getRouteState().cause, "route_conflict");
+});
+
+test("explicit shared-context bind adopts the server-selected presentation window", async () => {
+  const { pi } = makeMockSession();
+  const calls = [];
+  let inventoryCallCount = 0;
+  const client = {
+    tools: structuredClone(ceCatalog.tools),
+    async callTool(name, args) {
+      calls.push({ name, args });
+      if (name === "bind_context" && args.op === "bind") {
+        return makeTextResult("bound");
+      }
+      inventoryCallCount += 1;
+      const inventory = rawSharedContextInventory(6);
+      if (inventoryCallCount <= 2) {
+        inventory.binding = { binding_kind: "unbound" };
+        for (const window of inventory.windows) {
+          for (const tab of window.tabs) {
+            tab.is_bound = false;
+          }
+        }
+      }
+      return makeTextResult(inventory);
+    },
+  };
+  await establishRoutingInventoryContract(makeTestConfig(), client);
+
+  const binding = await bindToTab(pi, 5, "TAB-SHARED", makeTestConfig(), client);
+
+  assert.deepEqual(
+    calls.find((call) => call.name === "bind_context" && call.args.op === "bind").args,
+    { op: "bind", context_id: "TAB-SHARED" }
+  );
+  assert.equal(binding.windowId, 6);
+  assert.equal(binding.tab, "TAB-SHARED");
+  assert.deepEqual(currentSelectorArgs(), { _windowID: 6, context_id: "TAB-SHARED" });
+  assert.equal(getRouteState().kind, "verified");
 });

@@ -64,6 +64,7 @@ function canonicalInventoryResult(binding, repoRoot, activeApp) {
     binding: binding.tab
       ? {
           binding_kind: activeApp === "classic" ? "context" : "tab_context",
+          window_id: binding.windowId,
           context_id: binding.tab,
         }
       : { binding_kind: "window", window_id: binding.windowId },

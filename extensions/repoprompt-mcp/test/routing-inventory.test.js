@@ -45,6 +45,7 @@ test("multi-window fixture preserves all three windows, roots, tabs, and sticky 
   assert.deepEqual(result.inventory.windows.map((window) => window.id), [2, 10, 11]);
   assert.deepEqual(result.inventory.connectionBinding, {
     kind: "bound",
+    windowId: 10,
     contextId: "00000000-0000-4000-8000-000000001010",
   });
   assert.deepEqual(windowFromInventory(result.inventory, 2).roots, {
@@ -98,20 +99,98 @@ test("window-only connection binding is represented rather than collapsed into u
   assert.deepEqual(result.inventory.connectionBinding, { kind: "window", windowId: 2 });
 });
 
-test("binding references absent from inventory are malformed", () => {
+test("cross-window duplicate context ids are accepted as distinct tab identities", () => {
+  const fixture = structuredClone(ceScenarios.multiWindow);
+  const sharedContextId = fixture.windows[0].tabs[0].context_id;
+  fixture.windows[1].tabs[0].context_id = sharedContextId;
+  fixture.binding.window_id = fixture.windows[1].window_id;
+  fixture.binding.context_id = sharedContextId;
+
+  const result = parseRoutingInventory(fixture, CE_1_2_TARGET_CONTRACT);
+
+  assert.equal(result.kind, "observed");
+  assert.deepEqual(result.inventory.connectionBinding, {
+    kind: "bound",
+    windowId: fixture.windows[1].window_id,
+    contextId: sharedContextId,
+  });
+  assert.equal(result.inventory.windows[0].tabs[0].contextId, sharedContextId);
+  assert.equal(result.inventory.windows[1].tabs[0].contextId, sharedContextId);
+});
+
+test("same-window duplicate context ids remain malformed", () => {
+  const fixture = structuredClone(ceScenarios.unbound);
+  fixture.windows[0].tabs.push(structuredClone(fixture.windows[0].tabs[0]));
+
+  const result = parseRoutingInventory(fixture, CE_1_2_TARGET_CONTRACT);
+
+  assert.equal(result.kind, "malformed");
+  assert.match(result.diagnostic, /repeats context_id/u);
+});
+
+test("bound context may be projected under another window", () => {
+  const fixture = structuredClone(ceScenarios.multiWindow);
+  fixture.binding.window_id = 11;
+  const projectedWindow = fixture.windows.find((window) => window.window_id === 10);
+  fixture.binding.context_id = projectedWindow.tabs[0].context_id;
+
+  const result = parseRoutingInventory(fixture, CE_1_2_TARGET_CONTRACT);
+
+  assert.equal(result.kind, "observed");
+  assert.deepEqual(result.inventory.connectionBinding, {
+    kind: "bound",
+    windowId: projectedWindow.window_id,
+    contextId: fixture.binding.context_id,
+  });
+});
+
+test("bound observations require valid context and window fields", () => {
+  const invalidBindings = [
+    { binding_kind: "tab_context", window_id: 2 },
+    { binding_kind: "tab_context", window_id: 2, context_id: " " },
+    { binding_kind: "tab_context", context_id: "TAB" },
+    { binding_kind: "tab_context", window_id: -1, context_id: "TAB" },
+    { binding_kind: "tab_context", window_id: 1.5, context_id: "TAB" },
+    { binding_kind: "tab_context", window_id: "2", context_id: "TAB" },
+  ];
+
+  for (const binding of invalidBindings) {
+    const fixture = structuredClone(ceScenarios.unbound);
+    fixture.binding = binding;
+    const result = parseRoutingInventory(fixture, CE_1_2_TARGET_CONTRACT);
+    assert.equal(result.kind, "malformed");
+    assert.match(result.diagnostic, binding.context_id?.trim() ? /window_id/u : /context_id/u);
+  }
+});
+
+test("stale binding references remain observable for routing recovery", () => {
   const missingTab = structuredClone(ceScenarios.unbound);
   missingTab.binding = {
     binding_kind: "tab_context",
+    window_id: 2,
     context_id: "00000000-0000-4000-8000-999999999999",
   };
-  const missingWindow = structuredClone(ceScenarios.unbound);
-  missingWindow.binding = { binding_kind: "window", window_id: 999 };
+  const missingBoundWindow = structuredClone(ceScenarios.unbound);
+  missingBoundWindow.binding = {
+    binding_kind: "tab_context",
+    window_id: 999,
+    context_id: missingTab.binding.context_id,
+  };
+  const missingWindowOnly = structuredClone(ceScenarios.unbound);
+  missingWindowOnly.binding = { binding_kind: "window", window_id: 999 };
 
-  for (const fixture of [missingTab, missingWindow]) {
+  for (const fixture of [missingTab, missingBoundWindow, missingWindowOnly]) {
     const result = parseRoutingInventory(fixture, CE_1_2_TARGET_CONTRACT);
-    assert.equal(result.kind, "malformed");
-    assert.match(result.diagnostic, /absent from the inventory/u);
+    assert.equal(result.kind, "observed");
   }
+  assert.deepEqual(parseRoutingInventory(
+    missingTab,
+    CE_1_2_TARGET_CONTRACT
+  ).inventory.connectionBinding, {
+    kind: "bound",
+    windowId: 2,
+    contextId: missingTab.binding.context_id,
+  });
 });
 
 test("target contracts accept only their own bound-context discriminator", () => {
@@ -122,6 +201,7 @@ test("target contracts accept only their own bound-context discriminator", () =>
   assert.equal(classic.kind, "observed");
   assert.deepEqual(classic.inventory.connectionBinding, {
     kind: "bound",
+    windowId: 10,
     contextId: "00000000-0000-4000-8000-000000001010",
   });
 
@@ -344,5 +424,10 @@ test("Classic 2.1.32 scenarios use the observed context binding discriminator", 
   );
   assert.equal(parsed.kind, "observed");
   assert.deepEqual(parsed.inventory.windows.map((window) => window.id), [2, 10, 11]);
+  assert.deepEqual(parsed.inventory.connectionBinding, {
+    kind: "bound",
+    windowId: 10,
+    contextId: "00000000-0000-4000-8000-000000001010",
+  });
   assert.match(classicScenarios.provenance, /Classic 2\.1\.32 binding_kind context/u);
 });

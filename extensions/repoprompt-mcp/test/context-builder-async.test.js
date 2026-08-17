@@ -43,6 +43,9 @@ function routingInventoryResult({
   windows = [{ id: 7, workspace: "repo", root: "/fixtures/repo", tabs: [{ id: "TAB-1", bound: true }] }],
   boundContextId = "TAB-1",
 } = {}) {
+  const boundWindowId = windows.find((window) => (
+    window.tabs.some((tab) => tab.id === boundContextId)
+  ))?.id;
   return textResult(JSON.stringify({
     windows: windows.map((window) => ({
       window_id: window.id,
@@ -60,7 +63,7 @@ function routingInventoryResult({
       })),
     })),
     binding: boundContextId
-      ? { binding_kind: "tab_context", context_id: boundContextId }
+      ? { binding_kind: "tab_context", window_id: boundWindowId, context_id: boundContextId }
       : { binding_kind: "unbound" },
   }));
 }

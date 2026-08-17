@@ -377,7 +377,7 @@ test("agent_run blocking wait does not forward the two-minute CE default", async
               repo_paths: ["/tmp/steerable-waits-integration"],
             }],
           }],
-          binding: { binding_kind: "tab_context", context_id: "TAB-1" },
+          binding: { binding_kind: "tab_context", window_id: 7, context_id: "TAB-1" },
         })));
       }
       assert.equal(name, "agent_run");

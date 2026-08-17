@@ -94,12 +94,16 @@ function renderRoutingInventory(state) {
   const boundContextId = liveTabs.some((tab) => tab.id === state.boundContextId)
     ? state.boundContextId
     : liveTabs.find((tab) => tab.bound)?.id;
+  const boundWindowId = [...state.tabsByWindow.entries()].find(([, tabs]) => (
+    tabs.some((tab) => tab.id === boundContextId)
+  ))?.[0];
   state.boundContextId = boundContextId;
   return {
     windows,
     binding: boundContextId
       ? {
           binding_kind: state.currentCommand?.includes("classic") ? "context" : "tab_context",
+          window_id: boundWindowId,
           context_id: boundContextId,
         }
       : state.windowBoundId !== undefined

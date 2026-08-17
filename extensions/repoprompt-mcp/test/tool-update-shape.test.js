@@ -103,7 +103,7 @@ test("rp streamed partial updates always include a text content block", async ()
               repo_paths: [repoRoot],
             }],
           }],
-          binding: { binding_kind: "tab_context", context_id: "TAB-1" },
+          binding: { binding_kind: "tab_context", window_id: 7, context_id: "TAB-1" },
         }));
       }
       if (name === "read_file") {

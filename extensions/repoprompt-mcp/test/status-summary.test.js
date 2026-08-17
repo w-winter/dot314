@@ -153,7 +153,7 @@ test("status reports window-bound intent and verified tab authority with observa
   }, STATUS_CONFIG, "Live");
   const tabClient = await makeStatusClient(makeInventory({
     tabs: [{ id: "TAB-LIVE", name: "Live", active: false, bound: true }],
-    binding: { binding_kind: "tab_context", context_id: "TAB-LIVE" },
+    binding: { binding_kind: "tab_context", window_id: 5, context_id: "TAB-LIVE" },
   }));
 
   const tabStatus = await observeRouteStatus(STATUS_CONFIG, tabClient);
@@ -181,7 +181,14 @@ test("verified tab status rejects a context moved outside its stored window and 
       {
         window_id: 5,
         workspace: { id: "workspace-5", name: "agent" },
-        tabs: [],
+        tabs: [{
+          context_id: "TAB-MOVED",
+          name: "Moved",
+          is_active: false,
+          is_bound: false,
+          selected_file_count: 0,
+          repo_paths: ["/Users/ww/dot314/agent"],
+        }],
       },
       {
         window_id: 6,
@@ -196,7 +203,7 @@ test("verified tab status rejects a context moved outside its stored window and 
         }],
       },
     ],
-    binding: { binding_kind: "tab_context", context_id: "TAB-MOVED" },
+    binding: { binding_kind: "tab_context", window_id: 6, context_id: "TAB-MOVED" },
   }));
 
   const status = await observeRouteStatus(STATUS_CONFIG, client);
@@ -207,6 +214,63 @@ test("verified tab status rejects a context moved outside its stored window and 
     args: { _windowID: 5, context_id: "TAB-MOVED" },
   });
   assert.equal(getRouteState().kind, "verified");
+  resetBindingStateForTests();
+});
+
+test("sticky adoption follows the observed presentation window for the same logical context", async () => {
+  resetBindingStateForTests();
+  const entries = [{
+    type: "custom",
+    customType: BINDING_ENTRY_TYPE,
+    data: { app: "ce", windowId: 5, workspace: "agent", tab: "TAB-SHARED" },
+  }];
+  restoreBinding(makeIntentContext(entries), STATUS_CONFIG);
+  const appended = [];
+  const client = await makeStatusClient(makeInventory({
+    windows: [
+      {
+        window_id: 5,
+        workspace: { id: "workspace-5", name: "agent" },
+        tabs: [{
+          context_id: "TAB-SHARED",
+          name: "Shared",
+          is_active: false,
+          is_bound: false,
+          selected_file_count: 0,
+          repo_paths: ["/Users/ww/dot314/agent"],
+        }],
+      },
+      {
+        window_id: 6,
+        workspace: { id: "workspace-6", name: "other" },
+        tabs: [{
+          context_id: "TAB-SHARED",
+          name: "Shared",
+          is_active: true,
+          is_bound: true,
+          selected_file_count: 0,
+          repo_paths: ["/Users/ww/other"],
+        }],
+      },
+    ],
+    binding: { binding_kind: "tab_context", window_id: 6, context_id: "TAB-SHARED" },
+  }));
+
+  const result = await adoptObservedStickyRoute({
+    appendEntry(type, data) {
+      appended.push({ type, data });
+    },
+  }, STATUS_CONFIG, client);
+
+  assert.equal(result.kind, "adopted");
+  assert.equal(result.binding.windowId, 6);
+  assert.equal(result.binding.tab, "TAB-SHARED");
+  assert.equal(getRouteState().kind, "verified");
+  assert.deepEqual(getRouteSelectorDecision({ callerArgs: {} }), {
+    kind: "selectors",
+    args: { _windowID: 6, context_id: "TAB-SHARED" },
+  });
+  assert.equal(appended.length, 1);
   resetBindingStateForTests();
 });
 
@@ -221,7 +285,7 @@ test("status reports intent, stale intent, quarantine, observation failure, unsu
 
   const matchingClient = await makeStatusClient(makeInventory({
     tabs: [{ id: "TAB-INTENT", name: "Intent", active: true, bound: true }],
-    binding: { binding_kind: "tab_context", context_id: "TAB-INTENT" },
+    binding: { binding_kind: "tab_context", window_id: 5, context_id: "TAB-INTENT" },
   }));
   assert.equal((await observeRouteStatus(STATUS_CONFIG, matchingClient)).routeState, "intent");
   assert.equal(entries.length, 1);
@@ -274,7 +338,7 @@ test("status exposes degraded persistence while keeping an observed route verifi
 
   const client = await makeStatusClient(makeInventory({
     tabs: [{ id: "TAB-LIVE", name: "Live", active: true, bound: true }],
-    binding: { binding_kind: "tab_context", context_id: "TAB-LIVE" },
+    binding: { binding_kind: "tab_context", window_id: 5, context_id: "TAB-LIVE" },
   }));
   const status = await observeRouteStatus(STATUS_CONFIG, client);
   assert.equal(status.routeState, "verified_tab");
@@ -296,7 +360,7 @@ test("sticky adoption rejects conflicting restored intent without persistence or
       { id: "TAB-INTENT", name: "Intent", active: false, bound: false },
       { id: "TAB-OTHER", name: "Other", active: true, bound: true },
     ],
-    binding: { binding_kind: "tab_context", context_id: "TAB-OTHER" },
+    binding: { binding_kind: "tab_context", window_id: 5, context_id: "TAB-OTHER" },
   }));
 
   const result = await adoptObservedStickyRoute({

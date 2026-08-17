@@ -423,7 +423,6 @@ export interface RoutingMutationExecutorOptions<T> {
   readonly issuanceGuard?: RoutingMutationIssuanceGuard;
   readonly expectedBoundContext?: {
     readonly contextId: string;
-    readonly windowId?: number;
   };
   readonly expectedCreatedTab?: {
     readonly windowId: number;
@@ -441,15 +440,15 @@ function observedInventoryProvesVerifiedRouteUnchanged(
   inventory: RoutingInventory,
   route: VerifiedRoute
 ): boolean {
-  const window = windowFromInventory(inventory, route.identity.windowId);
-  if (!window
-    || (route.identity.workspace !== undefined && window.workspace !== route.identity.workspace)) {
+  const live = findInventoryTab(inventory, route.identity.windowId, route.contextId);
+  if (!live
+    || (route.identity.workspace !== undefined && live.window.workspace !== route.identity.workspace)) {
     return false;
   }
 
   return inventory.connectionBinding.kind === "bound"
-    && inventory.connectionBinding.contextId === route.contextId
-    && window.tabs.some((tab) => tab.contextId === route.contextId);
+    && inventory.connectionBinding.windowId === route.identity.windowId
+    && inventory.connectionBinding.contextId === route.contextId;
 }
 
 async function executeRoutingMutationWithinCoordinator<T>(
@@ -551,18 +550,17 @@ async function executeRoutingMutationWithinCoordinator<T>(
     if (options.expectedBoundContext) {
       requireBoundTab(
         inventory,
-        options.expectedBoundContext.contextId,
-        options.expectedBoundContext.windowId
+        options.expectedBoundContext.contextId
       );
     }
     if (options.expectedCreatedTab) {
-      if (inventory.connectionBinding.kind !== "bound") {
+      if (inventory.connectionBinding.kind !== "bound"
+        || inventory.connectionBinding.windowId !== options.expectedCreatedTab.windowId) {
         throw new Error("RepoPrompt did not report the created tab as connection-bound");
       }
       const created = requireBoundTab(
         inventory,
-        inventory.connectionBinding.contextId,
-        options.expectedCreatedTab.windowId
+        inventory.connectionBinding.contextId
       );
       if (options.expectedCreatedTab.previousContextIds.has(created.tab.contextId)) {
         throw new Error("RepoPrompt did not report one new bound tab after create_tab");
@@ -634,15 +632,12 @@ export type RouteStatusObservation =
 
 function findInventoryTab(
   inventory: RoutingInventory,
+  windowId: number,
   contextId: string
 ): { window: NormalizedWindow; tab: NormalizedTab } | null {
-  for (const window of inventory.windows) {
-    const tab = window.tabs.find((candidate) => candidate.contextId === contextId);
-    if (tab) {
-      return { window, tab };
-    }
-  }
-  return null;
+  const window = windowFromInventory(inventory, windowId);
+  const tab = window?.tabs.find((candidate) => candidate.contextId === contextId);
+  return window && tab ? { window, tab } : null;
 }
 
 function intentConflictsWithObservedBinding(
@@ -664,15 +659,8 @@ function intentConflictsWithObservedBinding(
       : `Restored window ${intent.windowId} conflicts with connection-bound window ${inventory.connectionBinding.windowId}`;
   }
 
-  const bound = findInventoryTab(inventory, inventory.connectionBinding.contextId);
-  if (!bound) {
-    return `Connection-bound context ${inventory.connectionBinding.contextId} is absent from inventory`;
-  }
-  if (bound.window.id !== intent.windowId) {
-    return `Restored window ${intent.windowId} conflicts with connection-bound context ${bound.tab.contextId} in window ${bound.window.id}`;
-  }
-  return intent.tabContextId && intent.tabContextId !== bound.tab.contextId
-    ? `Restored context ${intent.tabContextId} conflicts with connection-bound context ${bound.tab.contextId}`
+  return intent.tabContextId && intent.tabContextId !== inventory.connectionBinding.contextId
+    ? `Restored context ${intent.tabContextId} conflicts with connection-bound context ${inventory.connectionBinding.contextId}`
     : null;
 }
 
@@ -756,40 +744,48 @@ export async function observeRouteStatus(
       displayIdentity,
     };
   }
-  if (state.route.identity.workspace !== undefined
-    && storedWindow.workspace !== state.route.identity.workspace) {
-    return {
-      routeState: "stale",
-      diagnostic:
-        `Verified context ${state.route.contextId} window ${storedWindow.id} changed workspace from ` +
-        `${state.route.identity.workspace} to ${storedWindow.workspace}`,
-      displayIdentity,
-    };
-  }
   const verifiedContextId = state.route.contextId;
-  const storedTab = storedWindow.tabs.find((tab) => tab.contextId === verifiedContextId);
-  if (!storedTab) {
+  const live = findInventoryTab(inventory, storedWindow.id, verifiedContextId);
+  if (!live) {
     return {
       routeState: "stale",
       diagnostic: `Verified context ${state.route.contextId} is absent from window ${storedWindow.id}`,
       displayIdentity,
     };
   }
-  if (inventory.connectionBinding.kind !== "bound"
-    || inventory.connectionBinding.contextId !== state.route.contextId) {
+  if (state.route.identity.workspace !== undefined
+    && live.window.workspace !== state.route.identity.workspace) {
     return {
       routeState: "stale",
-      diagnostic: `Verified context ${state.route.contextId} is not the current connection binding`,
+      diagnostic:
+        `Verified context ${state.route.contextId} window ${storedWindow.id} changed workspace from ` +
+        `${state.route.identity.workspace} to ${live.window.workspace}`,
+      displayIdentity,
+    };
+  }
+  if (inventory.connectionBinding.kind !== "bound"
+    || inventory.connectionBinding.windowId !== state.route.identity.windowId
+    || inventory.connectionBinding.contextId !== state.route.contextId) {
+    const observedBinding = inventory.connectionBinding.kind === "bound"
+      ? `context ${inventory.connectionBinding.contextId} in window ${inventory.connectionBinding.windowId}`
+      : inventory.connectionBinding.kind === "window"
+        ? `window-only binding ${inventory.connectionBinding.windowId}`
+        : "an unbound connection";
+    return {
+      routeState: "stale",
+      diagnostic:
+        `Verified context ${state.route.contextId} in window ${state.route.identity.windowId} ` +
+        `does not match ${observedBinding}`,
       displayIdentity,
     };
   }
   return {
     routeState: "verified_tab",
-    window: { id: storedWindow.id, workspace: storedWindow.workspace },
+    window: { id: storedWindow.id, workspace: live.window.workspace },
     tab: {
-      contextId: storedTab.contextId,
-      name: storedTab.name,
-      ...(storedTab.isActive !== undefined ? { isActive: storedTab.isActive } : {}),
+      contextId: live.tab.contextId,
+      name: live.tab.name,
+      ...(live.tab.isActive !== undefined ? { isActive: live.tab.isActive } : {}),
       isBound: true,
     },
     ...(persistenceDiagnostic ? { persistenceDiagnostic } : {}),
@@ -1161,21 +1157,25 @@ async function findReusableSafeTab(
 
 function requireBoundTab(
   inventory: RoutingInventory,
-  expectedContextId: string,
-  expectedWindowId?: number
+  expectedContextId: string
 ): { window: NormalizedWindow; tab: NormalizedTab } {
   if (inventory.connectionBinding.kind !== "bound"
     || inventory.connectionBinding.contextId !== expectedContextId) {
     throw new Error(`RepoPrompt connection did not confirm bound context ${expectedContextId}`);
   }
 
-  for (const window of inventory.windows) {
-    const tab = window.tabs.find((candidate) => candidate.contextId === expectedContextId);
-    if (tab && (expectedWindowId === undefined || window.id === expectedWindowId)) {
-      return { window, tab };
-    }
+  const bound = findInventoryTab(
+    inventory,
+    inventory.connectionBinding.windowId,
+    inventory.connectionBinding.contextId
+  );
+  if (!bound) {
+    throw new Error(
+      `RepoPrompt context ${expectedContextId} is absent from observed window ` +
+      `${inventory.connectionBinding.windowId}`
+    );
   }
-  throw new Error(`RepoPrompt context ${expectedContextId} is absent from the observed inventory`);
+  return bound;
 }
 
 async function selectTab(
@@ -1200,7 +1200,7 @@ async function selectTab(
     client,
     signal,
     issuanceGuard,
-    expectedBoundContext: { contextId: tabId, windowId },
+    expectedBoundContext: { contextId: tabId },
     dispatch: () => client.callTool(
       toolName,
       { ...contract.bindArgs(tabId, windowId) },
@@ -1208,7 +1208,7 @@ async function selectTab(
       signal
     ),
     reconcile: (inventory) => {
-      const confirmed = requireBoundTab(inventory, tabId, windowId);
+      const confirmed = requireBoundTab(inventory, tabId);
       return publishVerifiedTab(
         pi,
         config,
@@ -1289,7 +1289,7 @@ export async function bindToTab(
         issuanceGuard
       );
     }
-    const confirmed = requireBoundTab(inventory, tab.contextId, windowId);
+    const confirmed = requireBoundTab(inventory, tab.contextId);
     return publishVerifiedTab(pi, config, confirmed.window, confirmed.tab, false, signal);
   }, signal);
 }
@@ -1334,8 +1334,7 @@ async function createBoundTab(
       }
       const confirmed = requireBoundTab(
         inventory,
-        inventory.connectionBinding.contextId,
-        windowId
+        inventory.connectionBinding.contextId
       );
       return publishVerifiedTab(
         pi,
@@ -1442,7 +1441,7 @@ export async function ensureBindingHasTab(
           issuanceGuard
         );
       }
-      const confirmed = requireBoundTab(inventory, requestedTab.contextId, window.id);
+      const confirmed = requireBoundTab(inventory, requestedTab.contextId);
       return publishVerifiedTab(
         pi,
         config,
@@ -1573,8 +1572,7 @@ export async function autoDetectAndBind(
     }
     const confirmed = requireBoundTab(
       inventory,
-      inventory.connectionBinding.contextId,
-      match.window.id
+      inventory.connectionBinding.contextId
     );
     const binding = publishVerifiedTab(pi, config, confirmed.window, confirmed.tab, true, signal);
     return {
@@ -1653,7 +1651,7 @@ export async function bindToWindow(
     if (selectedTab) {
       if (inventory.connectionBinding.kind === "bound"
         && inventory.connectionBinding.contextId === selectedTab.contextId) {
-        const confirmed = requireBoundTab(inventory, selectedTab.contextId, window.id);
+        const confirmed = requireBoundTab(inventory, selectedTab.contextId);
         return publishVerifiedTab(pi, config, confirmed.window, confirmed.tab, false, signal);
       }
       return await selectTab(
@@ -1691,7 +1689,10 @@ export function reconcileObservedInventoryRoute(
     return persistWindowIntent(pi, window, config, signal);
   }
 
-  const confirmed = requireBoundTab(inventory, inventory.connectionBinding.contextId);
+  const confirmed = requireBoundTab(
+    inventory,
+    inventory.connectionBinding.contextId
+  );
   return publishVerifiedTab(pi, config, confirmed.window, confirmed.tab, false, signal);
 }
 
@@ -1770,7 +1771,7 @@ export async function reconcileFailedRouteDependentCall(
 
   try {
     const inventory = await observeInventory(config, client, signal);
-    const live = findInventoryTab(inventory, priorBinding.tab);
+    const live = findInventoryTab(inventory, priorBinding.windowId, priorBinding.tab);
     if (!live) {
       quarantineIfOwned(
         "route_disappeared",
@@ -1778,8 +1779,8 @@ export async function reconcileFailedRouteDependentCall(
       );
       return;
     }
-    if (live.window.id !== priorBinding.windowId
-      || inventory.connectionBinding.kind !== "bound"
+    if (inventory.connectionBinding.kind !== "bound"
+      || inventory.connectionBinding.windowId !== priorBinding.windowId
       || inventory.connectionBinding.contextId !== priorBinding.tab) {
       quarantineIfOwned(
         "route_conflict",
