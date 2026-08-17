@@ -1,27 +1,3 @@
-/**
- * Model-Aware Compaction
- *
- * Adds per-model context-usage thresholds to Pi's built-in auto-compaction.
- * Thresholds are percent-used (0–100), configured in config.json.
- *
- * Design constraint: extensions cannot access InteractiveMode's compaction queue
- * (the "Queued message for after compaction" mechanism). Calling ctx.compact()
- * directly skips the compaction-summary UI and won't auto-send queued messages.
- *
- * Approach: at agent_end, if a model-specific threshold is exceeded, inflate
- * lastAssistant.usage.totalTokens past the context window. Pi's _checkCompaction()
- * then fires its normal pipeline — loader → compact → summary → queued-message
- * flush — preserving the full native UX. The inflated value is ephemeral;
- * compaction rebuilds messages from the session file.
- *
- * Session event handlers (session_start, session_tree, session_before_compact,
- * session_compact) reset internal state — cooldown
- * timers, cached message references — to stay consistent across navigations.
- *
- * Requires compaction.enabled: true in settings.json. See README.md for
- * threshold tuning and reserveTokens guidance.
- */
-
 import {
     buildSessionContext,
     estimateTokens,
@@ -33,47 +9,79 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-interface CompactionConfig {
+export interface CompactionConfig {
     global: number;
     models: Record<string, number>;
 }
 
-const DEFAULT_THRESHOLD_PERCENT = 85;
+export interface ModelAwareCompactionDependencies {
+    configPath?: string;
+    isAutoCompactionEnabled?: (cwd: string) => boolean;
+}
+
+type EffectiveCompactionPolicy =
+    | { status: "unavailable"; reason: "missing-policy" }
+    | { status: "unavailable"; reason: "auto-compaction-disabled"; thresholdPercent: number }
+    | { status: "available"; thresholdPercent: number };
+
+type AssistantMessageWithUsage = {
+    role: "assistant";
+    stopReason?: string;
+    usage: { totalTokens?: number };
+};
+
 const DEFAULT_CONTEXT_WINDOW = 128000;
-
-// Prevent thrashing
 const COMPACTION_COOLDOWN_MS = 15000;
+const NUDGE_COOLDOWN_MS = 5000;
+const DEFAULT_CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), "config.json");
 
-function normalizePercent(value: unknown, fallback: number): number {
-    if (typeof value !== "number" || Number.isNaN(value)) {
-        return fallback;
+function parsePercent(value: unknown, path: string): number {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+        throw new Error(`${path} must be a number from 0 to 100`);
     }
 
-    return Math.max(0, Math.min(100, Math.floor(value)));
+    return Math.floor(value);
 }
 
-function loadConfig(): CompactionConfig {
+export function parseCompactionConfig(value: unknown): CompactionConfig {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("config must be an object");
+    }
+
+    const config = value as Record<string, unknown>;
+    if (config.models === null || typeof config.models !== "object" || Array.isArray(config.models)) {
+        throw new Error("config.models must be an object");
+    }
+
+    const models = Object.fromEntries(
+        Object.entries(config.models).map(([modelId, threshold]) => [
+            modelId,
+            parsePercent(threshold, `config.models.${modelId}`),
+        ]),
+    );
+
+    return {
+        global: parsePercent(config.global, "config.global"),
+        models,
+    };
+}
+
+export function loadCompactionConfig(configPath = DEFAULT_CONFIG_PATH): CompactionConfig | undefined {
+    if (!existsSync(configPath)) {
+        return undefined;
+    }
+
     try {
-        const extensionDirectory = dirname(fileURLToPath(import.meta.url));
-        const configPath = join(extensionDirectory, "config.json");
-        const configData = readFileSync(configPath, "utf-8");
-        const parsedConfig = JSON.parse(configData);
-
-        return {
-            global: normalizePercent(parsedConfig.global, DEFAULT_THRESHOLD_PERCENT),
-            models:
-                typeof parsedConfig.models === "object" && parsedConfig.models !== null
-                    ? (parsedConfig.models as Record<string, number>)
-                    : {},
-        };
-    } catch {
-        return { global: DEFAULT_THRESHOLD_PERCENT, models: {} };
+        return parseCompactionConfig(JSON.parse(readFileSync(configPath, "utf-8")) as unknown);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid model-aware compaction config at ${configPath}: ${message}`, { cause: error });
     }
 }
 
-function getThresholdPercent(config: CompactionConfig, modelId: string): number {
-    if (config.models[modelId] !== undefined) {
-        return normalizePercent(config.models[modelId], config.global);
+export function getThresholdPercent(config: CompactionConfig, modelId: string): number {
+    if (Object.hasOwn(config.models, modelId)) {
+        return config.models[modelId]!;
     }
 
     for (const [pattern, threshold] of Object.entries(config.models)) {
@@ -81,11 +89,10 @@ function getThresholdPercent(config: CompactionConfig, modelId: string): number 
             continue;
         }
 
-        const escapedPattern = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-        const regex = new RegExp("^" + escapedPattern.replace(/\*/g, ".*") + "$");
-
+        const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+        const regex = new RegExp(`^${escapedPattern.replace(/\*/g, ".*")}$`);
         if (regex.test(modelId)) {
-            return normalizePercent(threshold, config.global);
+            return threshold;
         }
     }
 
@@ -93,83 +100,81 @@ function getThresholdPercent(config: CompactionConfig, modelId: string): number 
 }
 
 function estimateSystemPromptTokens(ctx: ExtensionContext): number {
-    const promptText = ctx.getSystemPrompt();
-    return Math.ceil(promptText.length / 4);  // ~4 chars/token rough heuristic
+    return Math.ceil(ctx.getSystemPrompt().length / 4);
 }
 
 function estimateLeafTokens(ctx: ExtensionContext): number {
     const sessionContext = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
-    const messagesTokens = sessionContext.messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
-
-    // System prompt (AGENTS.md, tool descriptions, etc.) isn't in SessionContext.messages
-    return messagesTokens + estimateSystemPromptTokens(ctx);
+    const messageTokens = sessionContext.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    return messageTokens + estimateSystemPromptTokens(ctx);
 }
 
 function getLastBranchCompactionMs(ctx: ExtensionContext): number | undefined {
     const branchEntries = ctx.sessionManager.getBranch();
 
-    for (let i = branchEntries.length - 1; i >= 0; i -= 1) {
-        const entry = branchEntries[i];
+    for (let index = branchEntries.length - 1; index >= 0; index -= 1) {
+        const entry = branchEntries[index];
         if (entry.type !== "compaction") {
             continue;
         }
 
-        // SessionEntry.timestamp is an ISO string
-        const ms = Date.parse(entry.timestamp);
-        return Number.isNaN(ms) ? undefined : ms;
+        const timestampMs = Date.parse(entry.timestamp);
+        return Number.isNaN(timestampMs) ? undefined : timestampMs;
     }
 
     return undefined;
 }
 
 function readJsonFile(filePath: string): unknown | undefined {
-    try {
-        if (!existsSync(filePath)) {
-            return undefined;
-        }
-
-        const text = readFileSync(filePath, "utf-8");
-        return JSON.parse(text) as unknown;
-    } catch {
+    if (!existsSync(filePath)) {
         return undefined;
+    }
+
+    try {
+        return JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid Pi settings JSON at ${filePath}: ${message}`, { cause: error });
     }
 }
 
 function getCompactionEnabledFromSettings(settings: unknown): boolean | undefined {
-    if (!settings || typeof settings !== "object") {
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
         return undefined;
     }
 
-    const maybe = (settings as any)?.compaction?.enabled;
-    return typeof maybe === "boolean" ? maybe : undefined;
+    const compaction = (settings as Record<string, unknown>).compaction;
+    if (!compaction || typeof compaction !== "object" || Array.isArray(compaction)) {
+        return undefined;
+    }
+
+    const enabled = (compaction as Record<string, unknown>).enabled;
+    return typeof enabled === "boolean" ? enabled : undefined;
 }
 
-function findProjectSettingsPath(startDir: string): string | undefined {
-    // Best-effort: walk up to root, looking for .pi/settings.json
-    let current = startDir;
+function findProjectSettingsPath(startDirectory: string): string | undefined {
+    let currentDirectory = startDirectory;
 
-    for (let i = 0; i < 20; i += 1) {
-        const candidate = join(current, ".pi", "settings.json");
+    for (let depth = 0; depth < 20; depth += 1) {
+        const candidate = join(currentDirectory, ".pi", "settings.json");
         if (existsSync(candidate)) {
             return candidate;
         }
 
-        const parent = dirname(current);
-        if (parent === current) {
+        const parentDirectory = dirname(currentDirectory);
+        if (parentDirectory === currentDirectory) {
             break;
         }
-        current = parent;
+        currentDirectory = parentDirectory;
     }
 
     return undefined;
 }
 
-function isAutoCompactionEnabled(ctx: ExtensionContext): boolean {
-    // Mirrors SettingsManager.getCompactionEnabled default behavior: true if unset
+function isAutoCompactionEnabled(cwd: string): boolean {
     const globalSettingsPath = join(homedir(), ".pi", "agent", "settings.json");
     const globalEnabled = getCompactionEnabledFromSettings(readJsonFile(globalSettingsPath));
-
-    const projectSettingsPath = findProjectSettingsPath(ctx.cwd);
+    const projectSettingsPath = findProjectSettingsPath(cwd);
     const projectEnabled = projectSettingsPath
         ? getCompactionEnabledFromSettings(readJsonFile(projectSettingsPath))
         : undefined;
@@ -177,93 +182,122 @@ function isAutoCompactionEnabled(ctx: ExtensionContext): boolean {
     return projectEnabled ?? globalEnabled ?? true;
 }
 
-/** Fallback when turn_end didn't capture a reference (e.g., extension loaded mid-session) */
-function findLastNonErrorAssistantMessage(messages: unknown[]): any | undefined {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const msg = messages[i] as any;
-        if (!msg || msg.role !== "assistant") {
-            continue;
-        }
+function resolveEffectiveCompactionPolicy(
+    modelId: string,
+    cwd: string,
+    configPath: string,
+    resolveAutoCompactionEnabled: (cwd: string) => boolean,
+): EffectiveCompactionPolicy {
+    const config = loadCompactionConfig(configPath);
+    if (!config) {
+        return { status: "unavailable", reason: "missing-policy" };
+    }
 
-        if (msg.stopReason === "error" || msg.stopReason === "aborted") {
-            continue;
-        }
+    const thresholdPercent = getThresholdPercent(config, modelId);
+    if (!resolveAutoCompactionEnabled(cwd)) {
+        return { status: "unavailable", reason: "auto-compaction-disabled", thresholdPercent };
+    }
 
-        if (!msg.usage) {
-            continue;
-        }
+    return { status: "available", thresholdPercent };
+}
 
-        return msg;
+function isUsableAssistantMessage(value: unknown): value is AssistantMessageWithUsage {
+    if (!value || typeof value !== "object") {
+        return false;
+    }
+
+    const message = value as Record<string, unknown>;
+    if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") {
+        return false;
+    }
+
+    return Boolean(message.usage && typeof message.usage === "object" && !Array.isArray(message.usage));
+}
+
+function findCurrentAssistantMessage(messages: unknown[]): AssistantMessageWithUsage | undefined {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message && typeof message === "object" && (message as Record<string, unknown>).role === "assistant") {
+            return isUsableAssistantMessage(message) ? message : undefined;
+        }
     }
 
     return undefined;
 }
 
-export default function (pi: ExtensionAPI) {
-    const config = loadConfig();
-
+export function registerModelAwareCompaction(
+    pi: ExtensionAPI,
+    dependencies: ModelAwareCompactionDependencies = {},
+): void {
+    const configPath = dependencies.configPath ?? DEFAULT_CONFIG_PATH;
+    const resolveAutoCompactionEnabled = dependencies.isAutoCompactionEnabled ?? isAutoCompactionEnabled;
     let lastCompactionMs = 0;
     let lastNudgeMs = 0;
+    let lastAssistantMessageRef: AssistantMessageWithUsage | undefined;
 
-    // Best-effort reference to the last assistant message object used by Pi's internal compaction check
-    let lastAssistantMessageRef: any | undefined;
-
-    // -- Session lifecycle -------------------------------------------------------
-    // Reset cooldowns and cached message refs on session start/navigation, and
-    // track compaction timestamps for debounce.
-
-    pi.on("session_start", async (_event, ctx) => {
+    const resetPendingNudge = () => {
         lastAssistantMessageRef = undefined;
-        lastCompactionMs = 0;
         lastNudgeMs = 0;
+    };
 
+    pi.on("session_start", (_event, ctx) => {
+        resetPendingNudge();
+        lastCompactionMs = getLastBranchCompactionMs(ctx) ?? 0;
+    });
+
+    pi.on("session_tree", (_event, ctx) => {
+        resetPendingNudge();
         const branchCompactionMs = getLastBranchCompactionMs(ctx);
         if (branchCompactionMs !== undefined) {
             lastCompactionMs = Math.max(lastCompactionMs, branchCompactionMs);
         }
     });
 
-    pi.on("session_tree", async (_event, ctx) => {
-        lastAssistantMessageRef = undefined;
-        lastNudgeMs = 0;
-
-        const branchCompactionMs = getLastBranchCompactionMs(ctx);
-        if (branchCompactionMs !== undefined) {
-            lastCompactionMs = Math.max(lastCompactionMs, branchCompactionMs);
-        }
+    pi.on("session_before_compact", () => {
+        resetPendingNudge();
     });
 
-    pi.on("session_before_compact", async (_event, _ctx) => {
-        lastAssistantMessageRef = undefined;
-        lastNudgeMs = 0;
-    });
-
-    pi.on("session_compact", async (_event, _ctx) => {
+    pi.on("session_compact", () => {
         lastCompactionMs = Date.now();
+        resetPendingNudge();
+    });
+
+    pi.on("session_shutdown", () => {
+        lastCompactionMs = 0;
+        resetPendingNudge();
+    });
+
+    pi.on("message_end", (event) => {
+        const message = (event as { message?: unknown }).message;
+        if (!message || typeof message !== "object" || (message as Record<string, unknown>).role !== "assistant") {
+            return;
+        }
+
+        lastAssistantMessageRef = isUsableAssistantMessage(message) ? message : undefined;
+    });
+
+    pi.on("agent_end", (event, ctx) => {
+        const agentEndEvent = event as { messages?: unknown[]; willRetry?: boolean };
+        const currentAssistantMessage = lastAssistantMessageRef;
         lastAssistantMessageRef = undefined;
-        lastNudgeMs = 0;
-    });
-
-    // Capture the last assistant message reference so we can mutate it reliably in agent_end
-    pi.on("turn_end", async (event, _ctx) => {
-        const msg = (event as any)?.message;
-        if (!msg || msg.role !== "assistant") {
+        if (agentEndEvent.willRetry) {
             return;
         }
 
-        if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+        if (!ctx.model) {
             return;
         }
 
-        if (!msg.usage) {
+        const policy = resolveEffectiveCompactionPolicy(
+            ctx.model.id,
+            ctx.cwd,
+            configPath,
+            resolveAutoCompactionEnabled,
+        );
+        if (policy.status === "unavailable" && policy.reason === "missing-policy") {
             return;
         }
 
-        lastAssistantMessageRef = msg;
-    });
-
-    // Trigger after an agent run completes (matches Pi built-in auto-compaction timing)
-    pi.on("agent_end", async (event, ctx) => {
         const branchCompactionMs = getLastBranchCompactionMs(ctx);
         if (branchCompactionMs !== undefined) {
             lastCompactionMs = Math.max(lastCompactionMs, branchCompactionMs);
@@ -274,58 +308,42 @@ export default function (pi: ExtensionAPI) {
             return;
         }
 
-        const model = ctx.model;
-        if (!model) {
-            return;
-        }
-
-        const contextWindow = model.contextWindow || DEFAULT_CONTEXT_WINDOW;
-        const thresholdPercent = getThresholdPercent(config, model.id);
+        const contextWindow = ctx.model.contextWindow || DEFAULT_CONTEXT_WINDOW;
+        const thresholdPercent = policy.thresholdPercent;
         const thresholdTokens = Math.floor((thresholdPercent / 100) * contextWindow);
-
-        const usage = ctx.getContextUsage();
-        const usedTokens = usage?.tokens ?? estimateLeafTokens(ctx);
-
+        const usedTokens = ctx.getContextUsage()?.tokens ?? estimateLeafTokens(ctx);
         if (usedTokens < thresholdTokens) {
             return;
         }
 
-        if (!isAutoCompactionEnabled(ctx)) {
+        if (policy.status === "unavailable") {
             if (ctx.hasUI) {
                 ctx.ui.notify(
-                    "Auto-compact is disabled. " +
-                        "Enable it in /settings so model-aware-compaction can trigger Pi's built-in auto-compaction",
+                    "Auto-compact is disabled. Enable it in /settings so model-aware-compaction can trigger " +
+                        "Pi's built-in auto-compaction",
                     "warning",
                 );
             }
             return;
         }
 
-        // Nudge Pi's built-in auto-compaction check (which runs right after this handler)
-        const lastAssistant =
-            lastAssistantMessageRef ?? findLastNonErrorAssistantMessage((event as any)?.messages ?? []);
-        if (!lastAssistant) {
+        const lastAssistant = currentAssistantMessage ?? findCurrentAssistantMessage(agentEndEvent.messages ?? []);
+        if (!lastAssistant || now - lastNudgeMs < NUDGE_COOLDOWN_MS) {
             return;
         }
-
-        const nudgeNow = Date.now();
-        if (nudgeNow - lastNudgeMs < 5000) {
-            return;
-        }
-        lastNudgeMs = nudgeNow;
+        lastNudgeMs = now;
 
         if (ctx.hasUI) {
             ctx.ui.notify(
-                `Auto-compacting via model-aware threshold: ${model.id} (>= ${thresholdPercent}% used)`,
+                `Auto-compacting via model-aware threshold: ${ctx.model.id} (>= ${thresholdPercent}% used)`,
                 "info",
             );
         }
 
-        // Force auto-compaction by bumping totalTokens above Pi's internal shouldCompact threshold
-        const forcedTokens = contextWindow + 1;
-        lastAssistant.usage.totalTokens = Math.max(lastAssistant.usage.totalTokens ?? 0, forcedTokens);
-
-        // Note: we deliberately don't set a footer/statusline indicator here.
-        // If Pi's auto-compaction is enabled, its own UI will show the compaction loader + result.
+        lastAssistant.usage.totalTokens = Math.max(lastAssistant.usage.totalTokens ?? 0, contextWindow + 1);
     });
+}
+
+export default function modelAwareCompaction(pi: ExtensionAPI): void {
+    registerModelAwareCompaction(pi);
 }
