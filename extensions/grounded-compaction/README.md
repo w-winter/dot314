@@ -1,8 +1,11 @@
 # grounded-compaction
 
-This extension can play two roles:
+This extension can play three roles:
 * Replace Pi's compaction summarizer with configurable model presets, custom summarization prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, recognized shell operations, and Codex `apply_patch`
 * Augment branch summarization during `/tree` with the same files-touched grounding and optional replacement of the summarization prompt contract with a custom one
+* Provide the plaintext summaries used by [`codex-compaction-coordinator`](../codex-compaction-coordinator/README.md) when switching from a Codex model to another provider
+
+The compaction and `/tree` features work without the coordinator. Coordinator integration is optional.
 
 > ⚠ **May conflict with other compaction extensions**: this extension hooks `session_before_compact` and returns a custom compaction result.  Any other extension that does the same is incompatible.  Having both active creates a race condition where the last handler to respond wins.  Enable only one.
 

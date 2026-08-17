@@ -1,7 +1,7 @@
 {
   "name": "pi-files-touched",
-  "version": "0.2.2",
-  "description": "Deterministic file-activity tracking for Pi sessions, covering native tools, RepoPrompt, and bash commands.  Includes /files-touched picker and a shared core for compaction/handover extensions",
+  "version": "0.2.3",
+  "description": "Deterministic file-activity tracking for Pi sessions, covering native tools, RepoPrompt, shell commands, and Codex `apply_patch`.  Includes /files-touched picker and a shared core for compaction/handover extensions",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "files", "tracking", "compaction"],
   "license": "MIT",
   "repository": {

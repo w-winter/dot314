@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,9 +7,12 @@ import {
     contentText,
     type Api,
     type AssistantMessage,
+    type Context,
     type Message,
     type Model,
+    type Provider,
     type ProviderHeaders,
+    type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
@@ -23,6 +27,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-touched-core.ts";
+import {
+    registerGroundedPortableSummarizer,
+    type GroundedPortableSummarizerOpenRequest,
+    type GroundedPortableSummarizerOpener,
+    type GroundedPortableSummarizerSession,
+    type PortableSummaryUsage,
+} from "./portable-summarizer.ts";
+import { registerGroundedCompactionHandlers } from "./registration.ts";
+
+export { queryGroundedCompactionDelegation } from "./registration.ts";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -98,6 +112,8 @@ type HookContext = {
     };
 };
 
+type SummarizerContext = Pick<HookContext, "model" | "modelRegistry">;
+
 type PreparedSummaryRequest = Readonly<{
     mode: SummaryMode;
     userPrompt: string;
@@ -164,9 +180,24 @@ type RunDeps = {
     loadBranchSummaryPrompt: (extensionDir?: string) => Promise<string | undefined>;
 };
 
+type PortableSummaryCompletion = (
+    model: Model<Api>,
+    context: Context,
+    options: SimpleStreamOptions | undefined,
+    provider: Provider,
+) => Promise<AssistantMessage>;
+
+export type GroundedPortableSummarizerDependencies = {
+    complete: PortableSummaryCompletion;
+    collectFilesTouched: typeof collectFilesTouched;
+    loadConfig: RunDeps["loadConfig"];
+    loadCompactionPrompt: RunDeps["loadCompactionPrompt"];
+};
+
 class CompactionAbortedError extends Error {
     constructor() {
         super("Compaction aborted");
+        this.name = "AbortError";
     }
 }
 
@@ -199,6 +230,8 @@ const CONFIG_PATH = path.join(EXTENSION_DIR, "config.json");
 const COMPACTION_PROMPT_PATH = path.join(EXTENSION_DIR, "compaction-prompt.md");
 const BRANCH_SUMMARY_PROMPT_PATH = path.join(EXTENSION_DIR, "branch-summary-prompt.md");
 const CURRENT_PRESET_SENTINEL = "current";
+const PORTABLE_SUMMARIZER_PROMPT_VERSION = 1;
+export const PORTABLE_SUMMARY_MAX_OUTPUT_TOKENS = 8192;
 const FILES_TOUCHED_HEADING = "## Files touched";
 const FINAL_FILES_TOUCHED_HEADING = "## Files touched (cumulative)";
 const FILES_TOUCHED_LEGEND = "R=read, W=write, E=edit, M=move/rename, D=delete";
@@ -281,6 +314,13 @@ const DEFAULT_DEPS: RunDeps = {
     loadConfig,
     loadCompactionPrompt: loadCompactionPromptContract,
     loadBranchSummaryPrompt: loadBranchSummaryPromptContract,
+};
+
+const DEFAULT_PORTABLE_DEPS: GroundedPortableSummarizerDependencies = {
+    complete: (model, context, options) => completeSimple(model, context, options),
+    collectFilesTouched,
+    loadConfig,
+    loadCompactionPrompt: loadCompactionPromptContract,
 };
 
 function isObject(value: unknown): value is JsonObject {
@@ -784,8 +824,8 @@ function parseProviderModel(value: string): { provider: string; modelId: string 
 }
 
 export async function resolveDefaultSummarizer(
-    ctx: HookContext,
-    branchEntries: SessionEntry[],
+    ctx: SummarizerContext,
+    branchEntries: readonly SessionEntry[],
 ): Promise<ResolvedSummarizer> {
     if (!ctx.model) {
         throw new Error("No active session model is available for compaction");
@@ -806,7 +846,7 @@ export async function resolveDefaultSummarizer(
 }
 
 export async function resolvePresetSummarizer(
-    ctx: HookContext,
+    ctx: SummarizerContext,
     config: GroundedCompactionConfig,
     presetQuery: string,
 ): Promise<ResolvedSummarizer> {
@@ -1075,12 +1115,35 @@ function getTextFromAssistantResponse(response: AssistantMessage): string {
         .trim();
 }
 
-async function executePreparedSummaryRequest(params: {
+type SummaryCallResult = {
+    summary: string;
+    usage: PortableSummaryUsage | null;
+};
+
+function normalizeSummaryUsage(usage: AssistantMessage["usage"] | undefined): PortableSummaryUsage | null {
+    if (!usage) return null;
+    return {
+        input: usage.input,
+        output: usage.output,
+        cacheRead: usage.cacheRead,
+        cacheWrite: usage.cacheWrite,
+        totalTokens: usage.totalTokens,
+        cost: {
+            input: usage.cost.input,
+            output: usage.cost.output,
+            cacheRead: usage.cost.cacheRead,
+            cacheWrite: usage.cost.cacheWrite,
+            total: usage.cost.total,
+        },
+    };
+}
+
+async function executePreparedSummaryRequestResult(params: {
     request: PreparedSummaryRequest;
     summarizer: ResolvedSummarizer;
     maxOutputTokens: number;
     signal: AbortSignal;
-}, deps: RunDeps): Promise<string> {
+}, deps: Pick<RunDeps, "complete">): Promise<SummaryCallResult> {
     if (params.signal.aborted) {
         throw new CompactionAbortedError();
     }
@@ -1117,11 +1180,265 @@ async function executePreparedSummaryRequest(params: {
         throw new Error(response.errorMessage || "Summarization failed");
     }
 
-    const text = getTextFromAssistantResponse(response);
-    if (!text) {
+    const summary = getTextFromAssistantResponse(response);
+    if (!summary) {
         throw new Error("Summarization returned empty output");
     }
-    return text;
+    return { summary, usage: normalizeSummaryUsage(response.usage) };
+}
+
+async function executePortableSummaryRequestResult(params: {
+    request: PreparedSummaryRequest;
+    summarizer: ResolvedSummarizer;
+    provider: Provider;
+    maxOutputTokens: number;
+    signal: AbortSignal;
+}, deps: Pick<GroundedPortableSummarizerDependencies, "complete">): Promise<SummaryCallResult> {
+    if (params.signal.aborted) throw new CompactionAbortedError();
+    const reasoningLevel = toReasoningLevel(params.summarizer.reasoningLevel);
+    const options = {
+        apiKey: params.summarizer.apiKey,
+        headers: params.summarizer.headers,
+        maxTokens: params.maxOutputTokens,
+        signal: params.signal,
+        ...(reasoningLevel ? { reasoning: reasoningLevel } : {}),
+    };
+    const response = await deps.complete(
+        params.summarizer.model,
+        {
+            systemPrompt: DEFAULT_SYSTEM_PROMPT,
+            messages: [buildSummaryRequestMessage(params.request.userPrompt)],
+        },
+        options,
+        params.provider,
+    );
+    if (isSignalAborted(params.signal) || response.stopReason === "aborted") {
+        throw new CompactionAbortedError();
+    }
+    if (response.stopReason === "error") {
+        throw new Error(response.errorMessage || "Summarization failed");
+    }
+    const summary = getTextFromAssistantResponse(response);
+    if (!summary) throw new Error("Summarization returned empty output");
+    return { summary, usage: normalizeSummaryUsage(response.usage) };
+}
+
+async function executePreparedSummaryRequest(params: {
+    request: PreparedSummaryRequest;
+    summarizer: ResolvedSummarizer;
+    maxOutputTokens: number;
+    signal: AbortSignal;
+}, deps: RunDeps): Promise<string> {
+    return (await executePreparedSummaryRequestResult(params, deps)).summary;
+}
+
+function createPortablePromptFingerprint(promptContract: string): string {
+    return createHash("sha256")
+        .update(`grounded-compaction:portable-prompt:v${PORTABLE_SUMMARIZER_PROMPT_VERSION}\0`)
+        .update(DEFAULT_SYSTEM_PROMPT)
+        .update("\0")
+        .update(promptContract)
+        .digest("hex");
+}
+
+function resolvePortableModelLimits(model: Model<any>): { contextWindow: number; maxOutputTokens: number } {
+    if (!Number.isSafeInteger(model.contextWindow) || model.contextWindow < 4) {
+        throw new Error(
+            `Portable summarizer model ${model.provider}/${model.id} has an invalid or unusably small contextWindow`,
+        );
+    }
+    if (!Number.isSafeInteger(model.maxTokens) || model.maxTokens < 1) {
+        throw new Error(
+            `Portable summarizer model ${model.provider}/${model.id} has an invalid or unusably small maxTokens`,
+        );
+    }
+    const maxOutputTokens = Math.min(
+        PORTABLE_SUMMARY_MAX_OUTPUT_TOKENS,
+        model.maxTokens,
+        Math.floor(model.contextWindow / 4),
+    );
+    if (maxOutputTokens < 1) {
+        throw new Error(`Portable summarizer model ${model.provider}/${model.id} cannot produce output`);
+    }
+    return { contextWindow: model.contextWindow, maxOutputTokens };
+}
+
+function moveBeforeSplitSurrogate(sourceText: string, startOffset: number, endOffset: number): number {
+    if (endOffset <= startOffset || endOffset >= sourceText.length) return endOffset;
+    const previousCodeUnit = sourceText.charCodeAt(endOffset - 1);
+    const nextCodeUnit = sourceText.charCodeAt(endOffset);
+    const splitsSurrogatePair = previousCodeUnit >= 0xD800
+        && previousCodeUnit <= 0xDBFF
+        && nextCodeUnit >= 0xDC00
+        && nextCodeUnit <= 0xDFFF;
+    return splitsSurrogatePair ? endOffset - 1 : endOffset;
+}
+
+function selectPortableChunkEndOffset(
+    sourceText: string,
+    startOffset: number,
+    maxSourceCharacters: number,
+): number {
+    if (sourceText.length - startOffset <= maxSourceCharacters) return sourceText.length;
+    const hardEndOffset = startOffset + maxSourceCharacters;
+    const searchStartOffset = startOffset + Math.floor(maxSourceCharacters * 3 / 4);
+    const finalQuarter = sourceText.slice(searchStartOffset, hardEndOffset);
+    const doubleNewlineIndex = finalQuarter.lastIndexOf("\n\n");
+    let endOffset: number;
+    if (doubleNewlineIndex >= 0) {
+        endOffset = searchStartOffset + doubleNewlineIndex + 2;
+    } else {
+        const newlineIndex = finalQuarter.lastIndexOf("\n");
+        if (newlineIndex >= 0) {
+            endOffset = searchStartOffset + newlineIndex + 1;
+        } else {
+            endOffset = hardEndOffset;
+            for (let index = hardEndOffset - 1; index >= searchStartOffset; index -= 1) {
+                if (/\s/u.test(sourceText[index])) {
+                    endOffset = index + 1;
+                    break;
+                }
+            }
+        }
+    }
+    return moveBeforeSplitSurrogate(sourceText, startOffset, endOffset);
+}
+
+function validatePortableSummaryRequest(request: {
+    previousSummary: string | null;
+    sourceText: string;
+    startOffset: number;
+    coverageEntries: readonly SessionEntry[];
+}): void {
+    if (request.previousSummary !== null && !request.previousSummary.trim()) {
+        throw new Error("Portable summarizer previousSummary must be null or nonblank text");
+    }
+    if (typeof request.sourceText !== "string") {
+        throw new Error("Portable summarizer sourceText must be a string");
+    }
+    if (!Array.isArray(request.coverageEntries)) {
+        throw new Error("Portable summarizer coverageEntries must be an array");
+    }
+    if (
+        !Number.isSafeInteger(request.startOffset)
+        || request.startOffset < 0
+        || request.startOffset > request.sourceText.length
+    ) {
+        throw new Error("Portable summarizer startOffset is outside sourceText");
+    }
+    if (request.startOffset === request.sourceText.length) {
+        throw new Error("Portable summarizer has no source text remaining");
+    }
+}
+
+export async function openGroundedPortableSummarizerSession(
+    request: GroundedPortableSummarizerOpenRequest,
+    signal: AbortSignal,
+    deps: GroundedPortableSummarizerDependencies = DEFAULT_PORTABLE_DEPS,
+): Promise<GroundedPortableSummarizerSession> {
+    if (signal.aborted) throw new CompactionAbortedError();
+    const [config, promptContract] = await Promise.all([
+        deps.loadConfig(EXTENSION_DIR),
+        deps.loadCompactionPrompt(EXTENSION_DIR),
+    ]);
+    if (signal.aborted) throw new CompactionAbortedError();
+
+    if (
+        config.defaultPreset === CURRENT_PRESET_SENTINEL
+        && request.context.model.provider === "openai-codex"
+        && request.context.model.api === "openai-codex-responses"
+    ) {
+        throw new Error("Portable summarizer current preset requires an active non-Codex model");
+    }
+    const summarizer = config.defaultPreset === CURRENT_PRESET_SENTINEL
+        ? await resolveDefaultSummarizer(request.context, request.branchEntries)
+        : await resolvePresetSummarizer(request.context, config, config.defaultPreset);
+    if (signal.aborted) throw new CompactionAbortedError();
+    const provider = request.context.modelRegistry.getProvider(summarizer.model.provider);
+    if (!provider) {
+        throw new Error(`Provider '${summarizer.model.provider}' is not registered`);
+    }
+
+    const { contextWindow, maxOutputTokens } = resolvePortableModelLimits(summarizer.model);
+    const descriptor = {
+        provider: summarizer.model.provider,
+        api: summarizer.model.api,
+        modelId: summarizer.model.id,
+        thinkingLevel: summarizer.reasoningLevel ?? null,
+        contextWindow,
+        maxOutputTokens,
+        promptFingerprint: createPortablePromptFingerprint(promptContract),
+    } satisfies GroundedPortableSummarizerSession["descriptor"];
+    let cachedCoverageEntries: readonly SessionEntry[] | undefined;
+    let cachedManifestBlock: string | undefined;
+
+    return {
+        descriptor,
+        async summarizeNext(summaryRequest) {
+            validatePortableSummaryRequest(summaryRequest);
+            if (summaryRequest.signal.aborted) throw new CompactionAbortedError();
+
+            if (
+                config.includeFilesTouched.inCompactionSummary
+                && cachedCoverageEntries !== summaryRequest.coverageEntries
+            ) {
+                const files = deps.collectFilesTouched([...summaryRequest.coverageEntries], request.context.cwd);
+                cachedCoverageEntries = summaryRequest.coverageEntries;
+                cachedManifestBlock = renderFinalFilesTouchedManifestBlock(files);
+            }
+            const previousSummary = stripGroundedCompactionManifestTail(
+                summaryRequest.previousSummary ?? undefined,
+            );
+            const emptySourcePrompt = buildSummaryUserPrompt({
+                mode: "history",
+                promptContract,
+                serializedConversation: "",
+                previousSummary,
+            });
+            const fixedPromptTokens = estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${emptySourcePrompt}`);
+            const maxSourceCharacters = (contextWindow - maxOutputTokens - fixedPromptTokens) * 4;
+            if (maxSourceCharacters < 1) {
+                throw new Error(
+                    `Portable summary prompt leaves no source capacity for ${summarizer.model.provider}/${summarizer.model.id}`,
+                );
+            }
+            const endOffset = selectPortableChunkEndOffset(
+                summaryRequest.sourceText,
+                summaryRequest.startOffset,
+                maxSourceCharacters,
+            );
+            if (endOffset <= summaryRequest.startOffset) {
+                throw new Error("Portable summary capacity cannot fit one UTF-16-safe source character");
+            }
+            const userPrompt = buildSummaryUserPrompt({
+                mode: "history",
+                promptContract,
+                serializedConversation: summaryRequest.sourceText.slice(summaryRequest.startOffset, endOffset),
+                previousSummary,
+            });
+            const result = await executePortableSummaryRequestResult(
+                {
+                    request: {
+                        mode: "history",
+                        userPrompt,
+                        estimatedInputTokens: estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${userPrompt}`),
+                    },
+                    summarizer,
+                    provider,
+                    maxOutputTokens,
+                    signal: summaryRequest.signal,
+                },
+                deps,
+            );
+            const summaryBody = stripGroundedCompactionManifestTail(result.summary);
+            if (!summaryBody) throw new Error("Portable summarization returned no summary body");
+            return {
+                summary: appendWholeBranchManifest(summaryBody, cachedManifestBlock),
+                endOffset,
+                usage: result.usage,
+            };
+        },
+    };
 }
 
 function appendWholeBranchManifest(summary: string, manifestBlock?: string): string {
@@ -1547,12 +1864,26 @@ export async function runGroundedCompaction(
     }
 }
 
-export default function groundedCompactionExtension(pi: ExtensionAPI): void {
-    pi.on("session_before_compact", async (event, ctx) => {
-        return runGroundedCompaction(event, ctx);
-    });
+export interface GroundedCompactionExtensionDependencies {
+    runCompaction?: typeof runGroundedCompaction;
+    runBranchSummary?: typeof runGroundedBranchSummaryAugmentation;
+    openPortableSession?: GroundedPortableSummarizerOpener;
+}
 
-    pi.on("session_before_tree", async (event, ctx) => {
-        return runGroundedBranchSummaryAugmentation(event, ctx);
+export function registerGroundedCompaction(
+    pi: ExtensionAPI,
+    dependencies: GroundedCompactionExtensionDependencies = {},
+): void {
+    registerGroundedCompactionHandlers(pi, {
+        runCompaction: dependencies.runCompaction ?? runGroundedCompaction,
+        runBranchSummary: dependencies.runBranchSummary ?? runGroundedBranchSummaryAugmentation,
     });
+    registerGroundedPortableSummarizer(
+        pi,
+        dependencies.openPortableSession ?? openGroundedPortableSummarizerSession,
+    );
+}
+
+export default function groundedCompactionExtension(pi: ExtensionAPI): void {
+    registerGroundedCompaction(pi);
 }

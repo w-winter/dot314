@@ -13,7 +13,12 @@
 
 - ● [`grounded-compaction/`](grounded-compaction/) ([README](./grounded-compaction/README.md))
   - Replaces Pi's compaction summarizer with configurable model presets, user-editable prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, recognized shell operations, and Codex `apply_patch`; also augments branch summarization during `/tree` with the same files-touched grounding and optional prompt customization
+  - Supplies plaintext summaries to [`codex-compaction-coordinator`](codex-compaction-coordinator/) when another provider needs visible history covered by a native checkpoint
   - Uses the shared collector from [`_shared/files-touched-core.ts`](_shared/files-touched-core.ts); see [Pi compaction docs](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/compaction.md) for background
+
+- ● [`codex-compaction-coordinator/`](codex-compaction-coordinator/) ([README](./codex-compaction-coordinator/README.md))
+  - Makes visible history covered by durable OpenAI Responses V2 checkpoints available to other providers through reusable plaintext summaries, with lazy and prewarm modes
+  - Works with [`@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) and other compatible Responses V2 checkpoint extensions
 
 - ● [`model-aware-compaction/`](model-aware-compaction/) ([README](./model-aware-compaction/README.md))
   - Triggers Pi's **built-in auto-compaction** at per-model percent-used thresholds (0-100), configured via `config.json` (keyed by model ID, supports `*` wildcards)

@@ -109,7 +109,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `ephemeral-mode.ts` | [`pi-ephemeral`](https://www.npmjs.com/package/pi-ephemeral) | Delete session on exit |
 | ◐ | `files-touched.ts` | | Files read/modified widget with path normalization and tracking coverage of Pi-native tools, RepoPrompt, recognized `bash`/`exec_command` shell operations, and `apply_patch` |
 | ● | `fork-from-first.ts` | [`pi-fork-from-first`](https://www.npmjs.com/package/pi-fork-from-first) | Quickly fork session from first message to establish parent-child lineage in a blank new session |
-| ● | `grounded-compaction/` | [`pi-grounded-compaction`](https://www.npmjs.com/package/pi-grounded-compaction) | Compaction summarizer with model presets, custom prompts, and shared files-touched tracking |
+| ● | `grounded-compaction/` | [`pi-grounded-compaction`](https://www.npmjs.com/package/pi-grounded-compaction) | Compaction summarizer with model presets, custom prompts, shared files-touched tracking, and cross-provider checkpoint summaries |
 | ◐ | `handover/` | | Handover draft with files-touched → fork-from-first → prefill editor |
 | ● | `iterm-tab-color.ts` | | Two-state tab coloring (running vs. idle) for iTerm2 |
 | ● | `md.ts` | [`pi-md-export`](https://www.npmjs.com/package/pi-md-export) | Export session branch or last N turns to Markdown file or clipboard |
@@ -137,6 +137,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | | Extension |
 |---|---|
 | ○ | `code-actions/` |
+| ● | `codex-compaction-coordinator/` |
 | ● | `context-limit-fallback/` |
 | ◐ | `extension-stats.ts` |
 | ● | `inline-shell.ts` |
@@ -149,6 +150,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ● | `subagent-bridge/` |
 | ○ | `titlebar-spinner.ts` |
 | ○ | `todos.ts` |
+| ◐ | `tool-horizon/` |
 
 ### Other recommended extensions
 
