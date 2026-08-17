@@ -86,12 +86,13 @@ Keep context intentional: select only what you need, prefer codemaps for referen
 
 ## Paths and roots
 
-Paths may be absolute, `RootName:rel/path`, or unambiguous repo-relative (`rel/path`).
-If a relative path could match multiple loaded roots, use `RootName:rel/path`.
+Path syntax is tool-specific. Use absolute paths when a tool accepts them.
+For `read_file` and `apply_edits`, reuse the exact path returned by `read_file` unchanged; in a multi-root workspace, its explicit form may be `root@<UUID>//rel/path`.
+For `manage_selection`, prefix a relative path with the loaded root name when needed (for example, `ProjectA/src/main.swift`).
 
 Notes:
 - `file_search path="..."` is an alias for `file_search filter.paths=["..."]`
-- `file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
+- `file_search filter.paths` accepts absolute or relative paths/folders, loaded root names, and root-name-prefixed paths (for example, `ProjectA/src`). It does not accept `root@<UUID>//...` aliases returned by `read_file`.
 - `file_actions` is stricter than most RP tools: `path` / `new_path` must be absolute
 - `get_code_structure` reads RepoPrompt's committed code graph; use `read_file` when you need the latest file contents
 

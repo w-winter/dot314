@@ -98,12 +98,13 @@ Each rp_exec call is a fresh connection. Use `&&` to chain deterministic sequenc
 
 ## Paths and roots
 
-Paths may be absolute, `RootName:rel/path`, or unambiguous repo-relative (`rel/path`).
-If a relative path could match multiple loaded roots, use `RootName:rel/path`.
+Path syntax is tool-specific. Use absolute paths when a tool accepts them.
+For `read_file` and `apply_edits`, reuse the exact path returned by `read_file` unchanged; in a multi-root workspace, its explicit form may be `root@<UUID>//rel/path`.
+For `manage_selection`, prefix a relative path with the loaded root name when needed (for example, `ProjectA/src/main.swift`).
 
 Notes:
 - `search`/`file_search path="..."` is an alias for `search`/`file_search filter.paths=["..."]`
-- `search`/`file_search filter.paths` accepts paths *or* a loaded root name (e.g. `"RepoPrompt"`)
+- `search`/`file_search filter.paths` accepts absolute or relative paths/folders, loaded root names, and root-name-prefixed paths (for example, `ProjectA/src`). It does not accept `root@<UUID>//...` aliases returned by `read_file`.
 - `file_actions` in call mode is stricter than most RP tools: `path` / `new_path` must be absolute
 - `structure`/`get_code_structure` line numbers match `read`/`read_file` and refresh after edits
 
