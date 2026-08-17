@@ -21,6 +21,14 @@ type FileTrackingAction =
 	| { kind: "touch"; path: string; operation: FileTouchOperation }
 	| { kind: "move"; from: string; to: string };
 
+export type CodexFileTrackingAction =
+	| { kind: "touch"; path: string; operation: "read" | "write" | "edit" | "create" | "delete" }
+	| { kind: "move"; from: string; to: string };
+
+type TrackedToolCall =
+	| { kind: "existing"; actions: FileTrackingAction[] }
+	| { kind: "codex"; toolName: string; toolArguments: Record<string, unknown> };
+
 type TrackedTouchRecord = {
 	path: string;
 	operation: FileTouchOperation;
@@ -58,7 +66,7 @@ function normalizePathSeparators(value: string): string {
 	return value.replace(/\\/g, "/");
 }
 
-function normalizeSegments(value: string): string {
+function normalizeSegments(value: string, preserveLeadingParents = true): string {
 	const normalized = normalizePathSeparators(value);
 	const segments: string[] = [];
 
@@ -70,6 +78,9 @@ function normalizeSegments(value: string): string {
 		if (segment === "..") {
 			if (segments.length > 0 && segments[segments.length - 1] !== "..") {
 				segments.pop();
+				continue;
+			}
+			if (!preserveLeadingParents) {
 				continue;
 			}
 		}
@@ -88,17 +99,36 @@ function normalizeAbsolutePath(value: string): string {
 	const normalized = normalizePathSeparators(value.trim());
 	const windowsMatch = normalized.match(/^([A-Za-z]:)(?:\/(.*))?$/);
 	if (windowsMatch) {
-		const segments = normalizeSegments(windowsMatch[2]);
-		return segments ? `${windowsMatch[1]}/${segments}` : `${windowsMatch[1]}/`;
+		const drive = windowsMatch[1].toUpperCase();
+		const segments = normalizeSegments(windowsMatch[2], false);
+		return segments ? `${drive}/${segments}` : `${drive}/`;
 	}
 
-	const segments = normalizeSegments(normalized);
+	const segments = normalizeSegments(normalized, false);
 	return segments ? `/${segments}` : "/";
 }
 
 function isAbsolutePath(value: string): boolean {
 	const normalized = normalizePathSeparators(value.trim());
 	return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+}
+
+function resolvePathFromBase(pathValue: string, basePath: string | null | undefined): string {
+	if (isAbsolutePath(pathValue)) {
+		return normalizeAbsolutePath(pathValue);
+	}
+
+	const relativePath = normalizeRelativePath(pathValue);
+	if (!basePath) {
+		return relativePath;
+	}
+	if (!relativePath) {
+		return isAbsolutePath(basePath) ? normalizeAbsolutePath(basePath) : normalizeRelativePath(basePath);
+	}
+
+	return isAbsolutePath(basePath)
+		? normalizeAbsolutePath(`${normalizeAbsolutePath(basePath)}/${relativePath}`)
+		: normalizeRelativePath(`${normalizeRelativePath(basePath)}/${relativePath}`);
 }
 
 function stripReadSliceSuffix(value: string): string {
@@ -154,7 +184,9 @@ function deriveRootFromAbsoluteAndRelative(absPath: string, relativePath: string
 		}
 	}
 
-	return `/${absSegments.slice(0, absSegments.length - relSegments.length).join("/")}`;
+	const rootSegments = absSegments.slice(0, absSegments.length - relSegments.length);
+	const rootPath = rootSegments.join("/");
+	return /^[A-Za-z]:$/.test(rootPath) ? `${rootPath}/` : /^[A-Za-z]:\//.test(rootPath) ? rootPath : `/${rootPath}`;
 }
 
 function inferRootMappings(paths: string[]): Map<string, string> {
@@ -868,6 +900,230 @@ function parseBashActions(cmd: string): FileTrackingAction[] {
 	return actions;
 }
 
+type ApplyPatchCandidate =
+	| { kind: "add" | "update" | "delete"; path: string }
+	| { kind: "move"; from: string; to: string };
+
+type ApplyPatchResult = {
+	changedFiles: string[];
+	createdFiles: string[];
+	deletedFiles: string[];
+	movedFiles: string[];
+};
+
+function resolveCodexWorkdir(cwd: string | null | undefined, workdir: string | undefined): string {
+	return workdir ? resolvePathFromBase(workdir, cwd) : (cwd ?? "");
+}
+
+function rebaseShellActions(actions: FileTrackingAction[], workdir: string): CodexFileTrackingAction[] {
+	const rebased: CodexFileTrackingAction[] = [];
+
+	for (const action of actions) {
+		if (action.kind === "move") {
+			rebased.push({
+				kind: "move",
+				from: resolvePathFromBase(action.from, workdir),
+				to: resolvePathFromBase(action.to, workdir),
+			});
+			continue;
+		}
+
+		if (action.operation !== "move") {
+			rebased.push({
+				kind: "touch",
+				path: resolvePathFromBase(action.path, workdir),
+				operation: action.operation,
+			});
+		}
+	}
+
+	return rebased;
+}
+
+function normalizeApplyPatchResultPath(pathValue: string, cwd: string | null | undefined): string {
+	const trimmed = pathValue.trim();
+	if (!trimmed) {
+		return "";
+	}
+	if (!isAbsolutePath(trimmed) && !normalizeRelativePath(trimmed)) {
+		return "";
+	}
+	return resolvePathFromBase(trimmed, cwd);
+}
+
+function normalizeApplyPatchHeaderPath(pathValue: string, cwd: string | null | undefined): string {
+	const trimmed = pathValue.trim();
+	const withoutAt = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+	const unquoted = withoutAt.replace(/^['"]|['"]$/g, "");
+	return normalizeApplyPatchResultPath(unquoted, cwd);
+}
+
+function parseApplyPatchCandidates(input: string, cwd: string | null | undefined): ApplyPatchCandidate[] {
+	const lines = input.trim().split(/\r?\n/);
+	// Mirror apply_patch's canonical envelope before trusting structural headers
+	if (lines.length < 2 || !lines[0].startsWith("*** Begin Patch") || lines.at(-1) !== "*** End Patch") {
+		return [];
+	}
+
+	const candidates: ApplyPatchCandidate[] = [];
+	for (let index = 1; index < lines.length - 1; index += 1) {
+		const line = lines[index];
+
+		if (line.startsWith("*** Add File: ")) {
+			const pathValue = normalizeApplyPatchHeaderPath(line.slice("*** Add File: ".length), cwd);
+			if (pathValue) candidates.push({ kind: "add", path: pathValue });
+			continue;
+		}
+
+		if (line.startsWith("*** Delete File: ")) {
+			const pathValue = normalizeApplyPatchHeaderPath(line.slice("*** Delete File: ".length), cwd);
+			if (pathValue) candidates.push({ kind: "delete", path: pathValue });
+			continue;
+		}
+
+		if (!line.startsWith("*** Update File: ")) {
+			continue;
+		}
+
+		const from = normalizeApplyPatchHeaderPath(line.slice("*** Update File: ".length), cwd);
+		const moveLine = lines[index + 1] ?? "";
+		if (moveLine.startsWith("*** Move to: ")) {
+			const to = normalizeApplyPatchHeaderPath(moveLine.slice("*** Move to: ".length), cwd);
+			if (from && to) candidates.push({ kind: "move", from, to });
+			index += 1;
+			continue;
+		}
+
+		if (from) candidates.push({ kind: "update", path: from });
+	}
+
+	return candidates;
+}
+
+function parseApplyPatchResult(details: unknown): ApplyPatchResult | null {
+	if (!details || typeof details !== "object" || Array.isArray(details)) {
+		return null;
+	}
+
+	const detailObject = details as Record<string, unknown>;
+	if (detailObject.status !== "success" && detailObject.status !== "partial_failure") {
+		return null;
+	}
+
+	if (!detailObject.result || typeof detailObject.result !== "object" || Array.isArray(detailObject.result)) {
+		return null;
+	}
+
+	const result = detailObject.result as Record<string, unknown>;
+	const keys = ["changedFiles", "createdFiles", "deletedFiles", "movedFiles"] as const;
+	for (const key of keys) {
+		const values = result[key];
+		if (!Array.isArray(values) || !values.every((value) => typeof value === "string")) {
+			return null;
+		}
+	}
+
+	return {
+		changedFiles: result.changedFiles as string[],
+		createdFiles: result.createdFiles as string[],
+		deletedFiles: result.deletedFiles as string[],
+		movedFiles: result.movedFiles as string[],
+	};
+}
+
+function normalizedPathSet(values: string[], cwd: string | null | undefined): Set<string> {
+	return new Set(values.map((value) => normalizeApplyPatchResultPath(value, cwd)).filter(Boolean));
+}
+
+function normalizedMoveSet(values: string[], cwd: string | null | undefined): Set<string> {
+	const moves = new Set<string>();
+
+	for (const value of values) {
+		const parts = value.split(" -> ");
+		if (parts.length !== 2) {
+			continue;
+		}
+
+		const from = normalizeApplyPatchResultPath(parts[0], cwd);
+		const to = normalizeApplyPatchResultPath(parts[1], cwd);
+		if (from && to) moves.add(JSON.stringify([from, to]));
+	}
+
+	return moves;
+}
+
+function completedApplyPatchActions(
+	input: string,
+	details: unknown,
+	cwd: string | null | undefined,
+): CodexFileTrackingAction[] {
+	const result = parseApplyPatchResult(details);
+	if (!result) {
+		return [];
+	}
+
+	const changed = normalizedPathSet(result.changedFiles, cwd);
+	const created = normalizedPathSet(result.createdFiles, cwd);
+	const deleted = normalizedPathSet(result.deletedFiles, cwd);
+	const moved = normalizedMoveSet(result.movedFiles, cwd);
+	const actions: CodexFileTrackingAction[] = [];
+
+	for (const candidate of parseApplyPatchCandidates(input, cwd)) {
+		if (candidate.kind === "move") {
+			if (moved.has(JSON.stringify([candidate.from, candidate.to]))) {
+				actions.push(candidate);
+			}
+			continue;
+		}
+
+		if (candidate.kind === "add") {
+			if (created.has(candidate.path)) {
+				actions.push({ kind: "touch", path: candidate.path, operation: "create" });
+			} else if (changed.has(candidate.path)) {
+				actions.push({ kind: "touch", path: candidate.path, operation: "write" });
+			}
+			continue;
+		}
+
+		if (candidate.kind === "update" && changed.has(candidate.path)) {
+			actions.push({ kind: "touch", path: candidate.path, operation: "edit" });
+		}
+		if (candidate.kind === "delete" && deleted.has(candidate.path)) {
+			actions.push({ kind: "touch", path: candidate.path, operation: "delete" });
+		}
+	}
+
+	return actions;
+}
+
+export function parseCompletedCodexFileActions(args: {
+	toolName: string;
+	toolArguments: Record<string, unknown>;
+	toolResult: { details?: unknown; isError?: boolean };
+	cwd?: string | null;
+}): CodexFileTrackingAction[] {
+	if (args.toolName === "exec_command") {
+		if (typeof args.toolArguments.cmd !== "string") {
+			return [];
+		}
+		if (args.toolArguments.workdir !== undefined && typeof args.toolArguments.workdir !== "string") {
+			return [];
+		}
+		if (args.toolResult.isError) {
+			return [];
+		}
+
+		const workdir = resolveCodexWorkdir(args.cwd, args.toolArguments.workdir as string | undefined);
+		return rebaseShellActions(parseBashActions(args.toolArguments.cmd), workdir);
+	}
+
+	if (args.toolName === "apply_patch" && typeof args.toolArguments.input === "string") {
+		return completedApplyPatchActions(args.toolArguments.input, args.toolResult.details, args.cwd);
+	}
+
+	return [];
+}
+
 function parseRpExecActions(cmd: string): FileTrackingAction[] {
 	const normalized = cmd.trim();
 	if (!normalized) {
@@ -1041,11 +1297,23 @@ function getToolCallId(value: unknown): string | null {
 	);
 }
 
+function toFileTrackingAction(action: CodexFileTrackingAction): FileTrackingAction {
+	if (action.kind === "move") {
+		return action;
+	}
+
+	return {
+		kind: "touch",
+		path: action.path,
+		operation: action.operation === "create" ? "write" : action.operation,
+	};
+}
+
 export function collectFilesTouched(
 	entries: SessionEntry[],
 	cwd?: string | null,
 ): FilesTouchedEntry[] {
-	const toolCalls = new Map<string, FileTrackingAction[]>();
+	const toolCalls = new Map<string, TrackedToolCall>();
 
 	for (const entry of entries) {
 		if (entry.type !== "message") {
@@ -1076,7 +1344,9 @@ export function collectFilesTouched(
 
 			const actions = getTrackedToolActions(toolName, argObject);
 			if (actions.length > 0) {
-				toolCalls.set(toolCallId, actions);
+				toolCalls.set(toolCallId, { kind: "existing", actions });
+			} else if (toolName === "exec_command" || toolName === "apply_patch") {
+				toolCalls.set(toolCallId, { kind: "codex", toolName, toolArguments: argObject });
 			}
 		}
 	}
@@ -1090,7 +1360,7 @@ export function collectFilesTouched(
 		}
 
 		const msg = entry.message;
-		if (msg.role !== "toolResult" || msg.isError) {
+		if (msg.role !== "toolResult") {
 			continue;
 		}
 
@@ -1103,13 +1373,32 @@ export function collectFilesTouched(
 			continue;
 		}
 
-		const actions = toolCalls.get(toolCallId);
-		if (!actions || actions.length === 0) {
+		const trackedCall = toolCalls.get(toolCallId);
+		if (!trackedCall) {
 			continue;
 		}
 
 		const toolResultText = extractTextFromContent(msg.content);
-		const isNoOpEdit = /applied:\s*0|no changes applied|nothing to (?:do|change)/i.test(toolResultText);
+		const matchesNoOp = /applied:\s*0|no changes applied|nothing to (?:do|change)/i.test(toolResultText);
+		let actions: FileTrackingAction[];
+		let isNoOpEdit: boolean;
+
+		if (trackedCall.kind === "existing") {
+			if (msg.isError) {
+				continue;
+			}
+			actions = trackedCall.actions;
+			isNoOpEdit = matchesNoOp;
+		} else {
+			actions = parseCompletedCodexFileActions({
+				toolName: trackedCall.toolName,
+				toolArguments: trackedCall.toolArguments,
+				toolResult: { details: msg.details, isError: msg.isError },
+				cwd,
+			}).map(toFileTrackingAction);
+			isNoOpEdit = trackedCall.toolName === "exec_command" && matchesNoOp;
+		}
+
 		for (const action of actions) {
 			if (action.kind === "move") {
 				moves.push({ from: action.from, to: action.to });

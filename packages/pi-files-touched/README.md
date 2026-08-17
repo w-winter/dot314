@@ -17,6 +17,7 @@ pi install npm:pi-files-touched
 - **Pi native tools**: `read`, `write`, `edit` tool calls matched with their tool results
 - **RepoPrompt tools**: `rp` and `rp_exec` tool calls: `read_file`, `apply_edits`, `file_actions` (create/move/delete), `git mv`, `git rm`
 - **Bash commands**: `sed -i` (edit), `cp`/`rsync` (write destination), `tee`/`touch` (write), `patch` (edit), `curl -o`/`wget -O` (write), `cat`/`head`/`tail` (read), shell output redirections (`>`, `>>`), `mv` (move), `rm`/`trash` (delete), heredoc body filtering
+- **Codex filesystem tools when present in the session**: `exec_command` uses the same high-confidence literal shell coverage relative to its effective working directory; `apply_patch` records completed adds, updates, deletes, and moves, including the completed portion of a partial patch
 
 All path spellings — relative, root-prefixed (`RootName:path`), and absolute — are normalized and coalesced so the same file appears once regardless of how different tools referred to it.  File moves are tracked and earlier references are carried forward to the final path.
 

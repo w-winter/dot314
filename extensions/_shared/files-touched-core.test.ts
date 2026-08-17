@@ -6,7 +6,7 @@ import test from "node:test";
 
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
-import { collectFilesTouched } from "./files-touched-core.ts";
+import { collectFilesTouched, parseCompletedCodexFileActions } from "./files-touched-core.ts";
 
 function toolCall(id: string, name: string, args: Record<string, unknown>): SessionEntry {
 	return {
@@ -26,7 +26,12 @@ function toolCall(id: string, name: string, args: Record<string, unknown>): Sess
 	} as SessionEntry;
 }
 
-function toolResult(id: string, timestamp: number, content = "ok"): SessionEntry {
+function toolResult(
+	id: string,
+	timestamp: number,
+	content: unknown = "ok",
+	options: { details?: unknown; isError?: boolean } = {},
+): SessionEntry {
 	return {
 		id: `result-${id}`,
 		type: "message",
@@ -35,8 +40,32 @@ function toolResult(id: string, timestamp: number, content = "ok"): SessionEntry
 			toolCallId: id,
 			timestamp,
 			content,
+			...(options.details === undefined ? {} : { details: options.details }),
+			...(options.isError === undefined ? {} : { isError: options.isError }),
 		},
 	} as SessionEntry;
+}
+
+function applyPatchDetails(
+	status: "success" | "partial_failure",
+	result: Partial<{
+		changedFiles: string[];
+		createdFiles: string[];
+		deletedFiles: string[];
+		movedFiles: string[];
+	}> = {},
+): Record<string, unknown> {
+	return {
+		status,
+		result: {
+			changedFiles: [],
+			createdFiles: [],
+			deletedFiles: [],
+			movedFiles: [],
+			fuzz: 0,
+			...result,
+		},
+	};
 }
 
 async function createRepoHarness(): Promise<{ cwd: string; externalRoot: string; cleanup: () => Promise<void> }> {
@@ -594,4 +623,389 @@ test("collectFilesTouched coalesces edit + read on the same file from mixed bash
 	} finally {
 		await harness.cleanup();
 	}
+});
+
+test("parseCompletedCodexFileActions resolves Windows relative workdir deterministically", () => {
+	const actions = parseCompletedCodexFileActions({
+		toolName: "exec_command",
+		toolArguments: { cmd: "cat src/index.ts", workdir: "packages/api" },
+		toolResult: { isError: false },
+		cwd: "C:/work",
+	});
+
+	assert.deepEqual(actions, [
+		{ kind: "touch", path: "C:/work/packages/api/src/index.ts", operation: "read" },
+	]);
+});
+
+test("parseCompletedCodexFileActions preserves cwd for dot-equivalent workdirs", () => {
+	const dotActions = parseCompletedCodexFileActions({
+		toolName: "exec_command",
+		toolArguments: { cmd: "cat src/index.ts", workdir: "." },
+		toolResult: { isError: false },
+		cwd: "/repo",
+	});
+	const parentActions = parseCompletedCodexFileActions({
+		toolName: "exec_command",
+		toolArguments: { cmd: "cat src/index.ts", workdir: "packages/app/.." },
+		toolResult: { isError: false },
+		cwd: "/repo",
+	});
+
+	assert.deepEqual(dotActions, [
+		{ kind: "touch", path: "/repo/src/index.ts", operation: "read" },
+	]);
+	assert.deepEqual(parentActions, [
+		{ kind: "touch", path: "/repo/packages/src/index.ts", operation: "read" },
+	]);
+});
+
+test("parseCompletedCodexFileActions clamps parent traversal at filesystem roots", () => {
+	const posixActions = parseCompletedCodexFileActions({
+		toolName: "exec_command",
+		toolArguments: { cmd: "cat etc/hosts", workdir: ".." },
+		toolResult: { isError: false },
+		cwd: "/",
+	});
+	const windowsActions = parseCompletedCodexFileActions({
+		toolName: "exec_command",
+		toolArguments: { cmd: "cat Windows/System32/drivers/etc/hosts", workdir: "../.." },
+		toolResult: { isError: false },
+		cwd: "C:/",
+	});
+
+	assert.deepEqual(posixActions, [
+		{ kind: "touch", path: "/etc/hosts", operation: "read" },
+	]);
+	assert.deepEqual(windowsActions, [
+		{ kind: "touch", path: "C:/Windows/System32/drivers/etc/hosts", operation: "read" },
+	]);
+});
+
+test("parseCompletedCodexFileActions separates patch header syntax from result paths", () => {
+	const patch = [
+		"*** Begin Patch",
+		"*** Update File: @@scope/file.ts",
+		"@@",
+		"-old",
+		"+new",
+		"*** Update File: @@scope/old.ts",
+		"*** Move to: @@scope/new.ts",
+		"@@",
+		" unchanged",
+		"*** End Patch",
+	].join("\n");
+	const actions = parseCompletedCodexFileActions({
+		toolName: "apply_patch",
+		toolArguments: { input: patch },
+		toolResult: {
+			details: applyPatchDetails("success", {
+				changedFiles: ["@scope/file.ts", "@scope/old.ts", "@scope/new.ts"],
+				createdFiles: ["@scope/new.ts"],
+				deletedFiles: ["@scope/old.ts"],
+				movedFiles: ["@scope/old.ts -> @scope/new.ts"],
+			}),
+		},
+		cwd: "/repo",
+	});
+
+	assert.deepEqual(actions, [
+		{ kind: "touch", path: "/repo/@scope/file.ts", operation: "edit" },
+		{ kind: "move", from: "/repo/@scope/old.ts", to: "/repo/@scope/new.ts" },
+	]);
+});
+
+test("parseCompletedCodexFileActions canonicalizes Windows drive identity", () => {
+	const patch = [
+		"*** Begin Patch",
+		"*** Update File: c:/work/src/model.ts",
+		"@@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	].join("\n");
+	const actions = parseCompletedCodexFileActions({
+		toolName: "apply_patch",
+		toolArguments: { input: patch },
+		toolResult: {
+			details: applyPatchDetails("success", { changedFiles: ["src\\model.ts"] }),
+		},
+		cwd: "C:/work",
+	});
+
+	assert.deepEqual(actions, [
+		{ kind: "touch", path: "C:/work/src/model.ts", operation: "edit" },
+	]);
+});
+
+test("parseCompletedCodexFileActions clamps patch paths and rejects dot targets", () => {
+	const clampedPatch = [
+		"*** Begin Patch",
+		"*** Update File: ../../target.ts",
+		"@@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	].join("\n");
+	const dotPatch = [
+		"*** Begin Patch",
+		"*** Update File: .",
+		"@@",
+		"-old",
+		"+new",
+		"*** End Patch",
+	].join("\n");
+
+	assert.deepEqual(parseCompletedCodexFileActions({
+		toolName: "apply_patch",
+		toolArguments: { input: clampedPatch },
+		toolResult: { details: applyPatchDetails("success", { changedFiles: ["/target.ts"] }) },
+		cwd: "/repo",
+	}), [
+		{ kind: "touch", path: "/target.ts", operation: "edit" },
+	]);
+	assert.deepEqual(parseCompletedCodexFileActions({
+		toolName: "apply_patch",
+		toolArguments: { input: dotPatch },
+		toolResult: { details: applyPatchDetails("success", { changedFiles: ["."] }) },
+		cwd: "/repo",
+	}), []);
+});
+
+test("collectFilesTouched tracks exec_command shell actions", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "exec_command", {
+				cmd: [
+					"cat docs/reference.md",
+					"sed -i 's/old/new/' src/config.ts",
+					"touch src/generated.ts",
+					"rm src/removed.ts",
+					"mv src/old.ts src/moved.ts",
+				].join(" && "),
+			}),
+			toolResult("1", 1),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((file) => [file.displayPath, file]));
+
+		assert.deepEqual([...(byDisplay.get("docs/reference.md")?.operations ?? [])], ["read"]);
+		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])], ["edit"]);
+		assert.deepEqual([...(byDisplay.get("src/generated.ts")?.operations ?? [])], ["write"]);
+		assert.deepEqual([...(byDisplay.get("src/removed.ts")?.operations ?? [])], ["delete"]);
+		assert.deepEqual([...(byDisplay.get("src/moved.ts")?.operations ?? [])], ["move"]);
+		assert.ok(!byDisplay.has("src/old.ts"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched honors exec_command workdirs and result semantics", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "exec_command", { cmd: "cat src/index.ts", workdir: "packages/app" }),
+			toolResult("1", 1, "exit 7", { details: { exit_code: 7 } }),
+			toolCall("2", "exec_command", { cmd: "cat docs/reference.md", workdir: harness.externalRoot }),
+			toolResult("2", 2),
+			toolCall("3", "exec_command", { cmd: "cat docs/failed.md" }),
+			toolResult("3", 3, "failed", { isError: true }),
+			toolCall("4", "exec_command", {
+				cmd: "cat docs/kept.md && sed -i 's/old/new/' src/noop.ts",
+			}),
+			toolResult("4", 4, "No changes applied"),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((file) => [file.displayPath, file]));
+
+		assert.equal(byDisplay.get("packages/app/src/index.ts")?.path, `${harness.cwd}/packages/app/src/index.ts`);
+		assert.equal(
+			byDisplay.get("pi-mono/docs/reference.md")?.path,
+			`${harness.externalRoot}/docs/reference.md`,
+		);
+		assert.ok(byDisplay.has("docs/kept.md"));
+		assert.ok(!byDisplay.has("docs/failed.md"));
+		assert.ok(!byDisplay.has("src/noop.ts"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched tracks structured apply_patch actions", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const patch = [
+			"*** Begin Patch",
+			"*** Add File: @\"src/new.ts\"",
+			"+new",
+			"*** Add File: src/overwritten.ts",
+			"+replacement",
+			`*** Update File: ${harness.cwd}/src/config.ts`,
+			"@@",
+			"-old",
+			"+new",
+			"*** Delete File: src/removed.ts",
+			`*** Update File: ${harness.cwd}/src/old.ts`,
+			`*** Move to: ${harness.cwd}/src/moved.ts`,
+			"@@",
+			" unchanged",
+			"*** End Patch",
+		].join("\n");
+		const entries = [
+			toolCall("1", "apply_patch", { input: patch }),
+			toolResult("1", 1, "Applied patch successfully", {
+				details: applyPatchDetails("success", {
+					changedFiles: [
+						"src/new.ts",
+						"src/overwritten.ts",
+						"src/config.ts",
+						"src/removed.ts",
+						"src/old.ts",
+						"src/moved.ts",
+					],
+					createdFiles: ["src/new.ts", "src/moved.ts"],
+					deletedFiles: ["src/removed.ts", "src/old.ts"],
+					movedFiles: ["src\\old.ts -> src\\moved.ts"],
+				}),
+			}),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+		const byDisplay = new Map(files.map((file) => [file.displayPath, file]));
+
+		assert.deepEqual([...(byDisplay.get("src/new.ts")?.operations ?? [])], ["write"]);
+		assert.deepEqual([...(byDisplay.get("src/overwritten.ts")?.operations ?? [])], ["write"]);
+		assert.deepEqual([...(byDisplay.get("src/config.ts")?.operations ?? [])], ["edit"]);
+		assert.deepEqual([...(byDisplay.get("src/removed.ts")?.operations ?? [])], ["delete"]);
+		assert.deepEqual([...(byDisplay.get("src/moved.ts")?.operations ?? [])], ["move"]);
+		assert.ok(!byDisplay.has("src/old.ts"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched retains only completed effects from partial apply_patch failure", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const patch = [
+			"*** Begin Patch",
+			"*** Update File: src/applied.ts",
+			"@@",
+			"-old",
+			"+new",
+			"*** Update File: src/failed.ts",
+			"@@",
+			"-old",
+			"+new",
+			"*** Update File: src/old.ts",
+			"*** Move to: src/moved.ts",
+			"@@",
+			" unchanged",
+			"*** End Patch",
+		].join("\n");
+		const entries = [
+			toolCall("1", "apply_patch", { input: patch }),
+			toolResult("1", 1, "No changes applied", {
+				isError: true,
+				details: applyPatchDetails("partial_failure", {
+					changedFiles: ["src/applied.ts", "src/old.ts", "src/moved.ts"],
+					createdFiles: ["src/moved.ts"],
+					deletedFiles: ["src/old.ts"],
+					movedFiles: ["src/old.ts -> src/moved.ts"],
+				}),
+			}),
+			toolCall("2", "apply_patch", { input: patch }),
+			toolResult("2", 2, "failed", { isError: true }),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		const byDisplay = new Map(files.map((file) => [file.displayPath, file]));
+		assert.equal(files.length, 2);
+		assert.deepEqual([...(byDisplay.get("src/applied.ts")?.operations ?? [])], ["edit"]);
+		assert.deepEqual([...(byDisplay.get("src/moved.ts")?.operations ?? [])], ["move"]);
+		assert.ok(!byDisplay.has("src/failed.ts"));
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("parseCompletedCodexFileActions fails closed on malformed canonical records", () => {
+	assert.deepEqual(parseCompletedCodexFileActions({
+		toolName: "exec_command",
+		toolArguments: { cmd: "cat src/index.ts", workdir: 42 },
+		toolResult: { isError: false },
+		cwd: "/repo",
+	}), []);
+	assert.deepEqual(parseCompletedCodexFileActions({
+		toolName: "apply_patch",
+		toolArguments: {
+			input: "*** Begin Patch\n*** Update File: src/index.ts\n@@\n-old\n+new\n*** End Patch",
+		},
+		toolResult: {
+			details: {
+				status: "success",
+				result: { changedFiles: ["src/index.ts"], createdFiles: [], deletedFiles: [], movedFiles: [42] },
+			},
+		},
+		cwd: "/repo",
+	}), []);
+});
+
+test("collectFilesTouched coalesces Codex and root-prefixed paths", async () => {
+	const harness = await createRepoHarness();
+
+	try {
+		const entries = [
+			toolCall("1", "rp", { call: "read_file", args: { path: "Project:src/model.ts" } }),
+			toolResult("1", 1),
+			toolCall("2", "exec_command", { cmd: "sed -i 's/old/new/' src/model.ts", workdir: "." }),
+			toolResult("2", 2),
+		] as SessionEntry[];
+
+		const files = collectFilesTouched(entries, harness.cwd);
+
+		assert.equal(files.length, 1);
+		assert.equal(files[0].displayPath, "src/model.ts");
+		assert.deepEqual([...files[0].operations].sort(), ["edit", "read"]);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("collectFilesTouched coalesces Windows drive-letter case for Codex paths", () => {
+	const entries = [
+		toolCall("1", "read", { path: "C:/work/src/model.ts" }),
+		toolResult("1", 1),
+		toolCall("2", "exec_command", { cmd: "cat c:/work/src/model.ts" }),
+		toolResult("2", 2),
+	] as SessionEntry[];
+
+	const files = collectFilesTouched(entries, "C:/work");
+
+	assert.equal(files.length, 1);
+	assert.equal(files[0].displayPath, "src/model.ts");
+	assert.deepEqual([...files[0].operations], ["read"]);
+});
+
+test("collectFilesTouched coalesces Windows named-root and Codex absolute paths", () => {
+	const entries = [
+		toolCall("1", "rp", { call: "read_file", args: { path: "Project:src/model.ts" } }),
+		toolResult("1", 1),
+		toolCall("2", "exec_command", { cmd: "sed -i 's/old/new/' c:/work/src/model.ts" }),
+		toolResult("2", 2),
+	] as SessionEntry[];
+
+	const files = collectFilesTouched(entries, "C:/work");
+
+	assert.equal(files.length, 1);
+	assert.equal(files[0].displayPath, "src/model.ts");
+	assert.deepEqual([...files[0].operations].sort(), ["edit", "read"]);
 });
