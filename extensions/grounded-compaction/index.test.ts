@@ -624,7 +624,25 @@ describe("grounded-compaction prompt assembly", () => {
         assert.match(prompt, /## Previous compaction summary/);
     });
 
-    it("prepends a stock-like split-turn contract ahead of the shared prompt contract", () => {
+    it("adds a split-turn note to the history prompt only when part of a split turn", () => {
+        const splitPrompt = buildSummaryUserPrompt({
+            mode: "history",
+            promptContract: DEFAULT_COMPACTION_PROMPT_CONTRACT,
+            serializedConversation: "[User]: hi",
+            splitTurn: true,
+        });
+        assert.match(splitPrompt, /## Split-turn note/);
+        assert.match(splitPrompt, /as of the end of your span/);
+
+        const plainPrompt = buildSummaryUserPrompt({
+            mode: "history",
+            promptContract: DEFAULT_COMPACTION_PROMPT_CONTRACT,
+            serializedConversation: "[User]: hi",
+        });
+        assert.doesNotMatch(plainPrompt, /## Split-turn note/);
+    });
+
+    it("uses the narrow split-turn contract with only the shared style section", () => {
         const prompt = buildSummaryUserPrompt({
             mode: "turn-prefix",
             promptContract: DEFAULT_COMPACTION_PROMPT_CONTRACT,
@@ -636,7 +654,11 @@ describe("grounded-compaction prompt assembly", () => {
         assert.match(prompt, /Early progress/);
         assert.match(prompt, /Context needed to understand the kept suffix/);
         assert.match(prompt, /Do not present this as a full-session status report/);
-        assert.match(prompt, /## Shared prompt contract/);
+        assert.match(prompt, /## Shared style guidance/);
+        assert.match(prompt, /Be dense, not terse/);
+        assert.doesNotMatch(prompt, /# Style/);
+        assert.doesNotMatch(prompt, /## Purpose & acceptance/);
+        assert.doesNotMatch(prompt, /# Coverage audit/);
     });
 });
 
@@ -1629,7 +1651,7 @@ describe("grounded-compaction runtime", () => {
             [
                 "**Turn Context (split turn):**",
                 "",
-                "_This section summarizes only the earlier part of the current split turn. More recent kept context may supersede status or next steps below._",
+                "_This section summarizes the early part of the current split turn. It is more recent than the sections above it; where they conflict, prefer this section. The kept conversation after this summary is more recent still and supersedes both._",
                 "",
                 "turn summary only",
             ].join("\n"),
@@ -1684,7 +1706,7 @@ describe("grounded-compaction runtime", () => {
                 "",
                 "**Turn Context (split turn):**",
                 "",
-                "_This section summarizes only the earlier part of the current split turn. More recent kept context may supersede status or next steps below._",
+                "_This section summarizes the early part of the current split turn. It is more recent than the sections above it; where they conflict, prefer this section. The kept conversation after this summary is more recent still and supersedes both._",
                 "",
                 "turn summary only",
             ].join("\n"),
@@ -1776,7 +1798,7 @@ describe("grounded-compaction runtime", () => {
                 "",
                 "**Turn Context (split turn):**",
                 "",
-                "_This section summarizes only the earlier part of the current split turn. More recent kept context may supersede status or next steps below._",
+                "_This section summarizes the early part of the current split turn. It is more recent than the sections above it; where they conflict, prefer this section. The kept conversation after this summary is more recent still and supersedes both._",
                 "",
                 "turn summary",
                 "",

@@ -50,6 +50,8 @@ For background on Pi's compaction lifecycle, see the [compaction docs](https://g
 - **Branch-summary prompt**: `branch-summary-prompt.md` (falls back to Pi's stock branch summarization prompt if blank or missing)
 - Examples: `compaction-prompt.md.example`, `branch-summary-prompt.md.example`
 
+`compaction-prompt.md.example` demonstrates optional RepoPrompt and `session_ask` integrations. Remove or adapt those clauses when those tools are unavailable; the embedded default does not depend on either tool.
+
 ## Config
 
 ```json
@@ -91,6 +93,8 @@ This setting applies to compaction only; summaries created from `/tree` are unaf
 ### `defaultPreset`, `largeContextPreset`, and `presets`
 
 These are compaction-only. `defaultPreset` controls which model runs compaction by default. The optional `largeContextPreset` names one other key in `presets`, used only when a summarization request is too large for the default preset's model; it must name a model Pi has registered with a strictly larger context window.
+
+For consistent behavior across model providers, preset `thinkingLevel` values range from `off` through `xhigh`.
 
 ```json
 {

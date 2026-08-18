@@ -8,15 +8,19 @@
     "largeContextPreset": "large",
     "presets": {
         "default": {
-            "model": "openai-codex/gpt-5.6-terra",
+            "model": "anthropic/claude-opus-5",
             "thinkingLevel": "medium"
+        },
+        "cheap": {
+            "model": "openai-codex/gpt-5.6-terra",
+            "thinkingLevel": "high"
         },
         "large": {
             "model": "openai-codex/gpt-5.4",
             "thinkingLevel": "xhigh"
         },
         "deep": {
-            "model": "anthropic/claude-opus-5-0",
+            "model": "anthropic/claude-opus-5",
             "thinkingLevel": "xhigh"
         }
     }
