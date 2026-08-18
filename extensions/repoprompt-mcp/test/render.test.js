@@ -103,8 +103,8 @@ test("createAdaptiveDiffAwareOutputComponent prefers details diff over summary t
   );
 
   const rendered = component.render(120).join("\n");
-  assert.match(rendered, /--- a\/demo\.txt/);
-  assert.match(rendered, /\+\+\+ b\/demo\.txt/);
+  assert.match(rendered, /edited file demo\.txt/);
+  assert.doesNotMatch(rendered, /^--- |^\+\+\+ /m);
   assert.match(rendered, /@@ -1 \+1 @@/);
   assert.doesNotMatch(rendered, /Applied edits/);
 });

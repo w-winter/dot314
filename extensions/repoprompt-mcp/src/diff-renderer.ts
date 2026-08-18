@@ -488,6 +488,27 @@ function normalizeDiffPath(rawPath: string | undefined): string | undefined {
   return trimmed;
 }
 
+function formatCompactFileHeading(
+  oldPath: string | undefined,
+  newPath: string | undefined
+): string | undefined {
+  if (!oldPath && newPath) {
+    return `created file ${newPath}`;
+  }
+
+  if (oldPath && !newPath) {
+    return `deleted file ${oldPath}`;
+  }
+
+  if (!oldPath || !newPath) {
+    return undefined;
+  }
+
+  return oldPath === newPath
+    ? `edited file ${newPath}`
+    : `moved file ${oldPath} → ${newPath}`;
+}
+
 function inferDiffLanguage(rawLine: string): string | undefined {
   if (rawLine.startsWith("diff --git ")) {
     const match = rawLine.match(/^diff --git\s+"?a\/(.+?)"?\s+"?b\/(.+?)"?$/);
@@ -525,7 +546,7 @@ function renderDiffContent(entry: DiffLineEntry, theme: Theme): string {
   return highlighted;
 }
 
-function parseDiff(diffText: string, fallbackFilePath?: string): ParsedDiff {
+function parseDiff(diffText: string, fallbackFilePath?: string, compactFileHeaders = false): ParsedDiff {
   const stats = {
     added: 0,
     removed: 0,
@@ -544,7 +565,28 @@ function parseDiff(diffText: string, fallbackFilePath?: string): ParsedDiff {
   let newLineCursor: number | null = null;
   let currentLanguage: string | undefined = fallbackFilePath ? detectLanguageFromPath(fallbackFilePath) : undefined;
 
-  for (const rawLine of diffText.replace(/\r/g, "").split("\n")) {
+  const rawLines = diffText.replace(/\r/g, "").split("\n");
+  for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
+    const rawLine = rawLines[lineIndex]!;
+    if (compactFileHeaders && rawLine.startsWith("--- ")) {
+      const nextLine = rawLines[lineIndex + 1];
+      if (nextLine?.startsWith("+++ ")) {
+        const oldPath = normalizeDiffPath(rawLine.slice(4));
+        const newPath = normalizeDiffPath(nextLine.slice(4));
+        const heading = formatCompactFileHeading(oldPath, newPath);
+        if (heading) {
+          stats.files += 1;
+          const languagePath = newPath ?? oldPath;
+          currentLanguage = languagePath
+            ? detectLanguageFromPath(languagePath)
+            : currentLanguage;
+          entries.push({ kind: "file", raw: heading, hunkIndex });
+          lineIndex += 1;
+          continue;
+        }
+      }
+    }
+
     const hunkMatch = rawLine.match(HUNK_HEADER_PATTERN);
     if (hunkMatch) {
       hunkIndex += 1;
@@ -1395,7 +1437,7 @@ export function renderAdaptiveDiffBlockLines(
   width: number,
   theme: Theme,
   config: AdaptiveDiffRenderConfig,
-  options?: { filePath?: string }
+  options?: { filePath?: string; compactFileHeaders?: boolean }
 ): string[] {
   const safeWidth = normalizeDiffRenderWidth(width);
   if (safeWidth <= 0) {
@@ -1403,7 +1445,7 @@ export function renderAdaptiveDiffBlockLines(
   }
 
   try {
-    const parsed = parseDiff(diffText, options?.filePath);
+    const parsed = parseDiff(diffText, options?.filePath, options?.compactFileHeaders);
     const lineNumberWidth = getLineNumberWidth(parsed.entries);
     const mode = resolveDiffPresentationMode(
       config,

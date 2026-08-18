@@ -30,6 +30,7 @@ interface DiffSegment {
   kind: "diff";
   diffText: string;
   filePath?: string;
+  compactFileHeaders?: boolean;
   addRowBgMixRatio?: number;
   removeRowBgMixRatio?: number;
 }
@@ -367,7 +368,10 @@ function buildPreferredAdaptiveSegments(text: string, toolName: string | undefin
     return segments;
   }
 
-  return diffSegments;
+  return diffSegments.map((segment) => ({
+    ...segment,
+    compactFileHeaders: true,
+  }));
 }
 
 function buildAdaptiveSegments(text: string, theme: Theme, context: AdaptiveOutputRenderContext): OutputSegment[] {
@@ -376,6 +380,7 @@ function buildAdaptiveSegments(text: string, theme: Theme, context: AdaptiveOutp
       kind: "diff",
       diffText: context.diffText,
       filePath: context.diffFilePath,
+      compactFileHeaders: context.toolName === "apply_edits",
       addRowBgMixRatio: context.diffConfig.addRowBgMixRatio,
       removeRowBgMixRatio: context.diffConfig.removeRowBgMixRatio,
     }];
@@ -400,6 +405,7 @@ function renderSegmentsAtWidth(
     if (segment.kind === "diff") {
       result.push(...renderAdaptiveDiffBlockLines(segment.diffText, safeWidth, theme, diffConfig, {
         filePath: segment.filePath,
+        compactFileHeaders: segment.compactFileHeaders,
       }));
       continue;
     }

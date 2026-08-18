@@ -48,6 +48,37 @@ test("adaptive diff renderer emits split headers when width allows it", () => {
   assert.ok(lines.some((line) => line.includes("old") && line.includes("new")));
 });
 
+test("adaptive diff renderer compacts unified file header pairs when requested", () => {
+  const compactHeaderDiff = [
+    "--- /dev/null",
+    "+++ b/new.ts",
+    "@@ -0,0 +1 @@",
+    "+export const created = true;",
+    "--- a/dead.ts",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-export const deleted = true;",
+    "--- a/old.ts",
+    "+++ b/new-name.ts",
+    "@@ -1 +1 @@",
+    "-export const moved = false;",
+    "+export const moved = true;",
+  ].join("\n");
+
+  const rendered = renderAdaptiveDiffBlockLines(
+    compactHeaderDiff,
+    120,
+    theme,
+    diffConfig,
+    { compactFileHeaders: true },
+  ).join("\n");
+
+  assert.match(rendered, /created file new\.ts/);
+  assert.match(rendered, /deleted file dead\.ts/);
+  assert.match(rendered, /moved file old\.ts → new-name\.ts/);
+  assert.doesNotMatch(rendered, /^--- |^\+\+\+ /m);
+});
+
 test("adaptive diff renderer degrades to compact and summary output", () => {
   const compactLines = renderAdaptiveDiffBlockLines(diffText, 12, theme, diffConfig);
   assert.ok(compactLines.some((line) => line.trimStart().startsWith("+") || line.trimStart().startsWith("-") || line.trimStart().startsWith("·")));
@@ -56,4 +87,3 @@ test("adaptive diff renderer degrades to compact and summary output", () => {
   assert.equal(summaryLines.length, 1);
   assert.ok(visibleWidth(summaryLines[0]) <= 7);
 });
-
