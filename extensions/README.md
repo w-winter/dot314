@@ -216,7 +216,7 @@
       - This version adds `alt+v` performing both arm + paste directly from the clipboard, preserving newlines and bypassing Pi's large-paste markers (e.g. `[paste #3 +122 lines]`)
   - When enabled, disable the standalone `shell-completions/`, `file-picker.ts`, and `raw-paste.ts` extensions to avoid editor-component conflicts
 
-- ◐ [`rewind/`](rewind/) ([README](./rewind/README.md)) — **Archived.** Session-native rewrite developed in ([`b432676`](https://github.com/w-winter/dot314/commit/b43267682059a4b7c37d557b608e8413ecbd0298)) now adopted upstream into [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook).  Install with `pi install npm:pi-rewind-hook`
+- ◐ [`rewind/`](rewind/) ([README](./rewind/README.md)) — **Archived.** Session-native rewrite developed in ([`b432676`](https://github.com/w-winter/dot314/commit/b43267682059a4b7c37d557b608e8413ecbd0298)) now adopted upstream into [nicobailon/pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook).  NB: this version interoperates more cleanly with `anycopy`.
 
 - ◐ [`files-touched.ts`](files-touched.ts) (upstream: [badlogic/pi-mono `.pi/extensions/files.ts`](https://github.com/badlogic/pi-mono/blob/main/.pi/extensions/files.ts))
   - `/files-touched` shows files read/written/edited in the active session branch and opens the selected file in VS Code
@@ -293,11 +293,12 @@
 
 - ● [`orca-session-tab-title/`](orca-session-tab-title/) — renames the containing Orca tab to the active named Pi session on session start and `/name`, using the durable leaf identity from `ORCA_PANE_KEY` to target the correct tab across split panes and Orca restarts
 
+- ● [`computer-use-toggle.ts`](computer-use-toggle.ts) — `/computer-use-toggle on|off` toggles [`pi-computer-use`](https://github.com/injaneity/pi-computer-use) and reloads Pi resources, removing its tool descriptions from system context when off
+
 - ○ [`interactive-shell.ts`](interactive-shell.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`preset.ts`](preset.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`status-line.ts`](status-line.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
 - ○ [`titlebar-spinner.ts`](titlebar-spinner.ts) (upstream: [pi-mono examples](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions))
-- ○ [`skill-palette/`](skill-palette/) (upstream: [nicobailon/pi-skill-palette](https://github.com/nicobailon/pi-skill-palette))
 - ○ [`code-actions/`](code-actions/) (upstream: [tmustier/pi-extensions](https://github.com/tmustier/pi-extensions))
   - `/code` to pick code blocks or inline code from recent assistant messages, then copy or insert
   - `run` now executes snippets in a just-bash OverlayFs sandbox by default on non-Windows (copy-on-write over cwd), with optional fallback to real shell when sandbox commands are unsupported

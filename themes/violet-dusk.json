@@ -21,7 +21,7 @@
 		"bgSlightlyLighter": "#232342",
 		"selection": "#7e5489",
 		"selectedBg": "#4e2d56",
-		"userMsgBg": "#0c1d38",
+		"userMsgBg": "#180b2e",
 		"toolPendingBg": "#14101f",
 		"toolSuccessBg": "#14101f",
 		"toolErrorBg": "#1E0D29",
@@ -41,7 +41,7 @@
 		"thinkingText": "comment",
 
 		"selectedBg": "selectedBg",
-		"userMessageBg": "",
+		"userMessageBg": "userMsgBg",
 		"userMessageText": "cyan",
 		"customMessageBg": "customMsgBg",
 		"customMessageText": "",

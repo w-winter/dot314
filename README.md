@@ -138,6 +138,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 |---|---|
 | ○ | `code-actions/` |
 | ● | `codex-compaction-coordinator/` |
+| ● | `computer-use-toggle.ts` |
 | ● | `context-limit-fallback/` |
 | ◐ | `extension-stats.ts` |
 | ● | `inline-shell.ts` |
@@ -145,8 +146,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ● | `orca-session-tab-title/` |
 | ○ | `preset.ts` |
 | ● | `repoprompt-cli/` |
-| ◐ | `rewind/` — archived; use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
-| ○ | `skill-palette/` |
+| ◐ | `rewind/` — if not using `anycopy`, then use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
 | ● | `subagent-bridge/` |
 | ○ | `titlebar-spinner.ts` |
 | ○ | `todos.ts` |
@@ -163,16 +163,20 @@ These other extensions have also improved my QoL in Pi, so I recommend checking 
 | [diligent-pi](https://github.com/crstdr/diligent-pi) (crstdr) | `/diligent-context` hides past tool calls from the context, a useful alternative to compaction in some types of sessions |  |
 | [greprip](https://github.com/kaofelix/greprip) (kaofelix) | Transparent interception of `grep`/`find` commands, translating them to `rg`/`fd` for speed | `uv tool install git+https://github.com/kaofelix/greprip` + [shell config](https://github.com/kaofelix/greprip#2-configure-pi) |
 | [loop](https://github.com/mitsuhiko/agent-stuff/blob/main/pi-extensions/loop.ts) (mitsuhiko) | `/loop` starts a follow-up loop with a breakout condition | Copy to `~/.pi/agent/extensions/` |
+| [pi-codex-conversion](https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/main/packages/pi-codex-conversion) (IgorWarzocha) | Codex-shaped tools for openai-codex models, plus Responses compaction, model verbosity controls, cached transport, and other niceties | `pi install npm:@howaboua/pi-codex-conversion` |
 | [pi-codex-goal](https://github.com/fitchmultz/pi-codex-goal) (fitchmultz) | Durable Codex-style `/goal` command with `get_goal`, `create_goal`, and `update_goal` tools; goal state persists across compaction and session recovery | `pi install npm:pi-codex-goal` |
-| [pi-gpt-config](https://github.com/edxeth/pi-gpt-config) (edxeth) | Configuration of OpenAI models' API-side parameters like verbosity, fast mode, etc. | `pi install git:github.com/edxeth/pi-gpt-config` |
+| [pi-computer-use](https://github.com/injaneity/pi-computer-use) (injaneity) | Desktop app observation and interaction tools for macOS, Windows, and Linux | `pi install npm:@injaneity/pi-computer-use` |
 | [pi-guardrails](https://github.com/aliou/pi-guardrails) (aliou) | `.env` file protection + AST-based dangerous command gates | `pi install npm:@aliou/pi-guardrails` |
 | [pi-interactive-subagents](https://github.com/HazAT/pi-interactive-subagents) (HazAT) | Spawn, orchestrate, and manage async subagent sessions in multiplexer cmux panes; main agent keeps working while subagents run in the background | `pi install git:github.com/HazAT/pi-interactive-subagents` |
 | [pi-intercom](https://github.com/nicobailon/pi-intercom) (nicobailon) | Direct 1:1 messaging between Pi sessions; augments subagents nicely | `pi install npm:pi-intercom` |
 | [pi-interview](https://github.com/nicobailon/pi-interview-tool) (nicobailon) | Interactive form-based input gathering with native window support | `pi install npm:pi-interview` |
+| [pi-invisible-continue](https://github.com/monotykamary/pi-invisible-continue) (monotykamary) | `/continue` resumes the agent loop without adding prompt text to the LLM context | `pi install npm:pi-invisible-continue` |
+| [pi-model-sort](https://github.com/monotykamary/pi-model-sort) (monotykamary) | Sorts model lists by recent usage and restores per-model thinking levels | `pi install npm:pi-model-sort` |
 | [pi-model-thinking](https://github.com/ogulcancelik/pi-extensions/tree/main/packages/pi-model-thinking) (ogulcancelik) | Stores and recalls last-selected thinking level per model | `pi install npm:@ogulcancelik/pi-model-thinking` |
 | [pi-nvim](https://github.com/aliou/pi-harness/tree/main/integrations/neovim) (aliou) | Bidirectional Neovim integration: `nvim_context` tool, LSP diagnostics at turn end, file reload after edits, visible-splits injection | Neovim plugin; see [setup instructions](https://github.com/aliou/pi-harness/tree/main/integrations/neovim#installation) |
 | [pi-prompt-template-model](https://github.com/nicobailon/pi-prompt-template-model) (nicobailon) | Adds `model`, `skill`, and `thinking` frontmatter to pi prompt templates and chained prompt template execution | `pi install npm:pi-prompt-template-model` |
 | [pi-queue-steer](https://github.com/tmustier/pi-queue-steer) (tmustier) | Cursor-inspired visible steering and follow-up timeline: queue instructions while the agent works, with editable steering (next turn) and follow-up (after run) lanes | `pi install git:github.com/tmustier/pi-queue-steer` |
+| [pi-retry](https://github.com/monotykamary/pi-retry) (monotykamary) | Automatically retries most errors with capped backoff and continues after output-token limits | `pi install https://github.com/monotykamary/pi-retry` |
 | [pi-rtk-optimizer](https://github.com/MasuRii/pi-rtk-optimizer) (MasuRii) | Read-tool-kit context optimization for token efficiency | `pi install npm:pi-rtk-optimizer` |
 | [pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker) (Graffioh) | Quick screenshot selection and attachment for prompts | `pi install npm:pi-screenshots-picker` |
 | [pi-token-burden](https://github.com/Whamp/pi-token-burden) (Whamp) | Token usage breakdown and context burden analysis | `pi install npm:pi-token-burden` |
@@ -196,26 +200,17 @@ The Pi package does not export skills.  See [skills/README.markdown](skills/READ
 | | Skill | Notes |
 |---|---|---|
 | ○ | `agent-browser/` | |
-| ◐ | `dev-browser/` | 🔄 Prefer [surf/](skills/surf/) for browsing/scraping, [agent-browser/](skills/agent-browser/) for structured testing |
+| ○ | `deep-x-research/` | Requires [surf-cli](https://github.com/nicobailon/surf-cli) |
 | ○ | `gdcli/` | |
 | ● | `repoprompt-tool-guidance-refresh/` | Maintainer workflow |
 | ● | `rp-deep-build/` | Requires [pi-codex-goal](https://github.com/fitchmultz/pi-codex-goal) |
-| ○ | `surf/` | |
+| ○ | `surf/` | Requires [surf-cli](https://github.com/nicobailon/surf-cli) |
 | ◐ | `text-search/` | |
 | ◐ | `xcodebuildmcp/` | |
 
 ## Prompts
 
 Prompts are not exported as part of the Pi package.
-
-See [prompts/README.md](prompts/README.md) for full descriptions.
-
-**`/command` prompts**
-
-| | Prompt |
-|---|---|
-| ● | `rp-address-review.md` |
-| ● | `rp-review-chat.md` |
 
 **AGENTS.md prefaces for reliable RepoPrompt tool usage** — see [AGENTS-prefaces/README.md](AGENTS-prefaces/README.md)
 

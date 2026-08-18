@@ -9,8 +9,8 @@ text. This file provides a consolidated overview.
 
 ## MIT Licensed
 
-### badlogic/pi-mono
-- **URL:** https://github.com/badlogic/pi-mono
+### earendil-works/pi
+- **URL:** https://github.com/earendil-works/pi
 - **License:** MIT
 - **Copyright:** © 2025 Mario Zechner
 - **Used in:**
@@ -73,13 +73,6 @@ text. This file provides a consolidated overview.
 - **Copyright:** © damianpdr
 - **Used in:**
   - `extensions/session-switch/` (◐ modified — mirrors native /resume layout with an extension-driven startup relaunch workaround)
-
-### nicobailon/pi-skill-palette
-- **URL:** https://github.com/nicobailon/pi-skill-palette
-- **License:** MIT (declared in package.json)
-- **Copyright:** © Nico Bailon
-- **Used in:**
-  - `extensions/skill-palette/` (○ unmodified)
 
 ### nicobailon/pi-rewind-hook
 - **URL:** https://github.com/nicobailon/pi-rewind-hook
@@ -152,6 +145,7 @@ request addition of an open-source license.
 - **Copyright:** © 2025 Nico Bailon
 - **Used in:**
   - `skills/surf/` (○ unmodified SKILL.md)
+  - `skills/deep-x-research/` (○ unmodified SKILL.md)
 
 ### badlogic/pi-skills
 - **URL:** https://github.com/badlogic/pi-skills
