@@ -202,4 +202,4 @@ Unexpected output is usually a routing issue—wrong workspace, wrong window, wr
 
 If the user mentions that this session was forked from a parent session and there is implied valuable context there, use the `session_lineage` and `session_ask` tools (if available) to inquire about the ancestors.
 
-If your session begins with a note like "The conversation history before this point was compacted" and the summary omits information you need, you can use the `session_ask` tool (if available) to fill in those gaps about the session's pre-compaction history.
+If history was compacted and the task depends on an exact earlier detail absent from context, recover it with `session_ask` (if available). Don't call it merely because compaction occurred, or to reconfirm facts already stated. Re-read files for current workspace state rather than asking the transcript.
