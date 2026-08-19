@@ -1,0 +1,23 @@
+{
+  "name": "pi-codex-apply-patch-display",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@howaboua/pi-codex-conversion": "3.0.16",
+    "diff": "^9.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

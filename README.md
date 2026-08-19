@@ -144,6 +144,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ● | `inline-shell.ts` |
 | ○ | `interactive-shell.ts` |
 | ● | `orca-session-tab-title/` |
+| ● | `pi-codex-apply-patch-display/` |
 | ○ | `preset.ts` |
 | ● | `repoprompt-cli/` |
 | ◐ | `rewind/` — if not using `anycopy`, then use upstream [`pi-rewind-hook`](https://github.com/nicobailon/pi-rewind-hook) |
