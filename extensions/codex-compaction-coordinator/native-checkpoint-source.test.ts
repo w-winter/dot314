@@ -130,6 +130,18 @@ describe("conversion native checkpoint details", () => {
                 cachedInputTokens: 8,
                 cacheWriteInputTokens: 0,
                 outputTokens: 2,
+                diagnostic: {
+                    model: "gpt-5.6-sol",
+                    inputSource: "reconstructed",
+                    canonicalReplay: "no_state",
+                    checkpointReused: false,
+                    rewrittenToolOutputs: 0,
+                    transport: "websocket",
+                    continuation: "no_session_cache_entry",
+                    previousResponseId: false,
+                    fullInputItems: 971,
+                    sentInputItems: 971,
+                },
             },
         });
 
@@ -137,6 +149,7 @@ describe("conversion native checkpoint details", () => {
         assert.equal(parsed.model, "gpt-5.4");
         assert.equal(parsed.requestMeta?.compactedKeptWindow, true);
         assert.equal(parsed.usage?.cachedInputTokens, 8);
+        assert.equal(parsed.usage?.diagnostic?.continuation, "no_session_cache_entry");
     });
 
     it("preserves the historical fingerprint bytes and JSON persistence semantics", () => {

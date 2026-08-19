@@ -31,7 +31,8 @@ const REQUIRED_DETAIL_KEYS = [
     "createdAt",
 ] as const;
 const REQUEST_META_KEYS = new Set(["tokensBefore", "previousSummaryPresent", "compactedKeptWindow"]);
-const USAGE_KEYS = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens"] as const;
+const REQUIRED_USAGE_KEYS = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens"] as const;
+const USAGE_KEYS = new Set([...REQUIRED_USAGE_KEYS, "diagnostic"]);
 
 type StructuredJsonPrimitive = null | string | number | boolean;
 type StructuredJsonValue = StructuredJsonPrimitive | StructuredJsonObject | StructuredJsonValue[];
@@ -56,6 +57,7 @@ export type ConversionNativeCheckpointDetails = {
         cachedInputTokens: number;
         cacheWriteInputTokens: number;
         outputTokens: number;
+        diagnostic?: StructuredJsonObject;
     }>;
 };
 
@@ -127,14 +129,6 @@ function hasOnlyEnumerableStringKeys(value: Record<string, unknown>): boolean {
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
     return hasOnlyEnumerableStringKeys(value) && Object.keys(value).every((key) => allowed.has(key));
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-    const keys = Object.keys(value);
-    return hasOnlyEnumerableStringKeys(value)
-        && keys.length === expected.length
-        && expected.every((key) => Object.hasOwn(value, key))
-        && keys.every((key) => expected.includes(key));
 }
 
 function ownRecord(value: Record<string, unknown>): Record<string, unknown> {
@@ -214,13 +208,21 @@ function parseRequestMeta(value: unknown): ConversionNativeCheckpointDetails["re
 
 function parseUsage(value: unknown): ConversionNativeCheckpointDetails["usage"] {
     if (value === undefined) return undefined;
-    if (!isRecord(value) || !hasExactKeys(value, USAGE_KEYS)) return malformedDetails();
+    if (
+        !isRecord(value)
+        || !hasOnlyKeys(value, USAGE_KEYS)
+        || !REQUIRED_USAGE_KEYS.every((key) => Object.hasOwn(value, key))
+    ) {
+        return malformedDetails();
+    }
     const ownValue = ownRecord(value);
+    const diagnostic = ownValue.diagnostic === undefined ? undefined : parseStructuredObject(ownValue.diagnostic);
     return {
         inputTokens: parseNonnegativeFiniteNumber(ownValue.inputTokens),
         cachedInputTokens: parseNonnegativeFiniteNumber(ownValue.cachedInputTokens),
         cacheWriteInputTokens: parseNonnegativeFiniteNumber(ownValue.cacheWriteInputTokens),
         outputTokens: parseNonnegativeFiniteNumber(ownValue.outputTokens),
+        ...(diagnostic === undefined ? {} : { diagnostic }),
     };
 }
 
