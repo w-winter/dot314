@@ -1,6 +1,6 @@
 {
   "name": "pi-grounded-compaction",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Compaction and branch summarizer for Pi with model presets, custom prompts, and deterministic files-touched tracking for native tools, RepoPrompt, shell commands, and Codex `apply_patch`",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "compaction", "summarization"],
   "license": "MIT",

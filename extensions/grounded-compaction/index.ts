@@ -231,7 +231,7 @@ const COMPACTION_PROMPT_PATH = path.join(EXTENSION_DIR, "compaction-prompt.md");
 const BRANCH_SUMMARY_PROMPT_PATH = path.join(EXTENSION_DIR, "branch-summary-prompt.md");
 const CURRENT_PRESET_SENTINEL = "current";
 const PORTABLE_SUMMARIZER_PROMPT_VERSION = 1;
-export const PORTABLE_SUMMARY_MAX_OUTPUT_TOKENS = 8192;
+export const PORTABLE_SUMMARY_MAX_OUTPUT_TOKENS = 16_384;
 const FILES_TOUCHED_HEADING = "## Files touched";
 const FINAL_FILES_TOUCHED_HEADING = "## Files touched (cumulative)";
 const FILES_TOUCHED_LEGEND = "R=read, W=write, E=edit, M=move/rename, D=delete";
@@ -1257,6 +1257,9 @@ async function executePortableSummaryRequestResult(params: {
     }
     if (response.stopReason === "error") {
         throw new Error(response.errorMessage || "Summarization failed");
+    }
+    if (response.stopReason === "length") {
+        throw new Error("Portable summarization reached the output token limit");
     }
     const summary = getTextFromAssistantResponse(response);
     if (!summary) throw new Error("Summarization returned empty output");

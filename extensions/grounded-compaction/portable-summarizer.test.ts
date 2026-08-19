@@ -769,7 +769,7 @@ describe("grounded portable summarizer capacity and execution", () => {
         assert.equal(completionCalls, 1);
     });
 
-    it("surfaces provider errors and empty output", async () => {
+    it("surfaces provider errors, output limits, and empty output", async () => {
         const providerError = await openSession({
             dependencies: createDependencies({
                 complete: async () => createAssistantResponse("", {
@@ -787,6 +787,22 @@ describe("grounded portable summarizer capacity and execution", () => {
                 signal: new AbortController().signal,
             }),
             /provider unavailable/,
+        );
+
+        const outputLimited = await openSession({
+            dependencies: createDependencies({
+                complete: async () => createAssistantResponse("truncated", { stopReason: "length" }),
+            }),
+        });
+        await assert.rejects(
+            outputLimited.summarizeNext({
+                previousSummary: null,
+                sourceText: "source",
+                startOffset: 0,
+                coverageEntries: [],
+                signal: new AbortController().signal,
+            }),
+            /output token limit/,
         );
 
         const emptyOutput = await openSession({
