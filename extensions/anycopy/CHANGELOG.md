@@ -11,6 +11,9 @@
 - Tool-result nodes now preview and copy their originating tool call together with the result
 - Key hints spell modifier names out
 
+### Fixed
+- Status hints wrap to the viewport width without dropping actions
+
 ## [0.3.4] - 2026-08-13
 
 ### Fixed

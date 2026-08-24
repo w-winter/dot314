@@ -33,6 +33,7 @@ import {
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { Focusable } from "@earendil-works/pi-tui";
 
@@ -46,6 +47,7 @@ import { AnycopyKeyHelp } from "./key-help.ts";
 import { formatConfiguredKey, getKeyHelpPreferredWidth, type KeyHelpRow } from "./key-help-data.ts";
 import { applyInclusiveRangeSelection, togglePaneFocus, type PaneFocus } from "./interaction-state.ts";
 import { getPreviewPageStep, getPreviewWindow } from "./preview-window.ts";
+import { renderStatusHints } from "./status-hints.ts";
 import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
 import { formatToolCallResultForClipboard, getToolName, resolveToolCallFromParents } from "./tool-call-copy.ts";
 import { buildNodeOrder } from "./tree-order.ts";
@@ -696,17 +698,24 @@ class anycopyOverlay implements Focusable {
 		}
 
 		const key = formatConfiguredKey;
-		const hint =
-			`  ${key(this.keys.scrollUp)}/${key(this.keys.scrollDown)}: scroll preview` +
-			` · ${key(this.keys.pageUp)}/${key(this.keys.pageDown)}: page preview` +
-			` · Enter: navigate` +
-			` · ${key(this.keys.toggleRangeSelection)}: range` +
-			` · ${key(this.keys.toggleSelect)}: select` +
-			` · ${key(this.keys.copy)}: copy` +
-			` · ${key(this.keys.clear)}: clear` +
-			` · ${key(this.keys.togglePaneFocus)}: layout` +
-			` · ${key(this.keys.help)}: help`;
-		lines.push(truncateToWidth(this.theme.fg("dim", hint), width));
+		lines.push(
+			...renderStatusHints(
+				[
+					`${key(this.keys.scrollUp)}/${key(this.keys.scrollDown)}: scroll preview`,
+					`${key(this.keys.pageUp)}/${key(this.keys.pageDown)}: page preview`,
+					"Enter: navigate",
+					`${key(this.keys.toggleRangeSelection)}: range`,
+					`${key(this.keys.toggleSelect)}: select`,
+					`${key(this.keys.copy)}: copy`,
+					`${key(this.keys.clear)}: clear`,
+					`${key(this.keys.togglePaneFocus)}: layout`,
+					`${key(this.keys.help)}: help`,
+				],
+				width,
+				wrapTextWithAnsi,
+				(text) => this.theme.fg("dim", text),
+			),
+		);
 
 		return lines;
 	}

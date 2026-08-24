@@ -34,6 +34,7 @@
       { "from": "../../extensions/anycopy/enter-navigation.ts", "to": "extensions/anycopy/enter-navigation.ts" },
       { "from": "../../extensions/anycopy/fold-state.ts", "to": "extensions/anycopy/fold-state.ts" },
       { "from": "../../extensions/anycopy/preview-window.ts", "to": "extensions/anycopy/preview-window.ts" },
+      { "from": "../../extensions/anycopy/status-hints.ts", "to": "extensions/anycopy/status-hints.ts" },
       { "from": "../../extensions/anycopy/timestamps.ts", "to": "extensions/anycopy/timestamps.ts" },
       { "from": "../../extensions/anycopy/tool-call-copy.ts", "to": "extensions/anycopy/tool-call-copy.ts" },
       { "from": "../../extensions/anycopy/tree-order.ts", "to": "extensions/anycopy/tree-order.ts" },
