@@ -18,7 +18,12 @@
  *   Esc       - close
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	KeybindingsManager,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import {
 	copyToClipboard,
 	getLanguageFromPath,
@@ -28,7 +33,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-	getKeybindings,
 	Markdown,
 	matchesKey,
 	truncateToWidth,
@@ -44,12 +48,17 @@ import { fileURLToPath } from "url";
 
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
 import { getKeyHelpWindow, renderKeyHelpLines } from "./key-help.ts";
-import { formatConfiguredKey, type KeyHelpRow } from "./key-help-data.ts";
+import { buildKeyHelpRows, formatConfiguredKey, type KeyHelpRow } from "./key-help-data.ts";
 import { applyInclusiveRangeSelection, togglePaneFocus, type PaneFocus } from "./interaction-state.ts";
 import { getPreviewPageStep, getPreviewWindow } from "./preview-window.ts";
 import { renderStatusHints } from "./status-hints.ts";
 import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
-import { formatToolCallResultForClipboard, getToolName, resolveToolCallFromParents } from "./tool-call-copy.ts";
+import {
+	formatJsonForDisplay,
+	formatToolCallResultForClipboard,
+	getToolName,
+	resolveToolCallFromParents,
+} from "./tool-call-copy.ts";
 import { buildNodeOrder } from "./tree-order.ts";
 import {
 	getAnycopyRenderHeight,
@@ -84,6 +93,7 @@ type anycopyTreeListInternals = {
 };
 
 type MatchesKeyId = Parameters<typeof matchesKey>[1];
+type EffectiveKeybindingId = Parameters<KeybindingsManager["getKeys"]>[0];
 
 type anycopyKeyConfig = {
 	toggleSelect: string;
@@ -355,46 +365,6 @@ const getTreeListInternals = (treeList: anycopyTreeList): anycopyTreeListInterna
 	return treeList as unknown as anycopyTreeListInternals;
 };
 
-type EffectiveKeybindings = ReturnType<typeof getKeybindings>;
-type EffectiveKeybindingId = Parameters<EffectiveKeybindings["getKeys"]>[0];
-
-const getEffectiveKeys = (keybindings: EffectiveKeybindings, ...ids: string[]): string[] =>
-	[...new Set(ids.flatMap((id) => keybindings.getKeys(id as EffectiveKeybindingId).map(String)))];
-
-const buildKeyHelpRows = (
-	keybindings: EffectiveKeybindings,
-	keys: anycopyKeyConfig,
-): KeyHelpRow[] => [
-	{ keys: getEffectiveKeys(keybindings, "tui.select.up"), label: "move up" },
-	{ keys: getEffectiveKeys(keybindings, "tui.select.down"), label: "move down" },
-	{ keys: getEffectiveKeys(keybindings, "tui.editor.cursorLeft", "tui.select.pageUp"), label: "page tree up" },
-	{ keys: getEffectiveKeys(keybindings, "tui.editor.cursorRight", "tui.select.pageDown"), label: "page tree down" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.foldOrUp"), label: "fold branch or jump up" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.unfoldOrDown"), label: "unfold branch or jump down" },
-	{ keys: getEffectiveKeys(keybindings, "tui.select.confirm"), label: "navigate to focused node" },
-	{ keys: getEffectiveKeys(keybindings, "tui.select.cancel"), label: "clear search or close" },
-	{ keys: getEffectiveKeys(keybindings, "tui.editor.deleteCharBackward"), label: "delete search character" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.editLabel"), label: "edit label" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.default"), label: "use default filter" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.noTools"), label: "toggle no-tools filter" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.userOnly"), label: "toggle user-only filter" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.labeledOnly"), label: "toggle labeled-only filter" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.all"), label: "toggle all-entries filter" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.cycleForward"), label: "cycle filter forward" },
-	{ keys: getEffectiveKeys(keybindings, "app.tree.filter.cycleBackward"), label: "cycle filter backward" },
-	{ keys: ["printable text"], label: "search visible nodes" },
-	{ keys: [keys.toggleSelect], label: "toggle focused node selection" },
-	{ keys: [keys.toggleRangeSelection], label: "start or finish range selection" },
-	{ keys: [keys.copy], label: "copy focused or selected nodes" },
-	{ keys: [keys.clear], label: "clear selection" },
-	{ keys: [keys.togglePaneFocus], label: "toggle tree or preview focus" },
-	{ keys: [keys.scrollUp, keys.scrollDown], label: "scroll preview" },
-	{ keys: [keys.pageUp, keys.pageDown], label: "page preview" },
-	{ keys: [keys.toggleLabelTimestamps], label: "toggle label timestamps" },
-	{ keys: [keys.toggleEntryTimestamps], label: "toggle entry timestamps" },
-	{ keys: [keys.help], label: "show or close this help" },
-];
-
 /** Clipboard text omits role prefix for a single node and includes it for multi-node copies
  * The preview pane is truncated for performance, while the clipboard copy is not
  */
@@ -426,6 +396,7 @@ class anycopyOverlay implements Focusable {
 	private helpOffset = 0;
 	private helpLineCount = 0;
 	private helpPageSize = 1;
+	private disposed = false;
 	private previewCache: {
 		entryId: string;
 		width: number;
@@ -440,6 +411,7 @@ class anycopyOverlay implements Focusable {
 		private keys: anycopyKeyConfig,
 		private layoutRatios: PaneLayoutRatios,
 		private helpRows: readonly KeyHelpRow[],
+		private keybindings: KeybindingsManager,
 		private onExplicitFoldMutation: ((
 			beforeTransientFoldedNodeIds: string[],
 			afterTransientFoldedNodeIds: string[],
@@ -516,8 +488,7 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
-		const keybindings = getKeybindings();
-		if (keybindings.matches(data, "app.tree.toggleLabelTimestamp")) {
+		if (this.keybindings.matches(data, "app.tree.toggleLabelTimestamp")) {
 			return;
 		}
 
@@ -548,7 +519,8 @@ class anycopyOverlay implements Focusable {
 		const beforeFocusedId = this.getFocusedNode()?.entry.id;
 		const shouldTrackExplicitFoldMutation =
 			this.onExplicitFoldMutation !== null &&
-			(keybindings.matches(data, "app.tree.foldOrUp") || keybindings.matches(data, "app.tree.unfoldOrDown"));
+			(this.keybindings.matches(data, "app.tree.foldOrUp") ||
+				this.keybindings.matches(data, "app.tree.unfoldOrDown"));
 		const beforeTransientFoldedNodeIds = shouldTrackExplicitFoldMutation ? getSelectorFoldedNodeIds(this.selector) : null;
 
 		this.selector.handleInput(data);
@@ -585,11 +557,10 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
-		const keybindings = getKeybindings();
-		if (keybindings.matches(data, "tui.select.up")) this.helpOffset -= 1;
-		else if (keybindings.matches(data, "tui.select.down")) this.helpOffset += 1;
-		else if (keybindings.matches(data, "tui.select.pageUp")) this.helpOffset -= this.helpPageSize;
-		else if (keybindings.matches(data, "tui.select.pageDown")) this.helpOffset += this.helpPageSize;
+		if (this.keybindings.matches(data, "tui.select.up")) this.helpOffset -= 1;
+		else if (this.keybindings.matches(data, "tui.select.down")) this.helpOffset += 1;
+		else if (this.keybindings.matches(data, "tui.select.pageUp")) this.helpOffset -= this.helpPageSize;
+		else if (this.keybindings.matches(data, "tui.select.pageDown")) this.helpOffset += this.helpPageSize;
 		else return;
 
 		this.helpOffset = Math.max(0, Math.min(this.helpOffset, Math.max(0, this.helpLineCount - this.helpPageSize)));
@@ -639,6 +610,7 @@ class anycopyOverlay implements Focusable {
 	}
 
 	private flash(message: string): void {
+		if (this.disposed) return;
 		this.flashMessage = message;
 		if (this.flashTimer) clearTimeout(this.flashTimer);
 		this.flashTimer = setTimeout(() => {
@@ -705,8 +677,11 @@ class anycopyOverlay implements Focusable {
 				return oa - ob;
 			});
 
-		copyToClipboard(buildClipboardText(nodes, nodeById));
-		this.flash(`Copied ${nodes.length} ${pluralizeNode(nodes.length)} to clipboard`);
+		void copyToClipboard(buildClipboardText(nodes, nodeById))
+			.then(() => this.flash(`Copied ${nodes.length} ${pluralizeNode(nodes.length)} to clipboard`))
+			.catch((error: unknown) => {
+				this.flash(`Copy failed: ${error instanceof Error ? error.message : String(error)}`);
+			});
 	}
 
 	private renderStatusBar(width: number): string[] {
@@ -769,11 +744,15 @@ class anycopyOverlay implements Focusable {
 		const clipped = clipTextForPreview(content);
 		const resultLines = renderPreviewBodyLines(clipped, focused.entry, width, this.theme, this.nodeById);
 		const invocation = resolveToolCallFromParents(focused.entry, this.nodeById);
+		const argumentLines = invocation
+			? highlightCode(clipTextForPreview(formatJsonForDisplay(invocation.arguments)), "json")
+				.map((line) => truncateToWidth(line, width))
+			: [];
 		const rendered = invocation
 			? [
 				truncateToWidth(`${this.theme.fg("muted", "Tool")}  ${this.theme.fg("accent", invocation.name)}`, width),
 				truncateToWidth(this.theme.fg("muted", "Arguments"), width),
-				...highlightCode(JSON.stringify(invocation.arguments, null, 2), "json").map((line) => truncateToWidth(line, width)),
+				...argumentLines,
 				this.theme.fg("dim", "─".repeat(Math.max(1, width))),
 				...resultLines,
 			]
@@ -879,8 +858,15 @@ class anycopyOverlay implements Focusable {
 			...bodyLines.slice(window.offset, window.end),
 		];
 		while (output.length < height - 1) output.push("");
+		const helpScrollKeys = [...new Set([
+			...this.keybindings.getKeys("tui.select.up"),
+			...this.keybindings.getKeys("tui.select.down"),
+			...this.keybindings.getKeys("tui.select.pageUp"),
+			...this.keybindings.getKeys("tui.select.pageDown"),
+		])].map(String).map(formatConfiguredKey).join("/");
+		const helpScrollHint = helpScrollKeys ? `${helpScrollKeys} scroll · ` : "";
 		const range = bodyLines.length > window.pageSize
-			? `${window.offset + 1}-${window.end} of ${bodyLines.length} · Up/Down/PageUp/PageDown scroll · `
+			? `${window.offset + 1}-${window.end} of ${bodyLines.length} · ${helpScrollHint}`
 			: "";
 		output.push(
 			this.renderPreviewDivider(
@@ -918,6 +904,7 @@ class anycopyOverlay implements Focusable {
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		if (this.flashTimer) {
 			clearTimeout(this.flashTimer);
 			this.flashTimer = null;
@@ -962,7 +949,10 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				done();
 			};
 			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
-			const helpRows = buildKeyHelpRows(keybindings, keys);
+			const helpRows = buildKeyHelpRows(
+				(id) => keybindings.getKeys(id as EffectiveKeybindingId).map(String),
+				keys,
+			);
 			const treeTermHeight = getAnycopyTreeHeight(getRenderHeight());
 			const nodeById = buildNodeMap(initialTree);
 			const validNodeIds = new Set(nodeById.keys());
@@ -1060,6 +1050,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				keys,
 				layoutRatios,
 				helpRows,
+				keybindings,
 				persistFoldState ? handleExplicitFoldMutation : null,
 				getRenderHeight,
 				() => tui.requestRender(),

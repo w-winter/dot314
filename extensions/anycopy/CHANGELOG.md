@@ -13,6 +13,9 @@
 
 ### Fixed
 - Status hints wrap to the viewport width without dropping actions
+- Tool-call lookup handles deep result chains, and large arguments are bounded in previews
+- Clipboard failures are reported instead of showing a false success message
+- Package staging is cleaned before publishing so removed interaction modules are not included
 
 ## [0.3.4] - 2026-08-13
 

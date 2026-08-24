@@ -9,8 +9,6 @@ type SessionTreeNodeLike = {
 	entry: SessionEntry;
 };
 
-const MAX_PARENT_TRAVERSAL_DEPTH = 30;
-
 export const getToolName = (entry: SessionEntry): string | null => {
 	if (entry.type !== "message") return null;
 	const message = entry.message as { role?: string; toolName?: unknown };
@@ -27,7 +25,11 @@ export const resolveToolCallFromParents = (
 	if (resultMessage.role !== "toolResult" || typeof resultMessage.toolCallId !== "string") return null;
 
 	let parentId = entry.parentId;
-	for (let depth = 0; depth < MAX_PARENT_TRAVERSAL_DEPTH && parentId; depth += 1) {
+	const visitedParentIds = new Set<string>();
+	while (parentId) {
+		if (visitedParentIds.has(parentId)) return null;
+		visitedParentIds.add(parentId);
+
 		const parentEntry = nodeById.get(parentId)?.entry;
 		if (!parentEntry) return null;
 		if (parentEntry.type === "message") {
@@ -48,6 +50,14 @@ export const resolveToolCallFromParents = (
 	return null;
 };
 
+export const formatJsonForDisplay = (value: unknown): string => {
+	try {
+		return JSON.stringify(value, null, 2) ?? "null";
+	} catch {
+		return "[unserializable]";
+	}
+};
+
 const formatResultContent = (content: unknown): string => {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
@@ -60,7 +70,7 @@ const formatResultContent = (content: unknown): string => {
 		);
 		if (textBlocks.length === content.length) return textBlocks.map((block) => block.text).join("");
 	}
-	return JSON.stringify(content ?? [], null, 2);
+	return formatJsonForDisplay(content ?? []);
 };
 
 export const formatToolCallResultForClipboard = (
@@ -71,5 +81,5 @@ export const formatToolCallResultForClipboard = (
 	if (!invocation || entry.type !== "message") return null;
 	const message = entry.message as { content?: unknown; isError?: boolean };
 	const resultLabel = message.isError === true ? "toolResult (error)" : "toolResult";
-	return `toolCall:\n\n${JSON.stringify(invocation, null, 2)}\n\n${resultLabel}:\n\n${formatResultContent(message.content)}`;
+	return `toolCall:\n\n${formatJsonForDisplay(invocation)}\n\n${resultLabel}:\n\n${formatResultContent(message.content)}`;
 };

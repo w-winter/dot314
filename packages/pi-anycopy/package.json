@@ -26,6 +26,7 @@
   },
   "files": ["extensions/**", "README.md", "CHANGELOG.md", "LICENSE", "package.json"],
   "dot314Prepack": {
+    "clean": ["extensions/anycopy"],
     "copy": [
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
       { "from": "../../extensions/anycopy/interaction-state.ts", "to": "extensions/anycopy/interaction-state.ts" },
