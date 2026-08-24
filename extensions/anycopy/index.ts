@@ -43,8 +43,8 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
-import { AnycopyKeyHelp } from "./key-help.ts";
-import { formatConfiguredKey, getKeyHelpPreferredWidth, type KeyHelpRow } from "./key-help-data.ts";
+import { getKeyHelpWindow, renderKeyHelpLines } from "./key-help.ts";
+import { formatConfiguredKey, type KeyHelpRow } from "./key-help-data.ts";
 import { applyInclusiveRangeSelection, togglePaneFocus, type PaneFocus } from "./interaction-state.ts";
 import { getPreviewPageStep, getPreviewWindow } from "./preview-window.ts";
 import { renderStatusHints } from "./status-hints.ts";
@@ -422,6 +422,10 @@ class anycopyOverlay implements Focusable {
 	private _focused = false;
 	private previewScrollOffset = 0;
 	private lastPreviewHeight = 0;
+	private helpVisible = false;
+	private helpOffset = 0;
+	private helpLineCount = 0;
+	private helpPageSize = 1;
 	private previewCache: {
 		entryId: string;
 		width: number;
@@ -435,7 +439,7 @@ class anycopyOverlay implements Focusable {
 		private nodeById: Map<string, SessionTreeNode>,
 		private keys: anycopyKeyConfig,
 		private layoutRatios: PaneLayoutRatios,
-		private openHelp: () => void,
+		private helpRows: readonly KeyHelpRow[],
 		private onExplicitFoldMutation: ((
 			beforeTransientFoldedNodeIds: string[],
 			afterTransientFoldedNodeIds: string[],
@@ -458,6 +462,11 @@ class anycopyOverlay implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.helpVisible) {
+			this.handleHelpInput(data);
+			return;
+		}
+
 		if (this.isEditingNodeLabel()) {
 			this.selector.handleInput(data);
 			this.requestRender();
@@ -465,7 +474,9 @@ class anycopyOverlay implements Focusable {
 		}
 
 		if (matchesKey(data, this.keys.help as MatchesKeyId)) {
-			this.openHelp();
+			this.helpVisible = true;
+			this.helpOffset = 0;
+			this.requestRender();
 			return;
 		}
 		if (matchesKey(data, this.keys.togglePaneFocus as MatchesKeyId)) {
@@ -563,6 +574,25 @@ class anycopyOverlay implements Focusable {
 			this.onExplicitFoldMutation?.(beforeTransientFoldedNodeIds, getSelectorFoldedNodeIds(this.selector));
 		}
 
+		this.requestRender();
+	}
+
+	private handleHelpInput(data: string): void {
+		if (matchesKey(data, this.keys.help as MatchesKeyId) || matchesKey(data, "escape")) {
+			this.helpVisible = false;
+			this.helpOffset = 0;
+			this.requestRender();
+			return;
+		}
+
+		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "tui.select.up")) this.helpOffset -= 1;
+		else if (keybindings.matches(data, "tui.select.down")) this.helpOffset += 1;
+		else if (keybindings.matches(data, "tui.select.pageUp")) this.helpOffset -= this.helpPageSize;
+		else if (keybindings.matches(data, "tui.select.pageDown")) this.helpOffset += this.helpPageSize;
+		else return;
+
+		this.helpOffset = Math.max(0, Math.min(this.helpOffset, Math.max(0, this.helpLineCount - this.helpPageSize)));
 		this.requestRender();
 	}
 
@@ -824,6 +854,43 @@ class anycopyOverlay implements Focusable {
 		return selectorLines;
 	}
 
+	private renderHelpPreview(width: number, height: number): string[] {
+		const bodyLines = renderKeyHelpLines(
+			this.helpRows,
+			width,
+			wrapTextWithAnsi,
+			(text) => this.theme.fg("dim", text),
+		);
+		const window = getKeyHelpWindow(bodyLines.length, height, this.helpOffset);
+		this.helpOffset = window.offset;
+		this.helpLineCount = bodyLines.length;
+		this.helpPageSize = window.pageSize;
+
+		if (height === 1) return [this.renderPreviewDivider(width, "Key bindings")];
+		if (height === 2) {
+			return [
+				this.renderPreviewDivider(width, "Key bindings"),
+				this.renderPreviewDivider(width, `${formatConfiguredKey(this.keys.help)}/Esc close help`),
+			];
+		}
+
+		const output = [
+			this.renderPreviewDivider(width, "Key bindings"),
+			...bodyLines.slice(window.offset, window.end),
+		];
+		while (output.length < height - 1) output.push("");
+		const range = bodyLines.length > window.pageSize
+			? `${window.offset + 1}-${window.end} of ${bodyLines.length} · Up/Down/PageUp/PageDown scroll · `
+			: "";
+		output.push(
+			this.renderPreviewDivider(
+				width,
+				`${range}${formatConfiguredKey(this.keys.help)}/Esc close help`,
+			),
+		);
+		return output.slice(0, height);
+	}
+
 	render(width: number): string[] {
 		const height = this.getRenderHeight();
 		const output: string[] = [];
@@ -838,7 +905,13 @@ class anycopyOverlay implements Focusable {
 
 		output.push(...selectorLines, ...statusLines);
 		const previewHeight = Math.max(0, height - output.length);
-		if (previewHeight > 0) output.push(...this.renderPreview(width, previewHeight));
+		if (previewHeight > 0) {
+			output.push(
+				...(this.helpVisible
+					? this.renderHelpPreview(width, previewHeight)
+					: this.renderPreview(width, previewHeight)),
+			);
+		}
 		while (output.length < height) output.push("");
 		if (output.length > height) output.length = height;
 		return output;
@@ -890,28 +963,6 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			};
 			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
 			const helpRows = buildKeyHelpRows(keybindings, keys);
-			const openKeyHelp = (): void => {
-				const terminalWidth = tui.terminal?.columns ?? 120;
-				const preferredWidth = getKeyHelpPreferredWidth(helpRows, visibleWidth);
-				const helpWidth = Math.min(preferredWidth, Math.max(32, terminalWidth - 4));
-				void ctx.ui.custom<void>(
-					(helpTui, helpTheme, _helpKeybindings, closeHelp) => new AnycopyKeyHelp(
-						helpTheme,
-						helpRows,
-						keys.help,
-						() => Math.max(8, Math.floor((helpTui.terminal?.rows ?? 40) * 0.8)),
-						() => helpTui.requestRender(),
-						closeHelp,
-					),
-					{
-						overlay: true,
-						overlayOptions: { anchor: "center", width: helpWidth, maxHeight: "80%", margin: 1 },
-						onHandle: (handle) => handle.focus(),
-					},
-				).catch((error: unknown) => {
-					ctx.ui.notify(error instanceof Error ? error.message : "Failed to open anycopy key help", "error");
-				});
-			};
 			const treeTermHeight = getAnycopyTreeHeight(getRenderHeight());
 			const nodeById = buildNodeMap(initialTree);
 			const validNodeIds = new Set(nodeById.keys());
@@ -1008,7 +1059,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				nodeById,
 				keys,
 				layoutRatios,
-				openKeyHelp,
+				helpRows,
 				persistFoldState ? handleExplicitFoldMutation : null,
 				getRenderHeight,
 				() => tui.requestRender(),

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatConfiguredKey, formatHelpRowKeys, getKeyHelpPreferredWidth } from "../key-help-data.ts";
+import { getKeyHelpWindow, renderKeyHelpLines } from "../key-help.ts";
+import { formatConfiguredKey, formatHelpRowKeys } from "../key-help-data.ts";
 
 test("help spells every modifier out", () => {
 	assert.equal(formatConfiguredKey("shift+ctrl+t"), "Shift+Ctrl+T");
@@ -15,11 +16,20 @@ test("help formats all effective keys for an action", () => {
 	);
 });
 
-test("preferred width includes key and action columns", () => {
-	assert.equal(getKeyHelpPreferredWidth([{ keys: ["?"], label: "show help" }]), 56);
-	assert.ok(
-		getKeyHelpPreferredWidth([
-			{ keys: ["shift+ctrl+pageup"], label: "a deliberately long action label that exceeds the minimum width" },
-		]) > 56,
+test("embedded help renders native-style padded lines without modal chrome", () => {
+	const lines = renderKeyHelpLines(
+		[{ keys: ["shift+r"], label: "start or finish range selection" }],
+		80,
+		(text) => [text],
 	);
+	assert.deepEqual(lines, ["  Shift+R: start or finish range selection"]);
+	assert.equal(lines.some((line) => /[┌┐└┘│]/.test(line)), false);
+});
+
+test("embedded help window reserves heading and footer rows", () => {
+	assert.deepEqual(getKeyHelpWindow(20, 10, 99), {
+		offset: 12,
+		end: 20,
+		pageSize: 8,
+	});
 });

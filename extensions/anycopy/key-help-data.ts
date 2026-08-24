@@ -30,12 +30,3 @@ export const formatConfiguredKey = (key: string): string => {
 
 export const formatHelpRowKeys = (row: KeyHelpRow): string =>
 	row.keys.map(formatConfiguredKey).join(" / ");
-
-export const getKeyHelpPreferredWidth = (
-	rows: readonly KeyHelpRow[],
-	measureWidth: (text: string) => number = (text) => text.length,
-): number => {
-	const keyWidth = Math.max(3, ...rows.map((row) => measureWidth(formatHelpRowKeys(row))));
-	const actionWidth = Math.max(6, ...rows.map((row) => measureWidth(row.label)));
-	return Math.max(56, keyWidth + actionWidth + 7);
-};
