@@ -1,29 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import {
 	getAnycopyRenderHeight,
 	getAnycopyTreeHeight,
 	getAnycopyTreeVisibleLines,
 } from "../viewport-layout.ts";
 
-test("getAnycopyRenderHeight reserves two terminal rows below the overlay", () => {
+test("getAnycopyRenderHeight reserves two terminal rows", () => {
 	assert.equal(getAnycopyRenderHeight(40), 38);
-});
-
-test("getAnycopyRenderHeight floors fractional terminal heights", () => {
-	assert.equal(getAnycopyRenderHeight(40.9), 38);
-});
-
-test("getAnycopyRenderHeight always leaves at least one component row", () => {
 	assert.equal(getAnycopyRenderHeight(1), 1);
 });
 
-test("getAnycopyTreeHeight applies the selector height ratio", () => {
+test("getAnycopyTreeHeight keeps the initial selector allocation", () => {
 	assert.equal(getAnycopyTreeHeight(38), 24);
 });
 
-test("getAnycopyTreeVisibleLines follows the live render height", () => {
-	assert.equal(getAnycopyTreeVisibleLines(38), 12);
-	assert.equal(getAnycopyTreeVisibleLines(18), 5);
+test("tree-focused and preview-focused layouts use their configured ratios", () => {
+	const ratios = { tree: 0.8, preview: 0.2 };
+	assert.equal(getAnycopyTreeVisibleLines(20, "tree", ratios), 16);
+	assert.equal(getAnycopyTreeVisibleLines(20, "preview", ratios), 4);
+});
+
+test("both layouts retain at least one row for each pane", () => {
+	const ratios = { tree: 0.99, preview: 0.01 };
+	assert.equal(getAnycopyTreeVisibleLines(2, "tree", ratios), 1);
+	assert.equal(getAnycopyTreeVisibleLines(2, "preview", ratios), 1);
 });

@@ -1,6 +1,10 @@
 {
   "treeFilterMode": "no-tools",
   "persistFoldState": true,
+  "layout": {
+    "treeFocusTreeRatio": 0.85,
+    "previewFocusTreeRatio": 0.15
+  },
   "keys": {
     "toggleSelect": "shift+a",
     "copy": "shift+c",
@@ -10,6 +14,9 @@
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
     "pageUp": "shift+pageup",
-    "pageDown": "shift+pagedown"
+    "pageDown": "shift+pagedown",
+    "togglePaneFocus": "tab",
+    "toggleRangeSelection": "shift+r",
+    "help": "?"
   }
 }
