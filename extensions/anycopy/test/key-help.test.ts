@@ -41,6 +41,32 @@ test("help includes effective native and anycopy actions but omits native Ctrl+X
 	assert.equal(rows.flatMap((row) => row.keys).includes("ctrl+x"), false);
 });
 
+test("shortcut-opened help explains that Enter cannot navigate", () => {
+	const rows = buildKeyHelpRows(
+		(id) => id === "tui.select.confirm" ? ["enter"] : [],
+		{
+			toggleSelect: "shift+a",
+			copy: "shift+c",
+			clear: "shift+x",
+			toggleLabelTimestamps: "shift+t",
+			toggleEntryTimestamps: "shift+ctrl+t",
+			scrollDown: "shift+down",
+			scrollUp: "shift+up",
+			pageDown: "shift+pagedown",
+			pageUp: "shift+pageup",
+			togglePaneFocus: "tab",
+			toggleRangeSelection: "shift+r",
+			help: "?",
+		},
+		false,
+	);
+
+	assert.deepEqual(rows.find((row) => row.keys.includes("enter")), {
+		keys: ["enter"],
+		label: "navigation unavailable, open /anycopy as a command",
+	});
+});
+
 test("help formats all effective keys for an action", () => {
 	assert.equal(
 		formatHelpRowKeys({ keys: ["ctrl+left", "alt+left"], label: "fold" }),

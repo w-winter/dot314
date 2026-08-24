@@ -52,6 +52,7 @@ export const formatHelpRowKeys = (row: KeyHelpRow): string =>
 export const buildKeyHelpRows = (
 	getKeys: (id: string) => readonly string[],
 	keys: AnycopyHelpKeys,
+	navigationAvailable = true,
 ): KeyHelpRow[] => {
 	const effectiveKeys = (...ids: string[]): string[] =>
 		[...new Set(ids.flatMap((id) => getKeys(id)).filter((key) => key.trim().length > 0))];
@@ -63,7 +64,12 @@ export const buildKeyHelpRows = (
 		{ keys: effectiveKeys("tui.editor.cursorRight", "tui.select.pageDown"), label: "page tree down" },
 		{ keys: effectiveKeys("app.tree.foldOrUp"), label: "fold branch or jump up" },
 		{ keys: effectiveKeys("app.tree.unfoldOrDown"), label: "unfold branch or jump down" },
-		{ keys: effectiveKeys("tui.select.confirm"), label: "navigate to focused node" },
+		{
+			keys: effectiveKeys("tui.select.confirm"),
+			label: navigationAvailable
+				? "navigate to focused node"
+				: "navigation unavailable, open /anycopy as a command",
+		},
 		{ keys: effectiveKeys("tui.select.cancel"), label: "clear search or close" },
 		{ keys: effectiveKeys("tui.editor.deleteCharBackward"), label: "delete search character" },
 		{ keys: effectiveKeys("app.tree.editLabel"), label: "edit label" },

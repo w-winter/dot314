@@ -95,12 +95,13 @@
 - ● [`anycopy/`](anycopy/) ([README](./anycopy/README.md))
   - `/anycopy` mirrors all behaviors of Pi's native `/tree` while adding a live, syntax-highlighted preview of each node's content, the ability to copy any node(s) to the clipboard, and optional node creation timestamps
   - `Enter` navigates to focused node (same semantics as `/tree`, including the summary chooser and `branchSummary.skipPrompt` support)
-  - `Shift+A` selects nodes, `Shift+R` extends an inclusive range, and `Shift+C` copies the selection. Tool-result nodes include their originating call
-  - `Tab` toggles tree-focused and preview-focused layouts. `?` shows effective native tree and anycopy bindings
+  - `Shift+A` selects nodes, `Shift+R` adds an inclusive range, and `Shift+C` copies while retaining the selection. Tool-result nodes include their originating call
+  - An optional copy-only shortcut preserves the editor draft. `Tab` toggles tree-focused and preview-focused layouts. `?` shows effective native tree and anycopy bindings
   - `Shift+Up`/`Down` scroll preview by line, `Shift+PageUp`/`PageDown` page preview
   - Single-node copies use just the node's content; role prefixes are only added when copying 2+ nodes
+  - Custom entries use readable labeled preview and clipboard output with local-time timestamp formatting
   - Multi-selected nodes are auto-sorted chronologically (by tree position)
-  - Configurable in `anycopy/config.json`: `treeFilterMode` (initial filter mode), `keys` (overlay keybindings)
+  - `anycopy/config.json` is the canonical configuration file for the shortcut, hint mode, layout ratios, tree filter, fold persistence, and overlay keys
 
 <p align="center">
   <img width="450" alt="anycopy demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif" />

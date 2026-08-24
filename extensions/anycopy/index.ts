@@ -21,6 +21,7 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 	KeybindingsManager,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
@@ -46,12 +47,13 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
+import { formatCustomEntryContent, formatCustomEntryPreview } from "./custom-entry.ts";
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
 import { getKeyHelpWindow, renderKeyHelpLines } from "./key-help.ts";
 import { buildKeyHelpRows, formatConfiguredKey, type KeyHelpRow } from "./key-help-data.ts";
 import { applyInclusiveRangeSelection, togglePaneFocus, type PaneFocus } from "./interaction-state.ts";
 import { getPreviewPageStep, getPreviewWindow } from "./preview-window.ts";
-import { renderStatusHints } from "./status-hints.ts";
+import { buildStatusTextLines, renderStatusHints, type HintMode } from "./status-hints.ts";
 import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
 import {
 	formatJsonForDisplay,
@@ -114,6 +116,10 @@ type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "a
 
 type anycopyConfig = {
 	keys?: Partial<anycopyKeyConfig>;
+	shortcut?: string | null;
+	hints?: {
+		mode?: HintMode;
+	};
 	layout?: {
 		treeFocusTreeRatio?: number;
 		previewFocusTreeRatio?: number;
@@ -124,6 +130,8 @@ type anycopyConfig = {
 
 type anycopyRuntimeConfig = {
 	keys: anycopyKeyConfig;
+	shortcut: string | null;
+	hintMode: HintMode;
 	layoutRatios: PaneLayoutRatios;
 	treeFilterMode: TreeFilterMode;
 	persistFoldState: boolean;
@@ -153,6 +161,8 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 const DEFAULT_LAYOUT_RATIOS: PaneLayoutRatios = { tree: 0.85, preview: 0.15 };
 const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
 const DEFAULT_PERSIST_FOLD_STATE = true;
+const DEFAULT_SHORTCUT = null;
+const DEFAULT_HINT_MODE: HintMode = "full";
 
 const getExtensionDir = (): string => {
 	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -184,6 +194,8 @@ const loadConfig = (): anycopyRuntimeConfig => {
 	if (!parsed) {
 		return {
 			keys: { ...DEFAULT_KEYS },
+			shortcut: DEFAULT_SHORTCUT,
+			hintMode: DEFAULT_HINT_MODE,
 			layoutRatios: { ...DEFAULT_LAYOUT_RATIOS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
 			persistFoldState: DEFAULT_PERSIST_FOLD_STATE,
@@ -205,6 +217,8 @@ const loadConfig = (): anycopyRuntimeConfig => {
 			: DEFAULT_TREE_FILTER_MODE;
 	const persistFoldState =
 		typeof parsed.persistFoldState === "boolean" ? parsed.persistFoldState : DEFAULT_PERSIST_FOLD_STATE;
+	const shortcut = typeof parsed.shortcut === "string" && parsed.shortcut.trim() ? parsed.shortcut.trim() : null;
+	const hintMode: HintMode = parsed.hints?.mode === "compact" ? "compact" : DEFAULT_HINT_MODE;
 	const normalizeRatio = (value: unknown, fallback: number): number =>
 		typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : fallback;
 	const layoutRatios: PaneLayoutRatios = {
@@ -212,7 +226,7 @@ const loadConfig = (): anycopyRuntimeConfig => {
 		preview: normalizeRatio(parsed.layout?.previewFocusTreeRatio, DEFAULT_LAYOUT_RATIOS.preview),
 	};
 
-	return { keys, layoutRatios, treeFilterMode, persistFoldState };
+	return { keys, shortcut, hintMode, layoutRatios, treeFilterMode, persistFoldState };
 };
 
 const pluralizeNode = (count: number): string => (count === 1 ? "node" : "nodes");
@@ -287,7 +301,7 @@ const getEntryContent = (entry: SessionEntry): string => {
 		case "branch_summary":
 			return entry.summary;
 		case "custom":
-			return `[custom: ${entry.customType}]`;
+			return formatCustomEntryContent(entry.customType, entry.data);
 		case "label":
 			return `label: ${entry.label ?? "(cleared)"}`;
 		case "model_change":
@@ -300,6 +314,9 @@ const getEntryContent = (entry: SessionEntry): string => {
 			return "";
 	}
 };
+
+const getPreviewEntryContent = (entry: SessionEntry): string =>
+	entry.type === "custom" ? formatCustomEntryPreview(entry.customType, entry.data) : getEntryContent(entry);
 
 const replaceTabs = (text: string): string => text.replace(/\t/g, "   ");
 
@@ -412,6 +429,8 @@ class anycopyOverlay implements Focusable {
 		private layoutRatios: PaneLayoutRatios,
 		private helpRows: readonly KeyHelpRow[],
 		private keybindings: KeybindingsManager,
+		private hintMode: HintMode,
+		private navigationAvailable: boolean,
 		private onExplicitFoldMutation: ((
 			beforeTransientFoldedNodeIds: string[],
 			afterTransientFoldedNodeIds: string[],
@@ -606,7 +625,7 @@ class anycopyOverlay implements Focusable {
 			anchorId,
 			anchorId,
 		);
-		this.flash("Range toggle active, move to extend");
+		this.flash("Range select active, move to extend");
 	}
 
 	private flash(message: string): void {
@@ -685,44 +704,35 @@ class anycopyOverlay implements Focusable {
 	}
 
 	private renderStatusBar(width: number): string[] {
-		const lines: string[] = [];
-
-		// Keep transient/selection status compact; omit the row entirely when idle.
-		if (this.flashMessage) {
-			lines.push(truncateToWidth(this.theme.fg("success", `  ${this.flashMessage}`), width));
-		} else if (this.selectedNodeIds.size > 0) {
-			lines.push(
-				truncateToWidth(
-					this.theme.fg(
-						"accent",
-						`  ${this.selectedNodeIds.size} selected ${pluralizeNode(this.selectedNodeIds.size)}`,
-					),
-					width,
-				),
-			);
-		}
-
 		const key = formatConfiguredKey;
-		lines.push(
-			...renderStatusHints(
-				[
-					`${key(this.keys.scrollUp)}/${key(this.keys.scrollDown)}: scroll preview`,
-					`${key(this.keys.pageUp)}/${key(this.keys.pageDown)}: page preview`,
-					"Enter: navigate",
-					`${key(this.keys.toggleRangeSelection)}: range`,
-					`${key(this.keys.toggleSelect)}: select`,
-					`${key(this.keys.copy)}: copy`,
-					`${key(this.keys.clear)}: clear`,
-					`${key(this.keys.togglePaneFocus)}: layout`,
-					`${key(this.keys.help)}: help`,
-				],
-				width,
-				wrapTextWithAnsi,
-				(text) => this.theme.fg("dim", text),
-			),
+		const navigationLabel = this.navigationAvailable ? "navigate" : "open /anycopy to navigate";
+		const status = this.flashMessage
+			?? (this.rangeSelection
+				? `Range selection active, ${this.selectedNodeIds.size} selected ${pluralizeNode(this.selectedNodeIds.size)}`
+				: this.selectedNodeIds.size > 0
+					? `${this.selectedNodeIds.size} selected ${pluralizeNode(this.selectedNodeIds.size)}`
+					: this.hintMode === "compact"
+						? `${key(this.keys.help)}: help · Enter: ${navigationLabel}`
+						: "Ready");
+		const statusRole = this.flashMessage ? "success" : this.selectedNodeIds.size > 0 ? "accent" : "dim";
+		const hintLines = renderStatusHints(
+			[
+				`${key(this.keys.scrollUp)}/${key(this.keys.scrollDown)}: scroll preview`,
+				`${key(this.keys.pageUp)}/${key(this.keys.pageDown)}: page preview`,
+				`Enter: ${navigationLabel}`,
+				`${key(this.keys.toggleRangeSelection)}: range`,
+				`${key(this.keys.toggleSelect)}: select`,
+				`${key(this.keys.copy)}: copy`,
+				`${key(this.keys.clear)}: clear`,
+				`${key(this.keys.togglePaneFocus)}: layout`,
+				`${key(this.keys.help)}: help`,
+			],
+			width,
+			wrapTextWithAnsi,
 		);
-
-		return lines;
+		return buildStatusTextLines(this.hintMode, status, hintLines).map((line, index) =>
+			truncateToWidth(this.theme.fg(index === 0 ? statusRole : "dim", line), width),
+		);
 	}
 
 	private renderPreviewDivider(width: number, message?: string): string {
@@ -740,7 +750,7 @@ class anycopyOverlay implements Focusable {
 			return this.previewCache;
 		}
 
-		const content = getEntryContent(focused.entry);
+		const content = getPreviewEntryContent(focused.entry);
 		const clipped = clipTextForPreview(content);
 		const resultLines = renderPreviewBodyLines(clipped, focused.entry, width, this.theme, this.nodeById);
 		const invocation = resolveToolCallFromParents(focused.entry, this.nodeById);
@@ -916,15 +926,20 @@ class anycopyOverlay implements Focusable {
 	}
 }
 
+const canNavigateTree = (ctx: ExtensionContext): ctx is ExtensionCommandContext =>
+	typeof (ctx as { navigateTree?: unknown }).navigateTree === "function";
+
 export default function anycopyExtension(pi: ExtensionAPI) {
 	const config = loadConfig();
 	const keys = config.keys;
+	const shortcut = config.shortcut;
+	const hintMode = config.hintMode;
 	const layoutRatios = config.layoutRatios;
 	const treeFilterMode = config.treeFilterMode;
 	const persistFoldState = config.persistFoldState;
 
 	const openAnycopy = async (
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		opts?: { initialSelectedId?: string },
 	) => {
 		if (!ctx.hasUI) return;
@@ -949,9 +964,11 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				done();
 			};
 			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
+			const navigationAvailable = canNavigateTree(ctx);
 			const helpRows = buildKeyHelpRows(
 				(id) => keybindings.getKeys(id as EffectiveKeybindingId).map(String),
 				keys,
+				navigationAvailable,
 			);
 			const treeTermHeight = getAnycopyTreeHeight(getRenderHeight());
 			const nodeById = buildNodeMap(initialTree);
@@ -963,26 +980,28 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			let lastPersistedFoldedNodeIds = durableFoldedNodeIds;
 			const currentLeafIdForNoop = currentLeafId;
 
-			const startEnterNavigation = createAnycopyEnterNavigationLauncher(async (entryId) =>
-				runAnycopyEnterNavigation({
-					entryId,
-					currentLeafIdForNoop,
-					skipSummaryPrompt,
-					close: closeOverlay,
-					reopen: (reopenOpts) => {
-						void openAnycopy(ctx, reopenOpts);
-					},
-					navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
-					ui: {
-						select: async (title, options) =>
-							(await ctx.ui.select(title, options)) as (typeof options)[number] | undefined,
-						editor: (title) => ctx.ui.editor(title),
-						setStatus: (source, message) => ctx.ui.setStatus(source, message),
-						setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
-						notify: (message, level) => ctx.ui.notify(message, level),
-					},
-				}),
-			);
+			const startEnterNavigation = navigationAvailable
+				? createAnycopyEnterNavigationLauncher(async (entryId) =>
+					runAnycopyEnterNavigation({
+						entryId,
+						currentLeafIdForNoop,
+						skipSummaryPrompt,
+						close: closeOverlay,
+						reopen: (reopenOpts) => {
+							void openAnycopy(ctx, reopenOpts);
+						},
+						navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
+						ui: {
+							select: async (title, options) =>
+								(await ctx.ui.select(title, options)) as (typeof options)[number] | undefined,
+							editor: (title) => ctx.ui.editor(title),
+							setStatus: (source, message) => ctx.ui.setStatus(source, message),
+							setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
+							notify: (message, level) => ctx.ui.notify(message, level),
+						},
+					}),
+				)
+				: () => ctx.ui.notify("Navigation requires opening /anycopy as a command", "warning");
 
 			const selector = new TreeSelectorComponent(
 				initialTree,
@@ -1051,6 +1070,8 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				layoutRatios,
 				helpRows,
 				keybindings,
+				hintMode,
+				navigationAvailable,
 				persistFoldState ? handleExplicitFoldMutation : null,
 				getRenderHeight,
 				() => tui.requestRender(),
@@ -1129,4 +1150,14 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			await openAnycopy(ctx);
 		},
 	});
+
+	if (shortcut) {
+		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Open /anycopy in copy-only mode",
+			handler: async (ctx: ExtensionContext) => {
+				if (!ctx.hasUI) return;
+				await openAnycopy(ctx);
+			},
+		});
+	}
 }

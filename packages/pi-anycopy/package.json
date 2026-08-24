@@ -29,6 +29,7 @@
     "clean": ["extensions/anycopy"],
     "copy": [
       { "from": "../../extensions/anycopy/index.ts", "to": "extensions/anycopy/index.ts" },
+      { "from": "../../extensions/anycopy/custom-entry.ts", "to": "extensions/anycopy/custom-entry.ts" },
       { "from": "../../extensions/anycopy/interaction-state.ts", "to": "extensions/anycopy/interaction-state.ts" },
       { "from": "../../extensions/anycopy/key-help-data.ts", "to": "extensions/anycopy/key-help-data.ts" },
       { "from": "../../extensions/anycopy/key-help.ts", "to": "extensions/anycopy/key-help.ts" },

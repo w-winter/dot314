@@ -3,9 +3,12 @@
 ## [Unreleased]
 
 ### Added
-- Inclusive range selection on `Shift+R`
+- Additive inclusive range selection on `Shift+R`
 - Two configurable tree and preview focus layouts toggled with `Tab`
 - Effective keybinding help on `?`, including native tree movement, filtering, folding, and anycopy actions
+- Optional copy-only shortcut that preserves the current editor draft
+- Configurable full and compact inline hints
+- Readable custom-entry previews and clipboard output with local-time timestamp formatting
 
 ### Changed
 - Tool-result nodes now preview and copy their originating tool call together with the result

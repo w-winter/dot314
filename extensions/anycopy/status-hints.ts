@@ -1,4 +1,14 @@
+export type HintMode = "full" | "compact";
+
 type WrapText = (text: string, width: number) => string[];
+
+export function buildStatusTextLines(
+	mode: HintMode,
+	status: string,
+	hintLines: readonly string[],
+): string[] {
+	return mode === "compact" ? [`  ${status}`] : [`  ${status}`, ...hintLines];
+}
 
 export function renderStatusHints(
 	segments: readonly string[],

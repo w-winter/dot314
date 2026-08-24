@@ -7,10 +7,10 @@ test("togglePaneFocus switches between the two fixed layouts", () => {
 	assert.equal(togglePaneFocus("preview"), "tree");
 });
 
-test("applyInclusiveRangeSelection toggles a forward range against its baseline", () => {
+test("applyInclusiveRangeSelection adds a forward range to its baseline", () => {
 	assert.deepEqual(
 		[...applyInclusiveRangeSelection(new Set(["outside", "b"]), ["a", "b", "c", "d"], "b", "d")],
-		["outside", "c", "d"],
+		["outside", "b", "c", "d"],
 	);
 });
 

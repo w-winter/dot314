@@ -18,9 +18,7 @@ export const applyInclusiveRangeSelection = (
 	const end = Math.max(anchorIndex, focusedIndex);
 	for (let index = start; index <= end; index += 1) {
 		const id = orderedVisibleIds[index];
-		if (!id) continue;
-		if (baselineIds.has(id)) selected.delete(id);
-		else selected.add(id);
+		if (id) selected.add(id);
 	}
 	return selected;
 };

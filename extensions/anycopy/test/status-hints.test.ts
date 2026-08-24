@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderStatusHints } from "../status-hints.ts";
+import { buildStatusTextLines, renderStatusHints } from "../status-hints.ts";
 
 const segments = [
 	"Shift+Up/Shift+Down: scroll preview",
@@ -13,6 +13,20 @@ const segments = [
 	"Tab: layout",
 	"?: help",
 ];
+
+test("compact hints keep one fixed status row", () => {
+	assert.deepEqual(buildStatusTextLines("compact", "?: help · Enter: navigate", ["  Shift+C: copy"]), [
+		"  ?: help · Enter: navigate",
+	]);
+});
+
+test("full hints retain the status row and every wrapped hint row", () => {
+	assert.deepEqual(buildStatusTextLines("full", "Ready", ["  Shift+C: copy", "  Shift+X: clear"]), [
+		"  Ready",
+		"  Shift+C: copy",
+		"  Shift+X: clear",
+	]);
+});
 
 test("status hints delegate the complete text to the native wrapper", () => {
 	const wrapped = [

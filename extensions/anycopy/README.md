@@ -36,10 +36,12 @@ Notes:
 - Cancelling the custom summarization editor returns to the summary chooser
 - If no nodes are selected, `Shift+C` copies the focused node
 - Tool-result previews always show the originating tool name and arguments above the result. Copying the node includes both the call and result
-- `Shift+R` anchors a range at the focused node. Tree movement extends or shrinks the inclusive range, toggling every node against its state when the range started
+- `Shift+R` anchors a range at the focused node. Tree movement extends or shrinks the inclusive range and adds every node in that range to the existing selection
 - Search, filter, and fold changes finish an active range while preserving its selected nodes
 - `Tab` switches directly between the tree-focused and preview-focused layouts. Both panes remain visible according to their configured ratios
 - `?` lists every effective native tree and anycopy binding. It omits native actions that anycopy does not implement
+- An optional global shortcut opens anycopy without clearing the editor draft. This copy-only mode keeps `Shift+C` unchanged, while `Enter` explains that navigation requires command-opened `/anycopy`
+- Custom session entries use readable labeled content in previews and clipboard output. Numeric timestamp fields ending in `At` use the local time zone
 - Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
 - When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
 - `Shift+A`/`Shift+C` multi-select copy behavior is unchanged by navigation support, while plain space remains available for search queries
@@ -61,6 +63,8 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
 - `treeFilterMode`: initial tree filter mode when opening `/anycopy`; defaults to `default` to match `/tree`
   - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
 - `persistFoldState`: whether `/anycopy` persists folded branches across reopenings and later sessions; defaults to `true`; when disabled, `/anycopy` does not read or write hidden fold-state session entries
+- `shortcut`: optional global shortcut that opens copy-only anycopy without clearing the current editor draft. Set it to a key such as `ctrl+shift+c`, or leave it as `null`
+- `hints.mode`: `full` shows every inline action, while `compact` keeps one status row with the help and Enter actions
 - `layout.treeFocusTreeRatio`: fraction of pane rows used by the tree in tree-focused mode
 - `layout.previewFocusTreeRatio`: fraction of pane rows used by the tree in preview-focused mode
 - `keys`: keybindings used inside the `/anycopy` overlay
@@ -69,6 +73,10 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
 {
   "treeFilterMode": "default",
   "persistFoldState": true,
+  "shortcut": null,
+  "hints": {
+    "mode": "full"
+  },
   "layout": {
     "treeFocusTreeRatio": 0.85,
     "previewFocusTreeRatio": 0.15

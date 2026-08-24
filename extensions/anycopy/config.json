@@ -1,6 +1,10 @@
 {
   "treeFilterMode": "no-tools",
   "persistFoldState": true,
+  "shortcut": null,
+  "hints": {
+    "mode": "full"
+  },
   "layout": {
     "treeFocusTreeRatio": 0.85,
     "previewFocusTreeRatio": 0.15
