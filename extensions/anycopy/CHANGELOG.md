@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Inclusive range selection on `Shift+R`
+- Two configurable tree and preview focus layouts toggled with `Tab`
+- Effective keybinding help on `?`, including native tree movement, filtering, folding, and anycopy actions
+
+### Changed
+- Tool-result nodes now preview and copy their originating tool call together with the result
+- Key hints spell modifier names out
+
 ## [0.3.4] - 2026-08-13
 
 ### Fixed

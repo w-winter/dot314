@@ -48,13 +48,16 @@ Defaults (customizable in `config.json`):
 |-----|--------|
 | `Enter` | Navigate to the focused node (same semantics as `/tree`) |
 | `Shift+A` | Select/unselect focused node for copy |
-| `Shift+C` | Copy selected nodes, or the focused node if nothing is selected |
+| `Shift+C` | Copy selected nodes, or the focused node if nothing is selected. Tool results include the originating call |
 | `Shift+X` | Clear selection |
+| `Shift+R` | Start or finish inclusive range selection |
+| `Tab` | Toggle between tree-focused and preview-focused layouts |
 | `Shift+L` | Label node (native tree behavior) |
 | `Shift+T` | Toggle label timestamps for labeled nodes |
 | `Shift+Ctrl+T` | Toggle node creation timestamps |
 | `Shift+Up` / `Shift+Down` | Scroll node preview by line |
 | `Shift+PageUp` / `Shift+PageDown` | Page through node preview |
+| `?` | Show every effective native tree and anycopy action |
 | `Esc` | Close |
 
 Notes:
@@ -64,6 +67,11 @@ Notes:
 - Escaping the summary chooser reopens `/anycopy` with focus restored to the node you tried to select
 - Cancelling the custom summarization editor returns to the summary chooser
 - If no nodes are selected, `Shift+C` copies the focused node
+- Tool-result previews always show the originating tool name and arguments above the result. Copying the node includes both the call and result
+- `Shift+R` anchors a range at the focused node. Tree movement extends or shrinks the inclusive range, toggling every node against its state when the range started
+- Search, filter, and fold changes finish an active range while preserving its selected nodes
+- `Tab` switches directly between the tree-focused and preview-focused layouts. Both panes remain visible according to their configured ratios
+- `?` lists every effective native tree and anycopy binding. It omits native actions that anycopy does not implement
 - Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
 - When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
 - `Shift+A`/`Shift+C` multi-select copy behavior is unchanged by navigation support, while plain space remains available for search queries
@@ -85,12 +93,18 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
 - `treeFilterMode`: initial tree filter mode when opening `/anycopy`; defaults to `default` to match `/tree`
   - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
 - `persistFoldState`: whether `/anycopy` persists folded branches across reopenings and later sessions; defaults to `true`; when disabled, `/anycopy` does not read or write hidden fold-state session entries
-- `keys`: keybindings used inside the `/anycopy` overlay for copy/preview actions and the creation timestamp toggle
+- `layout.treeFocusTreeRatio`: fraction of pane rows used by the tree in tree-focused mode
+- `layout.previewFocusTreeRatio`: fraction of pane rows used by the tree in preview-focused mode
+- `keys`: keybindings used inside the `/anycopy` overlay
 
 ```json
 {
   "treeFilterMode": "default",
   "persistFoldState": true,
+  "layout": {
+    "treeFocusTreeRatio": 0.85,
+    "previewFocusTreeRatio": 0.15
+  },
   "keys": {
     "toggleSelect": "shift+a",
     "copy": "shift+c",
@@ -100,7 +114,10 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
     "scrollUp": "shift+up",
     "scrollDown": "shift+down",
     "pageUp": "shift+pageup",
-    "pageDown": "shift+pagedown"
+    "pageDown": "shift+pagedown",
+    "togglePaneFocus": "tab",
+    "toggleRangeSelection": "shift+r",
+    "help": "?"
   }
 }
 ```
