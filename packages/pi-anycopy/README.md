@@ -57,7 +57,7 @@ Defaults (customizable in `config.json`):
 | `Shift+Ctrl+T` | Toggle node creation timestamps |
 | `Shift+Up` / `Shift+Down` | Scroll node preview by line |
 | `Shift+PageUp` / `Shift+PageDown` | Page through node preview |
-| `?` | Show every effective native tree and anycopy action |
+| `?` | Show available anycopy and native tree keybindings |
 | `Esc` | Close |
 
 Notes:
@@ -71,9 +71,9 @@ Notes:
 - `Shift+R` anchors a range at the focused node. Tree movement extends or shrinks the inclusive range and adds every node in that range to the existing selection
 - Search, filter, and fold changes finish an active range while preserving its selected nodes
 - `Tab` switches directly between the tree-focused and preview-focused layouts. Both panes remain visible according to their configured ratios
-- `?` lists every effective native tree and anycopy binding. It omits native actions that anycopy does not implement
-- An optional global shortcut opens anycopy without clearing the editor draft. This copy-only mode keeps `Shift+C` unchanged, while `Enter` explains that navigation requires command-opened `/anycopy`
-- Custom session entries use readable labeled content in previews and clipboard output. Numeric timestamp fields ending in `At` use the local time zone
+- `?` lists the anycopy and native tree keybindings available in the overlay
+- An optional Pi shortcut opens anycopy without clearing the editor draft. This copy-only view keeps `Shift+C` available; use `/anycopy` when you want `Enter` to navigate the session tree
+- Custom session entries use readable labeled content in previews and clipboard output. Timestamps in custom session entries use the local time zone
 - Single-node copies use just that node's content; role prefixes like `user:` or `assistant:` are only added when copying 2 or more nodes
 - When copying multiple selected nodes, they are auto-sorted chronologically by position in the session tree, not by selection order
 - `Shift+A`/`Shift+C` multi-select copy behavior is unchanged by navigation support, while plain space remains available for search queries
@@ -95,10 +95,10 @@ Edit `~/.pi/agent/extensions/anycopy/config.json`:
 - `treeFilterMode`: initial tree filter mode when opening `/anycopy`; defaults to `default` to match `/tree`
   - one of: `default` | `no-tools` | `user-only` | `labeled-only` | `all`
 - `persistFoldState`: whether `/anycopy` persists folded branches across reopenings and later sessions; defaults to `true`; when disabled, `/anycopy` does not read or write hidden fold-state session entries
-- `shortcut`: optional global shortcut that opens copy-only anycopy without clearing the current editor draft. Set it to a key such as `ctrl+shift+c`, or leave it as `null`
-- `hints.mode`: `full` shows every inline action, while `compact` keeps one status row with the help and Enter actions
-- `layout.treeFocusTreeRatio`: fraction of pane rows used by the tree in tree-focused mode
-- `layout.previewFocusTreeRatio`: fraction of pane rows used by the tree in preview-focused mode
+- `shortcut`: optional Pi shortcut that opens copy-only anycopy without clearing the current editor draft. Set it to a key such as `ctrl+shift+c`, or leave it as `null`
+- `hints.mode`: `full` displays shortcut hints below the tree, while `compact` uses one status row for help and Enter guidance
+- `layout.treeFocusTreeRatio`: fraction of pane rows used by the tree in tree-focused mode; must be greater than `0` and less than `1`
+- `layout.previewFocusTreeRatio`: fraction of pane rows used by the tree in preview-focused mode; must be greater than `0` and less than `1`
 - `keys`: keybindings used inside the `/anycopy` overlay
 
 ```json
