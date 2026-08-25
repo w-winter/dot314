@@ -22,6 +22,7 @@ export const formatConfiguredKey = (key: string): string => {
 	const normalized = key.trim().toLowerCase();
 	if (normalized === "space") return "Space";
 	if (normalized === "escape") return "Esc";
+	if (normalized === "type text") return "Type text";
 	if (/^f\d+$/.test(normalized)) return normalized.toUpperCase();
 	const names: Record<string, string> = {
 		shift: "Shift",
@@ -70,9 +71,15 @@ export const buildKeyHelpRows = (
 				? "navigate to focused node"
 				: "navigation unavailable, open /anycopy as a command",
 		},
-		{ keys: effectiveKeys("tui.select.cancel"), label: "clear search or close" },
+		{ keys: [keys.scrollUp, keys.scrollDown], label: "scroll preview" },
+		{ keys: [keys.pageUp, keys.pageDown], label: "page preview" },
+		{ keys: [keys.toggleRangeSelection], label: "select range" },
+		{ keys: [keys.toggleSelect], label: "(de)select node" },
+		{ keys: [keys.copy], label: "copy focused or selected nodes" },
+		{ keys: [keys.clear], label: "clear selection" },
+		{ keys: ["Type text"], label: "search visible nodes" },
 		{ keys: effectiveKeys("tui.editor.deleteCharBackward"), label: "delete search character" },
-		{ keys: effectiveKeys("app.tree.editLabel"), label: "edit label" },
+		{ keys: effectiveKeys("tui.select.cancel"), label: "clear search or close" },
 		{ keys: effectiveKeys("app.tree.filter.default"), label: "use default filter" },
 		{ keys: effectiveKeys("app.tree.filter.noTools"), label: "toggle no-tools filter" },
 		{ keys: effectiveKeys("app.tree.filter.userOnly"), label: "toggle user-only filter" },
@@ -80,14 +87,8 @@ export const buildKeyHelpRows = (
 		{ keys: effectiveKeys("app.tree.filter.all"), label: "toggle all-entries filter" },
 		{ keys: effectiveKeys("app.tree.filter.cycleForward"), label: "cycle filter forward" },
 		{ keys: effectiveKeys("app.tree.filter.cycleBackward"), label: "cycle filter backward" },
-		{ keys: ["printable text"], label: "search visible nodes" },
-		{ keys: [keys.toggleSelect], label: "toggle focused node selection" },
-		{ keys: [keys.toggleRangeSelection], label: "start or finish range selection" },
-		{ keys: [keys.copy], label: "copy focused or selected nodes" },
-		{ keys: [keys.clear], label: "clear selection" },
 		{ keys: [keys.togglePaneFocus], label: "toggle tree or preview focus" },
-		{ keys: [keys.scrollUp, keys.scrollDown], label: "scroll preview" },
-		{ keys: [keys.pageUp, keys.pageDown], label: "page preview" },
+		{ keys: effectiveKeys("app.tree.editLabel"), label: "edit label" },
 		{ keys: [keys.toggleLabelTimestamps], label: "toggle label timestamps" },
 		{ keys: [keys.toggleEntryTimestamps], label: "toggle entry timestamps" },
 		{ keys: [keys.help], label: "show or close this help" },

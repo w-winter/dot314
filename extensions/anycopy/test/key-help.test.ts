@@ -67,6 +67,77 @@ test("shortcut-opened help explains that Enter cannot navigate", () => {
 	});
 });
 
+test("help groups tree, preview, selection, search, and layout actions", () => {
+	const nativeKeys = new Map<string, string[]>([
+		["tui.select.up", ["up"]],
+		["tui.select.down", ["down"]],
+		["tui.editor.cursorLeft", ["left"]],
+		["tui.editor.cursorRight", ["right"]],
+		["app.tree.foldOrUp", ["ctrl+left"]],
+		["app.tree.unfoldOrDown", ["ctrl+right"]],
+		["tui.select.confirm", ["enter"]],
+		["tui.editor.deleteCharBackward", ["backspace"]],
+		["tui.select.cancel", ["escape"]],
+		["app.tree.filter.default", ["ctrl+1"]],
+		["app.tree.filter.noTools", ["ctrl+2"]],
+		["app.tree.filter.userOnly", ["ctrl+3"]],
+		["app.tree.filter.labeledOnly", ["ctrl+4"]],
+		["app.tree.filter.all", ["ctrl+5"]],
+		["app.tree.filter.cycleForward", ["]"]],
+		["app.tree.filter.cycleBackward", ["["]],
+		["app.tree.editLabel", ["shift+l"]],
+	]);
+	const rows = buildKeyHelpRows(
+		(id) => nativeKeys.get(id) ?? [],
+		{
+			toggleSelect: "shift+a",
+			copy: "shift+c",
+			clear: "shift+x",
+			toggleLabelTimestamps: "shift+t",
+			toggleEntryTimestamps: "shift+ctrl+t",
+			scrollDown: "shift+down",
+			scrollUp: "shift+up",
+			pageDown: "shift+pagedown",
+			pageUp: "shift+pageup",
+			togglePaneFocus: "tab",
+			toggleRangeSelection: "shift+r",
+			help: "?",
+		},
+	);
+
+	assert.deepEqual(rows.map((row) => row.label), [
+		"move up",
+		"move down",
+		"page tree up",
+		"page tree down",
+		"fold branch or jump up",
+		"unfold branch or jump down",
+		"navigate to focused node",
+		"scroll preview",
+		"page preview",
+		"select range",
+		"(de)select node",
+		"copy focused or selected nodes",
+		"clear selection",
+		"search visible nodes",
+		"delete search character",
+		"clear search or close",
+		"use default filter",
+		"toggle no-tools filter",
+		"toggle user-only filter",
+		"toggle labeled-only filter",
+		"toggle all-entries filter",
+		"cycle filter forward",
+		"cycle filter backward",
+		"toggle tree or preview focus",
+		"edit label",
+		"toggle label timestamps",
+		"toggle entry timestamps",
+		"show or close this help",
+	]);
+	assert.equal(rows[13] ? formatHelpRowKeys(rows[13]) : undefined, "Type text");
+});
+
 test("help formats all effective keys for an action", () => {
 	assert.equal(
 		formatHelpRowKeys({ keys: ["ctrl+left", "alt+left"], label: "fold" }),
@@ -76,11 +147,11 @@ test("help formats all effective keys for an action", () => {
 
 test("embedded help renders native-style padded lines without modal chrome", () => {
 	const lines = renderKeyHelpLines(
-		[{ keys: ["shift+r"], label: "start or finish range selection" }],
+		[{ keys: ["shift+r"], label: "select range" }],
 		80,
 		(text) => [text],
 	);
-	assert.deepEqual(lines, ["  Shift+R: start or finish range selection"]);
+	assert.deepEqual(lines, ["  Shift+R: select range"]);
 	assert.equal(lines.some((line) => /[┌┐└┘│]/.test(line)), false);
 });
 

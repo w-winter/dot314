@@ -670,6 +670,10 @@ class anycopyOverlay implements Focusable {
 		return this.showEntryTimestamps;
 	}
 
+	showNavigationUnavailable(): void {
+		this.flash("Navigation requires opening /anycopy as a command");
+	}
+
 	copySelectedOrFocusedNode(): void {
 		const focused = this.getFocusedNode();
 		const ids =
@@ -720,8 +724,8 @@ class anycopyOverlay implements Focusable {
 				`${key(this.keys.scrollUp)}/${key(this.keys.scrollDown)}: scroll preview`,
 				`${key(this.keys.pageUp)}/${key(this.keys.pageDown)}: page preview`,
 				`Enter: ${navigationLabel}`,
-				`${key(this.keys.toggleRangeSelection)}: range`,
-				`${key(this.keys.toggleSelect)}: select`,
+				`${key(this.keys.toggleRangeSelection)}: select range`,
+				`${key(this.keys.toggleSelect)}: (de)select node`,
 				`${key(this.keys.copy)}: copy`,
 				`${key(this.keys.clear)}: clear`,
 				`${key(this.keys.togglePaneFocus)}: layout`,
@@ -889,6 +893,8 @@ class anycopyOverlay implements Focusable {
 
 	render(width: number): string[] {
 		const height = this.getRenderHeight();
+		if (this.helpVisible) return this.renderHelpPreview(width, height);
+
 		const output: string[] = [];
 		const statusLines = this.renderStatusBar(width);
 		const probeLines = this.renderSelector(width, TREE_SELECTOR_PROBE_ROWS);
@@ -901,13 +907,7 @@ class anycopyOverlay implements Focusable {
 
 		output.push(...selectorLines, ...statusLines);
 		const previewHeight = Math.max(0, height - output.length);
-		if (previewHeight > 0) {
-			output.push(
-				...(this.helpVisible
-					? this.renderHelpPreview(width, previewHeight)
-					: this.renderPreview(width, previewHeight)),
-			);
-		}
+		if (previewHeight > 0) output.push(...this.renderPreview(width, previewHeight));
 		while (output.length < height) output.push("");
 		if (output.length > height) output.length = height;
 		return output;
@@ -957,6 +957,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 
 		await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
 			let closed = false;
+			let overlay: anycopyOverlay | undefined;
 			const closeOverlay = (): void => {
 				if (closed) return;
 				closed = true;
@@ -1001,7 +1002,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 						},
 					}),
 				)
-				: () => ctx.ui.notify("Navigation requires opening /anycopy as a command", "warning");
+				: () => overlay?.showNavigationUnavailable();
 
 			const selector = new TreeSelectorComponent(
 				initialTree,
@@ -1062,7 +1063,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				persistDurableFoldState(nextDurableFoldedNodeIds);
 			};
 
-			const overlay = new anycopyOverlay(
+			overlay = new anycopyOverlay(
 				selector,
 				getTree,
 				nodeById,

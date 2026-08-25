@@ -6,8 +6,8 @@ const segments = [
 	"Shift+Up/Shift+Down: scroll preview",
 	"Shift+PageUp/Shift+PageDown: page preview",
 	"Enter: navigate",
-	"Shift+R: range",
-	"Shift+A: select",
+	"Shift+R: select range",
+	"Shift+A: (de)select node",
 	"Shift+C: copy",
 	"Shift+X: clear",
 	"Tab: layout",
@@ -31,7 +31,7 @@ test("full hints retain the status row and every wrapped hint row", () => {
 test("status hints delegate the complete text to the native wrapper", () => {
 	const wrapped = [
 		"Shift+Up/Shift+Down: scroll preview · Shift+PageUp/Shift+PageDown: page",
-		"preview · Enter: navigate · Shift+R: range · Shift+A: select · Shift+C: copy ·",
+		"preview · Enter: navigate · Shift+R: select range · Shift+A: (de)select node ·",
 		"Shift+X: clear · Tab: layout · ?: help",
 	];
 	let receivedText = "";
