@@ -10,7 +10,7 @@ test("help spells every modifier out", () => {
 	assert.equal(formatConfiguredKey("super+shift+p"), "Super+Shift+P");
 });
 
-test("help includes effective native and anycopy actions but omits native Ctrl+X copy", () => {
+test("help includes the anycopy and native copy aliases", () => {
 	const nativeKeys = new Map<string, string[]>([
 		["tui.select.up", ["up"]],
 		["app.message.copy", ["ctrl+x"]],
@@ -36,9 +36,11 @@ test("help includes effective native and anycopy actions but omits native Ctrl+X
 
 	assert.deepEqual(rows.find((row) => row.label === "move up")?.keys, ["up"]);
 	assert.deepEqual(rows.find((row) => row.label === "edit label")?.keys, ["shift+l"]);
-	assert.deepEqual(rows.find((row) => row.label === "copy focused or selected nodes")?.keys, ["shift+c"]);
+	assert.deepEqual(rows.find((row) => row.label === "copy focused or selected nodes")?.keys, [
+		"shift+c",
+		"ctrl+x",
+	]);
 	assert.equal(rows.some((row) => row.keys.length === 0), false);
-	assert.equal(rows.flatMap((row) => row.keys).includes("ctrl+x"), false);
 });
 
 test("shortcut-opened help explains that Enter cannot navigate", () => {

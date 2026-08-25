@@ -55,8 +55,10 @@ export const buildKeyHelpRows = (
 	keys: AnycopyHelpKeys,
 	navigationAvailable = true,
 ): KeyHelpRow[] => {
+	const uniqueKeys = (values: readonly string[]): string[] =>
+		[...new Set(values.filter((key) => key.trim().length > 0))];
 	const effectiveKeys = (...ids: string[]): string[] =>
-		[...new Set(ids.flatMap((id) => getKeys(id)).filter((key) => key.trim().length > 0))];
+		uniqueKeys(ids.flatMap((id) => getKeys(id)));
 
 	return [
 		{ keys: effectiveKeys("tui.select.up"), label: "move up" },
@@ -75,7 +77,10 @@ export const buildKeyHelpRows = (
 		{ keys: [keys.pageUp, keys.pageDown], label: "page preview" },
 		{ keys: [keys.toggleRangeSelection], label: "select range" },
 		{ keys: [keys.toggleSelect], label: "(de)select node" },
-		{ keys: [keys.copy], label: "copy focused or selected nodes" },
+		{
+			keys: uniqueKeys([keys.copy, ...effectiveKeys("app.message.copy")]),
+			label: "copy focused or selected nodes",
+		},
 		{ keys: [keys.clear], label: "clear selection" },
 		{ keys: ["Type text"], label: "search visible nodes" },
 		{ keys: effectiveKeys("tui.editor.deleteCharBackward"), label: "delete search character" },

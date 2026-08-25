@@ -1063,7 +1063,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				persistDurableFoldState(nextDurableFoldedNodeIds);
 			};
 
-			overlay = new anycopyOverlay(
+			const activeOverlay = new anycopyOverlay(
 				selector,
 				getTree,
 				nodeById,
@@ -1078,6 +1078,8 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				() => tui.requestRender(),
 				theme,
 			);
+			overlay = activeOverlay;
+			selector.onCopy = () => activeOverlay.copySelectedOrFocusedNode();
 
 			const treeList = selector.getTreeList();
 			const treeListInternals = getTreeListInternals(treeList);
@@ -1099,7 +1101,7 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				const treeRowCount = Math.max(0, lines.length - 1);
 				const nowMs = Date.now();
 				const appendEntryTimestamp = (lineWithMarker: string, entry: SessionEntry): string => {
-					if (!overlay.shouldShowEntryTimestamps()) return truncateToWidth(lineWithMarker, width);
+					if (!activeOverlay.shouldShowEntryTimestamps()) return truncateToWidth(lineWithMarker, width);
 
 					const timestampMs = getEntryTimestampMs(entry);
 					if (timestampMs === null) return truncateToWidth(lineWithMarker, width);
@@ -1122,14 +1124,14 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 					const entry = filtered[startIdx + i]?.node.entry;
 					if (typeof entry?.id !== "string") return truncateToWidth(`  ${line}`, width);
 
-					const marker = overlay.isSelectedNode(entry.id)
+					const marker = activeOverlay.isSelectedNode(entry.id)
 						? theme.fg("success", "✓ ")
 						: theme.fg("dim", "○ ");
 					return appendEntryTimestamp(marker + line, entry);
 				});
 			};
 
-			return overlay;
+			return activeOverlay;
 		}, {
 			overlay: true,
 			overlayOptions: {
