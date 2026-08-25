@@ -20,6 +20,13 @@ test("formatCustomEntryContent keeps a useful fallback when data is absent", () 
 	assert.equal(formatCustomEntryContent("marker", undefined), "Custom entry: marker");
 });
 
+test("formatCustomEntryContent keeps lowercase at suffixes numeric", () => {
+	assert.equal(
+		formatCustomEntryContent("metrics", { stat: 42, format: 7 }),
+		"Custom entry: metrics\n\nStat: 42\nFormat: 7",
+	);
+});
+
 test("formatCustomEntryPreview renders structured evidence in local time as readable markdown", () => {
 	const previousTimeZone = process.env.TZ;
 	process.env.TZ = "Europe/Moscow";

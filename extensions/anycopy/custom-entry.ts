@@ -33,7 +33,7 @@ const formatLocalDate = (date: Date): string =>
 
 const formatScalar = (key: string, value: unknown): string => {
 	if (typeof value === "number") {
-		if (/at$/i.test(key) && Number.isFinite(value)) {
+		if (key.endsWith("At") && Number.isFinite(value)) {
 			const date = new Date(value);
 			if (!Number.isNaN(date.getTime())) return formatLocalDate(date);
 		}
