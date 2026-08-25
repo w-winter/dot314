@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Additive inclusive range selection on `Shift+R`
+- Two configurable tree and preview focus layouts toggled with `Tab`
+- Keybinding help on `?`, including native tree movement, filtering, folding, and anycopy actions
+- Optional copy-only shortcut that preserves the current editor draft
+- Configurable full and compact inline hints
+- Readable custom-entry previews and clipboard output with local-time timestamp formatting
+
+### Changed
+- Tool-result nodes now preview and copy their originating tool call together with the result
+- Key hints spell modifier names out
+
+### Fixed
+- Status hints wrap to the viewport width without dropping actions
+- Tool-call context remains available for results deep in the session tree, and large arguments no longer overwhelm previews
+- Clipboard failures are reported instead of showing a false success message
+- Published packages no longer retain stale anycopy modules from previous builds
+
+Contributed by [@AdamsGH](https://github.com/AdamsGH).
+
 ## [0.3.4] - 2026-08-13
 
 ### Fixed

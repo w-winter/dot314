@@ -7,15 +7,24 @@
  *   Shift+A   - select/unselect focused node for copy
  *   Shift+C   - copy selected nodes (or focused node if none selected)
  *   Shift+X   - clear selection
+ *   Shift+R   - start/finish inclusive range selection
+ *   Tab       - toggle tree-focused and preview-focused layouts
  *   Shift+L   - label node
  *   Shift+T   - toggle label timestamps for labeled nodes
  *   Shift+Ctrl+T - toggle entry-created timestamps for visible tree rows
  *   Shift+↑/↓ - scroll preview
  *   Shift+PageUp/PageDown - page preview
+ *   ?         - show effective native tree and anycopy actions
  *   Esc       - close
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	KeybindingsManager,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import {
 	copyToClipboard,
 	getLanguageFromPath,
@@ -25,11 +34,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
-	getKeybindings,
 	Markdown,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { Focusable } from "@earendil-works/pi-tui";
 
@@ -38,14 +47,26 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
+import { formatCustomEntryContent, formatCustomEntryPreview } from "./custom-entry.ts";
 import { createAnycopyEnterNavigationLauncher, runAnycopyEnterNavigation } from "./enter-navigation.ts";
+import { getKeyHelpWindow, renderKeyHelpLines } from "./key-help.ts";
+import { buildKeyHelpRows, formatConfiguredKey, type KeyHelpRow } from "./key-help-data.ts";
+import { applyInclusiveRangeSelection, togglePaneFocus, type PaneFocus } from "./interaction-state.ts";
 import { getPreviewPageStep, getPreviewWindow } from "./preview-window.ts";
+import { buildStatusTextLines, renderStatusHints, type HintMode } from "./status-hints.ts";
 import { formatCompactTimestamp, getEntryTimestampMs } from "./timestamps.ts";
+import {
+	formatJsonForDisplay,
+	formatToolCallResultForClipboard,
+	getToolName,
+	resolveToolCallFromParents,
+} from "./tool-call-copy.ts";
 import { buildNodeOrder } from "./tree-order.ts";
 import {
 	getAnycopyRenderHeight,
 	getAnycopyTreeHeight,
 	getAnycopyTreeVisibleLines,
+	type PaneLayoutRatios,
 } from "./viewport-layout.ts";
 import {
 	ANYCOPY_FOLD_STATE_CUSTOM_TYPE,
@@ -74,6 +95,7 @@ type anycopyTreeListInternals = {
 };
 
 type MatchesKeyId = Parameters<typeof matchesKey>[1];
+type EffectiveKeybindingId = Parameters<KeybindingsManager["getKeys"]>[0];
 
 type anycopyKeyConfig = {
 	toggleSelect: string;
@@ -85,18 +107,32 @@ type anycopyKeyConfig = {
 	scrollUp: string;
 	pageDown: string;
 	pageUp: string;
+	togglePaneFocus: string;
+	toggleRangeSelection: string;
+	help: string;
 };
 
 type TreeFilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
 type anycopyConfig = {
 	keys?: Partial<anycopyKeyConfig>;
+	shortcut?: string | null;
+	hints?: {
+		mode?: HintMode;
+	};
+	layout?: {
+		treeFocusTreeRatio?: number;
+		previewFocusTreeRatio?: number;
+	};
 	treeFilterMode?: TreeFilterMode;
 	persistFoldState?: boolean;
 };
 
 type anycopyRuntimeConfig = {
 	keys: anycopyKeyConfig;
+	shortcut: string | null;
+	hintMode: HintMode;
+	layoutRatios: PaneLayoutRatios;
 	treeFilterMode: TreeFilterMode;
 	persistFoldState: boolean;
 };
@@ -117,10 +153,16 @@ const DEFAULT_KEYS: anycopyKeyConfig = {
 	scrollUp: "shift+up",
 	pageDown: "shift+pagedown",
 	pageUp: "shift+pageup",
+	togglePaneFocus: "tab",
+	toggleRangeSelection: "shift+r",
+	help: "?",
 };
 
+const DEFAULT_LAYOUT_RATIOS: PaneLayoutRatios = { tree: 0.85, preview: 0.15 };
 const DEFAULT_TREE_FILTER_MODE: TreeFilterMode = "default";
 const DEFAULT_PERSIST_FOLD_STATE = true;
+const DEFAULT_SHORTCUT = null;
+const DEFAULT_HINT_MODE: HintMode = "full";
 
 const getExtensionDir = (): string => {
 	// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -152,6 +194,9 @@ const loadConfig = (): anycopyRuntimeConfig => {
 	if (!parsed) {
 		return {
 			keys: { ...DEFAULT_KEYS },
+			shortcut: DEFAULT_SHORTCUT,
+			hintMode: DEFAULT_HINT_MODE,
+			layoutRatios: { ...DEFAULT_LAYOUT_RATIOS },
 			treeFilterMode: DEFAULT_TREE_FILTER_MODE,
 			persistFoldState: DEFAULT_PERSIST_FOLD_STATE,
 		};
@@ -172,23 +217,16 @@ const loadConfig = (): anycopyRuntimeConfig => {
 			: DEFAULT_TREE_FILTER_MODE;
 	const persistFoldState =
 		typeof parsed.persistFoldState === "boolean" ? parsed.persistFoldState : DEFAULT_PERSIST_FOLD_STATE;
+	const shortcut = typeof parsed.shortcut === "string" && parsed.shortcut.trim() ? parsed.shortcut.trim() : null;
+	const hintMode: HintMode = parsed.hints?.mode === "compact" ? "compact" : DEFAULT_HINT_MODE;
+	const normalizeRatio = (value: unknown, fallback: number): number =>
+		typeof value === "number" && Number.isFinite(value) && value > 0 && value < 1 ? value : fallback;
+	const layoutRatios: PaneLayoutRatios = {
+		tree: normalizeRatio(parsed.layout?.treeFocusTreeRatio, DEFAULT_LAYOUT_RATIOS.tree),
+		preview: normalizeRatio(parsed.layout?.previewFocusTreeRatio, DEFAULT_LAYOUT_RATIOS.preview),
+	};
 
-	return { keys, treeFilterMode, persistFoldState };
-};
-
-const formatKeyHint = (key: string): string => {
-	const normalized = key.trim().toLowerCase();
-	if (normalized === "space") return "Space";
-	const parts = normalized.split("+");
-	return parts
-		.map((part) => {
-			if (part === "shift") return "Shift";
-			if (part === "ctrl") return "Ctrl";
-			if (part === "alt") return "Alt";
-			if (part.length === 1) return part.toUpperCase();
-			return part;
-		})
-		.join("+");
+	return { keys, shortcut, hintMode, layoutRatios, treeFilterMode, persistFoldState };
 };
 
 const pluralizeNode = (count: number): string => (count === 1 ? "node" : "nodes");
@@ -196,6 +234,7 @@ const pluralizeNode = (count: number): string => (count === 1 ? "node" : "nodes"
 const MAX_PREVIEW_CHARS = 7000;
 const MAX_PREVIEW_LINES = 200;
 const FLASH_DURATION_MS = 2000;
+const TREE_SELECTOR_PROBE_ROWS = 1;
 
 const getTextContent = (content: unknown): string => {
 	if (typeof content === "string") return content;
@@ -262,7 +301,7 @@ const getEntryContent = (entry: SessionEntry): string => {
 		case "branch_summary":
 			return entry.summary;
 		case "custom":
-			return `[custom: ${entry.customType}]`;
+			return formatCustomEntryContent(entry.customType, entry.data);
 		case "label":
 			return `label: ${entry.label ?? "(cleared)"}`;
 		case "model_change":
@@ -276,55 +315,10 @@ const getEntryContent = (entry: SessionEntry): string => {
 	}
 };
 
+const getPreviewEntryContent = (entry: SessionEntry): string =>
+	entry.type === "custom" ? formatCustomEntryPreview(entry.customType, entry.data) : getEntryContent(entry);
+
 const replaceTabs = (text: string): string => text.replace(/\t/g, "   ");
-
-const MAX_PARENT_TRAVERSAL_DEPTH = 30;
-
-const getToolCallId = (entry: SessionEntry): string | null => {
-	if (entry.type !== "message") return null;
-	const msg = entry.message as { role?: string; toolCallId?: unknown };
-	if (msg.role !== "toolResult") return null;
-	return typeof msg.toolCallId === "string" ? msg.toolCallId : null;
-};
-
-const getToolName = (entry: SessionEntry): string | null => {
-	if (entry.type !== "message") return null;
-	const msg = entry.message as { role?: string; toolName?: unknown };
-	if (msg.role !== "toolResult") return null;
-	return typeof msg.toolName === "string" ? msg.toolName : null;
-};
-
-const resolveToolCallArgsFromParents = (
-	entry: SessionEntry,
-	nodeById: Map<string, SessionTreeNode>,
-): Record<string, unknown> | null => {
-	const toolCallId = getToolCallId(entry);
-	if (!toolCallId) return null;
-
-	let parentId = entry.parentId;
-	for (let depth = 0; depth < MAX_PARENT_TRAVERSAL_DEPTH && parentId; depth += 1) {
-		const parentNode = nodeById.get(parentId);
-		if (!parentNode) return null;
-
-		const parentEntry = parentNode.entry;
-		if (parentEntry.type === "message") {
-			const parentMsg = parentEntry.message as { role?: string; content?: unknown };
-			if (parentMsg.role === "assistant" && Array.isArray(parentMsg.content)) {
-				const toolCall = parentMsg.content.find(
-					(c: any) => c && c.type === "toolCall" && c.id === toolCallId,
-				) as { arguments?: unknown } | undefined;
-
-				if (toolCall && typeof toolCall.arguments === "object" && toolCall.arguments !== null) {
-					return toolCall.arguments as Record<string, unknown>;
-				}
-			}
-		}
-
-		parentId = parentEntry.parentId;
-	}
-
-	return null;
-};
 
 const resolveReadToolLanguageFromParents = (
 	entry: SessionEntry,
@@ -332,10 +326,10 @@ const resolveReadToolLanguageFromParents = (
 ): string | undefined => {
 	if (getToolName(entry) !== "read") return undefined;
 
-	const args = resolveToolCallArgsFromParents(entry, nodeById);
+	const args = resolveToolCallFromParents(entry, nodeById)?.arguments;
 	if (!args) return undefined;
 
-	const rawPath = args["file_path"] ?? args["path"];
+	const rawPath = args.file_path ?? args.path;
 	if (typeof rawPath !== "string" || !rawPath.trim()) return undefined;
 	return getLanguageFromPath(rawPath);
 };
@@ -391,28 +385,35 @@ const getTreeListInternals = (treeList: anycopyTreeList): anycopyTreeListInterna
 /** Clipboard text omits role prefix for a single node and includes it for multi-node copies
  * The preview pane is truncated for performance, while the clipboard copy is not
  */
-const buildClipboardText = (nodes: SessionTreeNode[]): string => {
-	if (nodes.length === 1) {
-		return getEntryContent(nodes[0]!.entry);
-	}
-
-	return nodes
-		.map((node) => {
-			const label = getEntryRoleLabel(node.entry);
-			const content = getEntryContent(node.entry);
-			return `${label}:\n\n${content}`;
-		})
-		.join("\n\n---\n\n");
+const buildClipboardText = (
+	nodes: SessionTreeNode[],
+	nodeById: ReadonlyMap<string, SessionTreeNode>,
+): string => {
+	const formatNode = (node: SessionTreeNode, includeRole: boolean): string => {
+		const toolPair = formatToolCallResultForClipboard(node.entry, nodeById);
+		if (toolPair) return toolPair;
+		const content = getEntryContent(node.entry);
+		return includeRole ? `${getEntryRoleLabel(node.entry)}:\n\n${content}` : content;
+	};
+	if (nodes.length === 1) return formatNode(nodes[0]!, false);
+	return nodes.map((node) => formatNode(node, true)).join("\n\n---\n\n");
 };
 
 class anycopyOverlay implements Focusable {
 	private selectedNodeIds = new Set<string>();
+	private paneFocus: PaneFocus = "tree";
+	private rangeSelection: { anchorId: string; baselineIds: Set<string> } | null = null;
 	private showEntryTimestamps = false;
 	private flashMessage: string | null = null;
 	private flashTimer: ReturnType<typeof setTimeout> | null = null;
 	private _focused = false;
 	private previewScrollOffset = 0;
 	private lastPreviewHeight = 0;
+	private helpVisible = false;
+	private helpOffset = 0;
+	private helpLineCount = 0;
+	private helpPageSize = 1;
+	private disposed = false;
 	private previewCache: {
 		entryId: string;
 		width: number;
@@ -425,6 +426,11 @@ class anycopyOverlay implements Focusable {
 		private getTree: () => SessionTreeNode[],
 		private nodeById: Map<string, SessionTreeNode>,
 		private keys: anycopyKeyConfig,
+		private layoutRatios: PaneLayoutRatios,
+		private helpRows: readonly KeyHelpRow[],
+		private keybindings: KeybindingsManager,
+		private hintMode: HintMode,
+		private navigationAvailable: boolean,
 		private onExplicitFoldMutation: ((
 			beforeTransientFoldedNodeIds: string[],
 			afterTransientFoldedNodeIds: string[],
@@ -447,21 +453,45 @@ class anycopyOverlay implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.helpVisible) {
+			this.handleHelpInput(data);
+			return;
+		}
+
 		if (this.isEditingNodeLabel()) {
 			this.selector.handleInput(data);
 			this.requestRender();
 			return;
 		}
 
+		if (matchesKey(data, this.keys.help as MatchesKeyId)) {
+			this.helpVisible = true;
+			this.helpOffset = 0;
+			this.requestRender();
+			return;
+		}
+		if (matchesKey(data, this.keys.togglePaneFocus as MatchesKeyId)) {
+			this.paneFocus = togglePaneFocus(this.paneFocus);
+			this.lastPreviewHeight = 0;
+			this.flash(this.paneFocus === "tree" ? "Tree-focused layout" : "Preview-focused layout");
+			return;
+		}
+		if (matchesKey(data, this.keys.toggleRangeSelection as MatchesKeyId)) {
+			this.toggleRangeSelection();
+			return;
+		}
 		if (matchesKey(data, this.keys.toggleSelect as MatchesKeyId)) {
+			this.rangeSelection = null;
 			this.toggleSelectedFocusedNode();
 			return;
 		}
 		if (matchesKey(data, this.keys.copy as MatchesKeyId)) {
+			this.rangeSelection = null;
 			this.copySelectedOrFocusedNode();
 			return;
 		}
 		if (matchesKey(data, this.keys.clear as MatchesKeyId)) {
+			this.rangeSelection = null;
 			this.clearSelection();
 			return;
 		}
@@ -477,8 +507,7 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
-		const keybindings = getKeybindings();
-		if (keybindings.matches(data, "app.tree.toggleLabelTimestamp")) {
+		if (this.keybindings.matches(data, "app.tree.toggleLabelTimestamp")) {
 			return;
 		}
 
@@ -505,17 +534,55 @@ class anycopyOverlay implements Focusable {
 			return;
 		}
 
+		const beforeVisibleIds = this.getVisibleFilteredNodeIds();
+		const beforeFocusedId = this.getFocusedNode()?.entry.id;
 		const shouldTrackExplicitFoldMutation =
 			this.onExplicitFoldMutation !== null &&
-			(keybindings.matches(data, "app.tree.foldOrUp") || keybindings.matches(data, "app.tree.unfoldOrDown"));
+			(this.keybindings.matches(data, "app.tree.foldOrUp") ||
+				this.keybindings.matches(data, "app.tree.unfoldOrDown"));
 		const beforeTransientFoldedNodeIds = shouldTrackExplicitFoldMutation ? getSelectorFoldedNodeIds(this.selector) : null;
 
 		this.selector.handleInput(data);
+
+		const afterVisibleIds = this.getVisibleFilteredNodeIds();
+		const visibleRowsChanged = beforeVisibleIds.length !== afterVisibleIds.length ||
+			beforeVisibleIds.some((id, index) => id !== afterVisibleIds[index]);
+		if (visibleRowsChanged) {
+			this.rangeSelection = null;
+		} else if (this.rangeSelection) {
+			const focusedId = this.getFocusedNode()?.entry.id;
+			if (focusedId && focusedId !== beforeFocusedId) {
+				this.selectedNodeIds = applyInclusiveRangeSelection(
+					this.rangeSelection.baselineIds,
+					afterVisibleIds,
+					this.rangeSelection.anchorId,
+					focusedId,
+				);
+			}
+		}
 
 		if (beforeTransientFoldedNodeIds) {
 			this.onExplicitFoldMutation?.(beforeTransientFoldedNodeIds, getSelectorFoldedNodeIds(this.selector));
 		}
 
+		this.requestRender();
+	}
+
+	private handleHelpInput(data: string): void {
+		if (matchesKey(data, this.keys.help as MatchesKeyId) || matchesKey(data, "escape")) {
+			this.helpVisible = false;
+			this.helpOffset = 0;
+			this.requestRender();
+			return;
+		}
+
+		if (this.keybindings.matches(data, "tui.select.up")) this.helpOffset -= 1;
+		else if (this.keybindings.matches(data, "tui.select.down")) this.helpOffset += 1;
+		else if (this.keybindings.matches(data, "tui.select.pageUp")) this.helpOffset -= this.helpPageSize;
+		else if (this.keybindings.matches(data, "tui.select.pageDown")) this.helpOffset += this.helpPageSize;
+		else return;
+
+		this.helpOffset = Math.max(0, Math.min(this.helpOffset, Math.max(0, this.helpLineCount - this.helpPageSize)));
 		this.requestRender();
 	}
 
@@ -535,7 +602,34 @@ class anycopyOverlay implements Focusable {
 		return this.selector.getTreeList().getSelectedNode();
 	}
 
+	private getVisibleFilteredNodeIds(): string[] {
+		return this.getTreeListInternals().filteredNodes
+			.map(({ node }) => node.entry.id)
+			.filter((id): id is string => typeof id === "string");
+	}
+
+	private toggleRangeSelection(): void {
+		if (this.rangeSelection) {
+			this.rangeSelection = null;
+			this.flash(`Range selected (${this.selectedNodeIds.size} ${pluralizeNode(this.selectedNodeIds.size)})`);
+			return;
+		}
+		const focused = this.getFocusedNode();
+		if (!focused) return;
+		const anchorId = focused.entry.id;
+		const baselineIds = new Set(this.selectedNodeIds);
+		this.rangeSelection = { anchorId, baselineIds };
+		this.selectedNodeIds = applyInclusiveRangeSelection(
+			baselineIds,
+			this.getVisibleFilteredNodeIds(),
+			anchorId,
+			anchorId,
+		);
+		this.flash("Range select active, move to extend");
+	}
+
 	private flash(message: string): void {
+		if (this.disposed) return;
 		this.flashMessage = message;
 		if (this.flashTimer) clearTimeout(this.flashTimer);
 		this.flashTimer = setTimeout(() => {
@@ -576,6 +670,10 @@ class anycopyOverlay implements Focusable {
 		return this.showEntryTimestamps;
 	}
 
+	showNavigationUnavailable(): void {
+		this.flash("Navigation requires opening /anycopy as a command");
+	}
+
 	copySelectedOrFocusedNode(): void {
 		const focused = this.getFocusedNode();
 		const ids =
@@ -602,44 +700,43 @@ class anycopyOverlay implements Focusable {
 				return oa - ob;
 			});
 
-		copyToClipboard(buildClipboardText(nodes));
-		this.flash(`Copied ${nodes.length} ${pluralizeNode(nodes.length)} to clipboard`);
+		void copyToClipboard(buildClipboardText(nodes, nodeById))
+			.then(() => this.flash(`Copied ${nodes.length} ${pluralizeNode(nodes.length)} to clipboard`))
+			.catch((error: unknown) => {
+				this.flash(`Copy failed: ${error instanceof Error ? error.message : String(error)}`);
+			});
 	}
 
 	private renderStatusBar(width: number): string[] {
-		const lines: string[] = [];
-
-		// Keep transient/selection status compact; omit the row entirely when idle.
-		if (this.flashMessage) {
-			lines.push(truncateToWidth(this.theme.fg("success", `  ${this.flashMessage}`), width));
-		} else if (this.selectedNodeIds.size > 0) {
-			lines.push(
-				truncateToWidth(
-					this.theme.fg(
-						"accent",
-						`  ${this.selectedNodeIds.size} selected ${pluralizeNode(this.selectedNodeIds.size)}`,
-					),
-					width,
-				),
-			);
-		}
-
-		const compactKey = (key: string): string =>
-			formatKeyHint(key)
-				.replace(/^Shift(?=\+)/i, "S")
-				.replace(/\+Ctrl(?=\+|$)/gi, "+C")
-				.replace(/\+Alt(?=\+|$)/gi, "+A");
-		const hint =
-			`  ${compactKey(this.keys.scrollUp)}/${compactKey(this.keys.scrollDown)}: scroll` +
-			` · ${compactKey(this.keys.pageUp)}/${compactKey(this.keys.pageDown)}: page` +
-			` · Enter: navigate` +
-			` · ${compactKey(this.keys.toggleSelect)}: select` +
-			` · ${compactKey(this.keys.copy)}: copy` +
-			` · ${compactKey(this.keys.clear)}: clear` +
-			` · ${compactKey(this.keys.toggleEntryTimestamps)}: entry time`;
-		lines.push(truncateToWidth(this.theme.fg("dim", hint), width));
-
-		return lines;
+		const key = formatConfiguredKey;
+		const navigationLabel = this.navigationAvailable ? "navigate" : "open /anycopy to navigate";
+		const status = this.flashMessage
+			?? (this.rangeSelection
+				? `Range selection active, ${this.selectedNodeIds.size} selected ${pluralizeNode(this.selectedNodeIds.size)}`
+				: this.selectedNodeIds.size > 0
+					? `${this.selectedNodeIds.size} selected ${pluralizeNode(this.selectedNodeIds.size)}`
+					: this.hintMode === "compact"
+						? `${key(this.keys.help)}: help · Enter: ${navigationLabel}`
+						: "Ready");
+		const statusRole = this.flashMessage ? "success" : this.selectedNodeIds.size > 0 ? "accent" : "dim";
+		const hintLines = renderStatusHints(
+			[
+				`${key(this.keys.scrollUp)}/${key(this.keys.scrollDown)}: scroll preview`,
+				`${key(this.keys.pageUp)}/${key(this.keys.pageDown)}: page preview`,
+				`Enter: ${navigationLabel}`,
+				`${key(this.keys.toggleRangeSelection)}: select range`,
+				`${key(this.keys.toggleSelect)}: (de)select node`,
+				`${key(this.keys.copy)}: copy`,
+				`${key(this.keys.clear)}: clear`,
+				`${key(this.keys.togglePaneFocus)}: layout`,
+				`${key(this.keys.help)}: help`,
+			],
+			width,
+			wrapTextWithAnsi,
+		);
+		return buildStatusTextLines(this.hintMode, status, hintLines).map((line, index) =>
+			truncateToWidth(this.theme.fg(index === 0 ? statusRole : "dim", line), width),
+		);
 	}
 
 	private renderPreviewDivider(width: number, message?: string): string {
@@ -657,9 +754,23 @@ class anycopyOverlay implements Focusable {
 			return this.previewCache;
 		}
 
-		const content = getEntryContent(focused.entry);
+		const content = getPreviewEntryContent(focused.entry);
 		const clipped = clipTextForPreview(content);
-		const rendered = renderPreviewBodyLines(clipped, focused.entry, width, this.theme, this.nodeById);
+		const resultLines = renderPreviewBodyLines(clipped, focused.entry, width, this.theme, this.nodeById);
+		const invocation = resolveToolCallFromParents(focused.entry, this.nodeById);
+		const argumentLines = invocation
+			? highlightCode(clipTextForPreview(formatJsonForDisplay(invocation.arguments)), "json")
+				.map((line) => truncateToWidth(line, width))
+			: [];
+		const rendered = invocation
+			? [
+				truncateToWidth(`${this.theme.fg("muted", "Tool")}  ${this.theme.fg("accent", invocation.name)}`, width),
+				truncateToWidth(this.theme.fg("muted", "Arguments"), width),
+				...argumentLines,
+				this.theme.fg("dim", "─".repeat(Math.max(1, width))),
+				...resultLines,
+			]
+			: resultLines;
 		const preview = {
 			entryId,
 			width,
@@ -719,14 +830,9 @@ class anycopyOverlay implements Focusable {
 		return lines;
 	}
 
-	render(width: number): string[] {
-		const height = this.getRenderHeight();
-		const output: string[] = [];
-
-		this.getTreeListInternals().maxVisibleLines = getAnycopyTreeVisibleLines(height);
+	private renderSelector(width: number, visibleRows: number): string[] {
+		this.getTreeListInternals().maxVisibleLines = Math.max(1, visibleRows);
 		const selectorLines = this.selector.render(width);
-
-		// Remove the selector's spacer after the search prompt and before its bottom border
 		const searchLineIndex = selectorLines.findIndex((line) => line.includes("Type to search"));
 		const listStartIndex = searchLineIndex >= 0 ? searchLineIndex + 2 : -1;
 		if (listStartIndex >= 0 && visibleWidth(selectorLines[listStartIndex] ?? "") === 0) {
@@ -738,21 +844,77 @@ class anycopyOverlay implements Focusable {
 		while (selectorLines.length > 0 && visibleWidth(selectorLines.at(-1) ?? "") === 0) {
 			selectorLines.pop();
 		}
+		return selectorLines;
+	}
 
-		output.push(...selectorLines);
-		output.push(...this.renderStatusBar(width));
+	private renderHelpPreview(width: number, height: number): string[] {
+		const bodyLines = renderKeyHelpLines(
+			this.helpRows,
+			width,
+			wrapTextWithAnsi,
+			(text) => this.theme.fg("dim", text),
+		);
+		const window = getKeyHelpWindow(bodyLines.length, height, this.helpOffset);
+		this.helpOffset = window.offset;
+		this.helpLineCount = bodyLines.length;
+		this.helpPageSize = window.pageSize;
 
-		const previewHeight = Math.max(0, height - output.length);
-		if (previewHeight > 0) {
-			output.push(...this.renderPreview(width, previewHeight));
+		if (height === 1) return [this.renderPreviewDivider(width, "Key bindings")];
+		if (height === 2) {
+			return [
+				this.renderPreviewDivider(width, "Key bindings"),
+				this.renderPreviewDivider(width, `${formatConfiguredKey(this.keys.help)}/Esc close help`),
+			];
 		}
 
+		const output = [
+			this.renderPreviewDivider(width, "Key bindings"),
+			...bodyLines.slice(window.offset, window.end),
+		];
+		while (output.length < height - 1) output.push("");
+		const helpScrollKeys = [...new Set([
+			...this.keybindings.getKeys("tui.select.up"),
+			...this.keybindings.getKeys("tui.select.down"),
+			...this.keybindings.getKeys("tui.select.pageUp"),
+			...this.keybindings.getKeys("tui.select.pageDown"),
+		])].map(String).map(formatConfiguredKey).join("/");
+		const helpScrollHint = helpScrollKeys ? `${helpScrollKeys} scroll · ` : "";
+		const range = bodyLines.length > window.pageSize
+			? `${window.offset + 1}-${window.end} of ${bodyLines.length} · ${helpScrollHint}`
+			: "";
+		output.push(
+			this.renderPreviewDivider(
+				width,
+				`${range}${formatConfiguredKey(this.keys.help)}/Esc close help`,
+			),
+		);
+		return output.slice(0, height);
+	}
+
+	render(width: number): string[] {
+		const height = this.getRenderHeight();
+		if (this.helpVisible) return this.renderHelpPreview(width, height);
+
+		const output: string[] = [];
+		const statusLines = this.renderStatusBar(width);
+		const probeLines = this.renderSelector(width, TREE_SELECTOR_PROBE_ROWS);
+		const selectorChromeRows = Math.max(0, probeLines.length - TREE_SELECTOR_PROBE_ROWS);
+		const availablePaneRows = Math.max(1, height - selectorChromeRows - statusLines.length);
+		const treeVisibleRows = getAnycopyTreeVisibleLines(availablePaneRows, this.paneFocus, this.layoutRatios);
+		const selectorLines = treeVisibleRows === TREE_SELECTOR_PROBE_ROWS
+			? probeLines
+			: this.renderSelector(width, treeVisibleRows);
+
+		output.push(...selectorLines, ...statusLines);
+		const previewHeight = Math.max(0, height - output.length);
+		if (previewHeight > 0) output.push(...this.renderPreview(width, previewHeight));
 		while (output.length < height) output.push("");
 		if (output.length > height) output.length = height;
 		return output;
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		if (this.flashTimer) {
 			clearTimeout(this.flashTimer);
 			this.flashTimer = null;
@@ -764,14 +926,20 @@ class anycopyOverlay implements Focusable {
 	}
 }
 
+const canNavigateTree = (ctx: ExtensionContext): ctx is ExtensionCommandContext =>
+	typeof (ctx as { navigateTree?: unknown }).navigateTree === "function";
+
 export default function anycopyExtension(pi: ExtensionAPI) {
 	const config = loadConfig();
 	const keys = config.keys;
+	const shortcut = config.shortcut;
+	const hintMode = config.hintMode;
+	const layoutRatios = config.layoutRatios;
 	const treeFilterMode = config.treeFilterMode;
 	const persistFoldState = config.persistFoldState;
 
 	const openAnycopy = async (
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		opts?: { initialSelectedId?: string },
 	) => {
 		if (!ctx.hasUI) return;
@@ -787,8 +955,9 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 		const skipSummaryPrompt = loadBranchSummarySkipPrompt(ctx.cwd);
 		let overlayHandle: { focus(): void; unfocus(): void } | undefined;
 
-		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+		await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
 			let closed = false;
+			let overlay: anycopyOverlay | undefined;
 			const closeOverlay = (): void => {
 				if (closed) return;
 				closed = true;
@@ -796,6 +965,12 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				done();
 			};
 			const getRenderHeight = (): number => getAnycopyRenderHeight(tui.terminal?.rows ?? 40);
+			const navigationAvailable = canNavigateTree(ctx);
+			const helpRows = buildKeyHelpRows(
+				(id) => keybindings.getKeys(id as EffectiveKeybindingId).map(String),
+				keys,
+				navigationAvailable,
+			);
 			const treeTermHeight = getAnycopyTreeHeight(getRenderHeight());
 			const nodeById = buildNodeMap(initialTree);
 			const validNodeIds = new Set(nodeById.keys());
@@ -806,26 +981,28 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			let lastPersistedFoldedNodeIds = durableFoldedNodeIds;
 			const currentLeafIdForNoop = currentLeafId;
 
-			const startEnterNavigation = createAnycopyEnterNavigationLauncher(async (entryId) =>
-				runAnycopyEnterNavigation({
-					entryId,
-					currentLeafIdForNoop,
-					skipSummaryPrompt,
-					close: closeOverlay,
-					reopen: (reopenOpts) => {
-						void openAnycopy(ctx, reopenOpts);
-					},
-					navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
-					ui: {
-						select: async (title, options) =>
-							(await ctx.ui.select(title, options)) as (typeof options)[number] | undefined,
-						editor: (title) => ctx.ui.editor(title),
-						setStatus: (source, message) => ctx.ui.setStatus(source, message),
-						setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
-						notify: (message, level) => ctx.ui.notify(message, level),
-					},
-				}),
-			);
+			const startEnterNavigation = navigationAvailable
+				? createAnycopyEnterNavigationLauncher(async (entryId) =>
+					runAnycopyEnterNavigation({
+						entryId,
+						currentLeafIdForNoop,
+						skipSummaryPrompt,
+						close: closeOverlay,
+						reopen: (reopenOpts) => {
+							void openAnycopy(ctx, reopenOpts);
+						},
+						navigateTree: async (targetId, options) => ctx.navigateTree(targetId, options),
+						ui: {
+							select: async (title, options) =>
+								(await ctx.ui.select(title, options)) as (typeof options)[number] | undefined,
+							editor: (title) => ctx.ui.editor(title),
+							setStatus: (source, message) => ctx.ui.setStatus(source, message),
+							setWorkingMessage: (message) => ctx.ui.setWorkingMessage(message),
+							notify: (message, level) => ctx.ui.notify(message, level),
+						},
+					}),
+				)
+				: () => overlay?.showNavigationUnavailable();
 
 			const selector = new TreeSelectorComponent(
 				initialTree,
@@ -886,11 +1063,16 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 				persistDurableFoldState(nextDurableFoldedNodeIds);
 			};
 
-			const overlay = new anycopyOverlay(
+			overlay = new anycopyOverlay(
 				selector,
 				getTree,
 				nodeById,
 				keys,
+				layoutRatios,
+				helpRows,
+				keybindings,
+				hintMode,
+				navigationAvailable,
 				persistFoldState ? handleExplicitFoldMutation : null,
 				getRenderHeight,
 				() => tui.requestRender(),
@@ -969,4 +1151,14 @@ export default function anycopyExtension(pi: ExtensionAPI) {
 			await openAnycopy(ctx);
 		},
 	});
+
+	if (shortcut) {
+		pi.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Open /anycopy in copy-only mode",
+			handler: async (ctx: ExtensionContext) => {
+				if (!ctx.hasUI) return;
+				await openAnycopy(ctx);
+			},
+		});
+	}
 }
