@@ -24,37 +24,11 @@ MCP tools operate directly against this state, but in Pi you invoke them through
 
 After RepoPrompt routing, binding, and target-root confirmation are complete, inspect the ready set before every repository exploration call.
 
-- If two or more RepoPrompt operations are independent and read-only with respect to both files and RepoPrompt session state, invoke them together through `multi_tool_use.parallel` as separate `functions.rp` calls.
+- If two or more RepoPrompt operations are independent and read-only with respect to both files and RepoPrompt session state, issue them as separate rp calls in the same tool-call block so they run together.
 - Do not issue consecutive model turns containing one independent `rp` read/search call each.
 - Typical parallel candidates include `read_file`, `file_search`, `get_file_tree`, `get_code_structure`, and independent read-only `git` queries.
 - Do not parallelize routing or binding changes, selection mutations, workspace or tab lifecycle operations, edits, file actions, approvals, or calls whose inputs depend on another result.
 - Complete routing or state mutations before launching reads that depend on the resulting state.
-
-For example:
-
-```json
-{
-  "tool_uses": [
-    {
-      "recipient_name": "functions.rp",
-      "parameters": {
-        "call": "read_file",
-        "args": { "path": "src/a.ts" }
-      }
-    },
-    {
-      "recipient_name": "functions.rp",
-      "parameters": {
-        "call": "file_search",
-        "args": {
-          "pattern": "Example",
-          "path": "src"
-        }
-      }
-    }
-  ]
-}
-```
 
 ### Workspace Hygiene (Session Start Priority)
 
@@ -70,9 +44,7 @@ Rationale: Keep workspaces coherent; mixing unrelated repos clutters selection a
 
 ### Hard Constraints
 
-Do not use bash for: `ls`, `find`, `grep`, `cat`, `wc`, `tree`, or similar file exploration.
-
-Prefer RepoPrompt MCP tools for repo-scoped work. The native repo-file tools (`read/write/edit/ls/find/grep`) may be disabled automatically when RepoPrompt is available.
+Always prefer RepoPrompt's tools for repo-scoped searching, file reading, and file tree requests.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Use `open_in_new_window=true`.
 
