@@ -27,6 +27,8 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import { createPccCodeModeToolRegistrar } from "./pcc-code-mode-bridge.ts";
+
 let parseBash: ((input: string) => any) | null = null;
 let BashCtor: any | null = null;
 let justBashLoadPromise: Promise<void> | null = null;
@@ -1437,6 +1439,7 @@ function getParentSessionChain(sessionPath: string, maxDepth: number): string[] 
 
 
 export default function sessionAskExtension(pi: ExtensionAPI) {
+    const toolRegistrar = createPccCodeModeToolRegistrar(pi);
     const CONFIG = loadConfig();
 
     // Optionally ensure the agent sees a minimal fork note in the very first response after a fork/resume
@@ -1473,7 +1476,7 @@ export default function sessionAskExtension(pi: ExtensionAPI) {
         return filtered.length === event.messages.length ? undefined : { messages: filtered };
     });
 
-    pi.registerTool({
+    toolRegistrar.register({
         name: "session_lineage",
         label: "Session Lineage",
         description:
@@ -1536,9 +1539,9 @@ export default function sessionAskExtension(pi: ExtensionAPI) {
                 details: { sessionPath, parents },
             };
         },
-    });
+    }, 'await tools.session_lineage({ maxDepth: 50 })');
 
-    pi.registerTool({
+    toolRegistrar.register({
         name: "session_ask",
         label: (params: any) => `Session Ask: ${(params?.question ?? "").toString().slice(0, 60)}`,
         description:
@@ -1603,7 +1606,9 @@ export default function sessionAskExtension(pi: ExtensionAPI) {
                 };
             }
         },
-    });
+    }, 'await tools.session_ask({ question: "..." })');
+
+    pi.on("session_shutdown", () => toolRegistrar.unregister());
 
     pi.registerCommand("session-ask", {
         description: "Ask a question about the current session log (agentic session-view + isolated model call)",

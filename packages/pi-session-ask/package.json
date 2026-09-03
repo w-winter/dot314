@@ -1,6 +1,6 @@
 {
   "name": "pi-session-ask",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Allows the agent or user to ask questions about the current session's pre-compaction history, parent (if forked) sessions' histories, or any other sessions' histories, via a subagent (keeping current context clean).",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session", "compaction"],
   "license": "MIT",
@@ -32,6 +32,7 @@
   "dot314Prepack": {
     "copy": [
       { "from": "../../extensions/session-ask/index.ts", "to": "extensions/session-ask/index.ts" },
+      { "from": "../../extensions/session-ask/pcc-code-mode-bridge.ts", "to": "extensions/session-ask/pcc-code-mode-bridge.ts" },
       { "from": "../../extensions/session-ask/config.json.example", "to": "extensions/session-ask/config.json.example" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ]

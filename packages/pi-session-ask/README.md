@@ -33,6 +33,17 @@ Add to `~/.pi/agent/settings.json` (or replace an existing unfiltered `git:githu
 }
 ```
 
+## Code and Notebook modes
+
+[pi-codex-conversion](https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/main/packages/pi-codex-conversion) exposes both tools inside `exec` when Code or Notebook Mode is active:
+
+```javascript
+const lineage = await tools.session_lineage({ maxDepth: 50 });
+const answer = await tools.session_ask({ question: "What did we decide about X?" });
+```
+
+`pi-codex-conversion` is optional. Both tools remain available as ordinary top-level Pi tools.
+
 ## Notes
 
 - If the *agent* invokes the `session_ask(...)` tool, the model sees the tool output in that turn
