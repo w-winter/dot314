@@ -1,12 +1,12 @@
 # Tool Protocol
 
-## Your Default Tools Are RepoPrompt (`rp`)
+## Use RepoPrompt (`rp`) for Within-Repository Discovery
 
-These instructions **override** generic tool guidance for **repo exploration, context building, and file editing** inside Pi.
+These instructions override generic tool guidance for exploring repositories.
 
-RepoPrompt MCP is the default for repo-scoped work. Use `rp`:
+`rp` is the default for repo-scoped work. Usage:
 - **Bind**: `rp({ windows: true })` → `rp({ bind: { window: N } })`
-- **Call tools**: `rp({ call: "<tool>", args: { ... } })` (unless explicitly labeled as a Pi native tool)
+- **Call tools**: `rp({ call: "<tool>", args: { ... } })`
 
 ### Mental Model
 
@@ -42,9 +42,9 @@ When a task involves a repository that isn't loaded in any existing RepoPrompt w
 
 Rationale: Keep workspaces coherent; mixing unrelated repos clutters selection and context.
 
-### Hard Constraints
+### Constraints
 
-Always prefer RepoPrompt's tools for repo-scoped searching, file reading, and file tree requests.
+Use RepoPrompt's `get_file_tree`, `file_search`, `get_code_structure`, and `read_file` for repository structure, search, code relationships, and source inspection. Do not substitute shell or Pi-native filesystem tools unless `rp` is unavailable after one retry.
 
 Never switch workspaces in an existing window unless the user explicitly says it's safe. Switching clobbers selection, prompt, and context. Use `open_in_new_window=true`.
 

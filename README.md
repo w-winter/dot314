@@ -217,6 +217,5 @@ Prompts are not exported as part of the Pi package.
 
 | | Preface |
 |---|---|
-| ● | `AGENTS-prefaces/rp-cli-preface.md` |
 | ● | `AGENTS-prefaces/rp-mcp-preface.md` |
 | ● | `AGENTS-prefaces/rp-mcp-preface-exPi.md` |
