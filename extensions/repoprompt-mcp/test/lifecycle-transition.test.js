@@ -132,7 +132,7 @@ function createMockPi(entries, session = {}) {
   const tools = new Map();
 
   return {
-    events: { on() {}, emit() {} },
+    events: { on() { return () => {}; }, emit() {} },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);

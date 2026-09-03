@@ -11,11 +11,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolRenderResultOptions,
-  Theme,
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ToolRenderResultOptions,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text, matchesKey, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -126,6 +127,7 @@ import {
   runObserverInterruptibleCall,
   supportsObserverInterruptibleAgentWait,
 } from "./steerable-waits.js";
+import { registerRpCodeModeBridge } from "./pcc-code-mode-bridge.js";
 
 import { readFileWithCache } from "./readcache/read-file.js";
 import { RP_READCACHE_CUSTOM_TYPE, SCOPE_FULL, scopeRange } from "./readcache/constants.js";
@@ -865,6 +867,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   let connectionLifecycleController = new AbortController();
   let connectionTransition: Promise<void> | null = null;
   let connectionRecovery: { signal: AbortSignal; promise: Promise<void> } | null = null;
+  let unregisterCodeModeBridge: (() => void) | undefined;
 
   pi.events.on(QUEUE_STEER_ACCEPTED_EVENT, (payload: unknown) => {
     steeringWaitCoordinator.observeQueueSteerAccepted(payload);
@@ -2256,6 +2259,8 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   });
 
   pi.on("session_shutdown", async () => {
+    unregisterCodeModeBridge?.();
+    unregisterCodeModeBridge = undefined;
     shutdownRequested = true;
     invalidateConnectionLifecycle("session_shutdown");
     updatePendingTransitionSelectionFromLiveState();
@@ -2733,7 +2738,7 @@ export default function repopromptMcp(pi: ExtensionAPI, dependencies: RepoPrompt
   // Main Tool Registration
   // ───────────────────────────────────────────────────────────────────────────
 
-  pi.registerTool({
+  const rpTool = defineTool({
     name: "rp",
     label: "RepoPrompt",
     description: `RepoPrompt integration - file selection, code structure, edits, and more.
@@ -2930,6 +2935,8 @@ Mode priority: call > describe > search > windows > bind > status`,
       return new Container();
     },
   });
+  pi.registerTool(rpTool);
+  unregisterCodeModeBridge = registerRpCodeModeBridge(pi, rpTool);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Tool Row Content

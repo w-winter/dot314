@@ -91,7 +91,7 @@ function createMockPi() {
   const tools = new Map();
   const entries = [];
   return {
-    events: { on() {}, emit() {} },
+    events: { on() { return () => {}; }, emit() {} },
     on(event, handler) {
       const existing = handlers.get(event) ?? [];
       existing.push(handler);

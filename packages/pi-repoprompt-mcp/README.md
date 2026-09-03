@@ -71,6 +71,20 @@ Forked sessions inherit the parent session-plus-node's window, tab, and auto-sel
 - Generic fenced diff blocks, and adaptive-diff parse failures, fall back to a simpler diff renderer, which uses `delta` if installed or otherwise the built-in highlighter
 - Markdown-aware styling for headings and lists
 
+### Pi Codex Code and Notebook Mode
+
+When [pi-codex-conversion](https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/main/packages/pi-codex-conversion) 3.0.24 or newer is installed, the same `rp` tool is available inside Code and Notebook Mode as `tools.rp`. Await each call so cancellation and progress remain attached to the active `exec` cell:
+
+```js
+const result = await tools.rp({
+  call: "read_file",
+  args: { path: "README.md" },
+});
+text(result);
+```
+
+The top-level `rp` tool also works when `pi-codex-conversion` is not installed.
+
 ### Asynchronous Context Builder and Oracle jobs
 
 - Calls to `context_builder` and `oracle_send` through `rp` start in the background and immediately return opaque job IDs

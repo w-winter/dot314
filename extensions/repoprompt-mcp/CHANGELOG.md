@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.6] - 2026-09-03
+
+### Added
+
+- Pi Codex Conversion 3.0.24 or newer can invoke the existing `rp` tool inside Code and Notebook Mode with the same Pi context, cancellation, progress updates, and rendering
+
 ## [0.9.5] - 2026-08-18
 
 ### Changed
