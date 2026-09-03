@@ -1,6 +1,6 @@
 ---
 name: prose-review
-description: Review prose written for others -- user-facing docs, prompts for other LLMs, inline comments, docstrings, and other-facing messages -- for local jargon leakage, orphaned references, missing grounding, and audience or genre misfit
+description: Review prose written for others (e.g., user-facing documentation, prompts for other LLMs, reports, plans, inline comments, docstrings) for local jargon leakage, orphaned references, missing grounding, and audience or genre mismatch. Always run on prose you produce or materially edit, except for routine conversational messages (e.g., progress updates, confirmations, concise replies) and unchanged quoted text.
 ---
 
 # Prose Review
