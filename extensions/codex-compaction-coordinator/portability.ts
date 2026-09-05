@@ -11,6 +11,7 @@ import {
     type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
+import { serializeConversationForCompaction } from "../_shared/compaction-serialization.ts";
 import { isCoordinatorMetadataEntry } from "./portability-mode.ts";
 import {
     describeNativeEpoch,
@@ -35,6 +36,8 @@ import {
     hashPortableValue,
     MalformedPortableRecordError,
     parsePortableSummarizerProvenance,
+    parsePortableToolResultChars,
+    preparePortableSource,
     parsePortableSummaryRecord,
     parsePortableSummaryUsage,
     selectBestPortableChain,
@@ -63,6 +66,7 @@ type ModelIdentity = { provider: string; api: string; id: string };
 
 export type GroundedPortableSummarizerSession = {
     descriptor: PortableSummarizerProvenance;
+    toolResultChars: number | null;
     summarizeNext(request: {
         previousSummary: string | null;
         sourceText: string;
@@ -366,12 +370,6 @@ function revalidateEpochAgainstBranch(
     }
 }
 
-function serializeRange(entries: readonly SessionEntry[]): string {
-    const messages = entries
-        .flatMap((entry) => sessionEntryToContextMessages(entry));
-    return serializeConversation(convertToLlm(messages));
-}
-
 export function derivePortablePlan(
     branch: readonly SessionEntry[],
     response: NativeEpoch,
@@ -426,7 +424,8 @@ export function derivePortablePlan(
         const entries = branch.slice(startIndex, descriptor.entryIndex).filter(isPortableSourceEntry);
         const identityPairs = projectionIdentityPairs(branch, entries);
         const identityEntries = identityPairs.map(({ projectedEntry }) => projectedEntry);
-        const sourceText = serializeRange(entries);
+        const messages = convertToLlm(entries.flatMap((entry) => sessionEntryToContextMessages(entry)));
+        const sourceText = serializeConversation(messages);
         const range: PortableRangeIdentity = {
             firstEntryId: identityPairs[0]?.entryId ?? null,
             lastEntryId: identityPairs.at(-1)?.entryId ?? null,
@@ -440,6 +439,8 @@ export function derivePortablePlan(
             checkpoint: portableCheckpointIdentity(descriptor),
             range,
             sourceText,
+            serializeSource: (toolResultChars: number | null) =>
+                serializeConversationForCompaction(messages, toolResultChars),
             coverageEntries,
         };
     });
@@ -482,13 +483,26 @@ export function discoverChain(
     entries: readonly SessionEntry[],
     branch: readonly SessionEntry[],
     onPortableRecordValidation: () => void,
+    options: {
+        resumeToolResultChars?: number | null;
+        pendingRecords?: readonly PortableSummaryRecordV1[];
+    } = {},
 ): PortableChain {
     const sources = discoverSources(entries, branch, plan.baselineEntryIndex);
+    for (const record of options.pendingRecords ?? []) {
+        sources.push({
+            entryId: `pending:${record.recordId}`,
+            data: record,
+            activePosition: null,
+            relevantIfMalformed: true,
+        });
+    }
     for (let index = 0; index < sources.length; index += 1) onPortableRecordValidation();
     return selectBestPortableChain({
         sources,
         baseline: plan.baseline,
         checkpoints: plan.checkpoints,
+        resumeToolResultChars: options.resumeToolResultChars,
     });
 }
 
@@ -985,9 +999,9 @@ export function registerCodexCompactionPortability(
                             operation.phase = "preparing";
                             throwIfAborted(controller.signal);
                             if (operation.waiters.size === 0) return [];
-                            const checkpoint = plan.checkpoints[chain.completedCheckpoints]!;
+                            let checkpoint = plan.checkpoints[chain.completedCheckpoints]!;
                             currentCheckpointId = checkpoint.checkpoint.entryId;
-                            const startOffset = chain.partialOffset;
+                            let startOffset = chain.partialOffset;
                             let record: PortableSummaryRecordV1;
                             if (checkpoint.sourceText.length === 0) {
                                 operation.phase = "commit";
@@ -1020,8 +1034,26 @@ export function registerCodexCompactionPortability(
                                     } catch {
                                         throw new Error("Grounded portable summarizer returned invalid provenance");
                                     }
-                                    summarizer = { ...openedSession, descriptor };
+                                    summarizer = {
+                                        ...openedSession,
+                                        descriptor,
+                                        toolResultChars: parsePortableToolResultChars(openedSession.toolResultChars),
+                                    };
+                                    if (chain.partialOffset > 0) {
+                                        chain = discoverChain(
+                                            plan,
+                                            ctx.sessionManager.getEntries(),
+                                            ctx.sessionManager.getBranch(),
+                                            runtime.onPortableRecordValidation,
+                                            { resumeToolResultChars: summarizer.toolResultChars },
+                                        );
+                                    }
                                 }
+                                checkpoint = {
+                                    ...checkpoint,
+                                    ...preparePortableSource(checkpoint, summarizer.toolResultChars),
+                                };
+                                startOffset = chain.partialOffset;
                                 if (!startedCall) {
                                     notify(ctx, "Materializing portable Codex checkpoint history…", "info");
                                     startedCall = true;

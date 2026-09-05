@@ -21,6 +21,8 @@ import {
     canonicalJson,
     hashPortableValue,
     parsePortableSummarizerProvenance,
+    parsePortableToolResultChars,
+    preparePortableSource,
     type PortableChain,
     type PortableSummarizerProvenance,
     type PortableSummaryRecordV1,
@@ -368,7 +370,20 @@ export function registerCodexCompactionPrewarm(
             } catch {
                 throw new Error("Grounded portable summarizer returned invalid provenance");
             }
-            const summarizer: GroundedPortableSummarizerSession = { ...opened, descriptor };
+            const summarizer: GroundedPortableSummarizerSession = {
+                ...opened,
+                descriptor,
+                toolResultChars: parsePortableToolResultChars(opened.toolResultChars),
+            };
+            if (current.speculativeChain.partialOffset > 0) {
+                current.speculativeChain = discoverChain(
+                    current.plan,
+                    ctx.sessionManager.getEntries(),
+                    ctx.sessionManager.getBranch(),
+                    () => undefined,
+                    { resumeToolResultChars: summarizer.toolResultChars, pendingRecords: current.pendingRecords },
+                );
+            }
             while (current.speculativeChain.completedCheckpoints < current.plan.checkpoints.length) {
                 if (
                     current.controller.signal.aborted
@@ -377,7 +392,11 @@ export function registerCodexCompactionPrewarm(
                     || current.activeRunId !== runId
                 ) return;
                 if (!current.backgroundInterest) return;
-                const checkpoint = current.plan.checkpoints[current.speculativeChain.completedCheckpoints]!;
+                const plannedCheckpoint = current.plan.checkpoints[current.speculativeChain.completedCheckpoints]!;
+                const checkpoint = {
+                    ...plannedCheckpoint,
+                    ...preparePortableSource(plannedCheckpoint, summarizer.toolResultChars),
+                };
                 const startOffset = current.speculativeChain.partialOffset;
                 let record: PortableSummaryRecordV1;
                 if (checkpoint.sourceText.length === 0) {

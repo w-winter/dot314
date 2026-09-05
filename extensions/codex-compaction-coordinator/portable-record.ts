@@ -74,6 +74,8 @@ export type PortableRangeIdentity = {
     entriesFingerprint: string;
     transcriptLength: number;
     transcriptFingerprint: string;
+    // Absent on saved records created with Pi's stock serializer; retain their original proofs.
+    toolResultChars?: number | null;
 };
 
 export type PortableSummaryRecordV1 = {
@@ -121,7 +123,38 @@ export type PortableCheckpointPlan = {
     checkpoint: PortableCheckpointIdentity;
     range: PortableRangeIdentity;
     sourceText: string;
+    serializeSource: (toolResultChars: number | null) => string;
 };
+
+type PreparedPortableSource = Pick<PortableCheckpointPlan, "range" | "sourceText">;
+
+const preparedSources = new WeakMap<PortableCheckpointPlan, Map<number | null, PreparedPortableSource>>();
+
+/** Memoize the exact transcript and range proof per immutable checkpoint plan and tool-text limit. */
+export function preparePortableSource(
+    plan: PortableCheckpointPlan,
+    toolResultChars: number | null,
+): PreparedPortableSource {
+    let sources = preparedSources.get(plan);
+    if (!sources) {
+        sources = new Map();
+        preparedSources.set(plan, sources);
+    }
+    const cached = sources.get(toolResultChars);
+    if (cached) return cached;
+    const sourceText = plan.serializeSource(toolResultChars);
+    const prepared = {
+        sourceText,
+        range: {
+            ...plan.range,
+            transcriptLength: sourceText.length,
+            transcriptFingerprint: fingerprintPortableTranscript(sourceText),
+            toolResultChars,
+        },
+    };
+    sources.set(toolResultChars, prepared);
+    return prepared;
+}
 
 export type PortableRecordSource = {
     entryId: string;
@@ -310,6 +343,14 @@ function parseCheckpoint(value: unknown): PortableCheckpointIdentity {
     };
 }
 
+/** Parse an untrusted tool-text limit; reject values other than null or positive safe integers. */
+export function parsePortableToolResultChars(value: unknown): number | null {
+    if (value !== null && !isSafePositiveInteger(value)) {
+        throw new Error("Portable toolResultChars must be null or a positive integer");
+    }
+    return value;
+}
+
 function parseRange(value: unknown): PortableRangeIdentity {
     if (
         !isRecord(value)
@@ -320,6 +361,7 @@ function parseRange(value: unknown): PortableRangeIdentity {
             "entriesFingerprint",
             "transcriptLength",
             "transcriptFingerprint",
+            ...(Object.hasOwn(value, "toolResultChars") ? ["toolResultChars"] : []),
         ])
         || (value.firstEntryId !== null && !isNonblankString(value.firstEntryId))
         || (value.lastEntryId !== null && !isNonblankString(value.lastEntryId))
@@ -333,7 +375,7 @@ function parseRange(value: unknown): PortableRangeIdentity {
     ) {
         throw new Error("Portable record range is invalid");
     }
-    return {
+    const range: PortableRangeIdentity = {
         firstEntryId: value.firstEntryId,
         lastEntryId: value.lastEntryId,
         entryCount: value.entryCount,
@@ -341,6 +383,10 @@ function parseRange(value: unknown): PortableRangeIdentity {
         transcriptLength: value.transcriptLength,
         transcriptFingerprint: value.transcriptFingerprint,
     };
+    if (Object.hasOwn(value, "toolResultChars")) {
+        range.toolResultChars = parsePortableToolResultChars(value.toolResultChars);
+    }
+    return range;
 }
 
 export function parsePortableSummarizerProvenance(value: unknown): PortableSummarizerProvenance {
@@ -559,6 +605,8 @@ export function selectBestPortableChain(params: {
     sources: readonly PortableRecordSource[];
     baseline: PortableBaselineProof;
     checkpoints: readonly PortableCheckpointPlan[];
+    /** When opening a summarizer, resume only partial work whose source text still matches. */
+    resumeToolResultChars?: number | null;
 }): PortableChain {
     const checkpointIndices = new Map(
         params.checkpoints.map((checkpoint, index) => [canonicalJson(checkpoint.checkpoint), index]),
@@ -600,7 +648,10 @@ export function selectBestPortableChain(params: {
             }
             const checkpointIndex = checkpointIndexFor(record);
             if (checkpointIndex < 0) throw new Error(`Portable record ${record.recordId} has a stale checkpoint`);
-            const expectedPlan = params.checkpoints[checkpointIndex]!;
+            const checkpointPlan = params.checkpoints[checkpointIndex]!;
+            const expectedPlan = record.range.toolResultChars === undefined
+                ? checkpointPlan
+                : preparePortableSource(checkpointPlan, record.range.toolResultChars);
             if (!rangeMatches(record.range, expectedPlan.range)) {
                 throw new Error(`Portable record ${record.recordId} has mismatched range proof`);
             }
@@ -625,6 +676,9 @@ export function selectBestPortableChain(params: {
                 if (predecessorCheckpointIndex === checkpointIndex) {
                     if (predecessorTip.record.state === "complete") {
                         throw new Error(`Portable record ${record.recordId} continues a complete checkpoint`);
+                    }
+                    if (predecessorTip.record.range.transcriptFingerprint !== record.range.transcriptFingerprint) {
+                        throw new Error(`Portable record ${record.recordId} has mismatched predecessor transcript`);
                     }
                     expectedStartOffset = predecessorTip.record.endOffset;
                 } else if (predecessorCheckpointIndex === checkpointIndex - 1) {
@@ -699,6 +753,13 @@ export function selectBestPortableChain(params: {
         if (checkpointIndexFor(source.record) < 0) continue;
         try {
             const chain = validate(source);
+            if (source.record.state === "partial" && params.resumeToolResultChars !== undefined) {
+                const expected = preparePortableSource(
+                    params.checkpoints[checkpointIndexFor(source.record)]!,
+                    params.resumeToolResultChars,
+                );
+                if (source.record.range.transcriptFingerprint !== expected.range.transcriptFingerprint) continue;
+            }
             if (isBetterChain(chain, best)) best = chain;
         } catch (error) {
             if (source.activePosition !== null) throw error;

@@ -7,6 +7,7 @@ import type { AgentMessage, ExtensionAPI, SessionEntry } from "@earendil-works/p
 
 import {
     openGroundedPortableSummarizerSession,
+    parseConfig,
     type GroundedPortableSummarizerDependencies,
 } from "../grounded-compaction/index.ts";
 import {
@@ -27,6 +28,7 @@ import {
     parsePortableSummarizerProvenance,
     parsePortableSummaryRecord,
     parsePortableSummaryUsage,
+    preparePortableSource,
     selectBestPortableChain,
     type PortableBaselineProof,
     type PortableChain,
@@ -128,6 +130,23 @@ function nativeDetails(model = "gpt-test"): Record<string, unknown> {
     };
 }
 
+function toolResultEntry(id: string, text: string, parentId: string | null = null): SessionEntry {
+    return {
+        type: "message",
+        id,
+        parentId,
+        timestamp: "2026-07-24T00:00:00.000Z",
+        message: {
+            role: "toolResult",
+            toolCallId: "read-call",
+            toolName: "read",
+            content: [{ type: "text", text }],
+            isError: false,
+            timestamp: 1,
+        },
+    };
+}
+
 function checkpointEntry(
     id: string,
     parentId: string | null,
@@ -213,6 +232,7 @@ function checkpointPlan(entryId: string, sourceText: string, entries: unknown[] 
             transcriptFingerprint: fingerprintPortableTranscript(sourceText),
         },
         sourceText,
+        serializeSource: () => sourceText,
     };
 }
 
@@ -326,6 +346,24 @@ describe("portable record v1 trust boundary", () => {
             summary: "summary",
         });
         assert.equal(parsePortableSummaryRecord(record).recordId, UUIDS[0]);
+    });
+
+    it("rejects a chunk chain that changes serialized input halfway through a checkpoint", () => {
+        const plan = checkpointPlan("checkpoint", "old input");
+        plan.serializeSource = () => "different input";
+        const partial = recordFor({
+            recordId: UUIDS[0]!, checkpoint: plan, startOffset: 0, endOffset: 3, summary: "partial",
+        });
+        const chain = chainFor([{ entryId: "partial", record: partial }], [plan]);
+        const changed = { ...plan, ...preparePortableSource(plan, null) };
+        const complete = recordFor({
+            recordId: UUIDS[1]!, checkpoint: changed, predecessorChain: chain,
+            startOffset: 3, endOffset: changed.sourceText.length, summary: "invalid continuation",
+        });
+        assert.throws(() => chainFor([
+            { entryId: "partial", record: partial, activePosition: 1 },
+            { entryId: "complete", record: complete, activePosition: 2 },
+        ], [plan]), /mismatched predecessor transcript/);
     });
 
     it("parses summarizer provenance and usage without constructing a full portable record", () => {
@@ -575,6 +613,7 @@ describe("portable record v1 trust boundary", () => {
 
 type HarnessOptions = {
     branch: SessionEntry[];
+    toolResultChars?: number | null;
     grounded?: "available" | "unavailable" | "error" | "malformed";
     groundedOpenSession?: GroundedPortableSummarizerOpener;
     summarize?: (request: SummaryRequest, callIndex: number) => Promise<{
@@ -682,6 +721,7 @@ function createHarness(options: HarnessOptions) {
                     openCalls += 1;
                     return {
                         descriptor: PROVENANCE,
+                        toolResultChars: options.toolResultChars === undefined ? 2000 : options.toolResultChars,
                         summarizeNext: async (request: SummaryRequest) => {
                             const callIndex = summaryCalls++;
                             summaryRequests.push(request);
@@ -987,6 +1027,122 @@ describe("portable protocol normalization and branch projection", () => {
 });
 
 describe("coordinator lazy portability orchestration", () => {
+    for (const toolResultChars of [null, 4]) {
+        it(`uses grounded toolResultChars=${toolResultChars} before summarizing and reuses the result`, async () => {
+            const toolText = "head" + "x".repeat(2_100) + "important tail";
+            const tool = toolResultEntry("tool-source", toolText);
+            const prompts: string[] = [];
+            const groundedOpenSession: GroundedPortableSummarizerOpener = (request, signal) =>
+                openGroundedPortableSummarizerSession(request, signal, {
+                    collectFilesTouched: () => [],
+                    loadConfig: async () => parseConfig({ toolResultChars, includeFilesTouched: false }),
+                    loadCompactionPrompt: async () => "Keep the checkpoint concise",
+                    complete: async (_model, context) => {
+                        prompts.push(JSON.stringify(context));
+                        const response = assistantEntry("summary", "portable summary", null);
+                        assert.equal(response.type, "message");
+                        assert.equal(response.message.role, "assistant");
+                        return response.message;
+                    },
+                });
+            const harness = createHarness({
+                branch: [tool, checkpointEntry("checkpoint-1", tool.id)],
+                groundedOpenSession,
+            });
+            await harness.runContext();
+            assert.equal(harness.abortCalls, 0);
+            assert.equal(prompts.length, 1);
+            if (toolResultChars === null) {
+                assert.ok(prompts[0]!.includes(toolText));
+            } else {
+                assert.ok(prompts[0]!.includes(`head\\n\\n[... ${toolText.length - 4} more characters truncated]`));
+                assert.ok(!prompts[0]!.includes("important tail"));
+            }
+            await harness.runContext();
+            assert.equal(prompts.length, 1);
+            const resumed = createHarness({ branch: harness.branch, grounded: "unavailable" });
+            const result = await resumed.runContext();
+            assert.equal(result.messages[0].summary, "portable summary");
+            assert.equal(resumed.abortCalls, 0);
+        });
+    }
+
+    for (const state of ["partial", "complete"] as const) {
+        it(`reuses a stock-serialized ${state} record appropriately with full tool text enabled`, async () => {
+            const tool = toolResultEntry("old-tool", "old head" + "x".repeat(2_100) + "old tail");
+            const checkpoint = checkpointEntry("checkpoint-1", tool.id);
+            const branch = [tool, checkpoint];
+            const plan = derivePortablePlan(branch, {
+                status: "available",
+                baseline: { kind: "branch-root" },
+                checkpoints: [descriptor(checkpoint.id, 1)],
+            });
+            const record = recordFor({
+                recordId: UUIDS[5]!,
+                checkpoint: plan.checkpoints[0]!,
+                startOffset: 0,
+                endOffset: state === "complete" ? plan.checkpoints[0]!.sourceText.length : 8,
+                summary: "saved summary",
+            });
+            const saved: SessionEntry = {
+                type: "custom",
+                id: "saved-summary",
+                parentId: checkpoint.id,
+                timestamp: "2026-07-24T00:00:03.000Z",
+                customType: PORTABLE_SUMMARY_CUSTOM_TYPE,
+                data: record,
+            };
+            const nextTool = toolResultEntry("next-tool", "new head" + "y".repeat(2_100) + "new tail", saved.id);
+            const harness = createHarness({
+                branch: [...branch, saved, nextTool, checkpointEntry("checkpoint-2", nextTool.id)],
+                toolResultChars: null,
+            });
+            await harness.runContext();
+            assert.equal(harness.abortCalls, 0);
+            const first = harness.summaryRequests[0]!;
+            assert.equal(first.startOffset, 0);
+            if (state === "complete") {
+                assert.equal(harness.summaryCalls, 1);
+                assert.equal(first.previousSummary, "saved summary");
+                assert.ok(first.sourceText.includes("new tail"));
+                assert.ok(!first.sourceText.includes("old head"));
+            } else {
+                assert.equal(harness.summaryCalls, 2);
+                assert.equal(first.previousSummary, null);
+                assert.ok(first.sourceText.includes("old tail"));
+            }
+        });
+    }
+
+    for (const resumedLimit of [4, null]) {
+        it(`resumes interrupted configured serialization with toolResultChars=${resumedLimit}`, async () => {
+            const tool = toolResultEntry("tool", "head" + "x".repeat(2_100) + "tail");
+            const harness = createHarness({
+                branch: [tool, checkpointEntry("checkpoint", tool.id)],
+                toolResultChars: 4,
+                summarize: async () => ({ summary: "partial summary", endOffset: 8, usage: null }),
+                onAppend: () => harness.abort(),
+            });
+            await harness.runContext();
+            const resumed = createHarness({ branch: harness.branch, toolResultChars: resumedLimit });
+            // Each harness has its own deterministic UUID sequence.
+            const saved = harness.branch.at(-1)!;
+            assert.equal(saved.type, "custom");
+            const record = parsePortableSummaryRecord(saved.data);
+            record.recordId = UUIDS[5]!;
+            const branch = [...harness.branch.slice(0, -1), { ...saved, data: record }];
+            resumed.setBranch(branch);
+            resumed.setEntries(branch);
+            await resumed.runContext();
+            assert.equal(resumed.abortCalls, 0);
+            assert.equal(resumed.summaryCalls, 1);
+            const request = resumed.summaryRequests[0]!;
+            assert.equal(request.startOffset, resumedLimit === null ? 0 : 8);
+            assert.equal(request.previousSummary, resumedLimit === null ? null : "partial summary");
+            if (resumedLimit === null) assert.ok(request.sourceText.endsWith("tail"));
+        });
+    }
+
     it("bypasses canonical Codex, missing models, and empty native epochs", async () => {
         const harness = createHarness({ branch: basicBranch() });
         const activeModel = harness.context().model;
@@ -1350,6 +1506,7 @@ describe("coordinator lazy portability orchestration", () => {
             branch: basicBranch().slice(0, 2),
             groundedOpenSession: async () => ({
                 descriptor: PROVENANCE,
+                toolResultChars: 2000,
                 summarizeNext: (request) => {
                     summaryCalls += 1;
                     startOffsets.push(request.startOffset);
@@ -1766,6 +1923,7 @@ describe("coordinator lazy portability orchestration", () => {
             loadConfig: async () => ({
                 includeFilesTouched: { inCompactionSummary: false, inBranchSummary: false },
                 defaultPreset: "current",
+                toolResultChars: null,
                 presets: {},
             }),
             loadCompactionPrompt: async () => "Keep the checkpoint concise",

@@ -17,7 +17,9 @@ For Codex models, grounded-compaction leaves compaction to Pi's normal pipeline.
 
 On the first request after switching to another provider, the coordinator creates any missing portable summaries for the current history. Grounded-compaction uses its configured `defaultPreset` to summarize the visible session history in chronological chunks. When `includeFilesTouched.inCompactionSummary` is enabled, each portable summary includes grounded-compaction's cumulative files-touched manifest through that checkpoint. Messages after the checkpoint remain in the visible tail and are excluded from the manifest.
 
-Interrupted summarization resumes from the last completed chunk. The non-Codex request receives one complete cumulative summary followed by the exact visible messages after the latest checkpoint.
+Grounded-compaction's `toolResultChars` setting controls tool-result text before the coordinator divides the transcript into chunks. `null` keeps the full text; a positive integer caps each result. The setting is read when summarization starts. Completed portable summaries are reused after a setting change.
+
+Interrupted summarization resumes from the last completed chunk. If a changed `toolResultChars` setting alters an unfinished checkpoint's input text, that checkpoint restarts from the preceding complete summary. The non-Codex request receives one complete cumulative summary followed by the exact visible messages after the latest checkpoint.
 
 Completed model-generated portable summaries appear in the transcript as expandable portable compaction cards. Only complete summaries are shown.
 

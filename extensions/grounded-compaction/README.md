@@ -64,7 +64,7 @@ That cost is usually worth paying when the substance of a session lives in tool 
 
 A limit earns its keep in the opposite case: sessions dominated by bulky, low-signal output such as long directory listings, verbose build logs, or repeated large fetches. There the extra text mostly buys request size, and a cap keeps compaction affordable on a smaller default model.
 
-This setting applies to compaction only; summaries created from `/tree` are unaffected.
+This setting applies to ordinary compaction and portable summaries created through codex-compaction-coordinator. For portable summaries, it is applied before chunking. Completed portable summaries are reused after a setting change; an unfinished checkpoint restarts if the change alters its input text.
 
 ### `defaultPreset`, `largeContextPreset`, and `presets`
 

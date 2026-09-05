@@ -70,12 +70,14 @@ function createHarness(
     summaryPromise?: Promise<{ summary: string; endOffset: number; usage: null }>,
     ignoreAbort = false,
     summarizeOverride?: (
-        request: { sourceText: string; signal: AbortSignal },
+        request: { sourceText: string; startOffset: number; previousSummary: string | null; signal: AbortSignal },
         callIndex: number,
     ) => Promise<{ summary: string; endOffset: number; usage: null }>,
     openSessionPromise?: Promise<void>,
     openSessionOverride?: (openIndex: number, signal: AbortSignal) => Promise<void>,
+    initialToolResultChars: number | null = 2000,
 ) {
+    let toolResultChars = initialToolResultChars;
     const bus = new Bus();
     const hooks = new Map<string, Hook[]>();
     const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
@@ -139,6 +141,7 @@ function createHarness(
         if (openSessionOverride) await openSessionOverride(openIndex, signal);
         else if (openSessionPromise) await openSessionPromise;
         return {
+            toolResultChars,
             descriptor: {
                 provider: "anthropic",
                 api: "anthropic-messages",
@@ -219,6 +222,8 @@ function createHarness(
         get abortCalls() { return abortCalls; },
         setModel(next: typeof model) { model = next; },
         setBranch(next: SessionEntry[]) { branch = next; },
+        setEntries(next: SessionEntry[]) { entries = next; },
+        setToolResultChars(value: number | null) { toolResultChars = value; },
         setFailPortableAppends(value: boolean) { failPortableAppends = value; },
         appendUserAndCheckpoint() {
             const user = userEntry("user-2", "later visible work", branch.at(-1)?.id ?? null);
@@ -233,6 +238,89 @@ function createHarness(
 }
 
 describe("Codex portability prewarm", () => {
+    for (const limit of [null, 4]) {
+        it(`prewarms configured tool text with toolResultChars=${limit} and reuses it on a provider switch`, async () => {
+            const toolText = "head" + "x".repeat(2_100) + "tail";
+            let received = "";
+            const harness = createHarness(undefined, false, async (request) => {
+                received = request.sourceText;
+                return { summary: "configured summary", endOffset: received.length, usage: null };
+            }, undefined, undefined, limit);
+            registerCodexCompactionPortability(harness.pi);
+            const tool: SessionEntry = {
+                type: "message",
+                id: "tool",
+                parentId: null,
+                timestamp: "2026-07-25T00:00:00.000Z",
+                message: {
+                    role: "toolResult", toolCallId: "read-call", toolName: "read",
+                    content: [{ type: "text", text: toolText }], isError: false, timestamp: 1,
+                },
+            };
+            const branch = [tool, checkpointEntry(tool.id)];
+            harness.setBranch(branch);
+            harness.setEntries(branch);
+            await harness.command("prewarm");
+            await harness.flush();
+            assert.equal(received, limit === null
+                ? `[Tool result]: ${toolText}`
+                : `[Tool result]: head\n\n[... ${toolText.length - 4} more characters truncated]`);
+            await harness.runHooks("agent_end");
+            harness.setModel({ ...harness.context().model, provider: "anthropic", api: "anthropic-messages" });
+            await harness.runHooks("model_select");
+            const hooks = harness.hooks.get("context")!;
+            const ctx = harness.context();
+            await hooks[0]!({ messages: [] }, ctx);
+            const result = await hooks[1]!({ messages: [] }, ctx);
+            assert.equal(result.messages[0].summary, "configured summary");
+            assert.equal(harness.summaryCalls, 1);
+            assert.equal(harness.abortCalls, 0);
+        });
+    }
+
+    it("restarts changed prewarm source after cancellation while retaining pending paid records", async () => {
+        let restartedOffset = -1;
+        let restartedSummary: string | null = "not restarted";
+        const harness = createHarness(undefined, false, async (request, callIndex) => {
+            if (callIndex === 0) return { summary: "paid partial", endOffset: 8, usage: null };
+            if (callIndex === 1) {
+                return new Promise((_resolve, reject) => {
+                    request.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+                });
+            }
+            restartedOffset = request.startOffset;
+            restartedSummary = request.previousSummary;
+            return { summary: "full summary", endOffset: request.sourceText.length, usage: null };
+        }, undefined, undefined, 4);
+        const tool: SessionEntry = {
+            type: "message", id: "tool", parentId: null, timestamp: "2026-07-25T00:00:00.000Z",
+            message: {
+                role: "toolResult", toolCallId: "read-call", toolName: "read",
+                content: [{ type: "text", text: "head" + "x".repeat(2_100) + "tail" }],
+                isError: false, timestamp: 1,
+            },
+        };
+        const branch = [tool, checkpointEntry(tool.id)];
+        harness.setBranch(branch);
+        harness.setEntries(branch);
+        await harness.command("prewarm");
+        await harness.flush();
+        assert.equal(harness.summaryCalls, 2);
+        await harness.command("lazy");
+        await harness.flush();
+        harness.setToolResultChars(null);
+        await harness.command("prewarm");
+        await harness.flush();
+        await harness.runHooks("agent_end");
+        assert.equal(harness.summaryCalls, 3);
+        assert.equal(restartedOffset, 0);
+        assert.equal(restartedSummary, null);
+        assert.equal(harness.branch.filter((entry) =>
+            entry.type === "custom" && entry.customType === PORTABLE_SUMMARY_CUSTOM_TYPE).length, 2);
+        await harness.command("status");
+        assert.match(harness.notices.at(-1)!, /1\/1 complete/);
+    });
+
     it("defaults to lazy and keeps status read-only", async () => {
         const harness = createHarness();
         await harness.command("status");

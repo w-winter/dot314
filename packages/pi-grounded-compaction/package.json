@@ -1,6 +1,6 @@
 {
   "name": "pi-grounded-compaction",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Compaction and branch summarizer for Pi with model presets, custom prompts, and deterministic files-touched tracking for native tools, RepoPrompt, shell commands, and Codex `apply_patch`",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "compaction", "summarization"],
   "license": "MIT",
@@ -31,6 +31,7 @@
       { "from": "../../extensions/grounded-compaction/branch-summary-prompt.md.example", "to": "extensions/grounded-compaction/branch-summary-prompt.md.example" },
       { "from": "../../extensions/grounded-compaction/config.json.example", "to": "extensions/grounded-compaction/config.json.example" },
       { "from": "../../extensions/_shared/files-touched-core.ts", "to": "extensions/_shared/files-touched-core.ts" },
+      { "from": "../../extensions/_shared/compaction-serialization.ts", "to": "extensions/_shared/compaction-serialization.ts" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ]
   }

@@ -32,6 +32,8 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export type GroundedPortableSummarizerSession = {
     descriptor: PortableSummarizerProvenance;
+    /** Tool-result character cap for this session's source serialization; null retains full text. */
+    toolResultChars: number | null;
     summarizeNext(request: {
         previousSummary: string | null;
         sourceText: string;

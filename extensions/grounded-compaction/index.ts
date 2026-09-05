@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-    contentText,
     type Api,
     type AssistantMessage,
     type Context,
@@ -18,7 +17,6 @@ import { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
     convertToLlm,
     findTurnStartIndex,
-    serializeConversation,
     type ExtensionAPI,
     type SessionBeforeCompactEvent,
     type SessionBeforeTreeEvent,
@@ -27,6 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { collectFilesTouched, type FilesTouchedEntry } from "../_shared/files-touched-core.ts";
+import { serializeConversationForCompaction } from "../_shared/compaction-serialization.ts";
 import {
     registerGroundedPortableSummarizer,
     type GroundedPortableSummarizerOpenRequest,
@@ -776,39 +775,6 @@ export function stripGroundedCompactionManifestTail(text?: string): string | und
     return stripped || undefined;
 }
 
-function truncateToolResult(text: string, maxChars: number): string {
-    if (text.length <= maxChars) {
-        return text;
-    }
-
-    const truncatedChars = text.length - maxChars;
-    return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
-}
-
-function serializeConversationForCompaction(messages: Message[], toolResultChars: number | null): string {
-    const parts: string[] = [];
-
-    for (const message of messages) {
-        if (message.role !== "toolResult") {
-            const serializedMessage = serializeConversation([message]);
-            if (serializedMessage) {
-                parts.push(serializedMessage);
-            }
-            continue;
-        }
-
-        const content = contentText(message.content, "");
-        if (content) {
-            const serializedContent = toolResultChars === null
-                ? content
-                : truncateToolResult(content, toolResultChars);
-            parts.push(`[Tool result]: ${serializedContent}`);
-        }
-    }
-
-    return parts.join("\n\n");
-}
-
 export function serializePreparedMessages(
     messages: PreparedMessages,
     toolResultChars: number | null = null,
@@ -1417,6 +1383,7 @@ export async function openGroundedPortableSummarizerSession(
 
     return {
         descriptor,
+        toolResultChars: config.toolResultChars,
         async summarizeNext(summaryRequest) {
             validatePortableSummaryRequest(summaryRequest);
             if (summaryRequest.signal.aborted) throw new CompactionAbortedError();
