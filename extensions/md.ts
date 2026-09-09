@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -483,11 +483,23 @@ async function generateMarkdownFromSession(
   return buildMarkdownContent(meta, jsonlFile, conversation, lastTurns);
 }
 
-/**
- * Copy text to clipboard (macOS)
- */
+/** Copy text through the first available platform clipboard command. */
 function copyToClipboard(text: string): void {
-  execSync("pbcopy", { input: text });
+  const commands: Array<[string, string[]]> = [
+    ["pbcopy", []],
+    ["wl-copy", []],
+    ["xclip", ["-selection", "clipboard"]],
+  ];
+  const errors: string[] = [];
+  for (const [command, args] of commands) {
+    try {
+      execFileSync(command, args, { input: text, stdio: ["pipe", "ignore", "pipe"] });
+      return;
+    } catch (error) {
+      errors.push(`${command}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`No clipboard command succeeded. ${errors.join("; ")}`);
 }
 
 /**
