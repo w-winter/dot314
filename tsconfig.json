@@ -1,0 +1,18 @@
+{
+  // strict: false — full strict (mainly strictNullChecks) would mostly add `!` noise
+  // around invariants TS can't see (e.g. Map lookups guarded by .has(), in-progress
+  // assistant messages that are nullable at the type level but non-null at handler
+  // call time). Cheap dead-code flags below give most of the real-world value.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": false,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true
+  }
+}

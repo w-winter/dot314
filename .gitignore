@@ -1,0 +1,7 @@
+node_modules/
+.env.test
+.claude/
+.test-output/
+eli/.DS_Store
+.DS_Store
+eli/
