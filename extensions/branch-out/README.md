@@ -78,7 +78,7 @@ rm /tmp/pi-branch-out-layout-state.json
 Routing is automatic and tried in this order:
 
 1. `--branch-out-terminal` flag override (always wins)
-2. Orca — detected via `ORCA_WORKTREE_ID` and `ORCA_PANE_KEY`
+2. Orca — detected via `ORCA_WORKTREE_ID` and either `ORCA_TERMINAL_HANDLE` or `ORCA_PANE_KEY`
 3. cmux — detected via `CMUX_SOCKET_PATH`
 4. tmux — detected via `TMUX`
 5. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
@@ -86,7 +86,9 @@ Routing is automatic and tried in this order:
 7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
 8. Alacritty window
 
-The Orca backend matches `ORCA_PANE_KEY` to the exact tab and leaf returned by `orca terminal list`, then runs `orca terminal split` against that terminal handle. Orca defaults to a horizontal split that opens the new pane to the right; an explicit `down` preference creates a vertical split. `launchMode` must be `"split"` for Orca.
+The Orca backend lists terminals in the current `ORCA_WORKTREE_ID` using `orca terminal list`. When `ORCA_TERMINAL_HANDLE` is set, it matches that handle against the returned terminals. Otherwise, it matches `ORCA_PANE_KEY` against each terminal's `tabId:leafId` pair. A supplied handle that is no longer listed causes the launch to fail; it does not fall back to the pane key or another terminal.
+
+After resolving the caller, the backend runs `orca terminal split` against that handle and starts Pi in the current session's working directory, even when it differs from the Orca workspace root. Orca defaults to a horizontal split that opens the new pane to the right; an explicit `down` preference creates a vertical split. `launchMode` must be `"split"` for Orca.
 
 ### Backend capability matrix
 

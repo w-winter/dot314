@@ -169,7 +169,7 @@ function resolveSupportedSplitDirection(
 }
 
 function detectTerminalBackend(): TerminalBackend {
-	if (process.env.ORCA_WORKTREE_ID && process.env.ORCA_PANE_KEY) return "orca"
+	if (process.env.ORCA_WORKTREE_ID && (process.env.ORCA_TERMINAL_HANDLE || process.env.ORCA_PANE_KEY)) return "orca"
 	if (process.env.CMUX_SOCKET_PATH) return "cmux"
 	if (process.env.TMUX) return "tmux"
 	if (process.env.TERM_PROGRAM === "iTerm.app") return "iterm"
@@ -645,14 +645,16 @@ function resolveOrcaCommand(): string {
 		?? (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : "orca")
 }
 
-function parseOrcaTerminalHandle(output: string, paneKey: string): string | undefined {
+function parseOrcaTerminalHandle(output: string, paneKey?: string, terminalHandle?: string): string | undefined {
 	try {
 		const parsed = JSON.parse(output) as {
 			result?: {
 				terminals?: Array<{ handle?: unknown; tabId?: unknown; leafId?: unknown }>
 			}
 		}
-		const terminal = parsed.result?.terminals?.find((candidate) => (
+		const terminal = parsed.result?.terminals?.find((candidate) => terminalHandle
+			? candidate.handle === terminalHandle
+			: (
 			typeof candidate.tabId === "string"
 			&& typeof candidate.leafId === "string"
 			&& `${candidate.tabId}:${candidate.leafId}` === paneKey
@@ -761,10 +763,12 @@ async function openInOrca(
 	pi: ExtensionAPI,
 	forkFile: string,
 	config: ExtensionConfig,
+	cwd: string,
 ): Promise<{ opened: boolean; error?: string }> {
 	const worktreeId = process.env.ORCA_WORKTREE_ID
 	const paneKey = process.env.ORCA_PANE_KEY
-	if (!worktreeId || !paneKey) return { opened: false }
+	const terminalHandle = process.env.ORCA_TERMINAL_HANDLE
+	if (!worktreeId || (!paneKey && !terminalHandle)) return { opened: false }
 	if (config.launchMode !== "split") {
 		return { opened: false, error: "Orca branch launch requires launchMode 'split'" }
 	}
@@ -780,9 +784,9 @@ async function openInOrca(
 		return { opened: false, error: listResult.stderr || listResult.stdout || "orca terminal list failed" }
 	}
 
-	const currentHandle = parseOrcaTerminalHandle(`${listResult.stdout || listResult.stderr}`, paneKey)
+	const currentHandle = parseOrcaTerminalHandle(`${listResult.stdout || listResult.stderr}`, paneKey, terminalHandle)
 	if (!currentHandle) {
-		return { opened: false, error: `Could not resolve Orca pane '${paneKey}' to a terminal handle` }
+		return { opened: false, error: `Could not resolve Orca terminal '${terminalHandle || paneKey}' in the current worktree` }
 	}
 
 	const direction = resolvedSplitDirection === "right" ? "horizontal" : "vertical"
@@ -794,7 +798,7 @@ async function openInOrca(
 		"--direction",
 		direction,
 		"--command",
-		buildBranchCommand(forkFile),
+		`cd ${shellQuote(cwd)} && ${buildBranchCommand(forkFile)}`,
 		"--json",
 	])
 	if (splitResult.code !== 0) {
@@ -1118,7 +1122,7 @@ async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext
 	const activeBackend = detectTerminalBackend()
 
 	if (activeBackend === "orca") {
-		const orcaAttempt = await openInOrca(pi, forkFile, config)
+		const orcaAttempt = await openInOrca(pi, forkFile, config, ctx.cwd)
 		if (!orcaAttempt.opened) throw new Error(orcaAttempt.error || "Orca launch failed")
 		return
 	}
