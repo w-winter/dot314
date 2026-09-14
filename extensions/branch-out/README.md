@@ -86,9 +86,7 @@ Routing is automatic and tried in this order:
 7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
 8. Alacritty window
 
-The Orca backend lists terminals in the current `ORCA_WORKTREE_ID` using `orca terminal list`. When `ORCA_TERMINAL_HANDLE` is set, it matches that handle against the returned terminals. Otherwise, it matches `ORCA_PANE_KEY` against each terminal's `tabId:leafId` pair. A supplied handle that is no longer listed causes the launch to fail; it does not fall back to the pane key or another terminal.
-
-After resolving the caller, the backend runs `orca terminal split` against that handle and starts Pi in the current session's working directory, even when it differs from the Orca workspace root. Orca defaults to a horizontal split that opens the new pane to the right; an explicit `down` preference creates a vertical split. `launchMode` must be `"split"` for Orca.
+The Orca backend opens the fork beside the terminal that ran `/branch` and uses Pi's current working directory. Orca supports `right` (horizontal) and `down` (vertical) splits and requires `launchMode: "split"`.
 
 ### Backend capability matrix
 
