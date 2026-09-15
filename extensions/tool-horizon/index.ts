@@ -14,6 +14,8 @@ import { Container, SelectList, Text, visibleWidth, type SelectItem } from "@ear
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Type } from "typebox";
+import Value from "typebox/value";
 import { registerFilesTouchedTracking } from "../_shared/files-touched-core.ts";
 import {
 	TOOL_HORIZON_STATE_CUSTOM_TYPE,
@@ -49,6 +51,7 @@ import {
 } from "./boundary-model.ts";
 import { BoundaryPickerCompatibilityError, showToolHorizonBoundaryPicker } from "./boundary-picker.ts";
 import {
+	DEFAULT_CHECKPOINT_USE_GUIDANCE,
 	TOOL_HORIZON_CHECKPOINT_ABSENCE_STATE,
   TOOL_HORIZON_CHECKPOINT_MESSAGE_CUSTOM_TYPE,
   TOOL_HORIZON_CHECKPOINT_STATE_CUSTOM_TYPE,
@@ -67,6 +70,7 @@ type DynamicPickerItem = {
 };
 
 export type ToolHorizonConfig = {
+	checkpointUseGuidance: string;
 	warnBeforeRestoreAllThresholdPercent: number;
 	restoreAllAfterCompaction: boolean;
 };
@@ -90,6 +94,7 @@ type RestoreAllWarningProjection = {
 
 const DEFAULT_WARN_BEFORE_RESTORE_ALL_THRESHOLD_PERCENT = 85;
 const DEFAULT_RESTORE_ALL_AFTER_COMPACTION = true;
+const CheckpointUseGuidanceSchema = Type.String({ minLength: 1, pattern: "\\S" });
 
 function normalizePercent(value: unknown, defaultValue: number): number {
 	if (typeof value !== "number" || Number.isNaN(value)) return defaultValue;
@@ -101,10 +106,15 @@ function loadConfig(): ToolHorizonConfig {
 		const extensionDir = dirname(fileURLToPath(import.meta.url));
 		const configPath = join(extensionDir, "config.json");
 		const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as {
+			checkpointUseGuidance?: unknown;
 			warnBeforeRestoreAllThresholdPercent?: unknown;
 			restoreAllAfterCompaction?: unknown;
 		};
 		return {
+			checkpointUseGuidance:
+				Value.Check(CheckpointUseGuidanceSchema, parsed.checkpointUseGuidance)
+					? parsed.checkpointUseGuidance.trim()
+					: DEFAULT_CHECKPOINT_USE_GUIDANCE,
 			warnBeforeRestoreAllThresholdPercent: normalizePercent(
 				parsed.warnBeforeRestoreAllThresholdPercent,
 				DEFAULT_WARN_BEFORE_RESTORE_ALL_THRESHOLD_PERCENT,
@@ -116,6 +126,7 @@ function loadConfig(): ToolHorizonConfig {
 		};
 	} catch {
 		return {
+			checkpointUseGuidance: DEFAULT_CHECKPOINT_USE_GUIDANCE,
 			warnBeforeRestoreAllThresholdPercent: DEFAULT_WARN_BEFORE_RESTORE_ALL_THRESHOLD_PERCENT,
 			restoreAllAfterCompaction: DEFAULT_RESTORE_ALL_AFTER_COMPACTION,
 		};
@@ -1275,7 +1286,7 @@ export default function toolHorizonExtension(pi: ExtensionAPI, config: ToolHoriz
 			if (!activeCheckpoint) return filteredMessages;
 			const checkpointMessage = createCheckpointMessage(
 				activeCheckpoint,
-				renderCheckpointMessage(activeCheckpoint),
+				renderCheckpointMessage(activeCheckpoint, config.checkpointUseGuidance),
 			);
 			if (resolvedBoundaryIndex === null) return [...filteredMessages, checkpointMessage];
 			return insertCheckpointAtBoundary(

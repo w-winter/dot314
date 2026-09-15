@@ -161,6 +161,7 @@ The provider-facing XML remains generic:
 
 ```xml
 <checkpoint v="1" scope="before-boundary" fmt="known-root:relative-path, else cwd-relative, else absolute">
+  <use>Use the current request and retained conversation to identify only the listed paths needed for remaining work; inspect their current state before relying on prior observations. Do not inspect paths merely because they appear here.</use>
   <files>
     <read state="unmodified">...</read>
     <modified>...</modified>
@@ -189,12 +190,13 @@ Every append records the leaf beforehand. If persistence throws after advancing 
 
 ```json
 {
+  "checkpointUseGuidance": "Review relevant listed paths before relying on hidden tool activity.",
   "warnBeforeRestoreAllThresholdPercent": 70,
   "restoreAllAfterCompaction": true
 }
 ```
 
-Only these keys are read from Tool Horizon's colocated `config.json`.
+`checkpointUseGuidance` replaces the built-in `<use>` text after an extension reload. Empty and non-string values use the built-in guidance.
 
 ## Verification contract
 

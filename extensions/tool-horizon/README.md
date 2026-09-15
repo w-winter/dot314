@@ -119,11 +119,14 @@ Edit `extensions/tool-horizon/config.json`:
 
 ```json
 {
+  "checkpointUseGuidance": "Review relevant listed paths before relying on hidden tool activity.",
   "warnBeforeRestoreAllThresholdPercent": 70,
   "restoreAllAfterCompaction": true
 }
 ```
 
+- `checkpointUseGuidance` sets the instruction included with each file-provenance checkpoint. Omit it to use the built-in guidance, which is:
+  - > Use the current request and retained conversation to identify only the listed paths needed for remaining work; inspect their current state before relying on prior observations. Do not inspect paths merely because they appear here
 - `warnBeforeRestoreAllThresholdPercent` is an integer from `0` to `100`. Tool Horizon warns before restoring all history when projected context use reaches this percentage.
 - `restoreAllAfterCompaction` defaults to `true`. Pi compaction restores all tool history and stops adding provenance checkpoints; run `/tool-horizon here` or `/tool-horizon pick` to establish a new horizon. Set it to `false` to retain the current horizon across compaction.
 

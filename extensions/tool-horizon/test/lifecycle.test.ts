@@ -58,6 +58,7 @@ function parentLinkedBranch(entries: SessionEntry[]): SessionEntry[] {
 }
 
 const TEST_CONFIG: ToolHorizonConfig = {
+	checkpointUseGuidance: "Test checkpoint guidance.",
 	warnBeforeRestoreAllThresholdPercent: 85,
 	restoreAllAfterCompaction: true,
 };
@@ -697,6 +698,7 @@ test("test_checkpoint_stays_at_boundary_across_append_only_turns", async () => {
 	expect(firstResult.messages.at(-1)).toMatchObject({
 		role: "custom",
 		customType: TOOL_HORIZON_CHECKPOINT_MESSAGE_CUSTOM_TYPE,
+		content: expect.stringContaining("<use>Test checkpoint guidance.</use>"),
 	});
 	expect(firstResult.messages.slice(0, -1)).toEqual([fixture.boundaryMessage, fixture.suffixMessage]);
 	expect(secondResult.messages.slice(0, firstResult.messages.length)).toEqual(firstResult.messages);
@@ -994,6 +996,7 @@ test("test_compaction_restore_all_suppresses_immediately_and_persists_when_settl
 		},
 	} as unknown as ExtensionContext;
 	const config: ToolHorizonConfig = {
+		checkpointUseGuidance: "Test checkpoint guidance.",
 		warnBeforeRestoreAllThresholdPercent: 85,
 		restoreAllAfterCompaction: true,
 	};
@@ -1133,6 +1136,7 @@ test("test_former_subcommands_are_rejected_without_mutation", async () => {
 	} as unknown as ExtensionContext;
 
 	toolHorizonExtension(api, {
+		checkpointUseGuidance: "Test checkpoint guidance.",
 		warnBeforeRestoreAllThresholdPercent: 85,
 		restoreAllAfterCompaction: true,
 	});

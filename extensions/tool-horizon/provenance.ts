@@ -8,6 +8,7 @@ import type { BoundaryMode, EventMessage, SessionEntry } from "./core.ts";
 
 export const TOOL_HORIZON_CHECKPOINT_STATE_CUSTOM_TYPE = "tool-horizon-checkpoint-state";
 export const TOOL_HORIZON_CHECKPOINT_MESSAGE_CUSTOM_TYPE = "tool-horizon-checkpoint";
+export const DEFAULT_CHECKPOINT_USE_GUIDANCE = "Use the current request and retained conversation to identify only the listed paths needed for remaining work; inspect their current state before relying on prior observations. Do not inspect paths merely because they appear here.";
 
 export type FileMove = {
 	from: string;
@@ -683,8 +684,15 @@ function escapeCheckpointXmlText(value: string): string {
 		.replaceAll("\n", "&#10;");
 }
 
-export function renderCheckpointMessage(state: ToolHorizonCheckpointState): string {
-	const lines = ["<checkpoint v=\"1\" scope=\"before-boundary\" fmt=\"known-root:relative-path, else cwd-relative, else absolute\">", "<files>"];
+export function renderCheckpointMessage(
+	state: ToolHorizonCheckpointState,
+	useGuidance = DEFAULT_CHECKPOINT_USE_GUIDANCE,
+): string {
+	const lines = [
+		"<checkpoint v=\"1\" scope=\"before-boundary\" fmt=\"known-root:relative-path, else cwd-relative, else absolute\">",
+		`<use>${escapeCheckpointXmlText(useGuidance)}</use>`,
+		"<files>",
+	];
 	const pushSection = (name: string, values: string[], attributes = ""): void => {
 		if (values.length === 0) return;
 		lines.push(`<${name}${attributes}>`);
