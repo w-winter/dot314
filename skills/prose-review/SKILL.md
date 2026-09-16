@@ -3,7 +3,7 @@ name: prose-review
 description: Review prose written for others (e.g., user-facing documentation, prompts for other LLMs, reports, plans, inline comments, docstrings) for local jargon leakage, orphaned references, missing grounding, and audience or genre mismatch. Always run on prose you produce or materially edit, except for routine conversational messages (e.g., progress updates, confirmations, concise replies) and unchanged quoted text.
 ---
 
-# Prose Review
+# Prose review
 
 Review prose written to be read by someone else for language that doesn't belong in text its intended reader will encounter, and for missing grounding that a cold reader would need. Fix problems directly.
 
@@ -25,13 +25,13 @@ The same failure modes run through all of them.
 
 Before reviewing each file or standalone artifact, state in one line who reads it, what they are trying to do, what they can and cannot see, and what genre it is (user README, contributor or architecture doc, operator runbook, agent prompt, handoff, task brief, inline comment, docstring, message, email, issue comment). Every judgment below is relative to that reader and purpose, not to a generic "new reader." Implementation detail is correct in a contributor-facing architecture doc or an inline comment and wrong in a user README; "what changed" is correct in a changelog and wrong in reference docs. Do not strip detail that this file's actual reader needs.
 
-The acid test for every artifact: could the intended reader use this text correctly for their purpose with only the text and any explicitly named, reachable dependencies, without access to the session, private plans, or other local material that informed the recent edits?
+The intended reader must be able to use each artifact correctly with only its text and explicitly named, reachable dependencies, without access to the session, private plans, or other local material that informed the recent edits.
 
 For prompts, handoffs, and task briefs: could a cold-start agent act correctly from this text and any explicitly named, reachable files, without access to the context window you currently have and without having to guess? For comments and docstrings: could a maintainer who can read the surrounding code, but who wasn't present when it was written, understand what this text is telling them?
 
 Call this **operational closure**: every dependency needed to understand or act is either contained in the artifact or identified through a path or access method the recipient can actually use.
 
-Then ask the second question, which decoding alone never answers: is this language **situationally appropriate** for that reader -- the right register, the right level of detail, the right thing to be saying at this point in the document? A sentence can be fully comprehensible to a README-reading human and still be badly designed for them.
+Then ask the second question, which decoding alone never answers: is this language **situationally appropriate** for that reader, with the right register, level of detail, and content for this point in the document? A sentence can be fully comprehensible to a README-reading human and still be badly designed for them.
 
 ## What to catch
 
@@ -39,17 +39,17 @@ Then ask the second question, which decoding alone never answers: is this langua
 
 - **Implementation-plan language**: internal field names, spec edge-case notes, architecture references, phrases like "reserve the timestamp column" or "compact display buckets" that reflect how something was built rather than what a user or other agent sees
 
-- **Changelog/diff language**: "does not change X", "deliberately preserves Y", "without affecting Z", "is intentionally out of scope" -- comparisons against a prior version the reader has no baseline for. In comments and docstrings this shows up as narrating the edit ("now also handles X", "moved from Y", "renamed for clarity") instead of describing the code as it currently stands. **Genre exception**: when the file under review is a changelog, release note, migration guide, task retrospective, planning doc, PR description, or a handoff or task brief whose purpose is to transmit current state and remaining work, this language may be the point of the document. Preserve necessary temporal deltas, and don't "fix" them into timeless prose. The test is never whether the text refers to a prior state; it is whether this reader opened this file expecting it to
+- **Changelog/diff language**: "does not change X", "deliberately preserves Y", "without affecting Z", "is intentionally out of scope." These compare against a prior version the reader has no baseline for. In comments and docstrings this shows up as narrating the edit ("now also handles X", "moved from Y", "renamed for clarity") instead of describing the code as it currently stands. **Genre exception**: when the file under review is a changelog, release note, migration guide, task retrospective, planning doc, PR description, or a handoff or task brief whose purpose is to transmit current state and remaining work, this language may be the point of the document. Preserve necessary temporal deltas, and don't "fix" them into timeless prose. The test is never whether the text refers to a prior state; it is whether this reader opened this file expecting it to
 
 - **Internal jargon**: type names, config key internals, data-flow descriptions that only matter to contributors
 
 - **Agent/session artifacts**: review constraints, schema-version strategy, compatibility decisions leaked from planning conversations
 
-- **Orphaned deixis**: "this", "that", "the above", "as discussed", "the same approach", "the earlier plan", "continue from here" -- context-dependent references whose referent lives in the authoring session or a private plan, not in the document; restate the referent or delete the reference. In comments this also covers pointers the reader cannot open: ticket numbers, plan filenames, review threads, "per the discussion"
+- **Orphaned deixis**: "this", "that", "the above", "as discussed", "the same approach", "the earlier plan", "continue from here." These references depend on a referent in the authoring session or a private plan rather than the document; restate the referent or delete the reference. In comments this also covers pointers the reader cannot open: ticket numbers, plan filenames, review threads, "per the discussion"
 
 ### Omission: needed content is absent
 
-- **Terms used as if defined**: project-specific terms, acronyms, and metric names that are load-bearing for the reader but defined nowhere the reader can see; the fix is a local definition or glossary entry, not deletion
+- **Terms used as if defined**: project-specific terms, acronyms, and metric names that the reader needs but that are defined nowhere they can see; the fix is a local definition or glossary entry, not deletion
 
 - **Unreachable dependencies**: instructions that require files, systems, credentials, or steps the reader has no path to discover or perform from where they stand
 
@@ -65,7 +65,7 @@ Omission failures are as common as leakage and harder to see, because the text r
 
 - **Granularity mismatch**: exhaustive precision where the reader needs the shape of the thing, or a vague gesture where they need the exact flag, path, or value
 
-- **Relevance mismatch**: accurate, defined, and decodable, but not what this reader needs at this point -- rationale nobody asked for, caveats that matter to three people, edge cases placed ahead of the common path
+- **Relevance mismatch**: accurate, defined, and decodable, but not what this reader needs at this point: rationale nobody asked for, caveats that matter to three people, edge cases placed ahead of the common path
 
 - **Order mismatch**: material arranged in the author's discovery order rather than the reader's need or dependency order, so the reader must carry unexplained terms until they pay off later
 
@@ -75,7 +75,7 @@ Misfit is the failure mode that survives a careful leakage-and-omission pass, be
 
 Also catch any other pragmatic perspective-taking error that produces poor recipient design. One common pattern resembles the "curse of knowledge" described by Colin Camerer, George Loewenstein, and Martin Weber: language models behave as though human or AI recipients share the current context window or ephemeral planning artifacts, then leak local jargon or omit grounding. Treat this as a serious recurring failure across user-facing and agent-facing prose.
 
-Curse of knowledge is one lens, not the whole job. Recipient design (Sacks, Schegloff, and Jefferson; closely related to Bell's "audience design") covers the whole task of shaping an utterance for its actual recipient: not merely what they know, but what they came for, how much detail serves them, what register fits the situation, what they need first, and what they must be able to do afterward. Text can pass every shared-knowledge check and still answer a question the reader never asked, in a voice written for somebody else. Hold both lenses at once: "can this reader decode this?" and "is this the right thing to say to this reader, here?"
+Curse of knowledge is one lens within the broader job. Recipient design (Sacks, Schegloff, and Jefferson; closely related to Bell's "audience design") covers the whole task of shaping an utterance for its actual recipient: what they know, what they came for, how much detail serves them, what register fits the situation, what they need first, and what they must be able to do afterward. Text can pass every shared-knowledge check and still answer a question the reader never asked, in a voice written for somebody else. Hold both lenses at once: "can this reader decode this?" and "is this the right thing to say to this reader, here?"
 
 ## What good prose looks like
 
@@ -89,19 +89,19 @@ Good comments and docstrings explain what the code means to someone who can read
 
 Good explanations build an intelligible path from the reader's starting point to the model they need. Conceptual coverage is not a substitute for sequencing, emphasis, and omission.
 
-As a secondary lens, consider whether the documentation mixes Diátaxis categories inappropriately -- e.g., reference-style field descriptions embedded in a tutorial flow, or explanation ("why") mixed into a how-to. Light touch here; don't restructure, just note when the mixing hurts clarity.
+As a secondary lens, consider whether the documentation mixes Diátaxis categories inappropriately, such as reference-style field descriptions embedded in a tutorial flow or explanation ("why") mixed into a how-to. Light touch here; don't restructure, just note when the mixing hurts clarity.
 
 ## Scope
 
 $ARGUMENTS
 
-**Default to the narrowest scope the operator named.** If they pointed at a change -- specific diff hunks, a staged diff, a named patch, "the comments I just added" -- review only the prose inside that change: the doc lines it touches, and the comments and docstrings inside its hunks. Do not drift into untouched prose elsewhere in the same file.
+**Default to the narrowest scope the operator named.** If they pointed at a change (specific diff hunks, a staged diff, a named patch, "the comments I just added"), review only the prose inside that change: the doc lines it touches, and the comments and docstrings inside its hunks. Do not drift into untouched prose elsewhere in the same file.
 
 Review whole files only when the operator asks for files rather than a change ("review README.md", "review this whole skill", "audit every prompt in this directory").
 
 If the operator supplies standalone prose directly, such as a message, email, handoff, or subagent prompt, treat the supplied text as the whole artifact unless they explicitly narrow the scope.
 
-Read beyond the scope for *context*, never for edits. You usually need the surrounding file to tell whether a term is defined elsewhere, whether a reference has a local referent, or who the reader actually is. When you find a real problem outside the named scope, flag it in the summary with its location and leave it alone.
+Read beyond the scope only for *context*. You usually need the surrounding file to tell whether a term is defined elsewhere, whether a reference has a local referent, or who the reader actually is. When you find a real problem outside the named scope, flag it in the summary with its location and leave it alone.
 
 If the operator named paths but no change, review those files whole. If they named nothing at all, fall back to the current staged diff:
 
