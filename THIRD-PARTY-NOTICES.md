@@ -110,13 +110,6 @@ text. This file provides a consolidated overview.
   - `extensions/btw/` (◐ modified — scoped fuzzy model selection, request-auth forwarding, projected session context, double-dash options, and AST-based compound Bash permission checks)
   - `extensions/handover/` (◐ borrows heavily from handoff extension)
 
-### hjanuschka/shitty-extensions
-- **URL:** https://github.com/hjanuschka/shitty-extensions
-- **License:** MIT (declared in package.json)
-- **Copyright:** © hjanuschka
-- **Used in:**
-  - `extensions/usage-bar.ts` (◐ modified — multi-Codex, color scale, alignment)
-
 ### damianpdr/pi-thread-switcher
 - **URL:** https://github.com/damianpdr/pi-thread-switcher
 - **License:** MIT (declared in README)

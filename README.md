@@ -127,7 +127,6 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ◐ | `stash/` | | Shortcut-driven editor draft stash, restore, and swap |
 | ◐ | `tool-horizon/` | | Hides older tool activity before a chosen session-tree horizon while retaining file provenance |
 | ◐ | `tools/` | | UI for enabling/disabling active Pi tools |
-| ◐ | `usage-bar.ts` | | Provider quota overlay |
 
 ### Also included
 
