@@ -521,7 +521,7 @@ describe("grounded portable summarizer capacity and execution", () => {
                 },
             }),
         });
-        const sourceText = "x".repeat(40);
+        const sourceText = "x".repeat(20);
         const result = await session.summarizeNext({
             previousSummary: null,
             sourceText,
@@ -533,6 +533,19 @@ describe("grounded portable summarizer capacity and execution", () => {
         assert.equal(result.endOffset, sourceText.length);
         assert.equal(maxTokens, 1);
         assert.match(promptText, new RegExp(sourceText));
+    });
+
+    it("budgets dense portable history at two characters per token", async () => {
+        const session = await openSession({ model: createCapacityModel(10) });
+        const result = await session.summarizeNext({
+            previousSummary: null,
+            sourceText: "x".repeat(40),
+            startOffset: 0,
+            coverageEntries: [],
+            signal: new AbortController().signal,
+        });
+
+        assert.equal(result.endOffset, 20);
     });
 
     it("accounts for predecessor summary in fixed overhead", async () => {
@@ -567,41 +580,41 @@ describe("grounded portable summarizer capacity and execution", () => {
         const session = await openSession({ model });
         const signal = new AbortController().signal;
 
-        const doubleNewline = `${"a".repeat(31)}\n\n${"b".repeat(4)}\n${"c".repeat(20)}`;
+        const doubleNewline = `${"a".repeat(14)}\n\n${"b".repeat(4)}\n${"c".repeat(20)}`;
         assert.equal((await session.summarizeNext({
             previousSummary: null,
             sourceText: doubleNewline,
             startOffset: 0,
             coverageEntries: [],
             signal,
-        })).endOffset, 33);
+        })).endOffset, 16);
 
-        const newline = `${"a".repeat(35)}\n${"b".repeat(20)}`;
+        const newline = `${"a".repeat(17)}\n${"b".repeat(20)}`;
         assert.equal((await session.summarizeNext({
             previousSummary: null,
             sourceText: newline,
             startOffset: 0,
             coverageEntries: [],
             signal,
-        })).endOffset, 36);
+        })).endOffset, 18);
 
-        const whitespace = `${"a".repeat(37)} ${"b".repeat(20)}`;
+        const whitespace = `${"a".repeat(18)} ${"b".repeat(20)}`;
         assert.equal((await session.summarizeNext({
             previousSummary: null,
             sourceText: whitespace,
             startOffset: 0,
             coverageEntries: [],
             signal,
-        })).endOffset, 38);
+        })).endOffset, 19);
 
-        const hard = "a".repeat(60);
+        const hard = "a".repeat(30);
         assert.equal((await session.summarizeNext({
             previousSummary: null,
             sourceText: hard,
             startOffset: 0,
             coverageEntries: [],
             signal,
-        })).endOffset, 40);
+        })).endOffset, 20);
     });
 
     it("fails when fixed overhead leaves no source capacity", async () => {
@@ -633,13 +646,13 @@ describe("grounded portable summarizer capacity and execution", () => {
         });
         const result = await session.summarizeNext({
             previousSummary: null,
-            sourceText: "aaa😀rest",
+            sourceText: "a😀rest",
             startOffset: 0,
             coverageEntries: [],
             signal: new AbortController().signal,
         });
 
-        assert.equal(result.endOffset, 3);
+        assert.equal(result.endOffset, 1);
         assert.equal(promptText.includes("😀"), false);
         assert.equal(promptText.includes("\uD83D"), false);
     });

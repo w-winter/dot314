@@ -231,6 +231,8 @@ const BRANCH_SUMMARY_PROMPT_PATH = path.join(EXTENSION_DIR, "branch-summary-prom
 const CURRENT_PRESET_SENTINEL = "current";
 const PORTABLE_SUMMARIZER_PROMPT_VERSION = 1;
 export const PORTABLE_SUMMARY_MAX_OUTPUT_TOKENS = 16_384;
+// Portable transcripts contain code and tool output, which tokenize more densely than ordinary prose.
+const PORTABLE_SOURCE_CHARACTERS_PER_TOKEN = 2;
 const FILES_TOUCHED_HEADING = "## Files touched";
 const FINAL_FILES_TOUCHED_HEADING = "## Files touched (cumulative)";
 const FILES_TOUCHED_LEGEND = "R=read, W=write, E=edit, M=move/rename, D=delete";
@@ -1406,7 +1408,9 @@ export async function openGroundedPortableSummarizerSession(
                 previousSummary,
             });
             const fixedPromptTokens = estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${emptySourcePrompt}`);
-            const maxSourceCharacters = (contextWindow - maxOutputTokens - fixedPromptTokens) * 4;
+            const maxSourceCharacters = (
+                contextWindow - maxOutputTokens - fixedPromptTokens
+            ) * PORTABLE_SOURCE_CHARACTERS_PER_TOKEN;
             if (maxSourceCharacters < 1) {
                 throw new Error(
                     `Portable summary prompt leaves no source capacity for ${summarizer.model.provider}/${summarizer.model.id}`,
