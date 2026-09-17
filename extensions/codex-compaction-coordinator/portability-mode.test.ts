@@ -12,7 +12,10 @@ import {
     parsePortabilityModeRecord,
     resolveSessionPortabilityMode,
 } from "./portability-mode.ts";
-import { PORTABLE_SUMMARY_CUSTOM_TYPE } from "./portable-record.ts";
+import {
+    LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE,
+    PORTABLE_SUMMARY_CUSTOM_TYPE,
+} from "./portable-record.ts";
 
 function customEntry(id: string, customType: string, data: unknown): SessionEntry {
     return {
@@ -70,9 +73,12 @@ describe("portability mode persistence", () => {
         }
     });
 
-    it("classifies both coordinator custom entry types as metadata", () => {
+    it("classifies coordinator state and summary records as metadata", () => {
         assert.equal(isCoordinatorMetadataEntry(customEntry("mode", PORTABILITY_MODE_CUSTOM_TYPE, {})), true);
         assert.equal(isCoordinatorMetadataEntry(customEntry("summary", PORTABLE_SUMMARY_CUSTOM_TYPE, {})), true);
+        assert.equal(isCoordinatorMetadataEntry(
+            customEntry("label-sensitive-summary", LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE, {}),
+        ), true);
         assert.equal(isCoordinatorMetadataEntry(customEntry("other", "other", {})), false);
     });
 });

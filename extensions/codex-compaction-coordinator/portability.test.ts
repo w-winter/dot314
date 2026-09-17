@@ -15,6 +15,7 @@ import {
     type GroundedPortableSummarizerOpener,
 } from "../grounded-compaction/portable-summarizer.ts";
 import {
+    LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE,
     PORTABLE_SUMMARY_CUSTOM_TYPE,
     canonicalJson,
     fingerprintBranchRootCoverage,
@@ -173,6 +174,17 @@ function displayEntry(id: string, parentId: string): SessionEntry {
         customType: "codex-native-compaction-display",
         data: { content: "display metadata" },
     } as SessionEntry;
+}
+
+function labelEntry(id: string, parentId: string, targetId: string): SessionEntry {
+    return {
+        type: "label",
+        id,
+        parentId,
+        timestamp: "2026-07-24T00:00:02.750Z",
+        targetId,
+        label: "bookmark",
+    };
 }
 
 function plaintextEntry(
@@ -997,6 +1009,33 @@ describe("portable protocol normalization and branch projection", () => {
         assert.deepEqual(projectPortableTail(branch, plan).map((message) => message.role), ["user"]);
     });
 
+    it("keeps checkpoint proofs stable when forks omit or relocate labels", () => {
+        const first = userEntry("first", "first source");
+        const label = labelEntry("label", first.id, "off-branch-target");
+        const secondAfterLabel = userEntry("second", "second source", label.id);
+        const secondAfterFirst = userEntry("second", "second source", first.id);
+        const checkpoint = checkpointEntry("checkpoint", secondAfterFirst.id);
+        const relocatedLabel = labelEntry("relocated-label", checkpoint.id, first.id);
+        const tail = userEntry("tail", "visible tail", relocatedLabel.id);
+        const withLabel = [first, label, secondAfterLabel, checkpoint];
+        const withoutLabel = [first, secondAfterFirst, checkpoint];
+        const withRelocatedLabel = [first, secondAfterFirst, checkpoint, relocatedLabel, tail];
+        const epochFor = (entryIndex: number) => ({
+            status: "available" as const,
+            baseline: { kind: "branch-root" as const },
+            checkpoints: [descriptor("checkpoint", entryIndex)],
+        });
+
+        const originalPlan = derivePortablePlan(withLabel, epochFor(3));
+        const omittedPlan = derivePortablePlan(withoutLabel, epochFor(2));
+        const relocatedPlan = derivePortablePlan(withRelocatedLabel, epochFor(2));
+        assert.deepEqual(originalPlan.checkpoints[0]!.range, omittedPlan.checkpoints[0]!.range);
+        assert.deepEqual(originalPlan.checkpoints[0]!.range, relocatedPlan.checkpoints[0]!.range);
+        assert.equal(originalPlan.checkpoints[0]!.range.entryCount, 2);
+        assert.deepEqual(originalPlan.checkpoints[0]!.coverageEntries.map((entry) => entry.id), [first.id, "second"]);
+        assert.deepEqual(projectPortableTail(withRelocatedLabel, relocatedPlan).map((message) => message.role), ["user"]);
+    });
+
     it("rejects index drift before projecting a tail from an inherited ID match", () => {
         const inheritedMatch = userEntry("inherited-match", "must not become tail");
         delete (inheritedMatch as unknown as Record<string, unknown>).id;
@@ -1382,6 +1421,89 @@ describe("coordinator lazy portability orchestration", () => {
         assert.equal(harness.summaryCalls, 1);
         assert.equal(harness.groundedQueries, 1);
         assert.equal(harness.notices.length, noticeCount);
+    });
+
+    it("regenerates label-sensitive records inherited by a fork", async () => {
+        const source = userEntry("source", "source history");
+        const firstCheckpoint = checkpointEntry("checkpoint-1", source.id);
+        const firstPlan = derivePortablePlan([source, firstCheckpoint], {
+            status: "available",
+            baseline: { kind: "branch-root" },
+            checkpoints: [descriptor(firstCheckpoint.id, 1)],
+        });
+        const labelSensitiveRecord = {
+            ...recordFor({
+                recordId: UUIDS[0]!,
+                checkpoint: firstPlan.checkpoints[0]!,
+                startOffset: 0,
+                endOffset: firstPlan.checkpoints[0]!.sourceText.length,
+                summary: "label-sensitive summary",
+            }),
+            kind: LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE,
+        };
+        const between = userEntry("between", "second source", firstCheckpoint.id);
+        const labelSensitiveEntry: SessionEntry = {
+            type: "custom",
+            id: "label-sensitive-record",
+            parentId: between.id,
+            timestamp: "2026-07-24T00:00:04.000Z",
+            customType: LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE,
+            data: labelSensitiveRecord,
+        };
+        const secondCheckpoint = checkpointEntry("checkpoint-2", labelSensitiveEntry.id);
+        const tail = userEntry("tail", "visible tail", secondCheckpoint.id);
+        const harness = createHarness({
+            branch: [source, firstCheckpoint, between, labelSensitiveEntry, secondCheckpoint, tail],
+        });
+
+        const result = await harness.runProviderBoundary();
+        assert.equal(result.providerDispatched, true);
+        assert.equal(harness.summaryCalls, 2);
+        const records = harness.branch.filter((entry) => entry.type === "custom"
+            && entry.customType === PORTABLE_SUMMARY_CUSTOM_TYPE);
+        assert.equal(records.length, 2);
+        const appended = records.at(-1);
+        if (appended?.type !== "custom") throw new Error("Expected regenerated portable record");
+        assert.equal(parsePortableSummaryRecord(appended.data).range.entryCount, 1);
+    });
+
+    it("reuses a current record after a fork removes its label parent", async () => {
+        const first = userEntry("first", "first source");
+        const label = labelEntry("label", first.id, "off-branch-target");
+        const secondAfterLabel = userEntry("second", "second source", label.id);
+        const checkpoint = checkpointEntry("checkpoint", secondAfterLabel.id);
+        const parentPlan = derivePortablePlan([first, label, secondAfterLabel, checkpoint], {
+            status: "available",
+            baseline: { kind: "branch-root" },
+            checkpoints: [descriptor(checkpoint.id, 3)],
+        });
+        const record = recordFor({
+            recordId: UUIDS[0]!,
+            checkpoint: parentPlan.checkpoints[0]!,
+            startOffset: 0,
+            endOffset: parentPlan.checkpoints[0]!.sourceText.length,
+            summary: "portable summary",
+        });
+        const secondAfterFirst = userEntry("second", "second source", first.id);
+        const forkedCheckpoint = checkpointEntry("checkpoint", secondAfterFirst.id);
+        const recordEntry: SessionEntry = {
+            type: "custom",
+            id: "portable-record",
+            parentId: forkedCheckpoint.id,
+            timestamp: "2026-07-24T00:00:04.000Z",
+            customType: PORTABLE_SUMMARY_CUSTOM_TYPE,
+            data: record,
+        };
+        const tail = userEntry("tail", "visible tail", recordEntry.id);
+        const harness = createHarness({
+            branch: [first, secondAfterFirst, forkedCheckpoint, recordEntry, tail],
+        });
+
+        const result = await harness.runProviderBoundary();
+        assert.equal(result.providerDispatched, true);
+        assert.equal(harness.summaryCalls, 0);
+        assert.equal(harness.groundedQueries, 0);
+        assert.equal(result.contextResult.messages[0].role, "compactionSummary");
     });
 
     it("settles a completed operation before its waiter cleanup can abort the controller", async () => {

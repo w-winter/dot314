@@ -17,6 +17,10 @@ import codexCompactionCoordinator, {
     CODEX_COMPACTION_COORDINATION_EVENT,
     type CodexCompactionCoordinationQuery,
 } from "./index.ts";
+import {
+    LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE,
+    PORTABLE_SUMMARY_CUSTOM_TYPE,
+} from "./portable-record.ts";
 
 type EventListener = (payload: unknown) => unknown;
 type Hook = (event: unknown, ctx: unknown) => unknown;
@@ -89,7 +93,8 @@ function groundedQuery(model = codexModel()): CodexCompactionCoordinationQuery {
 describe("codex compaction coordinator", () => {
     it("registers portability context and lifecycle hooks alongside the synchronous protocols", () => {
         const { hooks, entryRenderers } = createHarness();
-        assert.equal(entryRenderers.has("codex-compaction-coordinator:portable-summary"), true);
+        assert.equal(entryRenderers.has(PORTABLE_SUMMARY_CUSTOM_TYPE), true);
+        assert.equal(entryRenderers.has(LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE), false);
         assert.equal(hooks.get("context")?.length, 2);
         assert.equal(hooks.get("session_start")?.length, 2);
         assert.equal(hooks.get("session_tree")?.length, 2);

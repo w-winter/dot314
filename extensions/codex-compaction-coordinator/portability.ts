@@ -246,7 +246,9 @@ function isProjectionMetadataEntry(entry: SessionEntry): boolean {
 }
 
 function isPortableSourceEntry(entry: SessionEntry): boolean {
-    return entry.type !== "compaction" && !isProjectionMetadataEntry(entry);
+    return entry.type !== "compaction"
+        && entry.type !== "label"
+        && !isProjectionMetadataEntry(entry);
 }
 
 function portableSourceEntries(entries: readonly SessionEntry[]): SessionEntry[] {
@@ -277,7 +279,7 @@ function projectionIdentityPairs(
     const metadataIds = new Set<string>();
     for (const entry of branch) {
         const entryId = ownEntryId(entry);
-        if (isProjectionMetadataEntry(entry)) {
+        if (entry.type === "label" || isProjectionMetadataEntry(entry)) {
             if (entryId === undefined) throw new Error("Projection metadata entry has an invalid identity");
             metadataIds.add(entryId);
         }

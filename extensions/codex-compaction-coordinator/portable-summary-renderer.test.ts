@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+    PORTABLE_SUMMARY_CUSTOM_TYPE,
     fingerprintPortableChunk,
     type PortableSummaryRecordV1,
 } from "./portable-record.ts";
@@ -11,7 +12,7 @@ const HASH = "a".repeat(64);
 
 function summaryRecord(overrides: Partial<PortableSummaryRecordV1> = {}): PortableSummaryRecordV1 {
     return {
-        kind: "codex-compaction-coordinator:portable-summary",
+        kind: PORTABLE_SUMMARY_CUSTOM_TYPE,
         version: 1,
         recordId: "00000000-0000-4000-8000-000000000001",
         predecessor: { kind: "branch-root", coverageFingerprint: HASH },

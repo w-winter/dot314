@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
-export const PORTABLE_SUMMARY_CUSTOM_TYPE = "codex-compaction-coordinator:portable-summary";
+export const PORTABLE_SUMMARY_CUSTOM_TYPE = "codex-compaction-coordinator:portable-summary-v2";
+// The old type remains inert metadata because its proofs may include fork-rewritten labels.
+export const LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE = "codex-compaction-coordinator:portable-summary";
 
 const HASH_DOMAINS = {
     branchRoot: "codex-compaction-coordinator:branch-root:v1",

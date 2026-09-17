@@ -1,6 +1,9 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
-import { PORTABLE_SUMMARY_CUSTOM_TYPE } from "./portable-record.ts";
+import {
+    LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE,
+    PORTABLE_SUMMARY_CUSTOM_TYPE,
+} from "./portable-record.ts";
 
 export const PORTABILITY_MODE_CUSTOM_TYPE = "codex-compaction-coordinator:portability-mode";
 export const PORTABILITY_COMMAND_USAGE = "Usage: /codex-portability lazy|prewarm|status";
@@ -65,7 +68,11 @@ export function isPortabilityModeEntry(entry: SessionEntry): boolean {
 
 export function isCoordinatorMetadataEntry(entry: SessionEntry): boolean {
     return entry.type === "custom"
-        && (entry.customType === PORTABLE_SUMMARY_CUSTOM_TYPE || entry.customType === PORTABILITY_MODE_CUSTOM_TYPE);
+        && (
+            entry.customType === PORTABLE_SUMMARY_CUSTOM_TYPE
+            || entry.customType === LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE
+            || entry.customType === PORTABILITY_MODE_CUSTOM_TYPE
+        );
 }
 
 export function resolveSessionPortabilityMode(entries: readonly SessionEntry[]): ResolvedPortabilityMode {
