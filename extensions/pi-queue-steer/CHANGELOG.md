@@ -14,6 +14,7 @@
 - Feed follow-ups into Pi's native continuation queue to preserve transcript and run semantics.
 - Add `/followup <message>` for terminals that cannot reliably send the follow-up key chord.
 - Allow edited rows to switch queues with `Option+Enter`, `/followup <message>` or `/steer <message>`.
+- Attach screenshots staged by `screenshots-picker` to keyboard submissions and `/followup` commands.
 
 ## 0.1.0 — 2026-07-16
 

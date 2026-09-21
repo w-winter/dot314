@@ -41,6 +41,8 @@ The upstream source is [Graffioh/pi-screenshots-picker](https://github.com/Graff
 4. Type your message in the prompt
 5. Press `Enter` to send - staged images attach automatically and appear as inline previews in chat
 
+Staged images also attach to steering and follow-up messages managed by `pi-queue-steer`.
+
 ## Orca
 
 Run Pi in an [Orca](https://github.com/stablyai/orca) terminal pane and use `/ss` or `Ctrl+\`` normally. The picker uses a lightweight metadata preview in Orca's xterm.js terminal; press `o` to inspect the original in your system image viewer. Staged screenshots are attached directly to Pi's next prompt.

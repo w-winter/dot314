@@ -79,7 +79,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2026 Umberto B.
 - **Used in:**
-  - `extensions/screenshots-picker/` (◐ modified — sent-image previews, Orca terminal support, custom shortcuts, clear notifications, current Pi imports, and updated glob dependency)
+  - `extensions/screenshots-picker/` (◐ modified — sent-image previews, Orca terminal support, custom shortcuts, clear notifications, current Pi imports, updated glob dependency, and staged-image handoff to `pi-queue-steer`)
 
 ### saadjs/pi
 - **URL:** https://github.com/saadjs/pi
@@ -93,7 +93,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2026 Thomas Mustier
 - **Used in:**
-  - `extensions/pi-queue-steer/` (◐ modified — slash-command follow-ups, bidirectional lane conversion, and content-free accepted-steering events)
+  - `extensions/pi-queue-steer/` (◐ modified — slash-command follow-ups, bidirectional lane conversion, content-free accepted-steering events, and staged-image collection from `screenshots-picker`)
 
 ### davidgasquez/dotfiles
 - **URL:** https://github.com/davidgasquez/dotfiles

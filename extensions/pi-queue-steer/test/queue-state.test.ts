@@ -7,7 +7,9 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import queueSteerExtension, {
 	QUEUE_STEER_ACCEPTED_EVENT,
+	QUEUE_STEER_ATTACHMENTS_EVENT,
 	type QueueSteerAcceptedEventV1,
+	type QueueSteerAttachmentsEventV1,
 } from "../index.ts";
 import { DeliveryQueue, QueueEditSession, type QueueLane } from "../queue-state.ts";
 
@@ -146,12 +148,13 @@ function createHarness(options: { cwd?: string; projectTrusted?: boolean; failSe
 	interface DeliveryOptions {
 		deliverAs?: QueueLane;
 	}
-	type AcceptedEventHandler = (event: QueueSteerAcceptedEventV1) => void;
+	type HarnessEvent = QueueSteerAcceptedEventV1 | QueueSteerAttachmentsEventV1;
+	type EventHandler = (event: HarnessEvent) => void;
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, Handler>();
 	const sent: Array<{ content: UserMessageContent; options: DeliveryOptions | undefined }> = [];
 	const notifications: Array<{ message: string; level: string }> = [];
-	const eventHandlers = new Map<string, AcceptedEventHandler[]>();
+	const eventHandlers = new Map<string, EventHandler[]>();
 	const emittedEvents: Array<{ channel: string; payload: QueueSteerAcceptedEventV1 }> = [];
 	let sessionId = "queue-session-1";
 	let idle = false;
@@ -206,13 +209,16 @@ function createHarness(options: { cwd?: string; projectTrusted?: boolean; failSe
 
 	const pi = {
 		events: {
-			on(channel: string, handler: AcceptedEventHandler) {
+			on(channel: string, handler: EventHandler) {
 				const registered = eventHandlers.get(channel) ?? [];
 				registered.push(handler);
 				eventHandlers.set(channel, registered);
 			},
-			emit(channel: string, payload: QueueSteerAcceptedEventV1) {
-				emittedEvents.push({ channel, payload });
+			emit(channel: string, payload: HarnessEvent) {
+				if (channel === QUEUE_STEER_ACCEPTED_EVENT) {
+					if (!("producer" in payload)) throw new Error("Invalid accepted-steer event");
+					emittedEvents.push({ channel, payload });
+				}
 				for (const handler of eventHandlers.get(channel) ?? []) handler(payload);
 			},
 		},
@@ -263,6 +269,11 @@ function createHarness(options: { cwd?: string; projectTrusted?: boolean; failSe
 		},
 		setSessionId(value: string) {
 			sessionId = value;
+		},
+		onEvent(channel: string, handler: EventHandler) {
+			const registered = eventHandlers.get(channel) ?? [];
+			registered.push(handler);
+			eventHandlers.set(channel, registered);
 		},
 		clearPending() {
 			pending = false;
@@ -582,6 +593,38 @@ test("injects follow-ups through Pi's native continuation queue at agent_end", a
 	assert.deepEqual(harness.sent[0], { content: "later one", options: { deliverAs: "followUp" } });
 	assert.match(renderWidget(harness), /later two/);
 });
+
+for (const submission of ["input", "command", "mixed"] as const) {
+	test(`collects staged attachments independently for consecutive ${submission} follow-ups`, async () => {
+		const harness = createHarness();
+		const firstImage: ImageContent = { type: "image", data: "first", mimeType: "image/png" };
+		const thirdImage: ImageContent = { type: "image", data: "third", mimeType: "image/png" };
+		let stagedImages = [firstImage];
+		harness.onEvent(QUEUE_STEER_ATTACHMENTS_EVENT, (value) => {
+			if (!("attach" in value)) throw new Error("Invalid attachment request");
+			value.attach(stagedImages);
+			stagedImages = [];
+		});
+		await harness.emit("session_start");
+		if (submission === "input") await enqueue(harness, "followUp", "first");
+		else await harness.invokeCommand("followup", "first");
+		if (submission === "command") await harness.invokeCommand("followup", "second");
+		else await enqueue(harness, "followUp", "second");
+		stagedImages = [thirdImage];
+		if (submission === "command") await harness.invokeCommand("followup", "third");
+		else await enqueue(harness, "followUp", "third");
+
+		for (let index = 0; index < 3; index += 1) {
+			await harness.emit("agent_end");
+			harness.clearPending();
+		}
+		assert.deepEqual(harness.sent.map((message) => message.content), [
+			[{ type: "text", text: "first" }, firstImage],
+			"second",
+			[{ type: "text", text: "third" }, thirdImage],
+		]);
+	});
+}
 
 test("/followup queues a visible follow-up without requiring Alt+Enter", async () => {
 	const harness = createHarness();

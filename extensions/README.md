@@ -264,10 +264,12 @@
   - Shows independent, editable steering and follow-up queues while preserving Pi's native delivery timing
   - Adds `/followup <message>`, `/steer <message>` while editing a follow-up, and symmetric `Option+Enter` conversion between queue lanes
   - Emits a content-free accepted-steering event used by `pi-repoprompt-mcp` to interrupt attended RepoPrompt waits as soon as Pi accepts steering
+  - Keeps screenshots staged by `screenshots-picker` attached to queued steering and follow-ups
 
 - ◐ [`screenshots-picker/`](screenshots-picker/) ([README](screenshots-picker/README.md)) (upstream: [Graffioh/pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker))
   - Browses and stages screenshots from configurable sources, then attaches them to the next prompt
   - Adds sent-screenshot previews that follow Pi's image visibility and resizing settings, plus metadata previews for Orca terminals
+  - Keeps staged screenshots attached when `pi-queue-steer` queues steering or follow-ups
   - Uses `Ctrl+\`` to open the picker and `Ctrl+1` to clear staged screenshots, reports picker-based clears, opens files in the system image viewer, imports the current `@earendil-works` Pi packages, and updates `glob` to 13.0.6
 
 - ◐ [`stash/`](stash/) ([README](stash/README.md)) (upstream: [saadjs/pi stash](https://github.com/saadjs/pi/tree/main/extensions/stash))

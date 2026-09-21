@@ -66,6 +66,7 @@ The extension keeps Pi’s 2 delivery classes:
 - the blue steering box remains above the yellow follow-up box
 - each lane keeps its own first-in, first-out order
 - Pi’s `one-at-a-time` and `all` settings apply independently at active-run delivery boundaries
+- screenshots staged by `screenshots-picker` attach to queued steering and follow-ups, including `/followup <message>`
 
 The extension hands messages back to Pi’s native queues only when their delivery boundary arrives. They remain visible and editable before that point. Pi records delivered rows as normal user messages.
 

@@ -20,6 +20,7 @@ import {
 } from "./queue-state.ts";
 
 export const QUEUE_STEER_ACCEPTED_EVENT = "pi-queue-steer:accepted-steer:v1";
+export const QUEUE_STEER_ATTACHMENTS_EVENT = "pi-queue-steer:attachments:v1";
 
 export interface QueueSteerAcceptedEventV1 {
 	readonly version: 1;
@@ -27,6 +28,11 @@ export interface QueueSteerAcceptedEventV1 {
 	readonly producerEpochId: string;
 	readonly sessionId: string;
 	readonly sequence: number;
+}
+
+export interface QueueSteerAttachmentsEventV1 {
+	readonly version: 1;
+	attach(images: readonly ImageContent[]): void;
 }
 
 const WIDGET_ID = "queue-steer.timeline";
@@ -212,7 +218,7 @@ class QueueTimelineWidget implements Component {
 			lines.push(`${border("│")} ${fitCell(`${prefix}${editorLine}`, cellWidth)} ${border("│")}`);
 		}
 		if (item.images.length > 0) {
-			const imageNote = `${item.images.length} image${item.images.length === 1 ? "" : "s"} preserved`;
+			const imageNote = `${item.images.length} image${item.images.length === 1 ? "" : "s"}`;
 			lines.push(`${border("│")} ${fitCell(this.theme.fg("dim", `${" ".repeat(prefixWidth)}↳ ${imageNote}`), cellWidth)} ${border("│")}`);
 		}
 	}
@@ -241,6 +247,18 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		steer: settingsManager?.getSteeringMode() ?? "one-at-a-time",
 		followUp: settingsManager?.getFollowUpMode() ?? "one-at-a-time",
 	});
+
+	const collectInputImages = (images: readonly ImageContent[] | undefined): ImageContent[] => {
+		const collected = [...(images ?? [])];
+		const request: QueueSteerAttachmentsEventV1 = {
+			version: 1,
+			attach(additionalImages) {
+				collected.push(...additionalImages);
+			},
+		};
+		pi.events.emit(QUEUE_STEER_ATTACHMENTS_EVENT, request);
+		return collected;
+	};
 
 	const laneIsHeld = (lane: QueueLane): boolean => {
 		if (!editSession) return false;
@@ -537,7 +555,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			queue.enqueue("followUp", text);
+			queue.enqueue("followUp", text, collectInputImages(undefined));
 			paused = false;
 			renderQueue(ctx);
 			if (ctx.isIdle()) dispatchFromIdle(ctx);
@@ -575,7 +593,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		}
 
 		if (event.streamingBehavior === "steer") {
-			queue.enqueue("steer", event.text, event.images);
+			queue.enqueue("steer", event.text, collectInputImages(event.images));
 			acceptedSteerSequence += 1;
 			const acceptedEvent: QueueSteerAcceptedEventV1 = {
 				version: 1,
@@ -591,7 +609,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 		}
 
 		if (event.streamingBehavior === "followUp") {
-			queue.enqueue("followUp", event.text, event.images);
+			queue.enqueue("followUp", event.text, collectInputImages(event.images));
 			paused = false;
 			renderQueue(ctx);
 			return { action: "handled" };

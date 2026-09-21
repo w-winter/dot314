@@ -94,6 +94,8 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { globSync } from "glob";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
 
 interface ScreenshotInfo {
 	path: string;
@@ -134,6 +136,12 @@ const SCREENSHOT_PATTERNS = [
 	/^maim/i, // Maim
 	/^grim/i, // Grim (Wayland)
 ];
+
+const QUEUE_STEER_ATTACHMENTS_EVENT = "pi-queue-steer:attachments:v1";
+const QueueSteerAttachmentsEventSchema = Type.Object({
+	version: Type.Literal(1),
+	attach: Type.Function([Type.Array(Type.Unknown())], Type.Void()),
+});
 
 /**
  * Detect the platform.
@@ -511,8 +519,19 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 	let stagedPaths = new Set<string>();
 	// Track the paths that were just sent so we can show a display-only preview in chat
 	let pendingSentPreviewPaths: string[] = [];
+	let activeContext: ExtensionContext | undefined;
+
+	function takeStagedImages(ctx: ExtensionContext): ImageContent[] {
+		const images = [...stagedImages];
+		pendingSentPreviewPaths = [...stagedPaths];
+		stagedImages = [];
+		stagedPaths.clear();
+		ctx.ui.setWidget("screenshots-staged", undefined);
+		return images;
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		activeContext = ctx;
 		if (isOrcaTerminal) return;
 
 		const previewPaths = new Set<string>();
@@ -528,6 +547,16 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 		}
 
 		await Promise.all(Array.from(previewPaths, (path) => prepareSentPreviewImage(path)));
+	});
+
+	const stopQueueSteerAttachments = pi.events.on(QUEUE_STEER_ATTACHMENTS_EVENT, (value) => {
+		if (!Check(QueueSteerAttachmentsEventSchema, value) || stagedImages.length === 0 || !activeContext) return;
+		value.attach(takeStagedImages(activeContext));
+	});
+
+	pi.on("session_shutdown", () => {
+		stopQueueSteerAttachments();
+		activeContext = undefined;
 	});
 
 	pi.registerMessageRenderer<SentScreenshotPreviewDetails>(SENT_PREVIEW_CUSTOM_TYPE, (message, options, theme) => {
@@ -638,18 +667,13 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 
 	// Intercept input events to attach staged images
 	pi.on("input", (event, ctx) => {
-		if (stagedImages.length === 0) {
+		activeContext = ctx;
+		if (event.source !== "interactive" || stagedImages.length === 0) {
 			return { action: "continue" as const };
 		}
 
 		// Attach staged images to the user's message
-		const imagesToAttach = [...stagedImages];
-		pendingSentPreviewPaths = [...stagedPaths];
-		stagedImages = []; // Clear staged images
-		stagedPaths.clear(); // Clear staged paths so picker doesn't show old ✓ state
-
-		// Clear the widget
-		ctx.ui.setWidget("screenshots-staged", undefined);
+		const imagesToAttach = takeStagedImages(ctx);
 
 		return {
 			action: "transform" as const,

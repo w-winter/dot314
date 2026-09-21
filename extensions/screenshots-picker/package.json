@@ -7,6 +7,9 @@
   },
   "description": "Screenshot picker extension for pi coding agent - quickly select and attach screenshots to your prompts",
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
   "keywords": [
     "pi-package",
     "pi",
