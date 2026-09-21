@@ -20,6 +20,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 type ThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
 
@@ -70,6 +72,7 @@ const THINKING_LEVELS = [
     "max",
 ] as const satisfies readonly ThinkingLevel[];
 const DEFAULT_RESERVE_TOKENS = 16384;
+const RESERVE_TOKENS_SCHEMA = Type.Integer({ minimum: 0 });
 const FALLBACK_STATE_ENTRY_TYPE = "context-limit-fallback-state";
 const EXTENSION_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(EXTENSION_DIRECTORY, "config.json");
@@ -231,13 +234,18 @@ function parseThresholdConfig(value: unknown): ThresholdConfig {
 }
 
 // Pi compacts when used tokens exceed contextWindow - reserveTokens (default reserve 16384).
-function loadReserveTokens(settingsPath = SETTINGS_PATH): number {
+function loadReserveTokens(
+    model: { readonly provider: string; readonly id: string } | undefined,
+    settingsPath = SETTINGS_PATH,
+): number {
     try {
         const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as JsonObject;
         const compaction = isObject(parsed.compaction) ? parsed.compaction : undefined;
-        const value = compaction?.reserveTokens;
-        if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-            return Math.floor(value);
+        const modelOverrides = isObject(compaction?.modelOverrides) ? compaction.modelOverrides : undefined;
+        const modelOverride = model ? modelOverrides?.[modelReference(model)] : undefined;
+        const override = isObject(modelOverride) ? modelOverride.reserveTokens : undefined;
+        for (const value of [override, compaction?.reserveTokens]) {
+            if (Value.Check(RESERVE_TOKENS_SCHEMA, value)) return value;
         }
         return DEFAULT_RESERVE_TOKENS;
     } catch {
@@ -573,7 +581,7 @@ export function registerContextLimitFallback(
             ctx,
             currentSessionState,
             thresholds,
-            loadReserveTokens(settingsPath),
+            loadReserveTokens(ctx.model, settingsPath),
         );
     });
 }

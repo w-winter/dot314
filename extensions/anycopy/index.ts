@@ -18,6 +18,7 @@
  *   Esc       - close
  */
 
+import type { SystemMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -267,10 +268,27 @@ const getEntryRoleLabel = (entry: SessionEntry): string => {
 	return entry.type;
 };
 
+function formatSystemMessage(message: SystemMessage): string {
+	const parts: string[] = [];
+	const content = getTextContent(message.content).trim();
+	if (content) parts.push(content);
+	for (const [name, value] of Object.entries(message.sections ?? {})) {
+		parts.push(value === null ? `Section removed: ${name}` : `Section ${name}:\n${value}`);
+	}
+	if (message.toolsAdded?.length) {
+		parts.push(`Tools added: ${message.toolsAdded.map((tool) => tool.name).join(", ")}`);
+	}
+	if (message.toolsRemoved?.length) {
+		parts.push(`Tools removed: ${message.toolsRemoved.map((tool) => tool.name).join(", ")}`);
+	}
+	return parts.join("\n\n") || "(no system changes)";
+}
+
 /** Plain text content for clipboard and preview (no metadata) */
 const getEntryContent = (entry: SessionEntry): string => {
 	switch (entry.type) {
 		case "message": {
+			if (entry.message.role === "system") return formatSystemMessage(entry.message);
 			const msg = entry.message as {
 				role?: string;
 				content?: unknown;

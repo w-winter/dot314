@@ -15,6 +15,7 @@
 - Key hints spell modifier names out
 
 ### Fixed
+- System-message previews and clipboard output include prompt-section and tool-set changes.
 - Status hints wrap to the viewport width without dropping actions
 - Tool-call context remains available for results deep in the session tree, and large arguments no longer overwhelm previews
 - Clipboard failures are reported instead of showing a false success message

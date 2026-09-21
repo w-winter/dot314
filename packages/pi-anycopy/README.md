@@ -2,6 +2,8 @@
 
 This extension mirrors all the behaviors of Pi's native `/tree` while adding a live, syntax-highlighting preview of each node's content, the ability to copy any node(s) to the clipboard, and optional node creation timestamps.
 
+Requires Pi 0.86.0 or later.
+
 <p align="center">
   <img width="450" alt="anycopy demo" src="https://raw.githubusercontent.com/w-winter/dot314/main/assets/anycopy-demo.gif" />
 </p>

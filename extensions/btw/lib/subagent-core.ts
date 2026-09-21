@@ -790,16 +790,18 @@ export async function runSubagent(options: RunSubagentOptions): Promise<SingleRe
 				let cost = 0;
 				let turns = 0;
 				for (const entry of session.sessionManager.getEntries()) {
-					if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-					const usage = entry.message.usage;
-					if (usage) {
-						input += usage.input || 0;
-						output += usage.output || 0;
-						cacheRead += usage.cacheRead || 0;
-						cacheWrite += usage.cacheWrite || 0;
-						cost += usage.cost?.total || 0;
-					}
-					turns++;
+					const usage = entry.type === "usage"
+						? entry.usage
+						: entry.type === "message" && entry.message.role === "assistant"
+							? entry.message.usage
+							: undefined;
+					if (!usage) continue;
+					input += usage.input || 0;
+					output += usage.output || 0;
+					cacheRead += usage.cacheRead || 0;
+					cacheWrite += usage.cacheWrite || 0;
+					cost += usage.cost?.total || 0;
+					if (entry.type === "message") turns++;
 				}
 				Object.assign(result.usage, { input, output, cacheRead, cacheWrite, cost, turns });
 				const contextUsage = session.getContextUsage();

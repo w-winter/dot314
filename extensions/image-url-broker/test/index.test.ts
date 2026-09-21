@@ -17,10 +17,11 @@ import test from "node:test";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import {
 	createAssistantMessageEventStream,
+	normalizeContext,
 	type AssistantMessage,
 	type AssistantMessageEvent,
-	type Context,
 	type Model,
+	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 
 import {
@@ -90,7 +91,7 @@ const CODEX_MODEL = {
 	maxTokens: 4_096,
 } as Model<"openai-codex-responses">;
 
-const EMPTY_CONTEXT: Context = { messages: [] };
+const EMPTY_CONTEXT: TranscriptContext = normalizeContext({ messages: [] });
 
 function assistantMessage(stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
 	return {

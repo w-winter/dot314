@@ -2,6 +2,8 @@
 
 This extension mirrors all the behaviors of Pi's native `/tree` while adding a live, syntax-highlighting preview of each node's content, the ability to copy any node(s) to the clipboard, and optional node creation timestamps.
 
+Requires Pi 0.86.0 or later.
+
 ## Usage
 
 ```text

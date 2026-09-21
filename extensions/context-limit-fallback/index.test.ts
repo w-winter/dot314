@@ -144,6 +144,7 @@ function setup(
     harnessOptions: Parameters<typeof createHarness>[0] = {},
     thresholds: unknown = DEFAULT_THRESHOLDS,
     reserveTokens = 16384,
+    modelOverrides: Record<string, { reserveTokens: number }> = {},
 ) {
     const directory = createTempDirectory();
     const configPath = join(directory, "config.json");
@@ -153,7 +154,7 @@ function setup(
     if (thresholds !== null) {
         writeFileSync(thresholdConfigPath, JSON.stringify(thresholds));
     }
-    writeFileSync(settingsPath, JSON.stringify({ compaction: { reserveTokens } }));
+    writeFileSync(settingsPath, JSON.stringify({ compaction: { reserveTokens, modelOverrides } }));
     const harness = createHarness(harnessOptions);
     registerContextLimitFallback(harness.pi, { configPath, thresholdConfigPath, settingsPath });
     return { ...harness, configPath };
@@ -443,6 +444,25 @@ describe("threshold handoff", () => {
             { setModel: async () => { calls += 1; return true; } },
             null,
             50000,
+        );
+        const ctx = switchingContext({
+            currentModel: createModel("capable-x", 100000),
+            models: [createModel("large", 1000000)],
+            usageTokens: 50001,
+        });
+        await emit(harness.handlers, "session_start", ctx);
+        await emit(harness.handlers, "agent_end", ctx);
+        assert.equal(calls, 1);
+    });
+
+    it("uses the active model's reserveTokens override for the native interception point", async () => {
+        let calls = 0;
+        const harness = setup(
+            VALID_CONFIG,
+            { setModel: async () => { calls += 1; return true; } },
+            null,
+            1000,
+            { "anthropic/capable-x": { reserveTokens: 50000 } },
         );
         const ctx = switchingContext({
             currentModel: createModel("capable-x", 100000),

@@ -2,6 +2,8 @@
 
 `/btw [--mode <name>] [--model <provider/id|partial>] <prompt>` runs a child agent in the background while the current session continues working. The child receives the parent session's resolved conversation context, uses its own model-specific system prompt and project resources, and persists as a child session linked to the parent.
 
+Requires Pi 0.86.0 or later.
+
 `--model` resolves exact or fuzzy matches within the session's scoped models, preferring the current provider when multiple providers expose similar model IDs. `--mode` reads named configurations from project-level `.pi/modes.json` or the Pi agent directory's `modes.json`.
 
 ## Installation
