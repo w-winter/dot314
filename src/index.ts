@@ -1,4 +1,13 @@
-import { type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool } from "@earendil-works/pi-ai";
+import {
+	getCurrentSystemPrompt,
+	getCurrentTools,
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	type Context,
+	type Model,
+	type SimpleStreamOptions,
+	type Tool,
+} from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createSdkMcpServer, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -259,7 +268,7 @@ async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDK
 // them without activating the extension. `ctx()`, `pushContext()`, `popContext()`
 // are imported at the top of this file.
 
-export function resolveMcpTools(context: Context, excludeToolName?: string): {
+export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolName?: string): {
 	mcpTools: Tool[];
 	customToolNameToSdk: Map<string, string>;
 	customToolNameToPi: Map<string, string>;
@@ -268,9 +277,7 @@ export function resolveMcpTools(context: Context, excludeToolName?: string): {
 	const customToolNameToSdk = new Map<string, string>();
 	const customToolNameToPi = new Map<string, string>();
 
-	if (!context.tools) return { mcpTools, customToolNameToSdk, customToolNameToPi };
-
-	for (const tool of context.tools) {
+	for (const tool of getCurrentTools(context.messages)) {
 		if (tool.name === excludeToolName) continue;
 		// Never re-offer a tool the child owns natively. The claude.ai connector
 		// namespace belongs to the child's own MCP servers, so a Pi tool sitting
@@ -912,7 +919,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		queryModel,
 		account,
 		bridgeConfig,
-		systemPrompt: context.systemPrompt,
+		systemPrompt: getCurrentSystemPrompt(context.messages),
 		reasoning: options?.reasoning,
 		resumeSessionId,
 		mcpServers,

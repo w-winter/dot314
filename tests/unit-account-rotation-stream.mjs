@@ -38,10 +38,13 @@ const model = {
 	contextWindow: 200000,
 	maxTokens: 8192,
 };
-const context = {
-	messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
-	systemPrompt: "test system prompt",
-};
+const contextWithPrompt = (messages) => ({
+	messages: [
+		{ role: "system", content: "test system prompt", timestamp: 0 },
+		...messages,
+	],
+});
+const context = contextWithPrompt([{ role: "user", content: "hello", timestamp: Date.now() }]);
 
 function fakeSdkQuery(messages, accountLabel, observed) {
 	let closed = false;
@@ -820,10 +823,9 @@ describe("reentrant subagent queries and the shared session (C1)", () => {
 
 		// Reentrant call: a subagent's own short [user] conversation (empty text,
 		// so nothing is queued for replay — this isolates the cursor guard).
-		const subagentStream = streamClaudeAgentSdk(model, {
-			messages: [{ role: "user", content: "", timestamp: Date.now() }],
-			systemPrompt: "test system prompt",
-		}, { sessionId: "subagent" });
+		const subagentStream = streamClaudeAgentSdk(model, contextWithPrompt([
+			{ role: "user", content: "", timestamp: Date.now() },
+		]), { sessionId: "subagent" });
 		assert.ok(subagentStream, "the reentrant call returns a stream");
 		const after = bridgeStateFor("parent").sharedSession;
 		assert.equal(JSON.stringify(after), before, "parent record must be byte-identical after the reentrant call");
@@ -853,10 +855,9 @@ describe("reentrant subagent queries and the shared session (C1)", () => {
 			], "legacy", observedState());
 		});
 
-		const events = await collect(streamClaudeAgentSdk(model, {
-			messages: [{ role: "user", content: "subagent prompt", timestamp: Date.now() }],
-			systemPrompt: "test system prompt",
-		}, { sessionId: "subagent" }));
+		const events = await collect(streamClaudeAgentSdk(model, contextWithPrompt([
+			{ role: "user", content: "subagent prompt", timestamp: Date.now() },
+		]), { sessionId: "subagent" }));
 		assert.equal(queryOptions.resume, undefined, "must not resume the parent's Claude session");
 		assert.deepEqual(textEvents(events), ["subagent-answer"]);
 	});

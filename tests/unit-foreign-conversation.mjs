@@ -41,7 +41,12 @@ const model = {
 };
 
 const userMessage = (text) => ({ role: "user", content: text, timestamp: Date.now() });
-const contextWithPrompt = (messages) => ({ messages, systemPrompt: "test system prompt" });
+const contextWithPrompt = (messages) => ({
+	messages: [
+		{ role: "system", content: "test system prompt", timestamp: 0 },
+		...messages,
+	],
+});
 
 function fakeSdkQuery(messages) {
 	let closed = false;

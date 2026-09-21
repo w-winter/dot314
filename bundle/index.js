@@ -5,6 +5,10 @@ var __export = (target, all) => {
 };
 
 // src/index.ts
+import {
+  getCurrentSystemPrompt,
+  getCurrentTools
+} from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 
 // node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
@@ -53601,7 +53605,7 @@ function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account)
       };
     }
   }
-  if (priorMessages.length === 0) {
+  if (priorMessages.every((message) => message.role === "system")) {
     debug(`Case 1: clean start, ${messages.length} total messages, account=${accountProfileId ?? "default"}`);
     debug(`syncResult: path=clean-start`);
     return { sessionId: null, promptStart: messages.length - 1 };
@@ -54747,8 +54751,7 @@ function resolveMcpTools(context, excludeToolName) {
   const mcpTools = [];
   const customToolNameToSdk = /* @__PURE__ */ new Map();
   const customToolNameToPi = /* @__PURE__ */ new Map();
-  if (!context.tools) return { mcpTools, customToolNameToSdk, customToolNameToPi };
-  for (const tool of context.tools) {
+  for (const tool of getCurrentTools(context.messages)) {
     if (tool.name === excludeToolName) continue;
     if (isChildExecutedTool(tool.name)) {
       debug(`resolveMcpTools: not re-offering child-native tool ${tool.name}`);
@@ -55159,7 +55162,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     queryModel,
     account,
     bridgeConfig,
-    systemPrompt: context.systemPrompt,
+    systemPrompt: getCurrentSystemPrompt(context.messages),
     reasoning: options?.reasoning,
     resumeSessionId,
     mcpServers,

@@ -63,7 +63,13 @@ async function collect(stream) {
 const userMessage = (text) => ({ role: "user", content: text, timestamp: Date.now() });
 
 function streamWithPrompt(context, options = {}) {
-	return streamClaudeAgentSdk(model, { ...context, systemPrompt: "test system prompt" }, options);
+	return streamClaudeAgentSdk(model, {
+		...context,
+		messages: [
+			{ role: "system", content: "test system prompt", timestamp: 0 },
+			...context.messages,
+		],
+	}, options);
 }
 
 /** A fake SDK query that emits one tool_use for `call-<label>` and then stays

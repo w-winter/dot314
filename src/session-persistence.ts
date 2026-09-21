@@ -593,8 +593,9 @@ export function syncSharedSession(
 		}
 	}
 
-	// REBUILD path
-	if (priorMessages.length === 0) {
+	// REBUILD path. Pi 0.86 carries prompt/tool state as leading system messages;
+	// those messages do not represent prior Claude conversation history.
+	if (priorMessages.every((message) => message.role === "system")) {
 		debug(`Case 1: clean start, ${messages.length} total messages, account=${accountProfileId ?? "default"}`);
 		debug(`syncResult: path=clean-start`);
 		return { sessionId: null, promptStart: messages.length - 1 };
