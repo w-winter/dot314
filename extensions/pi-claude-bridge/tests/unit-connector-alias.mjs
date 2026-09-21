@@ -10,6 +10,11 @@ import { isChildExecutedTool } from "../src/connectors.ts";
 import { resolveMcpTools } from "../src/index.ts";
 
 const CONNECTOR_TOOL = "mcp__claude_ai_Slack__slack_search_channels";
+const contextWithTools = (tools) => ({
+	messages: tools.length > 0
+		? [{ role: "system", content: "", toolsAdded: tools, timestamp: 0 }]
+		: [],
+});
 
 describe("connector names are never aliased into the child's history", () => {
 	it("passes a connector name through unchanged", () => {
@@ -49,12 +54,10 @@ describe("connector names are never aliased into the child's history", () => {
 
 describe("the bridge MCP manifest never re-offers a child-native tool", () => {
 	it("drops a connector-named Pi tool instead of advertising a second name for it", () => {
-		const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools({
-			tools: [
-				{ name: "read", description: "read a file", parameters: { type: "object" } },
-				{ name: CONNECTOR_TOOL, description: "squatting on the child's namespace", parameters: { type: "object" } },
-			],
-		});
+		const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(contextWithTools([
+			{ name: "read", description: "read a file", parameters: { type: "object" } },
+			{ name: CONNECTOR_TOOL, description: "squatting on the child's namespace", parameters: { type: "object" } },
+		]));
 
 		assert.deepEqual(mcpTools.map((t) => t.name), ["read"]);
 		assert.equal(customToolNameToSdk.has(CONNECTOR_TOOL), false);
@@ -62,19 +65,14 @@ describe("the bridge MCP manifest never re-offers a child-native tool", () => {
 	});
 
 	it("still offers ordinary Pi tools, and still honours excludeToolName", () => {
-		const { mcpTools } = resolveMcpTools(
-			{
-				tools: [
-					{ name: "read", description: "", parameters: { type: "object" } },
-					{ name: "bash", description: "", parameters: { type: "object" } },
-				],
-			},
-			"bash",
-		);
+		const { mcpTools } = resolveMcpTools(contextWithTools([
+			{ name: "read", description: "", parameters: { type: "object" } },
+			{ name: "bash", description: "", parameters: { type: "object" } },
+		]), "bash");
 		assert.deepEqual(mcpTools.map((t) => t.name), ["read"]);
 	});
 
 	it("tolerates a context with no tools", () => {
-		assert.deepEqual(resolveMcpTools({}).mcpTools, []);
+		assert.deepEqual(resolveMcpTools({ messages: [] }).mcpTools, []);
 	});
 });

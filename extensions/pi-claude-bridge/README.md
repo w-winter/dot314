@@ -2,6 +2,8 @@
 
 A Pi provider that uses a logged-in Claude Code account through the Claude Agent SDK. You keep Pi's terminal interface and tools while Claude Code handles model requests.
 
+Requires Pi 0.86.0 or later.
+
 This is a fork of [Eli Dickinson's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge).
 
 ![Response from Claude through the bridge](assets/bridge-demo.png)

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type Api, type Model } from "@earendil-works/pi-ai";
 import {
     convertToLlm,
     serializeConversation,
@@ -755,6 +755,16 @@ function buildInjectedMessages(params: {
     }, ...tail] as AgentMessage[];
 }
 
+function preserveCurrentSystemState(
+    currentMessages: readonly AgentMessage[],
+    replacement: AgentMessage[],
+): AgentMessage[] {
+    if (replacement.length === 0) return replacement;
+    const systemMessage = getCurrentSystemMessage(currentMessages);
+    const conversation = replacement.filter((message) => message.role !== "system");
+    return systemMessage ? [systemMessage, ...conversation] : conversation;
+}
+
 function throwIfAborted(signal: AbortSignal): void {
     if (signal.aborted) throw new PortabilityAbortedError();
 }
@@ -917,7 +927,7 @@ export function registerCodexCompactionPortability(
         pi.on(lifecycleEvent, invalidate);
     }
 
-    pi.on("context", async (_event, ctx) => {
+    pi.on("context", async (event, ctx) => {
         if (!ctx.model || isCanonicalCodexModel(ctx.model)) return undefined;
         try {
         let phase = "epoch-query";
@@ -977,7 +987,10 @@ export function registerCodexCompactionPortability(
             const existingOperation = activeOperations.get(operationKey);
             if (existingOperation) {
                 return {
-                    messages: await waitForOperation(existingOperation, ctx.signal, () => ctx.abort()),
+                    messages: preserveCurrentSystemState(
+                        event.messages,
+                        await waitForOperation(existingOperation, ctx.signal, () => ctx.abort()),
+                    ),
                 };
             }
             for (const activeOperation of [...activeOperations.values()]) cancelOperation(activeOperation);
@@ -1163,7 +1176,12 @@ export function registerCodexCompactionPortability(
                 if (activeOperations.get(operationKey) === operation) activeOperations.delete(operationKey);
             });
             activeOperations.set(operationKey, operation);
-            return { messages: await waitForOperation(operation, ctx.signal, () => ctx.abort()) };
+            return {
+                messages: preserveCurrentSystemState(
+                    event.messages,
+                    await waitForOperation(operation, ctx.signal, () => ctx.abort()),
+                ),
+            };
         } catch (error) {
             if (ctx.signal.aborted) return EMPTY_CONTEXT;
             notify(ctx, `Codex checkpoint portability failed during ${phase}.`, "error");

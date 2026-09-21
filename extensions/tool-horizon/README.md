@@ -2,6 +2,8 @@
 
 Tool Horizon keeps the complete human conversation in model context while hiding older tool calls and matching tool results before a horizon you choose. It changes only the outgoing model request; Pi's session history remains available through `/tree` and `/fork`.
 
+Requires Pi 0.86.0 or later.
+
 The horizon is selected from Pi's chronological session tree and resolved against the current model context. The picker estimate and actual context reduction are calculated from the same messages.
 
 When hidden tool activity touched files, Tool Horizon adds a compact deterministic checkpoint listing files that were read, modified, created, deleted, or moved. This preserves useful provenance without carrying the full tool transcript.

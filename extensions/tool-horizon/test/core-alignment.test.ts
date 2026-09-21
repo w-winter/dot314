@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { SystemMessage } from "@earendil-works/pi-ai";
+
 import {
-	ContextProjectionCardinalityError,
 	adaptSessionEntryProjection,
 	alignContextMessageEntriesExactly,
 	buildContextMessageEntries,
@@ -35,8 +36,9 @@ function compactionEntry(
 	id: string,
 	firstKeptEntryId: string,
 	parentId: string | null = null,
+	systemMessage?: SystemMessage,
 ): SessionEntry {
-	return {
+	const entry: Extract<SessionEntry, { type: "compaction" }> = {
 		id,
 		parentId,
 		type: "compaction",
@@ -44,7 +46,9 @@ function compactionEntry(
 		summary: `${id} summary`,
 		tokensBefore: 1234,
 		firstKeptEntryId,
-	} as unknown as SessionEntry;
+	};
+	if (systemMessage !== undefined) entry.systemMessage = systemMessage;
+	return entry;
 }
 
 function linearBranch(...entries: SessionEntry[]): SessionEntry[] {
@@ -102,24 +106,21 @@ test("test_public_context_projection_normalizes_absent_custom_message_content", 
 });
 
 test("test_context_projection_adapter_accepts_zero_message_projection", () => {
-	assert.equal(adaptSessionEntryProjection(customEntry("state"), []), null);
+	assert.deepEqual(adaptSessionEntryProjection(customEntry("state"), []), []);
 });
 
-test("test_context_projection_adapter_rejects_multiple_messages_for_one_entry", () => {
+test("test_context_projection_adapter_preserves_multiple_messages_for_one_entry", () => {
 	const entry = messageEntry("multi", userMessage("source"));
-	assert.throws(
-		() => adaptSessionEntryProjection(entry, [
-			{ role: "user", content: [{ type: "text", text: "one" }] },
-			{ role: "user", content: [{ type: "text", text: "two" }] },
-		]),
-		(error: unknown) => {
-			assert.ok(error instanceof ContextProjectionCardinalityError);
-			assert.equal(error.entryId, "multi");
-			assert.equal(error.entryType, "message");
-			assert.equal(error.projectedMessageCount, 2);
-			return true;
-		},
-	);
+	const projected = adaptSessionEntryProjection(entry, [
+		{ role: "user", content: [{ type: "text", text: "one" }] },
+		{ role: "user", content: [{ type: "text", text: "two" }] },
+	]);
+
+	assert.deepEqual(projected.map((item) => item.id), ["multi", "multi"]);
+	assert.deepEqual(projected.map((item) => item.message.content), [
+		[{ type: "text", text: "one" }],
+		[{ type: "text", text: "two" }],
+	]);
 });
 
 test("test_build_context_message_entries_follows_explicit_parent_linked_leaf", () => {
@@ -246,6 +247,28 @@ test("test_align_context_message_entries_exactly_maps_compaction_entry", () => {
 	assert.equal(result.get("kept"), 1);
 	assert.equal(result.get("after"), 2);
 	assert.equal(result.has("dropped"), false, "entries before firstKeptEntryId are not in the payload");
+});
+
+test("test_align_context_message_entries_exactly_maps_compaction_system_state_to_its_summary_boundary", () => {
+	const systemMessage = {
+		role: "system",
+		content: "Project instructions",
+		toolsAdded: [{ name: "read", description: "Read a file", parameters: { type: "object" } }],
+		timestamp: 0,
+	};
+	const branch = linearBranch(
+		messageEntry("kept", userMessage("kept message")),
+		compactionEntry("comp-1", "kept", null, systemMessage),
+		messageEntry("after", assistantMessage("after compaction")),
+	);
+	const contextEntries = project(branch);
+	const result = alignContextMessageEntriesExactly(contextEntries, contextEntries.map((entry) => entry.message));
+
+	if (!(result instanceof Map)) throw new Error("expected success");
+	assert.deepEqual(contextEntries.slice(0, 2).map((entry) => entry.message.role), ["system", "compactionSummary"]);
+	assert.equal(result.get("comp-1"), 1, "the compaction boundary maps to its summary, not its system snapshot");
+	assert.equal(result.get("kept"), 2);
+	assert.equal(result.get("after"), 3);
 });
 
 test("test_align_context_message_entries_exactly_succeeds_on_branch_derived_payload", () => {

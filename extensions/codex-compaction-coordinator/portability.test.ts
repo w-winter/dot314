@@ -1423,6 +1423,28 @@ describe("coordinator lazy portability orchestration", () => {
         assert.equal(harness.notices.length, noticeCount);
     });
 
+    it("preserves the current prompt and tools without replaying tail system deltas", async () => {
+        const harness = createHarness({ branch: basicBranch() });
+        const initialSystem = {
+            role: "system",
+            content: "Base instructions",
+            toolsAdded: [{ name: "read", description: "Read a file", parameters: { type: "object" } }],
+            timestamp: 0,
+        };
+        const update = {
+            role: "system",
+            content: "Current instructions",
+            toolsAdded: [{ name: "write", description: "Write a file", parameters: { type: "object" } }],
+            timestamp: 1,
+        };
+        const result = await harness.runContext([initialSystem, update, { role: "user", content: "visible tail" }]);
+
+        assert.deepEqual(result.messages.map((message: AgentMessage) => message.role), ["system", "compactionSummary", "user"]);
+        assert.equal(result.messages[0].content, "Base instructions\n\nCurrent instructions");
+        assert.deepEqual(result.messages[0].toolsAdded?.map((tool: { name: string }) => tool.name), ["read", "write"]);
+        assert.equal(result.messages.filter((message: AgentMessage) => message.role === "system").length, 1);
+    });
+
     it("regenerates label-sensitive records inherited by a fork", async () => {
         const source = userEntry("source", "source history");
         const firstCheckpoint = checkpointEntry("checkpoint-1", source.id);

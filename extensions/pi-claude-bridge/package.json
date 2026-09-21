@@ -16,12 +16,12 @@
     "change-case": "^5.4.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.81.0",
-    "@earendil-works/pi-coding-agent": ">=0.81.0"
+    "@earendil-works/pi-ai": ">=0.86.0",
+    "@earendil-works/pi-coding-agent": ">=0.86.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.84.0",
-    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@earendil-works/pi-ai": "^0.86.0",
+    "@earendil-works/pi-coding-agent": "^0.86.0",
     "@types/node": "^24.3.0",
     "esbuild": "^0.28.0",
     "tsx": "^4.21.0",

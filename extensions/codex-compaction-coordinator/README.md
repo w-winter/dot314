@@ -2,6 +2,8 @@
 
 Coordinates native compaction and cross-provider history portability for models whose provider is `openai-codex` and API is `openai-codex-responses` (called **Codex models** below).
 
+Requires Pi 0.86.0 or later.
+
 The coordinator depends on two integrations:
 
 - A compatible checkpoint extension creates and replays encrypted OpenAI Responses V2 checkpoints through Pi's normal compaction pipeline. [howaboua's `@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) is the implementation I use and test with this coordinator.

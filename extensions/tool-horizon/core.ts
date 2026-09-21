@@ -138,22 +138,6 @@ export const TOOL_HORIZON_DISABLED_STATE: ToolHorizonState = {
 	boundaryFingerprint: null,
 };
 
-export class ContextProjectionCardinalityError extends Error {
-	readonly entryId: string;
-	readonly entryType: SessionEntry["type"];
-	readonly projectedMessageCount: number;
-
-	constructor(entry: SessionEntry, projectedMessageCount: number) {
-		super(
-			`Session entry ${entry.id} (${entry.type}) projected to ${projectedMessageCount} messages; expected at most one`,
-		);
-		this.name = "ContextProjectionCardinalityError";
-		this.entryId = entry.id;
-		this.entryType = entry.type;
-		this.projectedMessageCount = projectedMessageCount;
-	}
-}
-
 function getContextMessageSourceType(entry: SessionEntry): ContextMessageSourceType {
 	if (
 		entry.type === "message" ||
@@ -169,16 +153,14 @@ function getContextMessageSourceType(entry: SessionEntry): ContextMessageSourceT
 export function adaptSessionEntryProjection(
 	entry: SessionEntry,
 	projectedMessages: readonly EventMessage[],
-): ContextMessageEntry | null {
-	if (projectedMessages.length === 0) return null;
-	if (projectedMessages.length > 1) {
-		throw new ContextProjectionCardinalityError(entry, projectedMessages.length);
-	}
-	return {
+): ContextMessageEntry[] {
+	if (projectedMessages.length === 0) return [];
+	const sourceType = getContextMessageSourceType(entry);
+	return projectedMessages.map((message) => ({
 		id: entry.id,
-		sourceType: getContextMessageSourceType(entry),
-		message: projectedMessages[0],
-	};
+		sourceType,
+		message,
+	}));
 }
 
 export function buildContextMessageEntries(
@@ -187,8 +169,7 @@ export function buildContextMessageEntries(
 ): ContextMessageEntry[] {
 	const byId = new Map(branchEntries.map((entry) => [entry.id, entry]));
 	return buildContextEntries(branchEntries, leafId, byId)
-		.map((entry) => adaptSessionEntryProjection(entry, sessionEntryToContextMessages(entry)))
-		.filter((entry): entry is ContextMessageEntry => entry !== null);
+		.flatMap((entry) => adaptSessionEntryProjection(entry, sessionEntryToContextMessages(entry)));
 }
 
 /**
@@ -223,7 +204,7 @@ export function collectCompactedAwayMessages(
 		if (entry.id === activeCompaction.firstKeptEntryId) break;
 		if (entry.type === "compaction") continue;
 		const projected = adaptSessionEntryProjection(entry, sessionEntryToContextMessages(entry));
-		if (projected) messages.push(projected.message);
+		messages.push(...projected.map((item) => item.message));
 	}
 	return messages;
 }
@@ -421,6 +402,9 @@ function getExactContextAlignmentSignature(message: EventMessage): string {
 		toolResultId: getToolResultId(message),
 		summary: getString((message as { summary?: unknown }).summary),
 		content: normalizeContentForContextAlignment(message.content),
+		sections: message.sections ?? null,
+		toolsAdded: message.toolsAdded ?? null,
+		toolsRemoved: message.toolsRemoved ?? null,
 	});
 }
 

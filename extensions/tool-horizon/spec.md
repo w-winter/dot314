@@ -83,7 +83,7 @@ A fingerprint contains role, leading comparable text, tool names, tool count, an
 
 ## Payload alignment
 
-`buildContextMessageEntries` calls Pi's public `buildContextEntries` and `sessionEntryToContextMessages` exports for an explicit parent-linked leaf, then retains each source entry ID through a strict adapter. Zero-message projections are omitted, one-message projections retain the source ID, and projections of more than one message fail with `ContextProjectionCardinalityError` because one source ID cannot identify multiple payload positions.
+`buildContextMessageEntries` calls Pi's public `buildContextEntries` and `sessionEntryToContextMessages` exports for an explicit parent-linked leaf, then retains each source entry ID through a strict adapter. Zero-message projections are omitted, and every message from a non-empty projection retains the source ID. Exact alignment maps that ID to the projection's final payload position, so a compaction boundary identifies its summary rather than the preceding system-state snapshot.
 
 `collectCompactedAwayMessages` remains a Tool Horizon branch-derived operation because Pi exposes no equivalent. It uses the same explicit leaf projection to identify the active compaction, then recovers the hidden prefix from the selected branch. `alignContextMessageEntriesExactly` maps active entries to the cached raw payload. Picker opening requires exact consumption of both actionable sequences; mismatches refuse the picker rather than inferring a mapping.
 
