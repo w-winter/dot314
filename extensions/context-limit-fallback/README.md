@@ -8,7 +8,7 @@ Switches a Pi session to a configured larger-context model when the active model
 
 Occasionally, I prefer to wade fearlessly into the so-called ["dumb zone"](https://www.aihero.dev/why-the-anthropic-ralph-plugin-sucks#the-problem-with-anthropics-ralph-plugin) rather than let a session auto-compact when the active model reaches its configured threshold. While I don't recommend this as a default policy, it *can* be useful when compaction risks losing earlier context that still matters for an orchestrator agent's unfinished delegated work.
 
-This can also buy the opportunity to prune accumulated tool-call payloads before deciding what context to retain (e.g., via [crstdr's diligent-context](https://github.com/crstdr/diligent-pi/tree/main/extensions/diligent-context)).
+This can also buy the opportunity to prune accumulated tool-call payloads before deciding what context to retain via [`tool-horizon`](../tool-horizon/), a modified derivative of [crstdr's diligent-context](https://github.com/crstdr/diligent-pi/tree/main/extensions/diligent-context).
 
 Lastly, [due to prefill effects](https://stencil.so/blog/prewalk), a lower-capability model with a larger context window can continue along a trajectory established by a higher-capability model with a smaller window, making that "dumb zone" a bit less dumb.
 
