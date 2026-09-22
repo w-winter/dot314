@@ -6,7 +6,8 @@
 // Separate from index.ts so tests can import it without activating the extension.
 
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
-import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
+import type { query } from "@anthropic-ai/claude-agent-sdk";
+import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { isConnectorTool } from "./connectors.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { currentRequestLaneId } from "./request-lane.js";
@@ -18,6 +19,13 @@ import { currentRequestLaneId } from "./request-lane.js";
 export interface DeferredUserMessage {
 	text: string;
 	blocks?: ContentBlockParam[];
+}
+
+export interface QueryRestartRequest {
+	model: Model<any>;
+	context: Context;
+	options: SimpleStreamOptions | undefined;
+	stream: AssistantMessageEventStream;
 }
 
 /** Diag payload for a deferred-message drop: counts, sites, and lengths only.
@@ -245,8 +253,13 @@ function unique(values: Iterable<string | undefined>): string[] {
 
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
-	activeQuery: unknown | null = null;
+	activeQuery: ReturnType<typeof query> | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
+	/** Pi replaced the history while this query was active. Its next callback
+	 *  must use the new context instead of resuming the stale Claude session. */
+	piHistoryReplaced = false;
+	reportedHistoryRestartDecline = false;
+	restartRequest: QueryRestartRequest | null = null;
 	latestCursor = 0;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
@@ -340,6 +353,9 @@ export class QueryContext {
 	 * call unrecordable at teardown — which is the one case the trail exists for.
 	 */
 	connectorCallAudit = new Map<string, ConnectorCallAuditState>();
+	/** Child-loaded MCP calls absent from Pi's transcript. A history restart
+	 *  cannot reconstruct them, even if their results arrived in Claude Code. */
+	foreignMcpCalls = new Map<string, string>();
 	/** Claude Code session id for this query, from the SDK's `system` init message.
 	 *  Undefined until it arrives; the audit trail omits the field rather than
 	 *  guessing. */
@@ -504,6 +520,11 @@ export class QueryContext {
 
 	markOutputCommitted(): void {
 		this.committedOutput = true;
+	}
+
+	noteForeignMcpToolCall(id: string | undefined, name: string): void {
+		this.markOutputCommitted();
+		if (id) this.foreignMcpCalls.set(id, name);
 	}
 
 	claimToolCall(toolName: string, args: Record<string, unknown> = {}): ClaimedToolCall {

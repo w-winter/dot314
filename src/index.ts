@@ -16,8 +16,8 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, modelDisplayName } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, drainPendingToolCalls, drainStrandedToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage } from "./query-state.js";
-import { teardownQuery } from "./query-teardown.js";
+import { QueryContext, ctx, deleteQueryLane, drainPendingToolCalls, drainStrandedToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
 import { loadConfig, recordProjectTrust } from "./config.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
 import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.js";
@@ -513,6 +513,30 @@ function applyProviderRegistration(trigger: string): void {
 	}
 }
 
+export const HISTORY_REPLACED_PROMPT = "The conversation above was rewritten by Pi (compaction or history navigation). It is the complete current history, including the results of every tool call that has already run. Continue the turn from there, and do not repeat a tool call whose result is already above.";
+
+function restartContext(request: QueryRestartRequest): Context {
+	return {
+		...request.context,
+		messages: [...request.context.messages, { role: "user", content: HISTORY_REPLACED_PROMPT, timestamp: Date.now() }],
+	};
+}
+
+/** Pi's compaction or tree navigation invalidates the running Claude query's
+ *  history. A restart rotates the session id because the killed child may
+ *  still be writing its previous transcript. */
+export function onPiHistoryReplaced(event: string): void {
+	const queryCtx = ctx();
+	const running = queryCtx.activeQuery !== null;
+	const restarts = running && !queryCtx.detachedFromSharedSession;
+	if (running) {
+		if (restarts) queryCtx.piHistoryReplaced = true;
+		reportToolResultMismatch(queryCtx, event, process.cwd(), { expectedInterruption: restarts });
+	}
+	debug(event + ": marking Claude session for rebuild");
+	markSessionForRebuild({ forceRotate: restarts });
+}
+
 /** Provider entry point. Pi calls this for each prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. Exported for
  *  the rotation-stream unit tests, which drive it with a fake SDK factory. */
@@ -547,6 +571,28 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (ctx().activeQuery) {
 		const queryCtx = ctx();
+		if (queryCtx.piHistoryReplaced) {
+			// A child-side call is absent from Pi's transcript, so this query
+			// must finish on its own history and the next turn must rebuild.
+			if (queryCtx.connectorCallAudit.size > 0 || queryCtx.foreignMcpCalls.size > 0) {
+				if (!queryCtx.reportedHistoryRestartDecline) {
+					queryCtx.reportedHistoryRestartDecline = true;
+					const names = [...new Set([
+						...Array.from(queryCtx.connectorCallAudit.values(), (call) => call.name),
+						...queryCtx.foreignMcpCalls.values(),
+					])];
+					debug("provider: history restart declined after child-side calls", names.join(", "));
+					appendIntegrityEntry("history_restart_declined", { reason: "child-executed calls absent from Pi history", names });
+				}
+			} else {
+				queryCtx.piHistoryReplaced = false;
+				queryCtx.restartRequest = { model, context, options, stream };
+				queryCtx.currentPiStream = null;
+				debug("provider: restarting query on replaced history", context.messages.length);
+				abortSdkQuery(queryCtx.activeQuery);
+				return stream;
+			}
+		}
 		queryCtx.currentPiStream = stream;
 		queryCtx.resetTurnState(model);
 		// A fresh callback separates handlers registered for settled turns from
@@ -741,6 +787,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().pendingToolCalls.clear();
 	ctx().pendingResults.clear();
 	ctx().reapedResults.clear();
+	ctx().connectorCallAudit.clear();
+	ctx().foreignMcpCalls.clear();
 	ctx().forwardedToolCallIds.clear();
 	ctx().deadToolCallIds.clear();
 	ctx().callbackGeneration = 0;
@@ -749,6 +797,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().resetToolTracking();
 	ctx().latestCursor = 0;
 	ctx().committedOutput = false;
+	ctx().piHistoryReplaced = false;
+	ctx().reportedHistoryRestartDecline = false;
 	// A reentrant query never claims the shared record; a foreign-conversation
 	// one-shot joins it below once syncSharedSession has ruled.
 	ctx().detachedFromSharedSession = isReentrant;
@@ -954,7 +1004,13 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// one-shot has exactly the same non-claim on the record.
 	const persistSession = (next: SessionState | null): void => {
 		if (isReentrant || foreignContext) return;
-		setSharedSession(next && conversationFp ? { conversationFingerprint: conversationFp, ...next } : next);
+		const restartPending = Boolean(abortCtx.restartRequest);
+		let replaced = next;
+		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending)) {
+			replaced = { ...next, needsRebuild: true };
+			if (restartPending) replaced.forceRotate = true;
+		}
+		setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
 	};
 	const markRebuildForThisQuery = (opts: { forceRotate?: boolean } = {}): void => {
 		if (isReentrant || foreignContext) return;
@@ -985,10 +1041,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	};
 
 	const requestAbort = () => {
-		// interrupt() asks the CLI to stop gracefully; close() kills it immediately.
-		// Both are needed — interrupt alone lets the current API call finish.
-		void sdkQuery.interrupt().catch(() => {});
-		try { sdkQuery.close(); } catch {}
+		abortSdkQuery(sdkQuery);
 	};
 
 	// Decide whether a classified failure may be replayed on the next profile.
@@ -1138,8 +1191,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// query CAN end in that window (abort, child process death throwing out of
 	// the generator). Live-ctx handlers there mutated the subagent's turn state
 	// and stream and skipped the parent's own teardown entirely.
+	let reentryStream = stream;
 	consumeQuery(sdkQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router, attemptFailure)
 		.then(async ({ capturedSessionId, failure }) => {
+			if (Boolean(abortCtx.restartRequest)) return;
 			debug(`provider: consumeQuery completed, stopReason=${abortCtx.turnOutput?.stopReason}, failure=${failure?.kind ?? "none"}, aborted=${wasAborted}`);
 			if (streamIdleTimedOut) {
 				dropDeferredUserMessages("stream-idle-timeout-completion");
@@ -1199,7 +1254,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			// Only for outermost queries — reentrant (subagent) queries leave
 			// deferred messages for the parent to handle after it finishes.
 			try {
-				while (abortCtx.deferredUserMessages.length > 0 && !isReentrant && !wasAborted) {
+				while (abortCtx.deferredUserMessages.length > 0 && !isReentrant && !wasAborted && !Boolean(abortCtx.restartRequest)) {
 					const steer = abortCtx.deferredUserMessages.shift()!;
 					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
@@ -1227,6 +1282,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 
 					try {
 						const continuation = await consumeQuery(contQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router);
+						if (Boolean(abortCtx.restartRequest)) break;
 						if (continuation.failure) {
 							// Continuations never rotate: the original prompt already
 							// committed on this account.
@@ -1246,6 +1302,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 							persistSession({ sessionId: sid, cursor: activeSession?.cursor ?? 0, cwd, ...accountScope });
 						}
 					} catch (contError) {
+						if (Boolean(abortCtx.restartRequest)) break;
 						debug(`provider: continuation query error:`, contError);
 						const continuationFailure: ClaudeAttemptFailure = {
 							kind: classifyClaudeFailure(contError),
@@ -1259,7 +1316,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 						}
 						break;
 					} finally {
-						contQuery.close();
+						closeSdkQuery(contQuery);
 					}
 				}
 			} finally {
@@ -1270,6 +1327,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			finalizeCurrentStream(abortCtx.turnOutput?.stopReason, abortCtx);
 		})
 		.catch((error) => {
+			if (Boolean(abortCtx.restartRequest)) return;
 			debug(`provider: query error, model=${queryModel.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
 			const suppressDuplicateError = abortCtx.handledTerminalError || (streamIdleTimedOut && !retryRequested);
 			if (wasAborted || options?.signal?.aborted) {
@@ -1306,9 +1364,25 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
 			const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, streamIdleTimedOut });
 			teardownQuery(abortCtx, sdkQuery, cause, cwd, isReentrant);
-			sdkQuery.close();
+			closeSdkQuery(sdkQuery);
 		})
 		.then(async () => {
+			const restart = abortCtx.restartRequest;
+			if (Boolean(restart)) {
+				abortCtx.restartRequest = null;
+				reentryStream = restart.stream;
+				if (wasAborted || (Boolean(restart.options) && Boolean(restart.options.signal) && restart.options.signal.aborted)) {
+					abortCtx.resetTurnState(restart.model);
+					abortCtx.turnOutput!.stopReason = "aborted";
+					abortCtx.turnOutput!.errorMessage = "Operation aborted";
+					reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
+					reentryStream.end();
+					return;
+				}
+				for await (const event of streamClaudeAgentSdk(restart.model, restartContext(restart), restart.options)) reentryStream.push(event);
+				reentryStream.end();
+				return;
+			}
 			// --- Account retry re-entry ---
 			// Runs AFTER teardown so the failed attempt's query state is fully
 			// released. The recursive call re-enters the fresh-query path with the
@@ -1326,8 +1400,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					abortCtx.turnOutput.stopReason = "aborted";
 					abortCtx.turnOutput.errorMessage = "Operation aborted";
 				}
-				stream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
-				stream.end();
+				reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
+				reentryStream.end();
 				return;
 			}
 			debug(`provider: starting account retry after ${retryFailure?.kind ?? "failure"}; excluded=${[...rotationState.excludedProfileIds].join(",")}`);
@@ -1340,17 +1414,23 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			// event — and EventStream.push is a silent no-op after end, so a failed
 			// rotation ended the turn with no error event at all. Success ends
 			// here; every throw ends in the .catch, after the error is pushed.
-			for await (const event of retryStream) stream.push(event);
-			stream.end();
+			for await (const event of retryStream) reentryStream.push(event);
+			reentryStream.end();
 		})
 		.catch((error) => {
-			debug("provider: account retry pipeline failed:", error);
+			debug("provider: re-entry pipeline failed:", error);
+			const restart = abortCtx.restartRequest;
+			if (Boolean(restart)) {
+				abortCtx.restartRequest = null;
+				reentryStream = restart.stream;
+				abortCtx.resetTurnState(restart.model);
+			}
 			if (abortCtx.turnOutput) {
 				abortCtx.turnOutput.stopReason = "error";
 				abortCtx.turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
 			}
-			stream.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
-			stream.end();
+			reentryStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
+			reentryStream.end();
 		})
 		// After teardown and any retry pipeline: nothing else reads this lane.
 		.finally(releaseEphemeralLane);
@@ -1424,25 +1504,9 @@ export default function (pi: ExtensionAPI) {
 		if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx);
 	}));
 
-	// pi /compact and session-tree navigation (rewind / fork-at-point /
-	// branch switch) both mutate pi's messages array out from under the
-	// bridge. syncSharedSession's REUSE check would otherwise see
-	// slice(cursor) === [] (or skip entries) and keep --resume'ing a CC
-	// session that does not match pi's history. /compact in particular
-		// triggers CC's autocompact-thrashing guard. Force the next
-	// call down the REBUILD path so CC sees the current history.
-	const markRebuild = (event: string) => {
-		const activeSession = getSharedSession();
-		if (ctx().activeQuery) {
-			reportToolResultMismatch(ctx(), event, activeSession?.cwd ?? process.cwd());
-		}
-		if (activeSession) {
-			debug(`${event}: marking needsRebuild on session ${activeSession.sessionId.slice(0, 8)}`);
-			markSessionForRebuild();
-		}
-	};
-	pi.on("session_compact", (_event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => markRebuild("session_compact")));
-	pi.on("session_tree", (_event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => markRebuild("session_tree")));
+	// Both events replace Pi's message history while a query may still be active.
+	pi.on("session_compact", (_event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => onPiHistoryReplaced("session_compact")));
+	pi.on("session_tree", (_event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => onPiHistoryReplaced("session_tree")));
 
 	// --- Provider ---
 	//
