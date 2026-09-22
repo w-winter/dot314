@@ -1,6 +1,6 @@
 {
   "name": "pi-grounded-compaction",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Customizable compaction and branch summaries for Pi with model presets, custom prompts, and file tracking across native, RepoPrompt, shell, Codex, and nested Code and Notebook tools",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "compaction", "summarization"],
   "license": "MIT",
@@ -17,8 +17,8 @@
     "extensions": ["extensions/grounded-compaction/index.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.84.0",
-    "@earendil-works/pi-coding-agent": ">=0.84.0",
+    "@earendil-works/pi-ai": ">=0.86.0",
+    "@earendil-works/pi-coding-agent": ">=0.86.0",
     "typebox": "^1.3.7"
   },
   "scripts": {

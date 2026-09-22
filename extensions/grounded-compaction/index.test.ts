@@ -4,10 +4,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import {
     convertToLlm,
     serializeConversation,
+    type ExtensionContext,
     type SessionBeforeCompactEvent,
     type SessionBeforeTreeEvent,
     type SessionEntry,
@@ -46,6 +47,7 @@ type TestContext = {
     cwd?: string | null;
     modelRegistry: {
         getAll(): Model<Api>[];
+        streamSimple: ExtensionContext["modelRegistry"]["streamSimple"];
         getApiKeyAndHeaders(model: Model<Api>): Promise<
             | { ok: true; apiKey?: string; headers?: Record<string, string> }
             | { ok: false; error: string }
@@ -219,6 +221,9 @@ function createContext(
             modelRegistry: {
                 getAll() {
                     return models;
+                },
+                streamSimple() {
+                    throw new Error("Unexpected live model call in test");
                 },
                 async getApiKeyAndHeaders(model) {
                     const reference = `${model.provider}/${model.id}`;
@@ -797,6 +802,36 @@ describe("grounded-compaction helpers", () => {
 });
 
 describe("grounded-compaction runtime", () => {
+    it("summarizes with an extension-registered Claude provider", async () => {
+        const claude = createModel({ provider: "pi-claude", api: "claude-bridge", id: "claude-opus-5-5" });
+        const { ctx } = createContext([claude]);
+        let selectedModel: string | undefined;
+        let requestSessionId: string | undefined;
+        ctx.modelRegistry.streamSimple = (model, context, options) => {
+            selectedModel = model.id;
+            requestSessionId = options?.sessionId;
+            assert.equal(context.systemPrompt, DEFAULT_SYSTEM_PROMPT);
+            assert.equal(options?.cacheRetention, "none");
+            const stream = createAssistantMessageEventStream();
+            stream.push({ type: "done", reason: "stop", message: createAssistantResponse("compacted") });
+            stream.end();
+            return stream;
+        };
+
+        const result = await runGroundedCompaction(createEvent(), ctx, createDeps({
+            complete: undefined,
+            loadConfig: async () => createTestConfig({
+                defaultPreset: "claude",
+                presets: { claude: { model: "pi-claude/claude-opus-5-5" } },
+            }),
+        }));
+
+        assert.ok(result && "compaction" in result);
+        assert.equal(result.compaction.summary, "compacted");
+        assert.equal(selectedModel, claude.id);
+        assert.ok(requestSessionId);
+    });
+
     it("uses a configured defaultPreset", async () => {
         const openAiModel = createModel({
             provider: "openai",

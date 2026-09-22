@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,11 +13,12 @@ import {
     type ProviderHeaders,
     type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { completeSimple } from "@earendil-works/pi-ai/compat";
+import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import {
     convertToLlm,
     findTurnStartIndex,
     type ExtensionAPI,
+    type ExtensionContext,
     type SessionBeforeCompactEvent,
     type SessionBeforeTreeEvent,
     type SessionBeforeTreeResult,
@@ -104,6 +105,7 @@ type HookContext = {
     cwd?: string | null;
     modelRegistry: {
         getAll(): Model<Api>[];
+        streamSimple: ExtensionContext["modelRegistry"]["streamSimple"];
         getApiKeyAndHeaders(model: Model<Api>): Promise<
             | { ok: true; apiKey?: string; headers?: ProviderHeaders }
             | { ok: false; error: string }
@@ -172,12 +174,15 @@ type SummaryArtifacts = {
 };
 
 type RunDeps = {
-    complete: typeof completeSimple;
+    /** Supplied by tests; ordinary compaction uses the session's model registry. */
+    complete?: typeof completeSimple;
     collectFilesTouched: typeof collectFilesTouched;
     loadConfig: (extensionDir?: string) => Promise<GroundedCompactionConfig>;
     loadCompactionPrompt: (extensionDir?: string) => Promise<string>;
     loadBranchSummaryPrompt: (extensionDir?: string) => Promise<string | undefined>;
 };
+
+type SummaryExecutionDeps = RunDeps & { complete: typeof completeSimple };
 
 type PortableSummaryCompletion = (
     model: Model<Api>,
@@ -187,7 +192,8 @@ type PortableSummaryCompletion = (
 ) => Promise<AssistantMessage>;
 
 export type GroundedPortableSummarizerDependencies = {
-    complete: PortableSummaryCompletion;
+    /** Overrides provider-backed completion through the model registry. */
+    complete?: PortableSummaryCompletion;
     collectFilesTouched: typeof collectFilesTouched;
     loadConfig: RunDeps["loadConfig"];
     loadCompactionPrompt: RunDeps["loadCompactionPrompt"];
@@ -332,7 +338,6 @@ Use this structure:
 Do not present this as a full-session status report. Avoid broad session-level status or next-step claims unless they are strictly necessary to understand the kept suffix. Treat unresolved guidance at the cut as provisional rather than a settled next step.`;
 
 const DEFAULT_DEPS: RunDeps = {
-    complete: completeSimple,
     collectFilesTouched,
     loadConfig,
     loadCompactionPrompt: loadCompactionPromptContract,
@@ -340,7 +345,6 @@ const DEFAULT_DEPS: RunDeps = {
 };
 
 const DEFAULT_PORTABLE_DEPS: GroundedPortableSummarizerDependencies = {
-    complete: (model, context, options) => completeSimple(model, context, options),
     collectFilesTouched,
     loadConfig,
     loadCompactionPrompt: loadCompactionPromptContract,
@@ -1151,7 +1155,7 @@ async function executePreparedSummaryRequestResult(params: {
     summarizer: ResolvedSummarizer;
     maxOutputTokens: number;
     signal: AbortSignal;
-}, deps: Pick<RunDeps, "complete">): Promise<SummaryCallResult> {
+}, deps: Pick<SummaryExecutionDeps, "complete">): Promise<SummaryCallResult> {
     if (params.signal.aborted) {
         throw new CompactionAbortedError();
     }
@@ -1201,7 +1205,7 @@ async function executePortableSummaryRequestResult(params: {
     provider: Provider;
     maxOutputTokens: number;
     signal: AbortSignal;
-}, deps: Pick<GroundedPortableSummarizerDependencies, "complete">): Promise<SummaryCallResult> {
+}, deps: Required<Pick<GroundedPortableSummarizerDependencies, "complete">>): Promise<SummaryCallResult> {
     if (params.signal.aborted) throw new CompactionAbortedError();
     const reasoningLevel = toReasoningLevel(params.summarizer.reasoningLevel);
     const options = {
@@ -1239,7 +1243,7 @@ async function executePreparedSummaryRequest(params: {
     summarizer: ResolvedSummarizer;
     maxOutputTokens: number;
     signal: AbortSignal;
-}, deps: RunDeps): Promise<string> {
+}, deps: SummaryExecutionDeps): Promise<string> {
     return (await executePreparedSummaryRequestResult(params, deps)).summary;
 }
 
@@ -1370,6 +1374,12 @@ export async function openGroundedPortableSummarizerSession(
         throw new Error(`Provider '${summarizer.model.provider}' is not registered`);
     }
 
+    const complete = deps.complete ?? ((model: Model<Api>, context: Context, options: SimpleStreamOptions | undefined) =>
+        request.context.modelRegistry.streamSimple(model, context, {
+            ...options,
+            sessionId: randomUUID(),
+            cacheRetention: "none",
+        }).result());
     const { contextWindow, maxOutputTokens } = resolvePortableModelLimits(summarizer.model);
     const descriptor = {
         provider: summarizer.model.provider,
@@ -1442,7 +1452,7 @@ export async function openGroundedPortableSummarizerSession(
                     maxOutputTokens,
                     signal: summaryRequest.signal,
                 },
-                deps,
+                { complete },
             );
             const summaryBody = stripGroundedCompactionManifestTail(result.summary);
             if (!summaryBody) throw new Error("Portable summarization returned no summary body");
@@ -1561,7 +1571,7 @@ async function executePreflightedSummaryBatch(
     plan: PreflightedSummaryBatch,
     signal: AbortSignal,
     wholeBranchManifestBlock: string | undefined,
-    deps: RunDeps,
+    deps: SummaryExecutionDeps,
 ): Promise<string> {
     const execute = (request: PreparedSummaryRequest) => executePreparedSummaryRequest(
         {
@@ -1747,6 +1757,15 @@ export async function runGroundedCompaction(
         throwIfAborted(event.signal);
 
         const config = await deps.loadConfig(EXTENSION_DIR);
+        const summaryDeps: SummaryExecutionDeps = {
+            ...deps,
+            // Keep one-off summaries off the active conversation's Claude session lane.
+            complete: deps.complete ?? ((model, context, options) => ctx.modelRegistry.streamSimple(model, context, {
+                ...options,
+                sessionId: randomUUID(),
+                cacheRetention: "none",
+            }).result()),
+        };
         const promptContract = await deps.loadCompactionPrompt(EXTENSION_DIR);
         const parsedInstructions = parseCompactInstructions(event.customInstructions);
         const spans = deriveSummaryEntrySpans({
@@ -1803,7 +1822,7 @@ export async function runGroundedCompaction(
                     plan,
                     event.signal,
                     summaryArtifacts.wholeBranchManifestBlock,
-                    deps,
+                    summaryDeps,
                 );
                 return buildSuccessResult(event, summary, summarizer);
             } catch (error) {
@@ -1859,7 +1878,7 @@ export async function runGroundedCompaction(
                 route.plan,
                 event.signal,
                 summaryArtifacts.wholeBranchManifestBlock,
-                deps,
+                summaryDeps,
             );
             return buildSuccessResult(event, summary, route.plan.summarizer);
         } catch (error) {

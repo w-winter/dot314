@@ -1,5 +1,7 @@
 # grounded-compaction
 
+Requires Pi 0.86.0 or later. Compaction presets can use models registered by other Pi extensions, including `pi-claude`.
+
 This extension can play three roles:
 * Replace Pi's compaction summarizer with configurable model presets, custom summarization prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, recognized shell operations, and Codex `apply_patch`
 * Augment branch summarization during `/tree` with the same files-touched grounding and optional replacement of the summarization prompt contract with a custom one

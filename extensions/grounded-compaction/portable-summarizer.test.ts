@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { Api, AssistantMessage, Model, Provider } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model, type Provider } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import type { FilesTouchedEntry } from "../_shared/files-touched-core.ts";
@@ -116,6 +116,9 @@ function createContext(models: Model<Api>[], currentModel = models[0]) {
                 apiKey: "secret-test-key",
                 headers: { "x-secret": "secret-test-header" },
             }),
+            streamSimple() {
+                throw new Error("Unexpected live model call in test");
+            },
         },
     } as GroundedPortableSummarizerQuery["context"];
 }
@@ -506,6 +509,36 @@ describe("grounded portable summarizer resolution", () => {
 });
 
 describe("grounded portable summarizer capacity and execution", () => {
+    it("uses the registered provider for a portable Claude summary", async () => {
+        const model = createModel({ provider: "pi-claude", api: "claude-bridge", id: "claude-opus-5-5" });
+        const request = createOpenRequest([model]);
+        let requestSessionId: string | undefined;
+        request.context.modelRegistry.streamSimple = (_model, context, options) => {
+            requestSessionId = options?.sessionId;
+            assert.equal(context.systemPrompt, DEFAULT_SYSTEM_PROMPT);
+            assert.equal(options?.cacheRetention, "none");
+            const stream = createAssistantMessageEventStream();
+            stream.push({ type: "done", reason: "stop", message: createAssistantResponse("portable via Claude") });
+            stream.end();
+            return stream;
+        };
+        const session = await openGroundedPortableSummarizerSession(
+            request,
+            new AbortController().signal,
+            createDependencies({ complete: undefined }),
+        );
+        const result = await session.summarizeNext({
+            previousSummary: null,
+            sourceText: "A short history to summarize.",
+            startOffset: 0,
+            coverageEntries: [],
+            signal: new AbortController().signal,
+        });
+
+        assert.match(result.summary, /portable via Claude/);
+        assert.ok(requestSessionId);
+    });
+
     it("uses exact fixed overhead and completes an exact-fit chunk", async () => {
         const model = createCapacityModel(10);
         let promptText = "";
