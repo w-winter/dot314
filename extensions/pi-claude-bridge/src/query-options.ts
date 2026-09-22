@@ -144,7 +144,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		includePartialMessages: true,
 		...(fallbackModel ? { fallbackModel } : {}),
 		...(providerSettings.fastMode ? { settings: { fastMode: true } } : {}),
-		systemPrompt: resolvedSystemPrompt,
+		systemPrompt: { type: "custom", prompt: resolvedSystemPrompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,
 		...(effort ? { effort } : {}),
