@@ -92,7 +92,11 @@ describe("fork prompt behavior", () => {
 			resumeSessionId: null,
 		});
 
-		assert.equal(built.queryOptions.systemPrompt, "Complete Pi system prompt");
+		assert.deepEqual(built.queryOptions.systemPrompt, {
+			type: "custom",
+			prompt: "Complete Pi system prompt",
+			snapshot: false,
+		});
 		assert.deepEqual(built.queryOptions.settingSources, []);
 		assert.equal(built.queryOptions.strictMcpConfig, true);
 	});
