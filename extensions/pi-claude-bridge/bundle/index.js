@@ -37944,6 +37944,11 @@ var QueryContext = class {
   // Query-scoped (fully isolated per query)
   activeQuery = null;
   currentPiStream = null;
+  /** Pi replaced the history while this query was active. Its next callback
+   *  must use the new context instead of resuming the stale Claude session. */
+  piHistoryReplaced = false;
+  reportedHistoryRestartDecline = false;
+  restartRequest = null;
   latestCursor = 0;
   pendingToolCalls = /* @__PURE__ */ new Map();
   pendingResults = /* @__PURE__ */ new Map();
@@ -38036,6 +38041,9 @@ var QueryContext = class {
    * call unrecordable at teardown — which is the one case the trail exists for.
    */
   connectorCallAudit = /* @__PURE__ */ new Map();
+  /** Child-loaded MCP calls absent from Pi's transcript. A history restart
+   *  cannot reconstruct them, even if their results arrived in Claude Code. */
+  foreignMcpCalls = /* @__PURE__ */ new Map();
   /** Claude Code session id for this query, from the SDK's `system` init message.
    *  Undefined until it arrives; the audit trail omits the field rather than
    *  guessing. */
@@ -38183,6 +38191,10 @@ var QueryContext = class {
   }
   markOutputCommitted() {
     this.committedOutput = true;
+  }
+  noteForeignMcpToolCall(id, name) {
+    this.markOutputCommitted();
+    if (id) this.foreignMcpCalls.set(id, name);
   }
   claimToolCall(toolName, args = {}) {
     const unclaimed = this.turnToolCalls.filter((call) => !this.claimedToolCallIds.has(call.id));
@@ -38705,6 +38717,18 @@ function flushConnectorCallAudit(queryCtx, reason) {
 }
 
 // src/query-teardown.ts
+function closeSdkQuery(sdkQuery) {
+  try {
+    sdkQuery.close();
+  } catch (error51) {
+    debug("provider: closing the sdk query threw:", error51);
+  }
+}
+function abortSdkQuery(sdkQuery) {
+  void sdkQuery.interrupt().catch(() => {
+  });
+  closeSdkQuery(sdkQuery);
+}
 function teardownQuery(queryCtx, sdkQuery, cause, cwd, isReentrant) {
   if (queryCtx.activeQuery !== sdkQuery) return false;
   reportToolResultMismatch(queryCtx, "query teardown", cwd, { forceRotate: cause !== "query-end" });
@@ -55196,7 +55220,7 @@ function processStreamEvent(message, customToolNameToPi, model, c = ctx()) {
     }
     if (event.content_block?.type === "tool_use" && !isPiDispatchable(event.content_block.name, customToolNameToPi)) {
       c.suppressedStreamIndexes.add(event.index);
-      if (isForeignMcpTool(event.content_block.name)) c.markOutputCommitted();
+      if (isForeignMcpTool(event.content_block.name)) c.noteForeignMcpToolCall(event.content_block.id, event.content_block.name);
       debug(`processStreamEvent: non-dispatchable tool ${event.content_block.name} [${event.content_block.id}] \u2014 not mirrored as a Pi tool call`);
       return;
     }
@@ -55318,7 +55342,7 @@ function appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameT
       continue;
     }
     if (!isPiDispatchable(block.name, customToolNameToPi)) {
-      if (isForeignMcpTool(block.name)) c.markOutputCommitted();
+      if (isForeignMcpTool(block.name)) c.noteForeignMcpToolCall(block.id, block.name);
       debug(`assistant message: non-dispatchable tool ${block.name} [${block.id}] \u2014 not mirrored as a Pi tool call`);
       continue;
     }
@@ -55416,7 +55440,7 @@ function processAssistantMessage(message, model, customToolNameToPi, c = ctx()) 
         continue;
       }
       if (!isPiDispatchable(block.name, customToolNameToPi)) {
-        if (isForeignMcpTool(block.name)) c.markOutputCommitted();
+        if (isForeignMcpTool(block.name)) c.noteForeignMcpToolCall(block.id, block.name);
         debug(`processAssistantMessage fallback: non-dispatchable tool ${block.name} [${block.id}] \u2014 not mirrored as a Pi tool call`);
         continue;
       }
@@ -56091,6 +56115,24 @@ function applyProviderRegistration(trigger) {
     debug(`${trigger}: registerProvider threw; released stream guard for retry (kept primary):`, err);
   }
 }
+var HISTORY_REPLACED_PROMPT = "The conversation above was rewritten by Pi (compaction or history navigation). It is the complete current history, including the results of every tool call that has already run. Continue the turn from there, and do not repeat a tool call whose result is already above.";
+function restartContext(request) {
+  return {
+    ...request.context,
+    messages: [...request.context.messages, { role: "user", content: HISTORY_REPLACED_PROMPT, timestamp: Date.now() }]
+  };
+}
+function onPiHistoryReplaced(event) {
+  const queryCtx = ctx();
+  const running = queryCtx.activeQuery !== null;
+  const restarts = running && !queryCtx.detachedFromSharedSession;
+  if (running) {
+    if (restarts) queryCtx.piHistoryReplaced = true;
+    reportToolResultMismatch(queryCtx, event, process.cwd(), { expectedInterruption: restarts });
+  }
+  debug(event + ": marking Claude session for rebuild");
+  markSessionForRebuild({ forceRotate: restarts });
+}
 function streamClaudeAgentSdk(model, context, options) {
   return runInRequestLane(options?.sessionId, () => streamClaudeAgentSdkInLane(model, context, options));
 }
@@ -56108,6 +56150,26 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
   if (ctx().activeQuery) {
     const queryCtx = ctx();
+    if (queryCtx.piHistoryReplaced) {
+      if (queryCtx.connectorCallAudit.size > 0 || queryCtx.foreignMcpCalls.size > 0) {
+        if (!queryCtx.reportedHistoryRestartDecline) {
+          queryCtx.reportedHistoryRestartDecline = true;
+          const names = [.../* @__PURE__ */ new Set([
+            ...Array.from(queryCtx.connectorCallAudit.values(), (call) => call.name),
+            ...queryCtx.foreignMcpCalls.values()
+          ])];
+          debug("provider: history restart declined after child-side calls", names.join(", "));
+          appendIntegrityEntry("history_restart_declined", { reason: "child-executed calls absent from Pi history", names });
+        }
+      } else {
+        queryCtx.piHistoryReplaced = false;
+        queryCtx.restartRequest = { model, context, options, stream };
+        queryCtx.currentPiStream = null;
+        debug("provider: restarting query on replaced history", context.messages.length);
+        abortSdkQuery(queryCtx.activeQuery);
+        return stream;
+      }
+    }
     queryCtx.currentPiStream = stream;
     queryCtx.resetTurnState(model);
     queryCtx.callbackGeneration += 1;
@@ -56241,6 +56303,8 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   ctx().pendingToolCalls.clear();
   ctx().pendingResults.clear();
   ctx().reapedResults.clear();
+  ctx().connectorCallAudit.clear();
+  ctx().foreignMcpCalls.clear();
   ctx().forwardedToolCallIds.clear();
   ctx().deadToolCallIds.clear();
   ctx().callbackGeneration = 0;
@@ -56249,6 +56313,8 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   ctx().resetToolTracking();
   ctx().latestCursor = 0;
   ctx().committedOutput = false;
+  ctx().piHistoryReplaced = false;
+  ctx().reportedHistoryRestartDecline = false;
   ctx().detachedFromSharedSession = isReentrant;
   const router = resolveClaudeAccountRouter();
   const rotationOptions = options;
@@ -56381,7 +56447,13 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   const attemptFailure = {};
   const persistSession = (next) => {
     if (isReentrant || foreignContext) return;
-    setSharedSession(next && conversationFp ? { conversationFingerprint: conversationFp, ...next } : next);
+    const restartPending = Boolean(abortCtx.restartRequest);
+    let replaced = next;
+    if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending)) {
+      replaced = { ...next, needsRebuild: true };
+      if (restartPending) replaced.forceRotate = true;
+    }
+    setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
   };
   const markRebuildForThisQuery = (opts = {}) => {
     if (isReentrant || foreignContext) return;
@@ -56402,12 +56474,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     accountFailureRecorded = true;
   };
   const requestAbort = () => {
-    void sdkQuery.interrupt().catch(() => {
-    });
-    try {
-      sdkQuery.close();
-    } catch {
-    }
+    abortSdkQuery(sdkQuery);
   };
   const requestRotation = (failure) => {
     recordAttemptFailure(failure);
@@ -56527,7 +56594,9 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     abortCtx.currentPiStream?.end();
     abortCtx.currentPiStream = null;
   };
+  let reentryStream = stream;
   consumeQuery(sdkQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router, attemptFailure).then(async ({ capturedSessionId, failure }) => {
+    if (Boolean(abortCtx.restartRequest)) return;
     debug(`provider: consumeQuery completed, stopReason=${abortCtx.turnOutput?.stopReason}, failure=${failure?.kind ?? "none"}, aborted=${wasAborted}`);
     if (streamIdleTimedOut) {
       dropDeferredUserMessages("stream-idle-timeout-completion");
@@ -56563,7 +56632,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     }
     if (account && router) safeRouterCall("recordSuccess", () => router.recordSuccess(account.profileId, options?.sessionId));
     try {
-      while (abortCtx.deferredUserMessages.length > 0 && !isReentrant && !wasAborted) {
+      while (abortCtx.deferredUserMessages.length > 0 && !isReentrant && !wasAborted && !Boolean(abortCtx.restartRequest)) {
         const steer = abortCtx.deferredUserMessages.shift();
         const steerPreview = (steer.text || "[image-only]").slice(0, 60);
         debug(`provider: replaying deferred user message: ${steerPreview}`);
@@ -56581,6 +56650,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
         debug(`provider: continuation query, model=${queryModel.id}, resume=${resumeId.slice(0, 8)}, account=${account?.label ?? "legacy"}, prompt=${steerPreview}`);
         try {
           const continuation = await consumeQuery(contQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router);
+          if (Boolean(abortCtx.restartRequest)) break;
           if (continuation.failure) {
             recordAttemptFailure(continuation.failure);
             if (!abortCtx.handledTerminalError) surfaceFailure(continuation.failure);
@@ -56595,6 +56665,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
             persistSession({ sessionId: sid, cursor: activeSession2?.cursor ?? 0, cwd, ...accountScope });
           }
         } catch (contError) {
+          if (Boolean(abortCtx.restartRequest)) break;
           debug(`provider: continuation query error:`, contError);
           const continuationFailure = {
             kind: classifyClaudeFailure(contError),
@@ -56607,7 +56678,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
           }
           break;
         } finally {
-          contQuery.close();
+          closeSdkQuery(contQuery);
         }
       }
     } finally {
@@ -56615,6 +56686,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     }
     finalizeCurrentStream(abortCtx.turnOutput?.stopReason, abortCtx);
   }).catch((error51) => {
+    if (Boolean(abortCtx.restartRequest)) return;
     debug(`provider: query error, model=${queryModel.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error51);
     const suppressDuplicateError = abortCtx.handledTerminalError || streamIdleTimedOut && !retryRequested;
     if (wasAborted || options?.signal?.aborted) {
@@ -56640,8 +56712,24 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     if (options?.signal) options.signal.removeEventListener("abort", onAbort);
     const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, streamIdleTimedOut });
     teardownQuery(abortCtx, sdkQuery, cause, cwd, isReentrant);
-    sdkQuery.close();
+    closeSdkQuery(sdkQuery);
   }).then(async () => {
+    const restart = abortCtx.restartRequest;
+    if (Boolean(restart)) {
+      abortCtx.restartRequest = null;
+      reentryStream = restart.stream;
+      if (wasAborted || Boolean(restart.options) && Boolean(restart.options.signal) && restart.options.signal.aborted) {
+        abortCtx.resetTurnState(restart.model);
+        abortCtx.turnOutput.stopReason = "aborted";
+        abortCtx.turnOutput.errorMessage = "Operation aborted";
+        reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput });
+        reentryStream.end();
+        return;
+      }
+      for await (const event of streamClaudeAgentSdk(restart.model, restartContext(restart), restart.options)) reentryStream.push(event);
+      reentryStream.end();
+      return;
+    }
     if (!retryRequested) return;
     if (wasAborted || options?.signal?.aborted) {
       debug("provider: abort after queued account retry \u2014 terminating stream without retrying");
@@ -56649,8 +56737,8 @@ function streamClaudeAgentSdkInLane(model, context, options) {
         abortCtx.turnOutput.stopReason = "aborted";
         abortCtx.turnOutput.errorMessage = "Operation aborted";
       }
-      stream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput });
-      stream.end();
+      reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput });
+      reentryStream.end();
       return;
     }
     debug(`provider: starting account retry after ${retryFailure?.kind ?? "failure"}; excluded=${[...rotationState.excludedProfileIds].join(",")}`);
@@ -56658,16 +56746,22 @@ function streamClaudeAgentSdkInLane(model, context, options) {
       ...options ?? {},
       [ROTATION_STATE_KEY]: rotationState
     });
-    for await (const event of retryStream) stream.push(event);
-    stream.end();
+    for await (const event of retryStream) reentryStream.push(event);
+    reentryStream.end();
   }).catch((error51) => {
-    debug("provider: account retry pipeline failed:", error51);
+    debug("provider: re-entry pipeline failed:", error51);
+    const restart = abortCtx.restartRequest;
+    if (Boolean(restart)) {
+      abortCtx.restartRequest = null;
+      reentryStream = restart.stream;
+      abortCtx.resetTurnState(restart.model);
+    }
     if (abortCtx.turnOutput) {
       abortCtx.turnOutput.stopReason = "error";
       abortCtx.turnOutput.errorMessage = error51 instanceof Error ? error51.message : String(error51);
     }
-    stream.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
-    stream.end();
+    reentryStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
+    reentryStream.end();
   }).finally(releaseEphemeralLane);
   return stream;
 }
@@ -56714,18 +56808,8 @@ function index_default(pi) {
     const message = event.message;
     if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx2);
   }));
-  const markRebuild = (event) => {
-    const activeSession = getSharedSession();
-    if (ctx().activeQuery) {
-      reportToolResultMismatch(ctx(), event, activeSession?.cwd ?? process.cwd());
-    }
-    if (activeSession) {
-      debug(`${event}: marking needsRebuild on session ${activeSession.sessionId.slice(0, 8)}`);
-      markSessionForRebuild();
-    }
-  };
-  pi.on("session_compact", (_event, ctx2) => runInRequestLane(ctx2.sessionManager.getSessionId(), () => markRebuild("session_compact")));
-  pi.on("session_tree", (_event, ctx2) => runInRequestLane(ctx2.sessionManager.getSessionId(), () => markRebuild("session_tree")));
+  pi.on("session_compact", (_event, ctx2) => runInRequestLane(ctx2.sessionManager.getSessionId(), () => onPiHistoryReplaced("session_compact")));
+  pi.on("session_tree", (_event, ctx2) => runInRequestLane(ctx2.sessionManager.getSessionId(), () => onPiHistoryReplaced("session_tree")));
   applyProviderRegistration("load");
 }
 export {
@@ -56739,6 +56823,7 @@ export {
   CONNECTOR_WRITE_TOOLS,
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   DISALLOWED_BUILTIN_TOOLS,
+  HISTORY_REPLACED_PROMPT,
   INTEGRITY_CUSTOM_TYPE,
   NATIVE_PROVIDER_UNSUPPORTED_MESSAGE,
   RetryEventBuffer,
@@ -56788,6 +56873,7 @@ export {
   mapToolName,
   normalizeRateLimitUtilization,
   noteChildExecutedToolResults,
+  onPiHistoryReplaced,
   planDeferredUserReplay,
   planIncrementalPromptBatch,
   preflightClaudeExecutable,

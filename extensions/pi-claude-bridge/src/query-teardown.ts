@@ -5,10 +5,23 @@
 // teardown must run against the parent state. Using the subagent state skips
 // the parent's drain, audit flush, and activeQuery clear, which leaks handlers.
 
+import type { query } from "@anthropic-ai/claude-agent-sdk";
 import { reportToolResultMismatch } from "./bridge-state.js";
 import { flushConnectorCallAudit } from "./connector-audit.js";
 import { debug } from "./debug.js";
 import { drainPendingToolCalls, popContextFor, type QueryContext, type ToolCallDrainCause } from "./query-state.js";
+
+/** A child transport may throw during close; teardown must still reach its
+ *  replacement query or report an error on the stream Pi is waiting for. */
+export function closeSdkQuery(sdkQuery: ReturnType<typeof query>): void {
+	try { sdkQuery.close(); }
+	catch (error) { debug("provider: closing the sdk query threw:", error); }
+}
+
+export function abortSdkQuery(sdkQuery: ReturnType<typeof query>): void {
+	void sdkQuery.interrupt().catch(() => {});
+	closeSdkQuery(sdkQuery);
+}
 
 /** Tear down `queryCtx` after its SDK query settled. No-ops when the query is
  *  is not the context's active one (a continuation replaced it, or teardown

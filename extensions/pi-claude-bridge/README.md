@@ -30,11 +30,12 @@ Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or l
 
 ## How it works
 
-- You pick one of the `pi-claude` models in Pi's model menu; **Claude Fable 5.1** is `pi-claude/claude-fable-5-1`.
+- You pick one of the `pi-claude` models in Pi's model menu, including `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
 - The bridge starts Claude Code, or resumes it, through the Claude Agent SDK, Anthropic's library for driving Claude Code from another program.
 - It sends your prompt to Claude Code and offers it Pi's tools.
 - When Claude Code calls a tool, Pi runs the tool and sends the result back to Claude Code.
 - Pi shows the reply and remembers which Claude Code conversation it belongs to, so your next message continues it.
+- When Pi compacts or changes the conversation history during a Pi tool call, the bridge resumes from Pi's new history with completed tool results. A query that used Claude Code's own connector finishes first; the next turn uses Pi's new history.
 
 ## Settings
 
@@ -73,10 +74,10 @@ Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Differences from upstream
 
-- Sends Pi's complete effective system prompt as the custom prompt supplied to the Claude Agent SDK on every query, including resumed sessions, rather than appending selected context to Claude Code's preset prompt. Pi's assembled prompt already includes extension instructions, project context, and skills.
-- Uses bridge-owned `systemPrompt` settings in `claude-bridge.json` for replacing the base prompt, adding the active model, and retaining the Pi context suffix. Values from trusted projects override user values.
-- Removes upstream's selective `APPEND_SYSTEM.md` and extension-hook forwarding controls because the complete Pi prompt is forwarded.
-- Enables strict MCP configuration on every query. Non-connector queries pass an empty list of filesystem setting sources by default; connector-enabled sessions use the separate policy below. An explicit `provider.settingSources` value overrides either default.
+- Sends Pi's full system prompt, including project instructions, skills and extension context, on every request. Claude Code applies changes to that prompt on resumed turns.
+- Reads the fork's `systemPrompt` settings from `claude-bridge.json`. A trusted project's settings override user settings and can replace the base prompt or add an active-model line.
+- Registers Claude Opus 5.5 in Pi's model menu.
+- Uses strict MCP configuration on every query. Connector sessions load the user's Claude Code settings by default; `provider.settingSources` overrides the setting sources.
 
 Claude Code built-in tools are disabled by default, and Pi exposes its tools through MCP. The SDK may prepend its own identity text to the custom prompt.
 

@@ -345,7 +345,7 @@ export function processStreamEvent(
 		}
 		if (event.content_block?.type === "tool_use" && !isPiDispatchable(event.content_block.name, customToolNameToPi)) {
 			c.suppressedStreamIndexes.add(event.index);
-			if (isForeignMcpTool(event.content_block.name)) c.markOutputCommitted();
+			if (isForeignMcpTool(event.content_block.name)) c.noteForeignMcpToolCall(event.content_block.id, event.content_block.name);
 			debug(`processStreamEvent: non-dispatchable tool ${event.content_block.name} [${event.content_block.id}] — not mirrored as a Pi tool call`);
 			return;
 		}
@@ -513,7 +513,7 @@ function appendMissingToolUsesFromAssistant(
 			continue;
 		}
 		if (!isPiDispatchable(block.name, customToolNameToPi)) {
-			if (isForeignMcpTool(block.name)) c.markOutputCommitted();
+			if (isForeignMcpTool(block.name)) c.noteForeignMcpToolCall(block.id, block.name);
 			debug(`assistant message: non-dispatchable tool ${block.name} [${block.id}] — not mirrored as a Pi tool call`);
 			continue;
 		}
@@ -670,7 +670,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 				continue;
 			}
 			if (!isPiDispatchable(block.name, customToolNameToPi)) {
-				if (isForeignMcpTool(block.name)) c.markOutputCommitted();
+				if (isForeignMcpTool(block.name)) c.noteForeignMcpToolCall(block.id, block.name);
 				debug(`processAssistantMessage fallback: non-dispatchable tool ${block.name} [${block.id}] — not mirrored as a Pi tool call`);
 				continue;
 			}
