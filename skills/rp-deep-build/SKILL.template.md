@@ -139,7 +139,7 @@ The goal-bound agent remains the scope owner and must:
 
 Run every applicable test, lint, type check, build, smoke check, documentation update, generated-artifact check, or rendered UI inspection required by the authoritative plan and repository. Triage and fix failures; do not report validation debt as completion. Map each plan requirement to fresh implementation and validation evidence.
 
-Before review, inspect `git status` and the complete diff footprint. Map every changed file and affected production module to the approved plan. Test updates, documentation, and mechanically required callers may extend the planned file list when they preserve the approved design. Treat the footprint as a scope change when it adds a production subsystem, public contract, state machine, ownership or lifecycle protocol, or other implementation responsibility that the approved plan did not describe, or when changed production files cannot be mapped directly to an approved item and its necessary integration. Stop and ask the user whether to simplify, revise the plan and route, or abandon the patch; do not use review to legitimize scope drift.
+Before review, inspect `git status` and the complete diff footprint. Delete via `trash` any leftover scratch scripts, debug artifacts, or working notes this run created; they are cleanup, not reviewable scope. Map every changed file and affected production module to the approved plan. Test updates, documentation, and mechanically required callers may extend the planned file list when they preserve the approved design. Treat the footprint as a scope change when it adds a production subsystem, public contract, state machine, ownership or lifecycle protocol, or other implementation responsibility that the approved plan did not describe, or when changed production files cannot be mapped directly to an approved item and its necessary integration. Stop and ask the user whether to simplify, revise the plan and route, or abandon the patch; do not use review to legitimize scope drift.
 
 ## Phase 6: Run the maintainability gate
 
@@ -154,7 +154,7 @@ Run exactly one fresh maintainability discovery pass against all uncommitted cha
 
 Do not use `context_builder` with `response_type: "review"` for this phase: that path uses RepoPrompt’s built-in Review system prompt rather than the `Maintainability-Review` Chat preset. A focused source check or Oracle follow-up that clarifies an identified finding is allowed; a second open-ended maintainability review is not.
 
-The review classifies each finding under one of the headings below. Adjudicate every reported item by its heading:
+The review classifies each finding under one of the headings below; each finding leads with a cut tag naming the kind of simplification. The tag is descriptive; the heading governs adjudication. Adjudicate every reported item by its heading:
 
 - Fix each verified finding classified as `In-scope implementation fix` when it is required by the approved plan or prevents a correctness or maintainability regression caused by the patch. Add or confirm tests that pin the intended behavior before restructuring. Record optional restructuring as a `Non-blocking opportunity` rather than treating it as mandatory work.
 - For `Scope or plan revision required`, verify the finding against the Ticket, source, and approved plan. If it remains valid, revise the authoritative plan, recalculate the execution route when affected, and obtain explicit user approval of the revised plan and route through `interview` before implementing the change. Close a rejected or inapplicable finding only with concrete contrary evidence.
@@ -167,6 +167,8 @@ The goal-bound agent owns each accepted correction: fix bounded findings directl
 {% endif %}
 
 ## Phase 7: Run the convergence-gated core review
+
+Before each core-review `context_builder` call, including focused gap fills, create a blank tab in the verified review window with `manage_workspaces` (`action: "create_tab"`, `window_id`, `mode: "blank"`, `focus: false`, `bind: true`); confirm its binding with `bind_context op: "status"`. An existing tab prompt can override the new review instructions.
 
 Run the complete canonical `rp-review` workflow against all uncommitted changes versus `HEAD`. Its `context_builder` instructions must give the exact path to the authoritative serialized plan `.md`, direct the builder to read and include that plan file in the selection, and name the Ticket, approved implementation boundary, and comparison scope.
 
