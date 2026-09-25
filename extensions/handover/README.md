@@ -90,6 +90,6 @@ You can start from:
 3. Builds an instruction prompt ("generate a single rich handover / rehydration message…") + style guide + that files-touched block, explicitly telling the model not to emit its own exhaustive file list or title
 4. If compactions occured: adds a small **prior-compactions addendum** (verbatim compaction summaries from the session JSONL), capped for safety
 5. Sends that prompt as a normal user message (`pi.sendUserMessage(...)`) so the current session model produces the draft
-6. Waits until the assistant response is actually present in the session entries (avoids queue/idle race conditions)
+6. Waits for the assistant response and extracts the draft, including when generation takes longer than five minutes
 7. Finds the first user message entry ID and calls `ctx.fork(firstUserEntryId)`
 8. Normalizes the draft, prefixes a stable title, appends the same files-touched block, and starts the countdown (if enabled)

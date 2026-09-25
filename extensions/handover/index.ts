@@ -554,11 +554,16 @@ async function waitForAssistantDraft(params: {
 
     const startedAt = Date.now();
 
-    while (Date.now() - startedAt < timeoutMs) {
+    for (;;) {
         const afterEntries = ctx.sessionManager.getEntries();
         const draft = extractAssistantDraftForNonce({ afterEntries, beforeEntryIds, nonce });
         if (draft) {
             return draft;
+        }
+
+        // waitForIdle() can outlast the deadline; inspect its completed response first.
+        if (Date.now() - startedAt >= timeoutMs) {
+            return null;
         }
 
         // Wait for the agent loop to run. ctx.waitForIdle() only waits for streaming
@@ -570,8 +575,6 @@ async function waitForAssistantDraft(params: {
 
         await sleep(80);
     }
-
-    return null;
 }
 
 async function generateHandoverDraftViaAgent(params: {
