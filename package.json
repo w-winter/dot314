@@ -1,6 +1,6 @@
 {
   "name": "dot314",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "private": true,
   "description": "Collection of original and modded Pi extensions, several of which facilitate Pi's integration with RepoPrompt.",
   "keywords": [
@@ -41,6 +41,7 @@
       "./extensions/model-aware-compaction/index.ts",
       "./extensions/model-sysprompt-appendix/index.ts",
       "./extensions/move-session.ts",
+      "./extensions/pi-claude-bridge/bundle/index.js",
       "./extensions/pi-codex-goal/src/index.ts",
       "./extensions/pi-queue-steer/index.ts",
       "./extensions/repoprompt-mcp/src/index.ts",

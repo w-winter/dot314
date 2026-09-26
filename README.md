@@ -29,7 +29,7 @@ pi -e git:github.com/w-winter/dot314
 
 ### Install as a Pi package
 
-**Requires Pi 0.63.1+** (see [packages.md](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md))
+**Requires Pi 0.86.0+** (see [packages.md](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md))
 
 Install from git:
 
@@ -114,6 +114,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `model-aware-compaction/` | [`pi-model-aware-compaction`](https://www.npmjs.com/package/pi-model-aware-compaction) | Per-model compaction thresholds |
 | ● | `model-sysprompt-appendix/` | [`pi-model-sysprompt-appendix`](https://www.npmjs.com/package/pi-model-sysprompt-appendix) | Per-model system prompt additions |
 | ● | `move-session.ts` | [`pi-move-session`](https://www.npmjs.com/package/pi-move-session) | Move current active session to a new cwd |
+| ◐ | [`pi-claude-bridge/`](extensions/pi-claude-bridge/README.md) | | Claude Agent SDK bridge for ToS-compliant Claude subscriptions usage in Pi |
 | ◐ | `pi-codex-goal/` | | Durable Codex-style goal tracking and continuation |
 | ◐ | `pi-queue-steer/` | | Editable steering and follow-up queues with RepoPrompt-aware interruption events |
 | ● | `protect-paths/` | | Directory protection with configurable trusted read paths, brew prevention, and command gates. Pair with [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` protection |
@@ -147,7 +148,6 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ● | `iterm-tab-color.ts` |
 | ● | `orca-session-tab-title/` |
 | ◐ | `plan-mode.ts` |
-| ◐ | `pi-claude-bridge/` |
 | ● | `pi-codex-apply-patch-display/` |
 | ● | `poly-notify/` |
 | ○ | `preset.ts` |
