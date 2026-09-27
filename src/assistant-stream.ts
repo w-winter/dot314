@@ -604,6 +604,14 @@ export function noteChildExecutedToolResults(message: SDKMessage, c: QueryContex
 export function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext = ctx()): void {
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
+	// A completed SDK message can lag behind the tool-use turn that Pi already
+	// consumed. In particular, repeated no-stream assistant yields can expand as
+	// later siblings in a parallel batch become available. Keep their ids for
+	// handler matching, but never append to the delivered turnOutput object.
+	if (!c.currentPiStream || !c.turnOutput) {
+		appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c);
+		return;
+	}
 	updateTurnOutputModel(assistantMsg.model, c);
 	if (c.turnSawStreamEvent) {
 		// The SDK yields the completed assistant message BEFORE the stream's
