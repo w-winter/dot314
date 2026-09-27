@@ -52,9 +52,8 @@ import { buildClaudeQueryOptions } from "./query-options.js";
 import { sdkQuery as startSdkQuery } from "./sdk-query.js";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
 
-// Re-exports: the module decomposition must not change the bundle entry's
-// public surface — unit tests and downstream consumers import these from
-// bundle/index.js.
+// Re-exports: the module decomposition must not change the entry's public
+// surface — unit tests and downstream consumers import these from index.ts.
 export { probeClaudeAccountProfile } from "./account-host.js";
 export { __testSetSdkQueryFactory } from "./sdk-query.js";
 export { resolveConfiguredEffort } from "./query-options.js";

@@ -14,7 +14,7 @@ setup_test_env "multi-turn" ".ndjson"
 TIMEOUT=180
 PASS=0
 FAIL=0
-EXPECTED_VERSION=$(jq -r .version "$DIR/package.json")
+EXPECTED_NAME=$(jq -r .name "$DIR/package.json")
 
 trap kill_descendants EXIT
 
@@ -24,7 +24,7 @@ run_json() {
   local slug=$(echo "$name" | tr ' :,' '-' | tr -cd '[:alnum:]-')
   local logfile="$LOGDIR/$slug.ndjson"
   printf "%-50s " "$name"
-  if timeout "$TIMEOUT" "$@" > "$logfile" 2>"$logfile.err"; then
+  if run_with_timeout "$TIMEOUT" "$@" > "$logfile" 2>"$logfile.err"; then
     if [ ! -s "$logfile" ]; then
       echo "FAIL (empty output)"
       ((FAIL+=1))
@@ -56,14 +56,14 @@ run_json() {
 run_json "multi-turn: tool use, context, history" \
   '([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "toolcall_end")] | length) >= 2 and
    ([.[] | select(.type == "agent_end")] | length) >= 3 and
-   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("'"$EXPECTED_VERSION"'")) and
+   ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("'"$EXPECTED_NAME"'")) and
    ([.[] | select(.type == "message_update") | .assistantMessageEvent | select(.type == "text_end") | .content] | join(" ") | test("banana"))' \
   pi --no-session -ne -e "$DIR" \
   --model "pi-claude/claude-haiku-4-5" \
   --mode json \
-  -p "The secret word is 'banana'. Read package.json and tell me the version. Be brief." \
+  -p "The word to remember is 'banana'. Read package.json and tell me the package name. Be brief." \
      "Now read README.md and tell me the first heading. Be brief." \
-     "What was the secret word I told you earlier? Reply with just the word."
+     "What was the word I asked you to remember earlier? Reply with just the word."
 
 # Multiple tool calls in a single turn — the scenario that caused the deadlock
 # when processAssistantMessage didn't end the stream on tool_use.

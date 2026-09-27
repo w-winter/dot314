@@ -152,7 +152,7 @@ for p in "${PROMPTS[@]}"; do PROMPT_ARGS+=(-p "$p"); done
 LOGFILE_A="$LOGDIR/usage-test-bridge.ndjson"
 echo ""
 echo "Running bridge conversation..."
-timeout 600 pi --no-session -ne -e "$DIR" \
+run_with_timeout 600 pi --no-session -ne -e "$DIR" \
   --model "pi-claude/$MODEL" \
   --mode json \
   "${PROMPT_ARGS[@]}" \
@@ -219,7 +219,7 @@ for p in "${PROMPTS[@]}"; do
     CLAUDE_ARGS+=(--resume "$RESUME_ID")
   fi
 
-  timeout 120 claude "${CLAUDE_ARGS[@]}" > "$TURN_FILE" 2>"$TURN_FILE.err" || true
+  run_with_timeout 120 claude "${CLAUDE_ARGS[@]}" > "$TURN_FILE" 2>"$TURN_FILE.err" || true
 
   # Extract session ID for --resume on next turn
   RESUME_ID=$(jq -r '.session_id // empty' "$TURN_FILE" 2>/dev/null)

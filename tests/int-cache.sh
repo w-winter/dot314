@@ -24,14 +24,14 @@ TMPFILE="$LOGDIR/cache-test-scratch.txt"
 rm -f "$TMPFILE" "$CLAUDE_BRIDGE_DEBUG_PATH"
 
 echo "Running 5-turn conversation (text + tool use)..."
-timeout 180 pi --no-session -ne -e "$DIR" \
+run_with_timeout 180 pi --no-session -ne -e "$DIR" \
   --model "pi-claude/claude-haiku-4-5" \
   --mode json \
-  -p "The secret number is 42. Acknowledge briefly." \
-     "Write the secret number to $TMPFILE. Just the number, nothing else." \
+  -p "The number to remember is 42. Acknowledge briefly." \
+     "Write the number to remember to $TMPFILE. Just the number, nothing else." \
      "What is 42 * 2? Just the number." \
      "Read $TMPFILE and tell me what's in it." \
-     "What was the secret number, what did you write, what did you read, and what was 42*2? One per line." \
+     "What was the number to remember, what did you write, what did you read, and what was 42*2? One per line." \
   > "$LOGFILE" 2>"$LOGFILE.err" || PI_EXIT=$?
 PI_EXIT=${PI_EXIT:-0}
 
