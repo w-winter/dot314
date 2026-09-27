@@ -448,6 +448,17 @@ export class QueryContext {
 		// assistant message boundary calls resetToolTracking() explicitly.
 	}
 
+	/** Start another SDK query within the same live Pi request. Unlike
+	 * resetTurnState, keeps the accumulated Pi message and usage: deferred replay
+	 * can add several Claude replies before Pi's single terminal event. Per-query
+	 * flags reset so a streamless continuation is not mistaken for the prior reply. */
+	prepareContinuation(): void {
+		this.turnSawStreamEvent = false;
+		this.turnSawToolCall = false;
+		this.handledTerminalError = false;
+		this.resetToolTracking();
+	}
+
 	resetToolTracking(): void {
 		this.turnToolCallIds = [];
 		this.turnToolCalls = [];

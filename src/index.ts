@@ -1260,8 +1260,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					const steer = abortCtx.deferredUserMessages.shift()!;
 					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
-					abortCtx.resetTurnState(queryModel);
-					abortCtx.resetToolTracking();
+					abortCtx.prepareContinuation();
 
 					// A foreign one-shot has no claim on the shared record: its steers
 					// continue ITS OWN child session, never --resume the parent's.

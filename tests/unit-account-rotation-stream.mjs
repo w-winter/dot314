@@ -175,6 +175,12 @@ const STREAMED_TEXT = (text) => [
 	{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } },
 	{ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } },
 ];
+const COMPLETED_TEXT = (text) => [
+	...STREAMED_TEXT(text),
+	{ type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+	{ type: "stream_event", event: { type: "message_stop" } },
+	{ type: "result", subtype: "success" },
+];
 
 describe("legacy sessions (no account router)", () => {
 	it("completes a rejected rate limit + streamed recovery exactly like a success", async () => {
@@ -261,6 +267,21 @@ describe("legacy sessions (no account router)", () => {
 		// the entry records count + text length — never the steer's content.
 		assert.doesNotMatch(diag, /queued steer/, "no user-authored text in the diagnostic");
 		assert.match(diag, /"textLengths":\[12\]/, "the entry records the dropped steer's length");
+	});
+
+	it("keeps the original reply and the deferred continuation reply in Pi's completed message", async () => {
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			if (calls++ > 0) return fakeSdkQuery(COMPLETED_TEXT("continuation reply"), "legacy", observedState());
+			ctx().deferredUserMessages.push({ text: "steer" });
+			return fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: "session-legacy" },
+				...COMPLETED_TEXT("first reply"),
+			], "legacy", observedState());
+		});
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "continuation-text" }));
+		const done = events.find((event) => event.type === "done");
+		assert.deepEqual(done.message.content.filter((block) => block.type === "text").map((block) => block.text), ["first reply", "continuation reply"]);
 	});
 
 	it("surfaces other non-success result subtypes as an explicit error and persists the session", async () => {
