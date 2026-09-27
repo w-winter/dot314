@@ -38013,6 +38013,11 @@ var QueryContext = class {
   reportedToolResultMismatch = false;
   deferredUserMessages = [];
   handledTerminalError = false;
+  /** Message of a terminal failure that ended this query after its last Pi
+   *  turn was already delivered. That turn must not change, so the next
+   *  provider callback reports the failure as its own error message.
+   *  Survives resetTurnState and teardown; cleared at fresh-query setup. */
+  undeliveredFailureMessage = null;
   // Once visible text/thinking, a complete tool call, or a child-executed
   // connector/foreign-MCP dispatch reaches Pi, the request must never be
   // replayed on another account (duplicate side effects). Query-scoped, not per-turn:
@@ -38109,9 +38114,18 @@ var QueryContext = class {
   turnStarted = false;
   turnSawStreamEvent = false;
   turnSawToolCall = false;
+  /** Index in turnBlocks where the current SDK query's blocks begin. Nonzero
+   *  only after deferred replay appends a continuation query's reply to the
+   *  same Pi message. */
+  queryContentStart = 0;
   get turnBlocks() {
     if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
     return this.turnOutput.content;
+  }
+  /** The blocks the current SDK query rendered. Duplicate-render checks read
+   *  only these: a continuation may legitimately repeat an earlier reply. */
+  get queryBlocks() {
+    return this.turnBlocks.slice(this.queryContentStart);
   }
   resetTurnState(model) {
     this.turnOutput = {
@@ -38134,6 +38148,7 @@ var QueryContext = class {
     this.turnStarted = false;
     this.turnSawStreamEvent = false;
     this.turnSawToolCall = false;
+    this.queryContentStart = 0;
     this.handledTerminalError = false;
     if (this.scheduledToolUseEnd) {
       clearTimeout(this.scheduledToolUseEnd.timer);
@@ -38150,6 +38165,7 @@ var QueryContext = class {
   prepareContinuation() {
     this.turnSawStreamEvent = false;
     this.turnSawToolCall = false;
+    this.queryContentStart = this.turnBlocks.length;
     this.handledTerminalError = false;
     this.resetToolTracking();
   }
@@ -55441,7 +55457,7 @@ function processAssistantMessage(message, model, customToolNameToPi, c = ctx()) 
   }
   c.beginChildMessage(assistantMsg.id);
   debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b) => b.type).join(",")}${sameMessage ? " (same message re-yield)" : ""}`);
-  const alreadyRendered = (type, content) => c.turnBlocks.some((b) => b.type === type && (type === "text" ? b.text : b.thinking) === content);
+  const alreadyRendered = (type, content) => c.queryBlocks.some((b) => b.type === type && (type === "text" ? b.text : b.thinking) === content);
   for (const block of assistantMsg.content) {
     if (block.type === "text" && block.text) {
       if (alreadyRendered("text", block.text)) continue;
@@ -55720,7 +55736,7 @@ async function consumeQuery(sdkQuery, queryCtx, customToolNameToPi, model, bridg
         if (!queryCtx.turnSawStreamEvent && message.subtype === "success") {
           if (!streamLive) break;
           const text = message.result || "";
-          if (queryCtx.turnBlocks.some((b) => b.type === "text" && b.text === text)) {
+          if (queryCtx.queryBlocks.some((b) => b.type === "text" && b.text === text)) {
             debug("consumeQuery: result text already rendered by assistant fallback; skipping duplicate");
             break;
           }
@@ -55747,6 +55763,9 @@ async function consumeQuery(sdkQuery, queryCtx, customToolNameToPi, model, bridg
               queryCtx.currentPiStream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
               queryCtx.currentPiStream.end();
               queryCtx.currentPiStream = null;
+            } else {
+              debug(`consumeQuery: usage limit after the Pi turn was delivered; holding it for the next callback`);
+              queryCtx.undeliveredFailureMessage = errors;
             }
           }
         }
@@ -56281,13 +56300,21 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   }
   const lastMsg = context.messages[context.messages.length - 1];
   if (lastMsg?.role === "toolResult") {
-    debug(`provider: orphaned tool result after abort, emitting end_turn`);
     const activeSession = getSharedSession();
     if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) setSharedSession({ ...activeSession, cursor: context.messages.length });
     const c = ctx();
+    const failureMessage = c.undeliveredFailureMessage;
+    c.undeliveredFailureMessage = null;
+    debug(`provider: orphaned tool result, emitting ${failureMessage === null ? "end_turn" : "the held terminal failure"}`);
     queueMicrotask(() => {
       c.resetTurnState(model);
-      stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+      if (failureMessage === null) {
+        stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+      } else {
+        c.turnOutput.stopReason = "error";
+        c.turnOutput.errorMessage = failureMessage;
+        stream.push({ type: "error", reason: "error", error: c.turnOutput });
+      }
       stream.end();
       releaseEphemeralLane();
     });
@@ -56338,6 +56365,8 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   ctx().deadToolCallIds.clear();
   ctx().callbackGeneration = 0;
   ctx().deferredUserMessages = [];
+  if (ctx().undeliveredFailureMessage !== null) debug(`provider: fresh query drops an unreported terminal failure: ${ctx().undeliveredFailureMessage}`);
+  ctx().undeliveredFailureMessage = null;
   ctx().resetTurnState(model);
   ctx().resetToolTracking();
   ctx().latestCursor = 0;
@@ -56623,6 +56652,9 @@ function streamClaudeAgentSdkInLane(model, context, options) {
       abortCtx.currentPiStream.push({ type: "error", reason: aborted2 ? "aborted" : "error", error: abortCtx.turnOutput });
       abortCtx.currentPiStream.end();
       abortCtx.currentPiStream = null;
+    } else if (!aborted2) {
+      debug(`provider: terminal failure after the Pi turn was delivered; holding it for the next callback: ${failure.message}`);
+      abortCtx.undeliveredFailureMessage = failure.message;
     }
   };
   let reentryStream = stream;
