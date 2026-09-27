@@ -32,7 +32,7 @@ import { cancelScheduledSessionPersistence, conversationFingerprint, restoreShar
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs } from "./tool-mapping.js";
-import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, scheduleToolUseTurnEnd, updateTurnOutputModel } from "./assistant-stream.js";
+import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, updateTurnOutputModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -1115,7 +1115,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					timeoutMs,
 				});
 				safeNotify(`${RATE_LIMIT_TOKEN} Claude stream idle timeout after ${formatDurationShort(timeoutMs)} — retrying via rate-limit backoff`, "warning");
-				if (abortCtx.turnOutput) {
+				if (abortCtx.turnOutput && abortCtx.currentPiStream) {
 					abortCtx.turnOutput.stopReason = "error";
 					abortCtx.turnOutput.errorMessage = errorMessage;
 					Object.assign(abortCtx.turnOutput as AssistantMessage & Record<string, unknown>, {
@@ -1123,10 +1123,11 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 						retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS,
 						streamIdleTimeoutMs: timeoutMs,
 					});
+					prunePartialToolCalls(abortCtx.turnOutput);
+					abortCtx.currentPiStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
+					abortCtx.currentPiStream.end();
+					abortCtx.currentPiStream = null;
 				}
-				abortCtx.currentPiStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
-				abortCtx.currentPiStream?.end();
-				abortCtx.currentPiStream = null;
 				requestAbort();
 			},
 			timeoutMs: streamIdleTimeoutMs,
@@ -1173,13 +1174,14 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			});
 			safeNotify(`${RATE_LIMIT_TOKEN} Claude ${failure.message} — resets ${formatResetTimestamp(resetAtMs ?? resetAt)}`, "warning");
 		}
-		if (abortCtx.turnOutput) {
+		if (abortCtx.turnOutput && abortCtx.currentPiStream) {
 			abortCtx.turnOutput.stopReason = aborted ? "aborted" : "error";
 			abortCtx.turnOutput.errorMessage = failure.message;
+			prunePartialToolCalls(abortCtx.turnOutput);
+			abortCtx.currentPiStream.push({ type: "error", reason: aborted ? "aborted" : "error", error: abortCtx.turnOutput });
+			abortCtx.currentPiStream.end();
+			abortCtx.currentPiStream = null;
 		}
-		abortCtx.currentPiStream?.push({ type: "error", reason: aborted ? "aborted" : "error", error: abortCtx.turnOutput! });
-		abortCtx.currentPiStream?.end();
-		abortCtx.currentPiStream = null;
 	};
 
 	// Background consumer — runs until this attempt's query ends. Before any
@@ -1396,10 +1398,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				// the retry without terminating here left the consumer hanging on a
 				// stream that never ends.
 				debug("provider: abort after queued account retry — terminating stream without retrying");
-				if (abortCtx.turnOutput) {
-					abortCtx.turnOutput.stopReason = "aborted";
-					abortCtx.turnOutput.errorMessage = "Operation aborted";
-				}
+				abortCtx.resetTurnState(queryModel);
+				abortCtx.turnOutput!.stopReason = "aborted";
+				abortCtx.turnOutput!.errorMessage = "Operation aborted";
 				reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
 				reentryStream.end();
 				return;
@@ -1424,11 +1425,11 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				abortCtx.restartRequest = null;
 				reentryStream = restart.stream;
 				abortCtx.resetTurnState(restart.model);
-			}
-			if (abortCtx.turnOutput) {
-				abortCtx.turnOutput.stopReason = "error";
-				abortCtx.turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
-			}
+			} else abortCtx.resetTurnState(queryModel);
+			// The previous turn may already have been delivered. Re-entry errors are
+			// represented by a fresh message instead of mutating that sealed object.
+			abortCtx.turnOutput!.stopReason = "error";
+			abortCtx.turnOutput!.errorMessage = error instanceof Error ? error.message : String(error);
 			reentryStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
 			reentryStream.end();
 		})

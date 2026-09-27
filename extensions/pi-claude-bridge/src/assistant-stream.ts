@@ -66,6 +66,18 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	c.currentPiStream = null;
 }
 
+/** Remove tool calls whose streamed arguments never completed. Pi persists
+ * every terminal message, errors included, so error paths prune too. */
+export function prunePartialToolCalls(output: AssistantMessage): void {
+	const partial = (output.content as Array<any>).filter((b) => b?.type === "toolCall" && "partialJson" in b);
+	if (partial.length === 0) return;
+	const calls = partial.map((b) => ({ id: b.id, name: b.name }));
+	debug(`prunePartialToolCalls: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
+	diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
+	appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
+	output.content = (output.content as Array<any>).filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
+}
+
 // --- Tool-use turn end: deferred to the stream's terminal events ---
 //
 // The Claude Code CLI dispatches MCP tool calls (and the SDK yields the
@@ -94,14 +106,7 @@ const TOOL_USE_END_GRACE_MS = 1500;
 export function endToolUseTurn(c: QueryContext): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	cancelScheduledToolUseEnd(c);
-	const partial = (c.turnOutput.content as Array<any>).filter((b) => b?.type === "toolCall" && "partialJson" in b);
-	if (partial.length > 0) {
-		const calls = partial.map((b) => ({ id: b.id, name: b.name }));
-		debug(`endToolUseTurn: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-		diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
-		appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
-		c.turnOutput.content = (c.turnOutput.content as Array<any>).filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
-	}
+	prunePartialToolCalls(c.turnOutput);
 	// Every tool call Pi is about to execute from this turn is owed a result and
 	// must never be dispatched again: a lagging stream replays the same tool_use
 	// into the NEXT turn, whose per-message dedup cannot see it.

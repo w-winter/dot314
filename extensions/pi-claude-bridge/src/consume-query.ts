@@ -14,7 +14,7 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, updateTurnOutputModel } from "./assistant-stream.js";
+import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnOutputModel } from "./assistant-stream.js";
 import { extensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug } from "./debug.js";
@@ -195,11 +195,14 @@ export async function consumeQuery(
 						// USAGE_LIMIT_ERROR_PREFIXES). Surface it immediately, exactly as
 						// before, and suppress the SDK's raw follow-up throw.
 						queryCtx.handledTerminalError = true;
-						queryCtx.turnOutput.stopReason = "error";
-						queryCtx.turnOutput.errorMessage = errors;
-						queryCtx.currentPiStream?.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
-						queryCtx.currentPiStream?.end();
-						queryCtx.currentPiStream = null;
+						if (queryCtx.currentPiStream) {
+							queryCtx.turnOutput.stopReason = "error";
+							queryCtx.turnOutput.errorMessage = errors;
+							prunePartialToolCalls(queryCtx.turnOutput);
+							queryCtx.currentPiStream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
+							queryCtx.currentPiStream.end();
+							queryCtx.currentPiStream = null;
+						}
 					}
 					// Other non-success subtypes (error_max_turns,
 					// error_during_execution) surface at completion via the held
