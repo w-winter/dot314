@@ -9,12 +9,10 @@ import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { Type } from "@earendil-works/pi-ai";
 
-import { ServedToolServer } from "../src/served-tools.ts";
+import { advertisedInputSchema, ServedToolServer } from "../src/served-tools.ts";
 import { QueryContext } from "../src/query-state.ts";
-import { jsonSchemaToZodShape } from "../src/typebox-to-zod.ts";
 
 const piTool = (name, description = `${name} tool`, parameters = Type.Object({})) => ({ name, description, parameters });
 const echoHandler = (tool) => async () => ({ content: [{ type: "text", text: `ran ${tool.name}` }] });
@@ -147,20 +145,20 @@ describe("ServedToolServer", () => {
 		});
 		const { client } = await connect(served.config.instance);
 		let answered = false;
-		const rejected = client.callTool({ name: "alpha", arguments: {}, _meta: { "claudecode/toolUseId": "toolu_1" } }).then((result) => {
-			answered = true;
-			return result;
-		});
+		// Arguments are pass-through (Pi validates them), so only a malformed
+		// request is still rejected by the SDK before the handler.
+		const rejected = client.callTool({ name: "alpha", arguments: "not an object", _meta: { "claudecode/toolUseId": "toolu_1" } }).then(
+			(result) => { answered = true; return result; },
+			(error) => { answered = true; return error; },
+		);
 		await macrotask();
 		assert.deepEqual(finished, ["toolu_1"], "the rejected call must be reported");
 		assert.equal(handlerRan, false, "the SDK rejected it before the handler");
 		assert.equal(answered, false, "the answer waits for the hook");
 		releaseHook();
-		const result = await rejected;
-		assert.equal(result.isError, true);
-		assert.match(result.content[0].text, /Input validation error/);
+		assert.match((await rejected).message, /expected record/);
 
-		const untagged = await client.callTool({ name: "alpha", arguments: { requiredOld: "x" } });
+		const untagged = await client.callTool({ name: "alpha", arguments: {} });
 		assert.equal(untagged.content[0].text, "ran");
 		assert.deepEqual(finished, ["toolu_1"], "a call without Claude Code's tag reports nothing");
 	});
@@ -188,19 +186,16 @@ describe("ServedToolServer", () => {
 		assert.deepEqual(await listNames(), ["beta"]);
 	});
 
-	it("lists a tool added mid-query exactly like createSdkMcpServer lists it", async () => {
+	it("lists a tool added mid-query exactly like a tool served from the start", async () => {
 		const parameters = Type.Object({
 			path: Type.String({ description: "File to read" }),
 			limit: Type.Optional(Type.Number({ description: "Max lines" })),
 			mode: Type.Union([Type.Literal("a"), Type.Literal("b")]),
 		});
 		const tool = piTool("read", "Read a file", parameters);
-		const reference = createSdkMcpServer({
-			name: "custom-tools",
-			version: "1.0.0",
-			tools: [{ name: tool.name, description: tool.description, inputSchema: jsonSchemaToZodShape(tool.parameters), handler: echoHandler(tool) }],
-		});
-		const expected = (await (await connect(reference.instance)).client.listTools()).tools;
+		const reference = new ServedToolServer("custom-tools", [tool], echoHandler);
+		const expected = (await (await connect(reference.config.instance)).client.listTools()).tools;
+		assert.deepEqual(expected[0].inputSchema, advertisedInputSchema(parameters));
 
 		const served = new ServedToolServer("custom-tools", [piTool("alpha")], echoHandler);
 		const { client } = await connect(served.config.instance);

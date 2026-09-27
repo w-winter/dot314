@@ -38,6 +38,9 @@
 // goes back, still ahead of the next model request. Without the tag, the
 // bridge retires the id when Claude Code reports the call's tool_result
 // (consume-query.ts), which bounds the postponement to that call's lifetime.
+// (Registered inputs are now pass-through, see "Schemas" below, so today the
+// SDK rejects no arguments; the postponement and `callFinished` remain as the
+// guard for any SDK-level rejection, such as a malformed request.)
 //
 // Every tool is registered under its MCP alias (mcpToolAliases), the name
 // Claude Code can call it by; everything else here, including the hooks and
@@ -46,17 +49,89 @@
 // added mid-query never takes an alias another registration holds (a late
 // invocation under it must reach the tool Claude called), so the newcomer may
 // be served under a different alias than a fresh query would give it.
+//
+// Schemas: Pi validates every tool call against the tool's full JSON Schema
+// (pi-agent-core's validateToolArguments) and returns a failure to the model as
+// the tool result, so Pi is the one validation authority. The SDK's
+// registerTool only takes Zod, and converting JSON Schema to Zod lost $ref,
+// unions, nullable types, integer and most constraints. So each tool is
+// registered with a Zod input that accepts any object and changes nothing
+// (PASS_THROUGH_INPUT), and tools/list advertises the tool's own schema
+// (advertisedInputSchema) instead of the SDK's rendering of that Zod input.
 
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@earendil-works/pi-ai";
+import { z } from "zod";
 import { debug } from "./debug.js";
 import type { McpResult } from "./extract-tool-results.js";
+import { isDraft2020Schema } from "./json-schema-2020.js";
 import { mcpToolAliases } from "./tool-mapping.js";
-import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 
 export const RELIST_TIMEOUT_MS = 2_000;
 /** The `_meta` key under which Claude Code sends a tools/call's tool_use id. */
 export const CLAUDE_CODE_TOOL_USE_ID = "claudecode/toolUseId";
+
+/** Accepts any arguments object and passes every key through unchanged (a
+ *  plain z.object({}) would strip unknown keys). */
+const PASS_THROUGH_INPUT = z.looseObject({});
+
+// Root keywords the model needs to read the properties right: `$ref` targets
+// and the object's own additionalProperties. Other root keywords are dropped,
+// as Pi's native Anthropic provider drops them. Claude Code skips any MCP tool
+// whose schema has a root anyOf/oneOf/allOf (CC 2.1.283, "which the Anthropic
+// API does not accept").
+const ADVERTISED_ROOT_KEYWORDS = ["$defs", "definitions", "additionalProperties"] as const;
+
+/** The input schema tools/list advertises for a Pi tool: the shape Pi's native
+ *  Anthropic provider declares (pi-ai convertTools: `type: "object"`, the
+ *  tool's `properties` and `required`, verbatim), plus the root keywords the
+ *  properties depend on. Pi's non-strict declaration drops root `$defs`, which
+ *  leaves every `#/$defs/...` reference dangling; measured with Haiku 4.5, the
+ *  model then sent a $ref'd object as a JSON string and null as "null".
+ *
+ *  A part that is not valid JSON Schema 2020-12 (a draft-04 boolean
+ *  `exclusiveMinimum`, a draft-07 tuple `items: [...]`) would make the API
+ *  reject every request of the session (see json-schema-2020.ts). Such a
+ *  property or `$defs` entry is advertised as `{}` with its description, an
+ *  invalid `required` as `[]`, and an invalid `additionalProperties` not at
+ *  all. Pi still validates arguments against the tool's full schema. */
+export function advertisedInputSchema(parameters: unknown, toolName = "tool"): Record<string, unknown> {
+	const schema = JSON.parse(JSON.stringify(parameters ?? {})) as Record<string, unknown>;
+	const loosened: string[] = [];
+	const subschema = (value: unknown, path: string): unknown => {
+		if (isDraft2020Schema(value)) return value;
+		loosened.push(path);
+		const description = typeof value === "object" && value !== null ? (value as { description?: unknown }).description : undefined;
+		return typeof description === "string" ? { description } : {};
+	};
+	const subschemas = (value: unknown, path: string): Record<string, unknown> => {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			loosened.push(path);
+			return {};
+		}
+		return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, subschema(entry, `${path}.${key}`)]));
+	};
+	const advertised: Record<string, unknown> = {
+		type: "object",
+		properties: subschemas(schema.properties ?? {}, "properties"),
+		required: schema.required ?? [],
+	};
+	if (!isDraft2020Schema({ required: advertised.required })) {
+		loosened.push("required");
+		advertised.required = [];
+	}
+	for (const keyword of ADVERTISED_ROOT_KEYWORDS) {
+		const value = schema[keyword];
+		if (value === undefined) continue;
+		if (keyword !== "additionalProperties") advertised[keyword] = subschemas(value, keyword);
+		else if (isDraft2020Schema(value)) advertised[keyword] = value;
+		else loosened.push(keyword);
+	}
+	if (loosened.length > 0) {
+		debug(`WARNING: served tools: ${toolName} advertises ${loosened.join(", ")} without its schema: not valid JSON Schema 2020-12, which the Anthropic API requires of every tool. Pi still validates the arguments.`);
+	}
+	return advertised;
+}
 
 export type ServedToolHandler = (args?: Record<string, unknown>) => Promise<McpResult>;
 export type ServedToolUpdate = "relisted" | "timeout" | "not-connected";
@@ -81,7 +156,7 @@ function toolSignature(tool: Tool): string {
 export class ServedToolServer {
 	readonly config: ReturnType<typeof createSdkMcpServer>;
 	/** Keyed by Pi tool name; `alias` is the MCP name it is registered under. */
-	private readonly registered = new Map<string, { signature: string; alias: string; handle: RegisteredTool }>();
+	private readonly registered = new Map<string, { signature: string; alias: string; inputSchema: Record<string, unknown>; handle: RegisteredTool }>();
 	private readonly withdrawn = new Set<string>();
 	private readonly deferred = new Set<string>();
 	private desired: Tool[] = [];
@@ -190,30 +265,37 @@ export class ServedToolServer {
 	private register(tool: Tool, alias: string): void {
 		const handle = this.config.instance.registerTool(
 			alias,
-			{ description: tool.description, inputSchema: jsonSchemaToZodShape(tool.parameters) },
+			{ description: tool.description, inputSchema: PASS_THROUGH_INPUT },
 			this.handlerFor(tool) as Parameters<McpServerInstance["registerTool"]>[2],
 		);
-		this.registered.set(tool.name, { signature: toolSignature(tool), alias, handle });
+		this.registered.set(tool.name, { signature: toolSignature(tool), alias, inputSchema: advertisedInputSchema(tool.parameters, tool.name), handle });
 	}
 
-	// McpServer has no public hook for "the client listed tools", so wrap the
-	// tools/list entry its Protocol dispatches from. Pinned SDK; if the entry is
-	// missing, updates fall back to the timeout cap, deactivated tools are
-	// removed outright, and this logs why.
+	// McpServer has no public hook for "the client listed tools", nor for the
+	// schema it lists, so wrap the tools/list entry its Protocol dispatches from.
+	// Pinned SDK; if the entry is missing, updates fall back to the timeout cap,
+	// deactivated tools are removed outright, tools are listed with the SDK's
+	// empty rendering of PASS_THROUGH_INPUT, and this logs why.
 	private observeRelist(): void {
 		const handlers = (this.config.instance.server as unknown as { _requestHandlers?: Map<string, RequestHandler> })._requestHandlers;
 		const list = handlers?.get("tools/list");
 		if (!handlers || !list) {
-			debug("WARNING: served tools cannot observe tools/list; mid-turn tool changes will wait for the timeout cap");
+			debug("WARNING: served tools cannot observe tools/list; tools are listed without their parameters and mid-turn tool changes will wait for the timeout cap");
 			return;
 		}
 		handlers.set("tools/list", async (request, extra) => {
-			const result = await list(request, extra) as { tools: Array<{ name: string }> };
+			const result = await list(request, extra) as { tools: Array<{ name: string; inputSchema?: unknown }> };
 			// Next macrotask: the list response is sent after this handler returns,
 			// and a tool result released earlier could overtake it on CC's stdin.
 			for (const release of this.relistWaiters.splice(0)) setImmediate(release);
 			const hidden = new Set([...this.withdrawn].map((name) => this.registered.get(name)?.alias));
-			return { ...result, tools: result.tools.filter((tool) => !hidden.has(tool.name)) };
+			const schemas = new Map([...this.registered.values()].map((entry) => [entry.alias, entry.inputSchema]));
+			return {
+				...result,
+				tools: result.tools
+					.filter((tool) => !hidden.has(tool.name))
+					.map((tool) => ({ ...tool, inputSchema: schemas.get(tool.name) ?? tool.inputSchema })),
+			};
 		});
 		this.listObserved = true;
 	}

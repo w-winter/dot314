@@ -195,9 +195,10 @@ function installTwoCallClaudeCode(observed, { tagCalls }) {
 	});
 }
 
-/** A call the SDK rejects at input validation never reaches the handler. It
- *  must not keep the redefinition Pi made meanwhile postponed: a later call
- *  valid under Pi's new definition must get Pi's real result. */
+/** A call with arguments Pi rejects still reaches Pi (MCP arguments are
+ *  pass-through; Pi validates) and Claude gets Pi's validation error. It must
+ *  not keep the redefinition Pi made meanwhile postponed: a later call valid
+ *  under Pi's new definition must get Pi's real result. */
 async function rejectedCallThenRedefinition(sessionId, { tagCalls }) {
 	let openGate;
 	const observed = { callGate: new Promise((resolve) => { openGate = resolve; }) };
@@ -226,7 +227,7 @@ async function rejectedCallThenRedefinition(sessionId, { tagCalls }) {
 	const done2 = (await secondTurn).find((event) => event.type === "done");
 	assert.equal(done2?.reason, "toolUse");
 	assert.equal(observed.firstResult.isError, true, "call-1 is rejected at input validation (that part is correct)");
-	assert.match(observed.firstResult.content[0].text, /Input validation error/);
+	assert.deepEqual(observed.firstResult.content, [{ type: "text", text: "Validation failed: requiredOld is required" }], "Pi's validation error is the result");
 	const call2 = done2.message.content.find((block) => block.type === "toolCall");
 	assert.equal(call2?.id, "call-2");
 	assert.deepEqual(call2.arguments, NEW_ARGS, "Pi receives call-2 with its new-schema arguments");
@@ -414,7 +415,7 @@ describe("tools activated by a tool call reach the running query", () => {
 		await second;
 	});
 
-	it("applies a redefinition postponed by a call the SDK rejected, so a new valid call gets Pi's real result", async () => {
+	it("applies a redefinition postponed by a call Pi rejected, so a new valid call gets Pi's real result", async () => {
 		// CC tags the call with its tool_use id: the redefinition applies before
 		// call-1's rejection goes back, so CC's next request already has the new schema.
 		const observed = await rejectedCallThenRedefinition("served-tools-rejected-tagged", { tagCalls: true });
@@ -422,7 +423,7 @@ describe("tools activated by a tool call reach the running query", () => {
 			"CC must have re-listed the new schema before call-1's rejection reached it");
 	});
 
-	it("applies it at the rejected call's tool_result when the call carries no tool_use id", async () => {
+	it("applies it too when the rejected call carries no tool_use id", async () => {
 		await rejectedCallThenRedefinition("served-tools-rejected-untagged", { tagCalls: false });
 	});
 
