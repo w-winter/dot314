@@ -4,19 +4,21 @@ A Pi provider that uses a logged-in Claude Code account through the Claude Agent
 
 Requires Pi 0.86.0 or later.
 
-This is a fork of [Eli Dickinson's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge).
+This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [Eli Dickinson's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge). It adds the fixes from [w-winter/dot314#20](https://github.com/w-winter/dot314/pull/20), which keep the Claude session the bridge rebuilds in sync with Pi's history.
 
 ![Response from Claude through the bridge](assets/bridge-demo.png)
 
 ## Install
 
-Pi auto-discovers the bridge when the dot314 checkout is your Pi agent directory. To load it explicitly for one run:
+Let Pi clone the repository and install its dependencies:
 
 ```bash
-pi -e ./extensions/pi-claude-bridge/bundle/index.js
+pi install git:git@github.com:nicobailon/pi-claude-bridge
 ```
 
-The committed bundle includes its runtime dependencies. A Claude Code login is required. Make `claude` available on `PATH` or set its executable path below.
+To work on the bridge, clone it, run `npm install`, and add the folder's path to `packages` in `~/.pi/agent/settings.json`. Pi loads `src/index.ts` directly, so `/reload` picks up edits. To load it for one run, use `pi -e ./src/index.ts`.
+
+A Claude Code login is required. Make `claude` available on `PATH` or set its executable path below.
 
 Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 

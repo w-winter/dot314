@@ -1,6 +1,6 @@
 # pi-claude-bridge development
 
-For maintainers of the dot314 fork. [README.md](README.md) covers user-facing behavior; this file records invariants that span several modules.
+For maintainers of this fork. [README.md](README.md) covers user-facing behavior; this file records invariants that span several modules.
 
 ## Invariants
 
@@ -44,7 +44,7 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 
 ## Runtime
 
-- `bundle/index.js` keeps `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` external because Pi supplies them at runtime. Run the bundle from the dot314 checkout so Node resolves those packages from the repository root.
+- Pi loads `src/index.ts` directly and supplies `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` at runtime, so they are optional peers and only installed as dev dependencies for typechecking and tests. `zod` is pinned to 4.4.3, the version the dot314 bundle ships.
 - Startup preflight (`src/claude-executable.ts::preflightClaudeExecutable`) preserves `code`, `errno`, `syscall`, `path`, `cwd` and the detected executable file type on the error it hands the SDK.
 
 ## Rate limits
@@ -56,9 +56,27 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 ```bash
 npm run typecheck
 npm run test:unit      # node --test over tests/unit-*.mjs, no credentials
-npm run test:ci        # build, then the unit suite
+npm run test:ci        # typecheck, then the unit suite
 npm test               # unit, then the integration suites
 npm run test:usage     # A/B subscription-usage comparison against Claude Code direct
 ```
 
 The integration suites (`tests/int-*.sh`, `tests/int-*.mjs`) need the `pi` CLI, a logged-in Claude Code, and `CLAUDE_BRIDGE_TESTING_ALT_MODEL` and `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER` from `.env.test`, which `npm test` sources when present. `test:usage` spends real subscription usage. A test that spawns a child pins `HOME`, `PI_CODING_AGENT_DIR` and `CLAUDE_CONFIG_DIR` explicitly, because a spawned child inherits the process's start environment rather than a harness override.
+
+## Syncing with dot314
+
+This repository is `git subtree split --prefix=extensions/pi-claude-bridge` of [w-winter/dot314](https://github.com/w-winter/dot314) plus local commits. Splitting dot314 again produces the same commit ids, so its bridge changes merge normally. In a dot314 clone with `upstream` pointing at w-winter/dot314:
+
+```bash
+git fetch upstream
+git subtree split --prefix=extensions/pi-claude-bridge upstream/main -b bridge-upstream
+```
+
+Then, in this repository:
+
+```bash
+git fetch <dot314 clone> bridge-upstream
+git merge FETCH_HEAD
+```
+
+Upstream commits regenerate `bundle/index.js`, which this repository does not keep. Resolve those conflicts with `git rm -r bundle`.
