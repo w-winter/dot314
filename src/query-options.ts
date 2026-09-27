@@ -134,10 +134,17 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// Manual /compact in CC still works (we never invoke it).
 	// When connectors are enabled, allow claude.ai cloud MCP servers so the
 	// authenticated account's Gmail/Calendar/Drive tools load. Default stays "0".
+	// CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0: with CLAUDE_AUTO_BACKGROUND_TASKS set,
+	// CC moves an MCP call still running after 120 s (this knob) to a background
+	// task and answers it with a placeholder. The model then ends its turn, the
+	// SDK closes the query on that result, and the call is interrupted; a Pi
+	// tool's real result is orphaned. A bridge query cannot carry a background
+	// task past its turn, so every MCP call stays in the foreground.
 	const childEnv = {
 		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
+		CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
 	};
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,

@@ -68,6 +68,15 @@ import { isDraft2020Schema } from "./json-schema-2020.js";
 import { mcpToolAliases } from "./tool-mapping.js";
 
 export const RELIST_TIMEOUT_MS = 2_000;
+/** Claude Code's per-call wall-clock limit for this server. CC applies
+ *  `timeout ?? MCP_TOOL_TIMEOUT ?? 1e8 ms` to in-process SDK servers too, and a
+ *  user's shell commonly exports MCP_TOOL_TIMEOUT for other servers (e.g.
+ *  300000). When it fires, CC answers the call itself ("timed out after Ns"),
+ *  the model finishes its turn without the result, the SDK closes the query,
+ *  and the real result Pi produces later is orphaned. A Pi tool's lifetime is
+ *  Pi's to decide (abort, the tool's own timeout), so the limit is set to CC's
+ *  own ceiling (the largest timer delay it accepts), which no Pi tool reaches. */
+export const PI_TOOL_CALL_TIMEOUT_MS = 2_147_483_647;
 /** The `_meta` key under which Claude Code sends a tools/call's tool_use id. */
 export const CLAUDE_CODE_TOOL_USE_ID = "claudecode/toolUseId";
 
@@ -172,7 +181,7 @@ export class ServedToolServer {
 		// Tools are registered here rather than through createSdkMcpServer's
 		// `tools` option so every tool, initial or added later, has a
 		// RegisteredTool handle that can remove it.
-		this.config = createSdkMcpServer({ name, version: "1.0.0", tools: [] });
+		this.config = createSdkMcpServer({ name, version: "1.0.0", tools: [], timeout: PI_TOOL_CALL_TIMEOUT_MS });
 		const aliases = mcpToolAliases(tools.map((tool) => tool.name));
 		for (const tool of tools) this.register(tool, aliases.get(tool.name) ?? tool.name);
 		this.observeRelist();

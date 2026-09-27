@@ -661,6 +661,13 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			if (id && queryCtx.pendingToolCalls.has(id)) {
 				const pending = queryCtx.pendingToolCalls.get(id)!;
 				queryCtx.pendingToolCalls.delete(id);
+				const abandoned = queryCtx.abandonedToolCalls.get(id);
+				if (abandoned) {
+					// Claude Code answered this call itself earlier (noteAbandonedToolCalls
+					// told the user); the SDK discards this late answer.
+					debug(`provider: late result for ${pending.toolName} [${id}] after Claude Code gave up on it (${abandoned.reason}); Claude does not receive it`);
+					appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id, toolName: pending.toolName });
+				}
 				debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
 				if (toolsSettling) void toolsSettling.then(() => pending.resolve(result));
 				else pending.resolve(result);
@@ -773,7 +780,13 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// emit end_turn so pi waits for the next real user message.
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
-		debug(`provider: orphaned tool result after abort, emitting end_turn`);
+		const abandoned = ctx().abandonedToolCalls.get(lastMsg.toolCallId);
+		if (abandoned) {
+			debug(`provider: orphaned tool result for ${abandoned.toolName} [${lastMsg.toolCallId}] that Claude Code gave up on (${abandoned.reason}); the query already ended, emitting end_turn`);
+			appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id: lastMsg.toolCallId, toolName: abandoned.toolName, queryEnded: true });
+		} else {
+			debug(`provider: orphaned tool result after abort, emitting end_turn`);
+		}
 		// The detached flag deliberately survives query end: an orphaned result
 		// from a foreign one-shot indexes ITS conversation, and writing that
 		// length here would move (even shrink) the parent's cursor.
@@ -835,6 +848,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().foreignMcpCalls.clear();
 	ctx().forwardedToolCallIds.clear();
 	ctx().deadToolCallIds.clear();
+	ctx().abandonedToolCalls.clear();
 	ctx().settledInvocationIds.clear();
 	ctx().callbackGeneration = 0;
 	ctx().deferredUserMessages = [];

@@ -15,9 +15,9 @@ import {
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
 import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnResponseModel } from "./assistant-stream.js";
-import { getExtensionApi, safeNotify } from "./bridge-state.js";
+import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
-import { debug } from "./debug.js";
+import { debug, diagDump } from "./debug.js";
 import { fallbackModelForPrimaryModel, modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
@@ -102,6 +102,34 @@ function settleReportedToolCalls(message: unknown, queryCtx: QueryContext): void
 	if (ids.length > 0) {
 		debug(`consumeQuery: Claude Code finished forwarded call(s) ${ids.join(",")}`);
 		queryCtx.settleInvocations(ids);
+	}
+}
+
+/** Claude Code reports a call's tool_result only after the call is answered,
+ *  and the bridge removes a handler from pendingToolCalls before answering it.
+ *  A reported id still pending therefore means Claude Code answered the call
+ *  itself (a CC-side limit gave up on it) while Pi is still running the tool.
+ *  Pi's result can no longer reach Claude, so say so now instead of losing it
+ *  silently when it arrives. The bridge's server config keeps CC's known
+ *  limits from firing (served-tools.ts, query-options.ts); this is the net. */
+function noteAbandonedToolCalls(message: unknown, queryCtx: QueryContext): void {
+	const content = (message as { message?: { content?: unknown } }).message?.content;
+	if (!Array.isArray(content)) return;
+	for (const block of content) {
+		const id = block?.type === "tool_result" ? block.tool_use_id : undefined;
+		if (typeof id !== "string" || queryCtx.abandonedToolCalls.has(id)) continue;
+		const pending = queryCtx.pendingToolCalls.get(id);
+		if (!pending) continue;
+		const raw = block.content;
+		const text = typeof raw === "string"
+			? raw
+			: Array.isArray(raw) ? raw.map((part: { text?: unknown }) => typeof part?.text === "string" ? part.text : "").join(" ") : "";
+		const reason = text.trim().slice(0, 200) || "no reason given";
+		queryCtx.abandonedToolCalls.set(id, { toolName: pending.toolName, reason });
+		debug(`consumeQuery: Claude Code gave up on ${pending.toolName} [${id}] while Pi is still running it: ${reason}`);
+		diagDump("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName, reason });
+		appendIntegrityEntry("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName });
+		safeNotify(`Claude bridge: Claude Code stopped waiting for ${pending.toolName} while Pi is still running it (${reason}). Claude will not see that call's result.`, "warning");
 	}
 }
 
@@ -301,6 +329,7 @@ export async function consumeQuery(
 				// boundary nulled the stream (noteChildExecutedToolResults is
 				// side-effect-free on the Pi stream).
 				noteChildExecutedToolResults(message, queryCtx);
+				noteAbandonedToolCalls(message, queryCtx);
 				settleReportedToolCalls(message, queryCtx);
 				break;
 			case "rate_limit_event": {

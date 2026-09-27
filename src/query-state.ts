@@ -299,6 +299,12 @@ export class QueryContext {
 	 *  validates that invocation against the schema its tool is registered with
 	 *  at that moment (see served-tools.ts). */
 	settledInvocationIds = new Set<string>();
+	/** Calls Claude Code answered on its own while their handler was still
+	 *  waiting on Pi (a CC-side limit gave up on them), keyed by id. Pi is still
+	 *  running the tool; its result can no longer reach Claude. Query-scoped and
+	 *  kept past query end, so a result that arrives as an orphan is still
+	 *  recognised; cleared at fresh-query setup. */
+	abandonedToolCalls = new Map<string, { toolName: string; reason: string }>();
 
 	/** Whether `toolName` has a forwarded call whose MCP invocation has not arrived. */
 	awaitsInvocation(toolName: string): boolean {
