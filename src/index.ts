@@ -32,7 +32,7 @@ import { cancelScheduledSessionPersistence, conversationFingerprint, restoreShar
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs } from "./tool-mapping.js";
-import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, updateTurnOutputModel } from "./assistant-stream.js";
+import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, updateTurnResponseModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -864,12 +864,12 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		? { ...model, id: account.modelId, name: modelDisplayName(account.modelId) }
 		: model;
 	if (queryModel.id !== model.id) {
-		// Stamp the output model on EVERY attempt (each retry resets turn state),
+		// Stamp the response model on EVERY attempt (each retry resets turn state),
 		// but toast each distinct model at most once per request: with up to 16
 		// rotation attempts, every retry re-enters this block and would otherwise
 		// repeat an identical switch notice. A DIFFERENT model first selected
 		// mid-rotation still announces itself.
-		updateTurnOutputModel(queryModel.id);
+		updateTurnResponseModel(queryModel.id);
 		if (rotationState.announcedModelId !== queryModel.id) {
 			rotationState.announcedModelId = queryModel.id;
 			safeNotify(
@@ -1397,7 +1397,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				// the retry without terminating here left the consumer hanging on a
 				// stream that never ends.
 				debug("provider: abort after queued account retry — terminating stream without retrying");
-				abortCtx.resetTurnState(queryModel);
+				abortCtx.resetTurnState(model);
+				updateTurnResponseModel(queryModel.id, abortCtx);
 				abortCtx.turnOutput!.stopReason = "aborted";
 				abortCtx.turnOutput!.errorMessage = "Operation aborted";
 				reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
@@ -1424,7 +1425,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				abortCtx.restartRequest = null;
 				reentryStream = restart.stream;
 				abortCtx.resetTurnState(restart.model);
-			} else abortCtx.resetTurnState(queryModel);
+			} else {
+				abortCtx.resetTurnState(model);
+				updateTurnResponseModel(queryModel.id, abortCtx);
+			}
 			// The previous turn may already have been delivered. Re-entry errors are
 			// represented by a fresh message instead of mutating that sealed object.
 			abortCtx.turnOutput!.stopReason = "error";

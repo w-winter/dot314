@@ -185,11 +185,18 @@ export function reapStaleQueuedResults(c: QueryContext): void {
 	);
 }
 
-export function updateTurnOutputModel(modelId: unknown, c: QueryContext = ctx()): void {
+/** Record the model Claude Code reports actually serving this turn (dated
+ *  alias, refusal fallback, account-rotation or classifier fallback). Matches
+ *  Pi's native Anthropic provider: `model` stays the Pi model id the request
+ *  selected — pi-subagents and others verify it against the launch model — and
+ *  the served model goes into `responseModel` only when it differs. */
+export function updateTurnResponseModel(modelId: unknown, c: QueryContext = ctx()): void {
 	if (typeof modelId !== "string" || !modelId || !c.turnOutput) return;
-	if (c.turnOutput.model === modelId) return;
-	debug(`provider: active Claude model changed ${c.turnOutput.model} -> ${modelId}`);
-	c.turnOutput.model = modelId;
+	const current = c.turnOutput.responseModel ?? c.turnOutput.model;
+	if (current === modelId) return;
+	debug(`provider: active Claude model changed ${current} -> ${modelId} (selected ${c.turnOutput.model})`);
+	if (modelId === c.turnOutput.model) delete c.turnOutput.responseModel;
+	else c.turnOutput.responseModel = modelId;
 }
 
 export const FINALIZE_MAX_REARMS = 3;
@@ -341,7 +348,7 @@ export function processStreamEvent(
 		// its counters are replaced. No-op on the turn's first, and no-op if this
 		// same message was already declared (see beginChildMessage).
 		c.beginChildMessage(event.message?.id);
-		updateTurnOutputModel(event.message?.model, c);
+		updateTurnResponseModel(event.message?.model, c);
 		if (event.message?.usage) updateUsage(c.turnOutput, event.message.usage, model, c);
 		return;
 	}
@@ -627,7 +634,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 		appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c);
 		return;
 	}
-	updateTurnOutputModel(assistantMsg.model, c);
+	updateTurnResponseModel(assistantMsg.model, c);
 	if (c.turnSawStreamEvent) {
 		// The SDK yields the completed assistant message BEFORE the stream's
 		// message_delta/message_stop on every tool-use turn (the norm, not a
@@ -739,7 +746,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 			c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
 			c.currentPiStream?.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: c.turnOutput });
 		} else if (block.type === "fallback") {
-			updateTurnOutputModel(block.to?.model, c);
+			updateTurnResponseModel(block.to?.model, c);
 		} else {
 			debug("processAssistantMessage: unhandled block type", block.type);
 		}

@@ -692,6 +692,10 @@ describe("managed account stream rotation", () => {
 		assert.equal(queryOptions.fallbackModel, "claude-opus-4-8");
 		assert.equal(queryOptions.env.CLAUDE_CONFIG_DIR, "/profiles/b");
 		assert.ok(textEvents(events).includes("opus-after-fable"));
+		// The router's model switch is a response model, not a new Pi model id.
+		const done = events.find((event) => event.type === "done");
+		assert.equal(done?.message.model, "claude-fable-5-1");
+		assert.equal(done?.message.responseModel, "claude-opus-5");
 	});
 
 	it("selects registered Fable 5.1 without skipping another managed account", async () => {

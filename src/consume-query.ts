@@ -14,7 +14,7 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnOutputModel } from "./assistant-stream.js";
+import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnResponseModel } from "./assistant-stream.js";
 import { getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug } from "./debug.js";
@@ -238,7 +238,7 @@ export async function consumeQuery(
 				} else if ((message as any).subtype === "model_refusal_fallback") {
 					const originalModel = (message as any).original_model;
 					const fallbackModel = (message as any).fallback_model;
-					updateTurnOutputModel(fallbackModel, queryCtx);
+					updateTurnResponseModel(fallbackModel, queryCtx);
 					debug("consumeQuery: model_refusal_fallback", JSON.stringify({ originalModel, fallbackModel }));
 					// Notify only for reroutes we configured, so an unexpected pairing from
 					// Claude Code is still logged above but not announced as one of ours.
