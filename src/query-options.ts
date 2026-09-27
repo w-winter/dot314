@@ -2,7 +2,7 @@
 // Extracted from index.ts (pure move): no closures — reads config, env, and
 // the provided context only.
 
-import { type Model } from "@earendil-works/pi-ai";
+import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { accountSessionScope, subscriberProfileEnv, type ClaudeAccountRoute } from "./account-router.js";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
@@ -94,10 +94,14 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	);
 	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
 	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
+	// Fall back to our generic table only for an absent key. A null entry marks
+	// the level unsupported on that model, and a value Claude Code does not
+	// accept is untrusted; both send no effort so Claude Code's default applies.
+	const mapped = reasoning ? queryModel.thinkingLevelMap?.[reasoning as ModelThinkingLevel] : undefined;
 	const requestedEffort = reasoning
-		? ((queryModel as any).thinkingLevelMap?.[reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[reasoning]
+		? mapped === undefined
+			? REASONING_TO_EFFORT[reasoning]
+			: normalizeEffortLevel(mapped) as EffortLevel | undefined
 		: undefined;
 	const effort = resolveConfiguredEffort(queryModel.id, requestedEffort, providerSettings);
 
