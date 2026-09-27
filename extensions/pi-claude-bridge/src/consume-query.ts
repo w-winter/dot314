@@ -202,6 +202,10 @@ export async function consumeQuery(
 							queryCtx.currentPiStream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
 							queryCtx.currentPiStream.end();
 							queryCtx.currentPiStream = null;
+						} else {
+							// A tool-use turn already reached Pi; its tool-result callback reports this.
+							debug(`consumeQuery: usage limit after the Pi turn was delivered; holding it for the next callback`);
+							queryCtx.undeliveredFailureMessage = errors;
 						}
 					}
 					// Other non-success subtypes (error_max_turns,

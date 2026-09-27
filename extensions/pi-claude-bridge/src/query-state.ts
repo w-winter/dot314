@@ -314,6 +314,11 @@ export class QueryContext {
 	reportedToolResultMismatch = false;
 	deferredUserMessages: DeferredUserMessage[] = [];
 	handledTerminalError = false;
+	/** Message of a terminal failure that ended this query after its last Pi
+	 *  turn was already delivered. That turn must not change, so the next
+	 *  provider callback reports the failure as its own error message.
+	 *  Survives resetTurnState and teardown; cleared at fresh-query setup. */
+	undeliveredFailureMessage: string | null = null;
 	// Once visible text/thinking, a complete tool call, or a child-executed
 	// connector/foreign-MCP dispatch reaches Pi, the request must never be
 	// replayed on another account (duplicate side effects). Query-scoped, not per-turn:

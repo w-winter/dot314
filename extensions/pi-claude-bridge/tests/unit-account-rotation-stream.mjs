@@ -887,54 +887,59 @@ describe("reentrant subagent queries and the shared session (C1)", () => {
 });
 
 describe("stream-independent metadata capture (C3)", () => {
-	it("keeps an executed tool turn sealed when a terminal failure arrives late", async () => {
-		let releaseLateFailure;
-		const toolStarted = new Promise((resolve) => { releaseLateFailure = resolve; });
-		__testSetSdkQueryFactory(() => {
-			let closed = false;
-			return {
+	for (const [kind, failureText] of [
+		["an execution error", "internal server error"],
+		["a usage limit", "You've hit your weekly limit · resets Thursday 4am"],
+	]) {
+		it(`reports ${kind} that arrives after the tool turn as a fresh error, keeping the executed turn sealed`, async () => {
+			let releaseLateFailure;
+			const toolStarted = new Promise((resolve) => { releaseLateFailure = resolve; });
+			let markQueryClosed;
+			const queryClosed = new Promise((resolve) => { markQueryClosed = resolve; });
+			__testSetSdkQueryFactory(() => ({
 				async *[Symbol.asyncIterator]() {
-					for (const message of [
-						{ type: "stream_event", event: { type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } } },
-						{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "mcp__custom-tools__mytool", input: {} } } },
-						{ type: "stream_event", event: { type: "content_block_stop", index: 0 } },
-						{ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } } },
-						{ type: "stream_event", event: { type: "message_stop" } },
-					]) {
-						if (closed) return;
-						yield message;
-					}
+					for (const event of [
+						{ type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } },
+						{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "mcp__custom-tools__mytool", input: {} } },
+						{ type: "content_block_stop", index: 0 },
+						{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+						{ type: "message_stop" },
+					]) yield { type: "stream_event", event };
 					await toolStarted;
-					if (!closed) yield { type: "result", subtype: "error_during_execution", errors: ["internal server error"] };
+					yield { type: "result", subtype: "error_during_execution", errors: [failureText] };
 				},
-				close() { closed = true; },
-				async interrupt() { closed = true; },
-			};
+				close() { markQueryClosed(); },
+				async interrupt() {},
+			}));
+
+			let executions = 0;
+			const history = await runAgentLoop(
+				[{ role: "user", content: "run it", timestamp: Date.now() }],
+				{ messages: [], tools: [{
+					name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
+					async execute() {
+						executions++;
+						releaseLateFailure();
+						// Finish only after the failed query is torn down, so Pi's
+						// tool-result callback finds no live query.
+						await queryClosed;
+						return { content: [{ type: "text", text: "REAL RESULT" }], details: {} };
+					},
+				}] },
+				{ model, convertToLlm: (messages) => messages, sessionId: `late-failure-${failureText.length}` },
+				() => {},
+				undefined,
+				streamClaudeAgentSdk,
+			);
+
+			const assistants = history.filter((message) => message.role === "assistant");
+			assert.equal(executions, 1);
+			assert.equal(assistants[0].stopReason, "toolUse", "late failure must not mutate the delivered assistant");
+			assert.equal(history.find((message) => message.role === "toolResult")?.content[0].text, "REAL RESULT");
+			assert.equal(assistants.at(-1).stopReason, "error", "the failure reaches Pi as its own message");
+			assert.equal(assistants.at(-1).errorMessage, failureText);
 		});
-
-		let executions = 0;
-		const history = await runAgentLoop(
-			[{ role: "user", content: "run it", timestamp: Date.now() }],
-			{ messages: [], tools: [{
-				name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
-				async execute() {
-					executions++;
-					releaseLateFailure();
-					await new Promise((resolve) => setTimeout(resolve, 30));
-					return { content: [{ type: "text", text: "REAL RESULT" }], details: {} };
-				},
-			}] },
-			{ model, convertToLlm: (messages) => messages, shouldStopAfterTurn: () => true, sessionId: "late-failure-history" },
-			() => {},
-			undefined,
-			streamClaudeAgentSdk,
-		);
-		await new Promise((resolve) => setTimeout(resolve, 25));
-
-		const assistant = history.find((message) => message.role === "assistant");
-		assert.equal(executions, 1);
-		assert.equal(assistant.stopReason, "toolUse", "late failure must not mutate the delivered assistant");
-	});
+	}
 
 	it("prunes a partial tool call from an immediate usage-limit error", async () => {
 		__testSetSdkQueryFactory(() => fakeSdkQuery([

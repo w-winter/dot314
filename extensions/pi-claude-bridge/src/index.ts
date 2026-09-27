@@ -725,20 +725,29 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	}
 
 	// --- Orphaned tool result (e.g. user aborted a tool call) ---
-	// The query is gone but pi still delivered the result. Nothing to do — just
-	// emit end_turn so pi waits for the next real user message.
+	// The query is gone but pi still delivered the result. Report the failure
+	// that ended the query after its tool turn, if one did; otherwise emit
+	// end_turn so pi waits for the next real user message.
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
-		debug(`provider: orphaned tool result after abort, emitting end_turn`);
 		// The detached flag deliberately survives query end: an orphaned result
 		// from a foreign one-shot indexes ITS conversation, and writing that
 		// length here would move (even shrink) the parent's cursor.
 		const activeSession = getSharedSession();
 		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) setSharedSession({ ...activeSession, cursor: context.messages.length });
 		const c = ctx();  // capture current context for the microtask
+		const failureMessage = c.undeliveredFailureMessage;
+		c.undeliveredFailureMessage = null;
+		debug(`provider: orphaned tool result, emitting ${failureMessage === null ? "end_turn" : "the held terminal failure"}`);
 		queueMicrotask(() => {
 			c.resetTurnState(model);
-			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			if (failureMessage === null) {
+				stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			} else {
+				c.turnOutput.stopReason = "error";
+				c.turnOutput.errorMessage = failureMessage;
+				stream.push({ type: "error", reason: "error", error: c.turnOutput });
+			}
 			stream.end();
 			releaseEphemeralLane();
 		});
@@ -793,6 +802,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().deadToolCallIds.clear();
 	ctx().callbackGeneration = 0;
 	ctx().deferredUserMessages = [];
+	// Reported only by the tool-result callback that directly follows the
+	// failed query; a fresh query means that callback carried a new prompt.
+	if (ctx().undeliveredFailureMessage !== null) debug(`provider: fresh query drops an unreported terminal failure: ${ctx().undeliveredFailureMessage}`);
+	ctx().undeliveredFailureMessage = null;
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	ctx().latestCursor = 0;
@@ -1181,6 +1194,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			abortCtx.currentPiStream.push({ type: "error", reason: aborted ? "aborted" : "error", error: abortCtx.turnOutput });
 			abortCtx.currentPiStream.end();
 			abortCtx.currentPiStream = null;
+		} else if (!aborted) {
+			// A tool-use turn already reached Pi; its tool-result callback reports this.
+			debug(`provider: terminal failure after the Pi turn was delivered; holding it for the next callback: ${failure.message}`);
+			abortCtx.undeliveredFailureMessage = failure.message;
 		}
 	};
 
