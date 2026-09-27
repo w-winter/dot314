@@ -38,11 +38,20 @@
 // goes back, still ahead of the next model request. Without the tag, the
 // bridge retires the id when Claude Code reports the call's tool_result
 // (consume-query.ts), which bounds the postponement to that call's lifetime.
+//
+// Every tool is registered under its MCP alias (mcpToolAliases), the name
+// Claude Code can call it by; everything else here, including the hooks and
+// `names`/`serves`, speaks Pi's tool names.
+// A tool keeps its alias for the whole query, withdrawn or redefined, and a tool
+// added mid-query never takes an alias another registration holds (a late
+// invocation under it must reach the tool Claude called), so the newcomer may
+// be served under a different alias than a fresh query would give it.
 
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@earendil-works/pi-ai";
 import { debug } from "./debug.js";
 import type { McpResult } from "./extract-tool-results.js";
+import { mcpToolAliases } from "./tool-mapping.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 
 export const RELIST_TIMEOUT_MS = 2_000;
@@ -71,7 +80,8 @@ function toolSignature(tool: Tool): string {
 
 export class ServedToolServer {
 	readonly config: ReturnType<typeof createSdkMcpServer>;
-	private readonly registered = new Map<string, { signature: string; handle: RegisteredTool }>();
+	/** Keyed by Pi tool name; `alias` is the MCP name it is registered under. */
+	private readonly registered = new Map<string, { signature: string; alias: string; handle: RegisteredTool }>();
 	private readonly withdrawn = new Set<string>();
 	private readonly deferred = new Set<string>();
 	private desired: Tool[] = [];
@@ -88,12 +98,13 @@ export class ServedToolServer {
 		// `tools` option so every tool, initial or added later, has a
 		// RegisteredTool handle that can remove it.
 		this.config = createSdkMcpServer({ name, version: "1.0.0", tools: [] });
-		for (const tool of tools) this.register(tool);
+		const aliases = mcpToolAliases(tools.map((tool) => tool.name));
+		for (const tool of tools) this.register(tool, aliases.get(tool.name) ?? tool.name);
 		this.observeRelist();
 		this.observeCalls();
 	}
 
-	/** The advertised tool names. */
+	/** The advertised tools' Pi names. */
 	get names(): string[] {
 		return [...this.registered.keys()].filter((name) => !this.withdrawn.has(name));
 	}
@@ -102,12 +113,23 @@ export class ServedToolServer {
 		return this.registered.has(name) && !this.withdrawn.has(name);
 	}
 
+	/** Pi name -> MCP alias of each advertised tool, as registered: the source
+	 *  of the query's reverse name manifest once tools change mid-query. */
+	get aliases(): Map<string, string> {
+		return new Map([...this.registered].filter(([name]) => !this.withdrawn.has(name)).map(([name, entry]) => [name, entry.alias]));
+	}
+
 	/** Serve exactly `tools`. Returns null when nothing changed. Otherwise
 	 *  resolves once CC has re-listed, after `timeoutMs` without a re-list, or at
 	 *  once when no client is connected (the next connection lists the new set). */
 	update(tools: Tool[], timeoutMs = RELIST_TIMEOUT_MS): Promise<ServedToolUpdate> | null {
 		this.desired = tools;
 		const next = new Map(tools.map((tool) => [tool.name, tool]));
+		// A registered tool (active, withdrawn or with a postponed redefinition)
+		// keeps its alias for the whole query, and a newcomer never takes it: a
+		// late invocation under that alias must reach the tool Claude called.
+		const owned = new Map([...this.registered].map(([name, entry]) => [name, entry.alias]));
+		const aliases = mcpToolAliases(next.keys(), owned);
 		let changed = false;
 		let visibilityChanged = false;
 		for (const [name, entry] of this.registered) {
@@ -131,7 +153,7 @@ export class ServedToolServer {
 				}
 				continue;
 			}
-			// Redefined (re-registered below under the same name, so a late
+			// Redefined (re-registered below under the same alias, so a late
 			// invocation still finds it), or no list hook to hide it with.
 			entry.handle.remove();
 			this.registered.delete(name);
@@ -140,7 +162,7 @@ export class ServedToolServer {
 		}
 		for (const tool of next.values()) {
 			if (this.registered.has(tool.name)) continue;
-			this.register(tool);
+			this.register(tool, aliases.get(tool.name) ?? tool.name);
 			changed = true;
 		}
 		if (!changed && !visibilityChanged) return null;
@@ -165,13 +187,13 @@ export class ServedToolServer {
 		return this.deferred.size > 0 ? this.update(this.desired, timeoutMs) : null;
 	}
 
-	private register(tool: Tool): void {
+	private register(tool: Tool, alias: string): void {
 		const handle = this.config.instance.registerTool(
-			tool.name,
+			alias,
 			{ description: tool.description, inputSchema: jsonSchemaToZodShape(tool.parameters) },
 			this.handlerFor(tool) as Parameters<McpServerInstance["registerTool"]>[2],
 		);
-		this.registered.set(tool.name, { signature: toolSignature(tool), handle });
+		this.registered.set(tool.name, { signature: toolSignature(tool), alias, handle });
 	}
 
 	// McpServer has no public hook for "the client listed tools", so wrap the
@@ -190,7 +212,8 @@ export class ServedToolServer {
 			// Next macrotask: the list response is sent after this handler returns,
 			// and a tool result released earlier could overtake it on CC's stdin.
 			for (const release of this.relistWaiters.splice(0)) setImmediate(release);
-			return { ...result, tools: result.tools.filter((tool) => !this.withdrawn.has(tool.name)) };
+			const hidden = new Set([...this.withdrawn].map((name) => this.registered.get(name)?.alias));
+			return { ...result, tools: result.tools.filter((tool) => !hidden.has(tool.name)) };
 		});
 		this.listObserved = true;
 	}

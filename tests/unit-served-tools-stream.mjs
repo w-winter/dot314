@@ -19,6 +19,7 @@ import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, isPiDispatchab
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
+import { mcpToolAliases } from "../src/tool-mapping.ts";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -44,8 +45,10 @@ async function collect(stream) {
 
 /** Fake SDK query that behaves like CC toward the bridge's MCP server: connects
  *  a real MCP client to the live instance, streams a tool_use for enable_extra,
- *  calls the tool, and only continues once the call has returned. */
+ *  calls the tool, and only continues once the call has returned.
+ *  `observed.callName` replaces enable_extra's MCP name when set. */
 function installFakeClaudeCode(observed) {
+	const callName = observed.callName ?? ENABLE.name;
 	__testSetSdkQueryFactory(({ options }) => {
 		let closed = false;
 		return {
@@ -60,7 +63,7 @@ function installFakeClaudeCode(observed) {
 				for (const message of [
 					{ type: "system", subtype: "init", session_id: "served-tools-session" },
 					{ type: "stream_event", event: { type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } } },
-					{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "mcp__custom-tools__enable_extra", input: {} } } },
+					{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: `mcp__custom-tools__${callName}`, input: {} } } },
 					{ type: "stream_event", event: { type: "content_block_stop", index: 0 } },
 					{ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } } },
 					{ type: "stream_event", event: { type: "message_stop" } },
@@ -69,7 +72,7 @@ function installFakeClaudeCode(observed) {
 					yield message;
 				}
 				if (observed.callGate) await observed.callGate;
-				const call = client.callTool({ name: "enable_extra", arguments: {} }).then((result) => {
+				const call = client.callTool({ name: callName, arguments: {} }).then((result) => {
 					observed.callReturned = true;
 					return result;
 				});
@@ -92,11 +95,11 @@ function installFakeClaudeCode(observed) {
 
 /** Runs the tool-use turn and returns the context Pi would send back with the
  *  enable_extra result. `change`, when given, is the tool loadout delta the
- *  extension caused during the call. */
-async function runToolTurn(sessionId, change) {
+ *  extension caused during the call; `enable` replaces the enable_extra tool. */
+async function runToolTurn(sessionId, change, enable = ENABLE) {
 	const initial = {
 		messages: [
-			{ role: "system", content: "test system prompt", toolsAdded: [ENABLE], timestamp: 0 },
+			{ role: "system", content: "test system prompt", toolsAdded: [enable], timestamp: 0 },
 			{ role: "user", content: "enable the extra tools, then use them", timestamp: Date.now() },
 		],
 	};
@@ -107,7 +110,7 @@ async function runToolTurn(sessionId, change) {
 		messages: [
 			...initial.messages,
 			done.message,
-			{ role: "toolResult", toolCallId: "call-1", toolName: "enable_extra", content: [{ type: "text", text: "enabled" }], isError: false, timestamp: Date.now() },
+			{ role: "toolResult", toolCallId: "call-1", toolName: enable.name, content: [{ type: "text", text: "enabled" }], isError: false, timestamp: Date.now() },
 			// pi-agent-core declares a tool loadout change as a system message after the results.
 			...(change ? [{
 				role: "system",
@@ -338,6 +341,37 @@ describe("tools activated by a tool call reach the running query", () => {
 		const fresh = await observed.client.callTool({ name: "enable_extra", arguments: {} });
 		assert.equal(fresh.isError, true, "a new call to the removed tool must be rejected");
 		assert.match(fresh.content[0].text, /no longer active/);
+		await second;
+	});
+
+	it("delivers the late result to the removed tool even when the tool added in its place is named like its alias", async () => {
+		// `fake_name/with space` is served as `fake_name_with_space_<hash>`; the
+		// tool Pi activates in its place is named exactly that. The alias still
+		// belongs to the executed call's tool, so the newcomer is served under
+		// another alias and the late invocation reaches the original handler.
+		const original = { ...ENABLE, name: "fake_name/with space" };
+		const alias = mcpToolAliases([original.name]).get(original.name);
+		const newcomer = { ...EXTRA, name: alias };
+		let openGate;
+		const observed = { listChanged: 0, callReturned: false, callName: alias, callGate: new Promise((resolve) => { openGate = resolve; }) };
+		installFakeClaudeCode(observed);
+		const next = await runToolTurn("served-tools-alias-reclaimed", { toolsAdded: [newcomer], toolsRemoved: [{ name: original.name }] }, original);
+
+		const second = collect(streamClaudeAgentSdk(model, next, { sessionId: "served-tools-alias-reclaimed" }));
+		const routed = runInRequestLane("served-tools-alias-reclaimed", () => new Map(ctx().servedToolNameToPi));
+		openGate();
+		const listed = (await observed.client.listTools()).tools.map((tool) => tool.name);
+		const result = await observed.call;
+		assert.deepEqual(result.content, [{ type: "text", text: "enabled" }], "the executed call must receive its real result");
+		assert.notEqual(result.isError, true);
+		assert.equal(listed.length, 1);
+		assert.notEqual(listed[0], alias, "the newcomer must not take the alias a late invocation still needs");
+		assert.match(listed[0], /^[A-Za-z0-9_-]+$/);
+		assert.deepEqual([...routed], [[`mcp__custom-tools__${listed[0]}`, alias]],
+			"routing to Pi matches what is served: only the newcomer, under the alias it is listed by");
+		const fresh = await observed.client.callTool({ name: alias, arguments: {} });
+		assert.equal(fresh.isError, true, "a new call under the removed tool's alias must be rejected");
+		assert.match(fresh.content[0].text, /fake_name\/with space is no longer active/);
 		await second;
 	});
 

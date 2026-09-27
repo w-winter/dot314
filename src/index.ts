@@ -31,7 +31,7 @@ import { primeConnectorServers } from "./connector-runtime.js";
 import { cancelScheduledSessionPersistence, conversationFingerprint, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
-import { mapToolArgs, markAuthoritativeManifest } from "./tool-mapping.js";
+import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
 import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, updateTurnResponseModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
@@ -274,9 +274,6 @@ export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolN
 	customToolNameToPi: Map<string, string>;
 } {
 	const mcpTools: Tool[] = [];
-	const customToolNameToSdk = new Map<string, string>();
-	const customToolNameToPi = new Map<string, string>();
-
 	for (const tool of getCurrentTools(context.messages)) {
 		if (tool.name === excludeToolName) continue;
 		// Never re-offer a tool the child owns natively. The claude.ai connector
@@ -291,22 +288,38 @@ export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolN
 			debug(`resolveMcpTools: not re-offering child-native tool ${tool.name}`);
 			continue;
 		}
-		const sdkName = `${MCP_TOOL_PREFIX}${tool.name}`;
 		mcpTools.push(tool);
-		// Case-insensitive aliases mean two tools differing only by case would
-		// silently overwrite each other's mapping — surface it if it ever happens.
-		const lowerName = tool.name.toLowerCase();
-		const collision = customToolNameToSdk.get(lowerName);
-		if (collision !== undefined && collision !== sdkName) {
-			debug(`WARNING: resolveMcpTools lowercase alias collision: ${tool.name} overwrites mapping previously held by ${collision}`);
-		}
-		customToolNameToSdk.set(tool.name, sdkName);
-		customToolNameToSdk.set(lowerName, sdkName);
-		customToolNameToPi.set(sdkName, tool.name);
-		customToolNameToPi.set(sdkName.toLowerCase(), tool.name);
 	}
 
+	// Served under an alias Claude Code keeps verbatim (see mcpToolAliases);
+	// a new ServedToolServer derives the same aliases from the same names.
+	const { customToolNameToSdk, customToolNameToPi } = toolNameManifest(mcpToolAliases(mcpTools.map((tool) => tool.name)));
 	return { mcpTools, customToolNameToSdk, customToolNameToPi };
+}
+
+/** The lookup maps between Pi tool names and the qualified MCP names they are
+ *  served under, from Pi name -> alias. */
+function toolNameManifest(aliases: Map<string, string>): {
+	customToolNameToSdk: Map<string, string>;
+	customToolNameToPi: Map<string, string>;
+} {
+	const customToolNameToSdk = new Map<string, string>();
+	const customToolNameToPi = new Map<string, string>();
+	for (const [piName, alias] of aliases) {
+		const sdkName = `${MCP_TOOL_PREFIX}${alias}`;
+		// Case-insensitive aliases mean two tools differing only by case would
+		// silently overwrite each other's mapping — surface it if it ever happens.
+		const lowerName = piName.toLowerCase();
+		const collision = customToolNameToSdk.get(lowerName);
+		if (collision !== undefined && collision !== sdkName) {
+			debug(`WARNING: resolveMcpTools lowercase alias collision: ${piName} overwrites mapping previously held by ${collision}`);
+		}
+		customToolNameToSdk.set(piName, sdkName);
+		customToolNameToSdk.set(lowerName, sdkName);
+		customToolNameToPi.set(sdkName, piName);
+		customToolNameToPi.set(sdkName.toLowerCase(), piName);
+	}
+	return { customToolNameToSdk, customToolNameToPi };
 }
 
 // finalizeToolUseTurnFromMcpInvocation moved to assistant-stream.ts: it is now
@@ -404,17 +417,18 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 function syncServedTools(queryCtx: QueryContext, context: Pick<Context, "messages">): void {
 	const served = queryCtx.servedTools;
 	if (!served) return;
-	const { mcpTools, customToolNameToPi } = resolveMcpTools(context);
+	const { mcpTools } = resolveMcpTools(context);
 	const before = served.names;
 	const update = served.update(mcpTools);
 	if (!update) return;
 	const after = served.names;
 	// Rebuilt in place (consumeQuery holds this map): a call under a name that is
-	// no longer served must stop routing to Pi.
+	// no longer served must stop routing to Pi. Built from the registrations the
+	// server kept, whose aliases can differ from a fresh query's (served-tools.ts).
 	const nameMap = queryCtx.servedToolNameToPi;
 	if (nameMap) {
 		nameMap.clear();
-		for (const [sdkName, piName] of customToolNameToPi) nameMap.set(sdkName, piName);
+		for (const [sdkName, piName] of toolNameManifest(served.aliases).customToolNameToPi) nameMap.set(sdkName, piName);
 	}
 	const added = after.filter((name) => !before.includes(name));
 	const removed = before.filter((name) => !after.includes(name));
