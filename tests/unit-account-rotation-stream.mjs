@@ -16,6 +16,8 @@ import {
 	streamClaudeAgentSdk,
 } from "../src/index.ts";
 import * as piAi from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
+import { runAgentLoop } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js";
 import { buildModels } from "../src/models.ts";
 import { resolveGetModels } from "../src/pi-ai-compat.ts";
 import { buildNativeProvider } from "../src/native-provider.ts";
@@ -864,6 +866,67 @@ describe("reentrant subagent queries and the shared session (C1)", () => {
 });
 
 describe("stream-independent metadata capture (C3)", () => {
+	it("keeps an executed tool turn sealed when a terminal failure arrives late", async () => {
+		let releaseLateFailure;
+		const toolStarted = new Promise((resolve) => { releaseLateFailure = resolve; });
+		__testSetSdkQueryFactory(() => {
+			let closed = false;
+			return {
+				async *[Symbol.asyncIterator]() {
+					for (const message of [
+						{ type: "stream_event", event: { type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } } },
+						{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "mcp__custom-tools__mytool", input: {} } } },
+						{ type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+						{ type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } } },
+						{ type: "stream_event", event: { type: "message_stop" } },
+					]) {
+						if (closed) return;
+						yield message;
+					}
+					await toolStarted;
+					if (!closed) yield { type: "result", subtype: "error_during_execution", errors: ["internal server error"] };
+				},
+				close() { closed = true; },
+				async interrupt() { closed = true; },
+			};
+		});
+
+		let executions = 0;
+		const history = await runAgentLoop(
+			[{ role: "user", content: "run it", timestamp: Date.now() }],
+			{ messages: [], tools: [{
+				name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
+				async execute() {
+					executions++;
+					releaseLateFailure();
+					await new Promise((resolve) => setTimeout(resolve, 30));
+					return { content: [{ type: "text", text: "REAL RESULT" }], details: {} };
+				},
+			}] },
+			{ model, convertToLlm: (messages) => messages, shouldStopAfterTurn: () => true, sessionId: "late-failure-history" },
+			() => {},
+			undefined,
+			streamClaudeAgentSdk,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		const assistant = history.find((message) => message.role === "assistant");
+		assert.equal(executions, 1);
+		assert.equal(assistant.stopReason, "toolUse", "late failure must not mutate the delivered assistant");
+	});
+
+	it("prunes a partial tool call from an immediate usage-limit error", async () => {
+		__testSetSdkQueryFactory(() => fakeSdkQuery([
+			{ type: "stream_event", event: { type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "partial-call", name: "mytool", input: {} } } },
+			{ type: "result", subtype: "error_during_execution", errors: ["You've hit your weekly limit · resets Thursday 4am"] },
+		], "legacy", observedState()));
+
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "partial-usage-limit" }));
+		const terminal = events.find((event) => event.type === "error");
+		assert.deepEqual(terminal.error.content, []);
+	});
+
 	it("captures a terminal result failure that arrives after a tool-use turn ended the stream", async () => {
 		// A tool-use message_stop ends the Pi stream (currentPiStream = null). A
 		// terminal `result` failure arriving after that boundary was skipped by

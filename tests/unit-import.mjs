@@ -179,6 +179,36 @@ describe("thinking block filtering", () => {
 });
 
 describe("message structure", () => {
+	it("aborted and errored assistant turns and their tool results are not imported", () => {
+		const msgs = [
+			{ role: "user", content: "before" },
+			{ role: "assistant", stopReason: "aborted", content: [
+				{ type: "toolCall", id: "toolu_aborted", name: "bash", arguments: {}, partialJson: "" },
+			] },
+			{ role: "toolResult", toolCallId: "toolu_aborted", content: "orphaned" },
+			{ role: "assistant", stopReason: "error", content: [] },
+			{ role: "user", content: "after" },
+		];
+		assert.deepEqual(convert(msgs), [
+			{ role: "user", content: "before" },
+			{ role: "user", content: "after" },
+		]);
+	});
+
+	it("filters skipped-call results from assistant lookahead and consecutive result groups", () => {
+		const aborted = { role: "assistant", stopReason: "aborted", content: [
+			{ type: "toolCall", id: "a", name: "read", arguments: {} },
+		] };
+		const successful = { role: "assistant", stopReason: "toolUse", content: [
+			{ type: "toolCall", id: "b", name: "read", arguments: {} },
+		] };
+		const resultA = { role: "toolResult", toolCallId: "a", content: "must be omitted" };
+		const resultB = { role: "toolResult", toolCallId: "b", content: "kept" };
+
+		assert.deepEqual(convert([aborted, successful, resultB, resultA])[1].content.map((block) => block.tool_use_id), ["b"]);
+		assert.deepEqual(convert([aborted, { role: "toolResult", toolCallId: "other", content: "kept" }, resultA])[0].content.map((block) => block.tool_use_id), ["other"]);
+	});
+
 	it("toolResult → user with tool_result content", () => {
 		const msgs = [
 			{ role: "toolResult", toolCallId: "id1", content: "result text", isError: false },

@@ -129,12 +129,16 @@ export function convertPiMessages(
 ): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string> } {
 	const anthropicMessages = [];
 	const sanitizedIds = new Map();
+	const skippedToolCallIds = new Set<string>();
+	const isSkippedToolResult = (message: PiMessage): boolean =>
+		message.role === "toolResult" && skippedToolCallIds.has(message.toolCallId);
 
 	const pushToolResultGroup = (toolMessages: PiMessage[]): void => {
-		if (toolMessages.length === 0) return;
+		const included = toolMessages.filter((message) => !isSkippedToolResult(message));
+		if (included.length === 0) return;
 		anthropicMessages.push({
 			role: "user",
-			content: toolMessages.map((toolMsg) => toolResultToAnthropicBlock(toolMsg, sanitizedIds)),
+			content: included.map((toolMsg) => toolResultToAnthropicBlock(toolMsg, sanitizedIds)),
 		});
 	};
 
@@ -148,6 +152,16 @@ export function convertPiMessages(
 			anthropicMessages.push(userMessageToAnthropic(msg));
 		} else if (msg.role === "assistant") {
 			const content = Array.isArray(msg.content) ? msg.content : [];
+			// Match pi-ai's provider transform: failed turns are incomplete stream
+			// snapshots, not model-authored history. Pi's agent loop returns before
+			// dispatching their tool calls, so any associated results are orphaned
+			// history and must not be imported either.
+			if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+				for (const block of content) {
+					if (block.type === "toolCall") skippedToolCallIds.add(block.id);
+				}
+				continue;
+			}
 			const blocks = [];
 			const provenance = assistantProvenancePrefix(msg);
 			if (provenance) blocks.push({ type: "text", text: provenance });
@@ -195,9 +209,10 @@ export function convertPiMessages(
 			for (; i < messages.length; i++) {
 				const toolMsg = messages[i];
 				if (toolMsg.role !== "toolResult") { i--; break; }
+				if (isSkippedToolResult(toolMsg)) continue;
 				blocks.push(toolResultToAnthropicBlock(toolMsg, sanitizedIds));
 			}
-			anthropicMessages.push({ role: "user", content: blocks });
+			if (blocks.length > 0) anthropicMessages.push({ role: "user", content: blocks });
 		}
 	}
 
