@@ -9,7 +9,15 @@ import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./
 
 // --- Usage helpers ---
 
-function updateUsage(output: AssistantMessage, usage: Record<string, number | undefined>, model: Model<any>, c: QueryContext): void {
+type SdkUsage = {
+	input_tokens?: number | null;
+	output_tokens?: number | null;
+	cache_read_input_tokens?: number | null;
+	cache_creation_input_tokens?: number | null;
+	output_tokens_details?: { thinking_tokens?: number | null } | null;
+};
+
+function updateUsage(output: AssistantMessage, usage: SdkUsage, model: Model<any>, c: QueryContext): void {
 	// Anthropic reports per-message counters and RE-reports them as the message
 	// grows, so the in-flight message's figures replace, never accumulate. What
 	// accumulates is every child message already finished in this Pi turn — see
@@ -20,15 +28,22 @@ function updateUsage(output: AssistantMessage, usage: Record<string, number | un
 	if (usage.output_tokens != null) current.output = usage.output_tokens;
 	if (usage.cache_read_input_tokens != null) current.cacheRead = usage.cache_read_input_tokens;
 	if (usage.cache_creation_input_tokens != null) current.cacheWrite = usage.cache_creation_input_tokens;
+	// Thinking tokens are a subset of output: reported for Pi's display, never
+	// added to the total or cost.
+	const thinking = usage.output_tokens_details?.thinking_tokens;
+	if (thinking != null) current.reasoning = thinking;
 	output.usage.input = carry.input + current.input;
 	output.usage.output = carry.output + current.output;
 	output.usage.cacheRead = carry.cacheRead + current.cacheRead;
 	output.usage.cacheWrite = carry.cacheWrite + current.cacheWrite;
+	if (carry.reasoning !== undefined || current.reasoning !== undefined) {
+		output.usage.reasoning = (carry.reasoning ?? 0) + (current.reasoning ?? 0);
+	}
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	calculateCost(model, output.usage);
 	const promptTokens = output.usage.input + output.usage.cacheRead + output.usage.cacheWrite;
 	const cachePct = promptTokens > 0 ? Math.round(output.usage.cacheRead / promptTokens * 100) : 0;
-	debug(`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens} cachePct=${cachePct}% model=${model.id}`);
+	debug(`usage: in=${output.usage.input} out=${output.usage.output} reasoning=${output.usage.reasoning ?? "-"} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens} cachePct=${cachePct}% model=${model.id}`);
 }
 
 // --- Provider helpers: misc ---

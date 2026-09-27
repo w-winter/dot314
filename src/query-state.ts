@@ -197,6 +197,15 @@ export interface ClaimedToolCall {
 	argsMismatch?: boolean;
 }
 
+/** Token counters of one or more child messages; see `QueryContext.turnUsageCarry`. */
+interface UsageCounters {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	reasoning?: number;
+}
+
 export interface ToolResultProgress {
 	expectedIds: string[];
 	deliveredIds: string[];
@@ -378,8 +387,10 @@ export class QueryContext {
 	// in this Pi turn, `currentMessageUsage` holds the one in flight, and the Pi
 	// message reports their sum. Summing is the correct model for input and cache
 	// too — each call bills its own.
-	turnUsageCarry = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-	currentMessageUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	// `reasoning` stays undefined until the child reports thinking tokens, so Pi
+	// can tell "no breakdown" from zero.
+	turnUsageCarry: UsageCounters = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	currentMessageUsage: UsageCounters = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 	/** Anthropic id of the child message `currentMessageUsage` describes. */
 	currentMessageId: string | undefined;
 
@@ -405,6 +416,9 @@ export class QueryContext {
 		this.turnUsageCarry.output += this.currentMessageUsage.output;
 		this.turnUsageCarry.cacheRead += this.currentMessageUsage.cacheRead;
 		this.turnUsageCarry.cacheWrite += this.currentMessageUsage.cacheWrite;
+		if (this.currentMessageUsage.reasoning !== undefined) {
+			this.turnUsageCarry.reasoning = (this.turnUsageCarry.reasoning ?? 0) + this.currentMessageUsage.reasoning;
+		}
 		this.currentMessageUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 		this.currentMessageId = id;
 	}
