@@ -68,8 +68,15 @@ function sharedSessionLaneStore(): SharedSessionLaneStoreV1 {
 	return store;
 }
 
-export let extensionApi: ExtensionAPI | undefined;
-export let piUI: ExtensionUIContext | undefined;
+// Module state is read through functions, never `export let`: Pi's TypeScript
+// loader does not keep reassigned exports live across modules, so an importer
+// would keep the first session's API after /new or /reload.
+let extensionApi: ExtensionAPI | undefined;
+let piUI: ExtensionUIContext | undefined;
+
+export function getExtensionApi(): ExtensionAPI | undefined {
+	return extensionApi;
+}
 
 export function getSharedSession(): SessionState | null {
 	const store = sharedSessionLaneStore();

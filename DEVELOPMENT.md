@@ -45,6 +45,7 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 ## Runtime
 
 - Pi loads `src/index.ts` directly and supplies `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` at runtime, so they are optional peers and only installed as dev dependencies for typechecking and tests. `zod` is pinned to 4.4.3, the version the dot314 bundle ships.
+- Pi's TypeScript loader does not keep a reassigned `export let` in sync for importers, and on `/new`, fork, or resume it reuses the loaded modules while passing the extension a new API object. Shared module state is therefore read through functions such as `getExtensionApi()`. `npm run check:exports` rejects `export let` and `export var` in `src/`, and `tests/int-session-new.mjs` checks that the provider survives `/new`. Unit tests run under tsx, which keeps real ESM bindings and cannot catch this.
 - Startup preflight (`src/claude-executable.ts::preflightClaudeExecutable`) preserves `code`, `errno`, `syscall`, `path`, `cwd` and the detected executable file type on the error it hands the SDK.
 
 ## Rate limits

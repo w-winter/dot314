@@ -7,7 +7,7 @@ import { preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWith
 import { loadConfig } from "./config.js";
 import { CLAUDE_BRIDGE_TOOL_ISOLATION, denyAllToolsHook } from "./connectors.js";
 import { debug, makeCliDebugOptions } from "./debug.js";
-import { sdkQueryFactory } from "./sdk-query.js";
+import { sdkQuery } from "./sdk-query.js";
 
 /** Local /usage probe for the reciprocal account-host service: the companion
  *  account manager asks the bridge (the SDK owner) to read a profile's identity
@@ -32,7 +32,7 @@ export async function probeClaudeAccountProfile(input: {
 	const config = loadConfig(input.cwd);
 	const claudeExecutable = resolveClaudeExecutable(config.provider?.pathToClaudeCodeExecutable);
 	if (claudeExecutable) preflightClaudeExecutable(claudeExecutable, input.cwd);
-	const probe = sdkQueryFactory({
+	const probe = sdkQuery({
 		prompt: "/usage",
 		options: {
 			cwd: input.cwd,

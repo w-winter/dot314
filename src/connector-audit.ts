@@ -17,7 +17,7 @@
 // messages, documents); the audit answers whether a call happened and what came
 // back, not what it said.
 
-import { extensionApi } from "./bridge-state.js";
+import { getExtensionApi } from "./bridge-state.js";
 import { debug } from "./debug.js";
 import type { QueryContext, ToolCallDrainCause } from "./query-state.js";
 
@@ -124,6 +124,7 @@ export function setConnectorCallAuditSink(sink: ConnectorCallAuditSink | undefin
  */
 export function appendConnectorCallAudit(data: ConnectorCallAuditData): boolean {
 	let delivered = false;
+	const extensionApi = getExtensionApi();
 	if (extensionApi) {
 		try {
 			extensionApi.appendEntry(CONNECTOR_CALL_CUSTOM_TYPE, data);

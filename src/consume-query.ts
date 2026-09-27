@@ -15,7 +15,7 @@ import {
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
 import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnOutputModel } from "./assistant-stream.js";
-import { extensionApi, safeNotify } from "./bridge-state.js";
+import { getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug } from "./debug.js";
 import { fallbackModelForPrimaryModel, modelDisplayName } from "./models.js";
@@ -25,7 +25,7 @@ import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.js";
 
 export function emitRateLimitEvent(payload: Record<string, unknown>): void {
 	try {
-		extensionApi?.events?.emit?.(RATE_LIMIT_AUTO_RESUME_EVENT, payload);
+		getExtensionApi()?.events?.emit?.(RATE_LIMIT_AUTO_RESUME_EVENT, payload);
 	} catch {
 		// Cross-extension broker is best-effort only.
 	}

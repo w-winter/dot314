@@ -3,7 +3,7 @@ import { createSession, deleteSession, openSession, repairToolPairing } from "cc
 import { createHash } from "crypto";
 import { realpathSync, statSync } from "fs";
 import { resolve as pathResolve } from "path";
-import { extensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
+import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
 import { DEBUG, DEBUG_LOG_PATH, debug, diagDump } from "./debug.js";
@@ -257,6 +257,7 @@ export function __testCancelAllScheduledSessionPersistence(): void {
 
 export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknown }): void {
 	const sharedSession = getSharedSession();
+	const extensionApi = getExtensionApi();
 	if (!extensionApi || !sharedSession || !ctxLike?.sessionManager) return;
 	// Extension contexts become guarded/stale as soon as shutdown or replacement
 	// starts. Capture the plain SessionManager reference now and cancel the timer

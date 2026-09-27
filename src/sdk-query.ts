@@ -6,8 +6,13 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 
 export type SdkQueryFactory = typeof query;
 
-// ESM live binding: importers read the CURRENT factory at call time.
-export let sdkQueryFactory: SdkQueryFactory = query;
+let sdkQueryFactory: SdkQueryFactory = query;
+
+/** Starts a query through the current factory, so a swapped test factory
+ *  reaches every spawn path. */
+export function sdkQuery(params: Parameters<SdkQueryFactory>[0]): ReturnType<SdkQueryFactory> {
+	return sdkQueryFactory(params);
+}
 
 /** Test seam for exercising the real bridge retry/session orchestration without
  *  spending Claude usage. Production never calls this. */

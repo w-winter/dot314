@@ -25,7 +25,7 @@ import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
-import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, extensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
+import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
 import { primeConnectorServers } from "./connector-runtime.js";
 import { cancelScheduledSessionPersistence, conversationFingerprint, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
@@ -49,7 +49,7 @@ import { BRIDGE_ACCOUNT_HOST } from "./account-host.js";
 import { registerBridgeCommands } from "./bridge-commands.js";
 import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.js";
 import { buildClaudeQueryOptions } from "./query-options.js";
-import { sdkQueryFactory } from "./sdk-query.js";
+import { sdkQuery as startSdkQuery } from "./sdk-query.js";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
 
 // Re-exports: the module decomposition must not change the bundle entry's
@@ -466,7 +466,7 @@ let nativeProviderInstance: unknown;
 let notifiedNativeUnsupported = false;
 
 function applyProviderRegistration(trigger: string): void {
-	const pi = extensionApi;
+	const pi = getExtensionApi();
 	if (!pi) { debug(`${trigger}: applyProviderRegistration skipped — no extensionApi`); return; }
 	const g = globalThis as Record<symbol, any>;
 	const isPrimary = claimPrimaryInstance();
@@ -990,7 +990,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	let streamIdleTimedOut = false;
 	let retryRequested = false;
 	let retryFailure: ClaudeAttemptFailure | undefined;
-	const sdkQuery = sdkQueryFactory({ prompt, options: queryOptions });
+	const sdkQuery = startSdkQuery({ prompt, options: queryOptions });
 	ctx().activeQuery = sdkQuery;
 
 	// 4. Capture context for abort handling (must be AFTER pushContext)
@@ -1276,7 +1276,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
 					// Runs carrying image blocks replay as blocks (wrapPromptStream) so
 					// the images survive; text-only runs stay plain strings.
-					const contQuery = sdkQueryFactory({ prompt: steer.blocks ? wrapPromptStream(steer.blocks) : steer.text, options: contOptions });
+					const contQuery = startSdkQuery({ prompt: steer.blocks ? wrapPromptStream(steer.blocks) : steer.text, options: contOptions });
 					abortCtx.activeQuery = contQuery;
 
 					debug(`provider: continuation query, model=${queryModel.id}, resume=${resumeId.slice(0, 8)}, account=${account?.label ?? "legacy"}, prompt=${steerPreview}`);
