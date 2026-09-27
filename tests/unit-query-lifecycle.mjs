@@ -165,7 +165,14 @@ describe("a prompt sent right after an abort", () => {
 });
 
 describe("a Claude Code child that stops responding", () => {
-	beforeEach(() => __testSetSdkSettleGraceMs(20));
+	// The bridge unrefs its watchdog and settle timers, and the fake SDK has no
+	// child process, so on Node 22 nothing else keeps the event loop alive.
+	let keepAlive;
+	beforeEach(() => {
+		__testSetSdkSettleGraceMs(20);
+		keepAlive = setInterval(() => {}, 1000);
+	});
+	afterEach(() => clearInterval(keepAlive));
 
 	it("times out silence after output started, tears the query down, and lets the next prompt start fresh", { timeout: 3000 }, async () => {
 		process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "40ms";
