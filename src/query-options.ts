@@ -4,7 +4,7 @@
 
 import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { accountSessionScope, subscriberProfileEnv, type ClaudeAccountRoute } from "./account-router.js";
+import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.js";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
 import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.js";
 import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.js";
@@ -135,7 +135,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// When connectors are enabled, allow claude.ai cloud MCP servers so the
 	// authenticated account's Gmail/Calendar/Drive tools load. Default stays "0".
 	const childEnv = {
-		...(account ? subscriberProfileEnv(account) : process.env),
+		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
 	};

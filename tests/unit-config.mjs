@@ -100,6 +100,19 @@ describe("loadConfig", () => {
 		assert.equal(loadConfig(project).provider?.connectorWriteMode, "allow");
 	}));
 
+	it("accepts inheritAnthropicEnv only as a user-scope boolean", () => withTempDirs(({ user, project }) => {
+		writeFileSync(join(user, "claude-bridge.json"), JSON.stringify({ provider: { inheritAnthropicEnv: "yes" } }));
+		assert.equal(loadConfig(project).provider?.inheritAnthropicEnv, undefined);
+
+		writeFileSync(join(user, "claude-bridge.json"), JSON.stringify({ provider: { inheritAnthropicEnv: true } }));
+		assert.equal(loadConfig(project).provider?.inheritAnthropicEnv, true);
+
+		writeFileSync(join(user, "claude-bridge.json"), "{}");
+		writeFileSync(join(project, ".pi", "claude-bridge.json"), JSON.stringify({ provider: { inheritAnthropicEnv: true } }));
+		recordProjectTrust({ cwd: project, isProjectTrusted: () => true });
+		assert.equal(loadConfig(project).provider?.inheritAnthropicEnv, undefined);
+	}));
+
 	it("drops malformed provider values", () => withTempDirs(({ user, project }) => {
 		writeFileSync(join(user, "claude-bridge.json"), JSON.stringify({
 			provider: {

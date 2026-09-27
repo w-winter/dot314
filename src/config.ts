@@ -72,6 +72,14 @@ export interface Config {
 		 * and env only (see USER_SCOPE_ONLY_PROVIDER_KEYS).
 		 */
 		connectorWriteMode?: ConnectorWriteMode;
+		/**
+		 * Let an unmanaged Claude Code child inherit ANTHROPIC_BASE_URL,
+		 * ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the environment, for
+		 * an intentional gateway or API-key setup. Off by default, and ignored
+		 * for managed account profiles. Resolved from USER-scope config only
+		 * (see USER_SCOPE_ONLY_PROVIDER_KEYS).
+		 */
+		inheritAnthropicEnv?: boolean;
 	};
 }
 
@@ -190,13 +198,15 @@ export function tryParseJson(path: string): Partial<Config> {
 
 // Connector enablement and write mode decide whether the child claude gains
 // access to the account's live connectors (mail, calendar, files) and whether
-// their WRITE tools are exposed. A repo-controlled channel (a checkout's
+// their WRITE tools are exposed; inheritAnthropicEnv decides whether the
+// child's traffic and credentials may follow an exported gateway. A
+// repo-controlled channel (a checkout's
 // `.pi/settings.json` or `.pi/claude-bridge.json`, even when the project is
-// trusted for ordinary options) must not be able to flip them: these two keys
+// trusted for ordinary options) must not be able to flip them: these keys
 // resolve from USER scope and the env vars only, mirroring the
 // settingSourcesForQuery rationale — whoever writes user scope already owns
 // the process.
-const USER_SCOPE_ONLY_PROVIDER_KEYS = ["enableConnectors", "connectorWriteMode"] as const;
+const USER_SCOPE_ONLY_PROVIDER_KEYS = ["enableConnectors", "connectorWriteMode", "inheritAnthropicEnv"] as const;
 
 function stripUserScopeOnlyProviderKeys(config: Partial<Config>): Partial<Config> {
 	if (!config.provider) return config;
@@ -281,6 +291,7 @@ function normalizeProviderConfig(provider: Config["provider"] | undefined): Conf
 	const connectorWriteMode = normalizeConnectorWriteMode(raw.connectorWriteMode);
 	if (connectorWriteMode) out.connectorWriteMode = connectorWriteMode;
 	else delete out.connectorWriteMode;
+	if (typeof raw.inheritAnthropicEnv !== "boolean") delete out.inheritAnthropicEnv;
 	return out;
 }
 

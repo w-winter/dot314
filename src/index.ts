@@ -43,6 +43,7 @@ import {
 	resolveClaudeAccountRouter,
 	RetryEventBuffer,
 	safeRouterCall,
+	unmanagedClaudeEnv,
 	type ClaudeAccountRoute,
 } from "./account-router.js";
 import { BRIDGE_ACCOUNT_HOST } from "./account-host.js";
@@ -481,14 +482,14 @@ function applyProviderRegistration(trigger: string): void {
 		}
 		return;
 	}
-	const credentialed = hasClaudeCredentials() || Boolean(resolveClaudeAccountRouter());
+	const credentialed = hasClaudeCredentials(unmanagedClaudeEnv()) || Boolean(resolveClaudeAccountRouter());
 	debug(`${trigger}: native registration upsert, credentialed=${credentialed} (module=${moduleInstanceId})`);
 	// Start the connector inventory now, not on the first turn: the query path
 	// can only read a synchronous snapshot, so priming here is what gets the
 	// declarations in place before turn 1. Fire and forget —
 	// registration must not wait on the network. Primes the DEFAULT credential
 	// scope only; managed profiles are primed per request in their own scope.
-	if (hasClaudeCredentials() && connectorsEnabledFor(loadConfig(process.cwd()))) primeConnectorServers();
+	if (hasClaudeCredentials(unmanagedClaudeEnv()) && connectorsEnabledFor(loadConfig(process.cwd()))) primeConnectorServers();
 	// Claim ordering: stream guard BEFORE registerProvider so a concurrent
 	// subagent can never observe a registered provider without an owner.
 	g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
@@ -500,7 +501,7 @@ function applyProviderRegistration(trigger: string): void {
 			process.env,
 			// Availability includes a companion account pool: the router owns
 			// credentials the direct existence probes cannot see.
-			() => hasClaudeCredentials() || Boolean(resolveClaudeAccountRouter()),
+			() => hasClaudeCredentials(unmanagedClaudeEnv()) || Boolean(resolveClaudeAccountRouter()),
 		);
 		(pi.registerProvider as (provider: unknown) => void)(nativeProviderInstance);
 	} catch (err) {
@@ -755,7 +756,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// hides the models, and (b) fail this request with a clear, actionable
 	// message instead of letting the SDK spawn die with a generic error. The
 	// check is cheap (existsSync + env reads only, no credential contents).
-	if (!hasClaudeCredentials() && !resolveClaudeAccountRouter()) {
+	if (!hasClaudeCredentials(unmanagedClaudeEnv()) && !resolveClaudeAccountRouter()) {
 		try { applyProviderRegistration("pre-spawn"); } catch { /* best effort */ }
 		const message = "Claude account not connected — connect an account (or run `claude login`) and retry.";
 		debug(`provider: pre-spawn credential check failed; failing fast: ${message}`);

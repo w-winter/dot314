@@ -2,7 +2,7 @@
 // manager calls to read a profile's identity and usage figures under that
 // profile's credential scope. Extracted from index.ts (pure move).
 
-import { subscriberProfileEnv, type ClaudeAccountRoute, type ClaudeBridgeAccountHostV1 } from "./account-router.js";
+import { claudeChildEnv, type ClaudeAccountRoute, type ClaudeBridgeAccountHostV1 } from "./account-router.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
 import { loadConfig } from "./config.js";
 import { CLAUDE_BRIDGE_TOOL_ISOLATION, denyAllToolsHook } from "./connectors.js";
@@ -37,7 +37,7 @@ export async function probeClaudeAccountProfile(input: {
 		options: {
 			cwd: input.cwd,
 			env: {
-				...subscriberProfileEnv(input.profile),
+				...claudeChildEnv(input.profile, config.provider?.inheritAnthropicEnv),
 				ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 				DISABLE_AUTO_COMPACT: "1",
 			},
