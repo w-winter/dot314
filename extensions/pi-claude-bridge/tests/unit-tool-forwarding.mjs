@@ -333,6 +333,29 @@ describe("turn-end safety invariants", () => {
 
 		assert.equal(deliveredContent.length, lengthAtDelivery, "Pi's delivered message is never appended to behind its back");
 	});
+
+	it("an expanded no-stream assistant yield delivers a lagging sibling once in the next turn", () => {
+		const c = ctx();
+		c.resetTurnState(model);
+		const firstEvents = installFakeStream();
+		const names = new Map([["mcp__custom-tools__bash", "bash"]]);
+		const yieldCalls = (...ids) => processAssistantMessage({ type: "assistant", message: {
+			id: "msg_batch", content: ids.map((id) => ({ type: "tool_use", id, name: "mcp__custom-tools__bash", input: {} })),
+		} }, model, names);
+
+		yieldCalls("t1");
+		const firstDone = firstEvents.find((event) => event.type === "done");
+		// The SDK repeats the same completed message after Pi consumed t1, now
+		// exposing a sibling whose handler/stream lagged behind the first yield.
+		yieldCalls("t1", "t2");
+		assert.deepEqual(firstDone.message.content.map((block) => block.id), ["t1"], "the delivered object stays sealed");
+
+		c.resetTurnState(model);
+		const secondEvents = installFakeStream();
+		yieldCalls("t1", "t2");
+		const secondDone = secondEvents.find((event) => event.type === "done");
+		assert.deepEqual(secondDone.message.content.map((block) => block.id), ["t2"]);
+	});
 });
 
 describe("parked early results", () => {
