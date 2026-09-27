@@ -25,10 +25,18 @@ export function isForeignMcpTool(name: unknown): boolean {
 	return (normalized.startsWith("mcp__") || normalized.startsWith("mcp/")) && bridgedToolSuffix(normalized) === undefined;
 }
 
+// Maps of a query that serves Pi tools stay authoritative when a mid-turn
+// deactivation empties them; an empty map otherwise means "no manifest".
+const authoritativeManifests = new WeakSet<Map<string, string>>();
+
+export function markAuthoritativeManifest(customToolNameToPi: Map<string, string>): void {
+	authoritativeManifests.add(customToolNameToPi);
+}
+
 export function isPiDispatchable(name: unknown, customToolNameToPi?: Map<string, string>): boolean {
 	if (typeof name !== "string" || !name) return false;
 	const normalized = name.toLowerCase();
-	const hasManifest = Boolean(customToolNameToPi?.size);
+	const hasManifest = Boolean(customToolNameToPi?.size) || (customToolNameToPi !== undefined && authoritativeManifests.has(customToolNameToPi));
 	if (customToolNameToPi?.has(name) || customToolNameToPi?.has(normalized)) return true;
 	const bridgedSuffix = bridgedToolSuffix(normalized);
 	if (bridgedSuffix !== undefined) {

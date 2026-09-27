@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { isPiDispatchable, mapToolName } from "../src/index.ts";
+import { markAuthoritativeManifest } from "../src/tool-mapping.ts";
 
 describe("tool name mapping", () => {
 	it("maps known Claude builtin names to Pi tool names", () => {
@@ -38,5 +39,17 @@ describe("tool name mapping", () => {
 			assert.equal(isPiDispatchable(name, map), true);
 		}
 		assert.equal(isPiDispatchable("grep", new Map()), true);
+	});
+
+	it("keeps an emptied served manifest authoritative, and only that one", () => {
+		const emptied = new Map();
+		markAuthoritativeManifest(emptied);
+		assert.equal(isPiDispatchable("mcp__custom-tools__grep", emptied), false);
+		assert.equal(isPiDispatchable("grep", emptied), false);
+		assert.equal(isPiDispatchable("ListMcpResources", emptied), true);
+		// A query that never served tools keeps the permissive no-manifest rules.
+		assert.equal(isPiDispatchable("mcp__custom-tools__grep", new Map()), true);
+		assert.equal(isPiDispatchable("grep", new Map()), true);
+		assert.equal(isPiDispatchable("grep"), true);
 	});
 });

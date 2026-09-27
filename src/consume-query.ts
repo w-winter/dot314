@@ -76,6 +76,24 @@ export interface ConsumeQueryResult {
 	failure?: ClaudeAttemptFailure;
 }
 
+/** Claude Code reports a tool_result only once a call is over, so a forwarded
+ *  call it reports can no longer be invoked late: retire it, which lets a
+ *  served-tool redefinition it was postponing apply (served-tools.ts). Covers
+ *  calls that finished without a tools/call carrying Claude Code's tool_use id. */
+function settleReportedToolCalls(message: unknown, queryCtx: QueryContext): void {
+	const content = (message as { message?: { content?: unknown } }).message?.content;
+	if (!Array.isArray(content)) return;
+	const ids: string[] = [];
+	for (const block of content) {
+		const id = block?.type === "tool_result" ? block.tool_use_id : undefined;
+		if (typeof id === "string" && queryCtx.forwardedToolCallIds.has(id) && !queryCtx.settledInvocationIds.has(id)) ids.push(id);
+	}
+	if (ids.length > 0) {
+		debug(`consumeQuery: Claude Code finished forwarded call(s) ${ids.join(",")}`);
+		queryCtx.settleInvocations(ids);
+	}
+}
+
 export async function consumeQuery(
 	sdkQuery: ReturnType<typeof query>,
 	// The CAPTURED context of the query being consumed, never the live ctx():
@@ -257,6 +275,7 @@ export async function consumeQuery(
 				// boundary nulled the stream (noteChildExecutedToolResults is
 				// side-effect-free on the Pi stream).
 				noteChildExecutedToolResults(message, queryCtx);
+				settleReportedToolCalls(message, queryCtx);
 				break;
 			case "rate_limit_event": {
 				if (!streamLive) break;

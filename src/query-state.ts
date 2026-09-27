@@ -11,6 +11,8 @@ import type { AssistantMessage, AssistantMessageEventStream, Context, Model, Sim
 import { isConnectorTool } from "./connectors.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { currentRequestLaneId } from "./request-lane.js";
+import { debug } from "./debug.js";
+import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
 
 /** A mid-query user run captured for replay after the active query ends.
  *  `text` is the joined text form (previews, and the replay prompt when no
@@ -290,6 +292,46 @@ export class QueryContext {
 	 *  model has been told these calls failed; forwarding one later would execute
 	 *  it behind the model's back, so every forward path skips them. */
 	deadToolCallIds = new Set<string>();
+	/** Ids whose MCP invocation has arrived or can no longer arrive: the handler
+	 *  ran, the SDK answered the call without it (input validation), or Claude
+	 *  Code reported a result for it. Query-scoped, unlike claimedToolCallIds: a
+	 *  forwarded call missing here can still be invoked late, and the SDK
+	 *  validates that invocation against the schema its tool is registered with
+	 *  at that moment (see served-tools.ts). */
+	settledInvocationIds = new Set<string>();
+
+	/** Whether `toolName` has a forwarded call whose MCP invocation has not arrived. */
+	awaitsInvocation(toolName: string): boolean {
+		for (const id of this.forwardedToolCallIds) {
+			if (this.settledInvocationIds.has(id) || this.deadToolCallIds.has(id)) continue;
+			if (this.queryToolNames.get(id) === toolName) return true;
+		}
+		return false;
+	}
+
+	/** Records that `ids` can no longer be invoked late and applies any
+	 *  served-tool redefinition that was waiting on them. Returns the re-list
+	 *  hold when that changed the served tools, else null. */
+	settleInvocations(ids: Iterable<string>): Promise<void> | null {
+		for (const id of ids) this.settledInvocationIds.add(id);
+		const redefined = this.servedTools?.retryDeferred();
+		if (!redefined) return null;
+		debug("served tools: applied a postponed redefinition; holding tool results for Claude Code's re-list");
+		return this.holdResultsForRelist(redefined);
+	}
+
+	/** Sets `servedToolsSettling` until `update` settles, chained behind any
+	 *  earlier change still settling so results wait for both. */
+	holdResultsForRelist(update: Promise<ServedToolUpdate>): Promise<void> {
+		const previous = this.servedToolsSettling;
+		const settling: Promise<void> = Promise.all([previous, update]).then(([, outcome]) => {
+			debug(`served tools: ${outcome === "relisted" ? "Claude Code re-listed" : outcome === "timeout" ? "no re-list within the cap; delivering anyway" : "no client connected"}`);
+		}, (error) => debug("served tools: update failed; delivering anyway:", error)).finally(() => {
+			if (this.servedToolsSettling === settling) this.servedToolsSettling = null;
+		});
+		this.servedToolsSettling = settling;
+		return settling;
+	}
 	/** Streamed block indexes suppressed as duplicate or dead tool_use blocks —
 	 *  their deltas and stops must be ignored the same way child-executed indexes
 	 *  are. Per message; reset by resetToolTracking. */
@@ -343,6 +385,16 @@ export class QueryContext {
 	 *  this is the deadlock backstop for streams that go silent instead. Managed
 	 *  by schedule/cancelToolUseTurnEnd in assistant-stream.ts. */
 	scheduledToolUseEnd: { stream: unknown; timer: ReturnType<typeof setTimeout> } | null = null;
+
+	/** The query's live MCP tool server (null when it serves no tools) and the
+	 *  SDK→Pi name map consumeQuery reads. The map is updated IN PLACE with the
+	 *  served set: continuation queries reuse both. */
+	servedTools: ServedToolServer | null = null;
+	servedToolNameToPi: Map<string, string> | null = null;
+	/** Set while a served-tool change waits for Claude Code to re-list. Tool
+	 *  results are released only after it settles, or CC's next request would
+	 *  still carry the old tool set. */
+	servedToolsSettling: Promise<void> | null = null;
 
 	// Tool calls the CHILD executes itself (see isChildExecutedTool).
 	// Deliberately NOT in turnToolCalls/turnToolCallIds: those track calls Pi
@@ -471,6 +523,9 @@ export class QueryContext {
 		this.turnSawToolCall = false;
 		this.handledTerminalError = false;
 		this.resetToolTracking();
+		// The Claude Code process that was issued these calls has finished, so
+		// none of them can be invoked late any more.
+		this.settleInvocations(this.forwardedToolCallIds);
 	}
 
 	resetToolTracking(): void {
