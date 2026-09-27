@@ -37638,11 +37638,14 @@ function hasToolUse(msg) {
 function convertPiMessages(messages, customToolNameToSdk) {
   const anthropicMessages = [];
   const sanitizedIds = /* @__PURE__ */ new Map();
+  const skippedToolCallIds = /* @__PURE__ */ new Set();
+  const isSkippedToolResult = (message) => message.role === "toolResult" && skippedToolCallIds.has(message.toolCallId);
   const pushToolResultGroup = (toolMessages) => {
-    if (toolMessages.length === 0) return;
+    const included = toolMessages.filter((message) => !isSkippedToolResult(message));
+    if (included.length === 0) return;
     anthropicMessages.push({
       role: "user",
-      content: toolMessages.map((toolMsg) => toolResultToAnthropicBlock(toolMsg, sanitizedIds))
+      content: included.map((toolMsg) => toolResultToAnthropicBlock(toolMsg, sanitizedIds))
     });
   };
   for (let i = 0; i < messages.length; i++) {
@@ -37651,6 +37654,12 @@ function convertPiMessages(messages, customToolNameToSdk) {
       anthropicMessages.push(userMessageToAnthropic(msg));
     } else if (msg.role === "assistant") {
       const content = Array.isArray(msg.content) ? msg.content : [];
+      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+        for (const block of content) {
+          if (block.type === "toolCall") skippedToolCallIds.add(block.id);
+        }
+        continue;
+      }
       const blocks = [];
       const provenance = assistantProvenancePrefix(msg);
       if (provenance) blocks.push({ type: "text", text: provenance });
@@ -37695,9 +37704,10 @@ function convertPiMessages(messages, customToolNameToSdk) {
           i--;
           break;
         }
+        if (isSkippedToolResult(toolMsg)) continue;
         blocks.push(toolResultToAnthropicBlock(toolMsg, sanitizedIds));
       }
-      anthropicMessages.push({ role: "user", content: blocks });
+      if (blocks.length > 0) anthropicMessages.push({ role: "user", content: blocks });
     }
   }
   return { anthropicMessages, sanitizedIds };
@@ -38132,6 +38142,16 @@ var QueryContext = class {
     this.turnUsageCarry = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     this.currentMessageUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     this.currentMessageId = void 0;
+  }
+  /** Start another SDK query within the same live Pi request. Unlike
+   * resetTurnState, keeps the accumulated Pi message and usage: deferred replay
+   * can add several Claude replies before Pi's single terminal event. Per-query
+   * flags reset so a streamless continuation is not mistaken for the prior reply. */
+  prepareContinuation() {
+    this.turnSawStreamEvent = false;
+    this.turnSawToolCall = false;
+    this.handledTerminalError = false;
+    this.resetToolTracking();
   }
   resetToolTracking() {
     this.turnToolCallIds = [];
@@ -55076,18 +55096,20 @@ function finalizeCurrentStream(stopReason, c = ctx()) {
   c.currentPiStream.end();
   c.currentPiStream = null;
 }
+function prunePartialToolCalls(output) {
+  const partial2 = output.content.filter((b) => b?.type === "toolCall" && "partialJson" in b);
+  if (partial2.length === 0) return;
+  const calls = partial2.map((b) => ({ id: b.id, name: b.name }));
+  debug(`prunePartialToolCalls: pruning ${partial2.length} still-partial tool call(s) \u2014 truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
+  diagDump("partial_tool_calls_pruned", { count: partial2.length, calls });
+  appendIntegrityEntry("partial_tool_calls_pruned", { count: partial2.length, calls });
+  output.content = output.content.filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
+}
 var TOOL_USE_END_GRACE_MS = 1500;
 function endToolUseTurn(c) {
   if (!c.currentPiStream || !c.turnOutput) return;
   cancelScheduledToolUseEnd(c);
-  const partial2 = c.turnOutput.content.filter((b) => b?.type === "toolCall" && "partialJson" in b);
-  if (partial2.length > 0) {
-    const calls = partial2.map((b) => ({ id: b.id, name: b.name }));
-    debug(`endToolUseTurn: pruning ${partial2.length} still-partial tool call(s) \u2014 truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-    diagDump("partial_tool_calls_pruned", { count: partial2.length, calls });
-    appendIntegrityEntry("partial_tool_calls_pruned", { count: partial2.length, calls });
-    c.turnOutput.content = c.turnOutput.content.filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
-  }
+  prunePartialToolCalls(c.turnOutput);
   for (const block of c.turnOutput.content) {
     if (block?.type === "toolCall" && typeof block.id === "string") c.forwardedToolCallIds.add(block.id);
   }
@@ -55400,6 +55422,10 @@ function noteChildExecutedToolResults(message, c = ctx()) {
 function processAssistantMessage(message, model, customToolNameToPi, c = ctx()) {
   const assistantMsg = message.message;
   if (!assistantMsg?.content) return;
+  if (!c.currentPiStream || !c.turnOutput) {
+    appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c);
+    return;
+  }
   updateTurnOutputModel(assistantMsg.model, c);
   if (c.turnSawStreamEvent) {
     if (appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c)) {
@@ -55714,11 +55740,14 @@ async function consumeQuery(sdkQuery, queryCtx, customToolNameToPi, model, bridg
           if (account) break;
           if (usageLimit) {
             queryCtx.handledTerminalError = true;
-            queryCtx.turnOutput.stopReason = "error";
-            queryCtx.turnOutput.errorMessage = errors;
-            queryCtx.currentPiStream?.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
-            queryCtx.currentPiStream?.end();
-            queryCtx.currentPiStream = null;
+            if (queryCtx.currentPiStream) {
+              queryCtx.turnOutput.stopReason = "error";
+              queryCtx.turnOutput.errorMessage = errors;
+              prunePartialToolCalls(queryCtx.turnOutput);
+              queryCtx.currentPiStream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
+              queryCtx.currentPiStream.end();
+              queryCtx.currentPiStream = null;
+            }
           }
         }
         break;
@@ -56532,7 +56561,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
         timeoutMs
       });
       safeNotify(`${RATE_LIMIT_TOKEN} Claude stream idle timeout after ${formatDurationShort(timeoutMs)} \u2014 retrying via rate-limit backoff`, "warning");
-      if (abortCtx.turnOutput) {
+      if (abortCtx.turnOutput && abortCtx.currentPiStream) {
         abortCtx.turnOutput.stopReason = "error";
         abortCtx.turnOutput.errorMessage = errorMessage;
         Object.assign(abortCtx.turnOutput, {
@@ -56540,10 +56569,11 @@ function streamClaudeAgentSdkInLane(model, context, options) {
           retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS,
           streamIdleTimeoutMs: timeoutMs
         });
+        prunePartialToolCalls(abortCtx.turnOutput);
+        abortCtx.currentPiStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
+        abortCtx.currentPiStream.end();
+        abortCtx.currentPiStream = null;
       }
-      abortCtx.currentPiStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
-      abortCtx.currentPiStream?.end();
-      abortCtx.currentPiStream = null;
       requestAbort();
     },
     timeoutMs: streamIdleTimeoutMs
@@ -56586,13 +56616,14 @@ function streamClaudeAgentSdkInLane(model, context, options) {
       });
       safeNotify(`${RATE_LIMIT_TOKEN} Claude ${failure.message} \u2014 resets ${formatResetTimestamp(resetAtMs ?? resetAt)}`, "warning");
     }
-    if (abortCtx.turnOutput) {
+    if (abortCtx.turnOutput && abortCtx.currentPiStream) {
       abortCtx.turnOutput.stopReason = aborted2 ? "aborted" : "error";
       abortCtx.turnOutput.errorMessage = failure.message;
+      prunePartialToolCalls(abortCtx.turnOutput);
+      abortCtx.currentPiStream.push({ type: "error", reason: aborted2 ? "aborted" : "error", error: abortCtx.turnOutput });
+      abortCtx.currentPiStream.end();
+      abortCtx.currentPiStream = null;
     }
-    abortCtx.currentPiStream?.push({ type: "error", reason: aborted2 ? "aborted" : "error", error: abortCtx.turnOutput });
-    abortCtx.currentPiStream?.end();
-    abortCtx.currentPiStream = null;
   };
   let reentryStream = stream;
   consumeQuery(sdkQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router, attemptFailure).then(async ({ capturedSessionId, failure }) => {
@@ -56636,8 +56667,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
         const steer = abortCtx.deferredUserMessages.shift();
         const steerPreview = (steer.text || "[image-only]").slice(0, 60);
         debug(`provider: replaying deferred user message: ${steerPreview}`);
-        abortCtx.resetTurnState(queryModel);
-        abortCtx.resetToolTracking();
+        abortCtx.prepareContinuation();
         const resumeId = foreignContext ? capturedSessionId : getSharedSession()?.sessionId;
         if (!resumeId) {
           debug(`WARNING: no session to resume for deferred message, dropping`);
@@ -56733,10 +56763,9 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     if (!retryRequested) return;
     if (wasAborted || options?.signal?.aborted) {
       debug("provider: abort after queued account retry \u2014 terminating stream without retrying");
-      if (abortCtx.turnOutput) {
-        abortCtx.turnOutput.stopReason = "aborted";
-        abortCtx.turnOutput.errorMessage = "Operation aborted";
-      }
+      abortCtx.resetTurnState(queryModel);
+      abortCtx.turnOutput.stopReason = "aborted";
+      abortCtx.turnOutput.errorMessage = "Operation aborted";
       reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput });
       reentryStream.end();
       return;
@@ -56755,11 +56784,9 @@ function streamClaudeAgentSdkInLane(model, context, options) {
       abortCtx.restartRequest = null;
       reentryStream = restart.stream;
       abortCtx.resetTurnState(restart.model);
-    }
-    if (abortCtx.turnOutput) {
-      abortCtx.turnOutput.stopReason = "error";
-      abortCtx.turnOutput.errorMessage = error51 instanceof Error ? error51.message : String(error51);
-    }
+    } else abortCtx.resetTurnState(queryModel);
+    abortCtx.turnOutput.stopReason = "error";
+    abortCtx.turnOutput.errorMessage = error51 instanceof Error ? error51.message : String(error51);
     reentryStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
     reentryStream.end();
   }).finally(releaseEphemeralLane);
