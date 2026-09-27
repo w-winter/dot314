@@ -419,10 +419,20 @@ export class QueryContext {
 	turnStarted = false;
 	turnSawStreamEvent = false;
 	turnSawToolCall = false;
+	/** Index in turnBlocks where the current SDK query's blocks begin. Nonzero
+	 *  only after deferred replay appends a continuation query's reply to the
+	 *  same Pi message. */
+	queryContentStart = 0;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
 		return this.turnOutput.content;
+	}
+
+	/** The blocks the current SDK query rendered. Duplicate-render checks read
+	 *  only these: a continuation may legitimately repeat an earlier reply. */
+	get queryBlocks(): Array<any> {
+		return this.turnBlocks.slice(this.queryContentStart);
 	}
 
 	resetTurnState(model: Model<any>): void {
@@ -436,6 +446,7 @@ export class QueryContext {
 		this.turnStarted = false;
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
+		this.queryContentStart = 0;
 		this.handledTerminalError = false;
 		// A fresh pi message means the previous turn's stream is done with; an
 		// armed end-timer for it must not fire into this turn's state.
@@ -460,6 +471,7 @@ export class QueryContext {
 	prepareContinuation(): void {
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
+		this.queryContentStart = this.turnBlocks.length;
 		this.handledTerminalError = false;
 		this.resetToolTracking();
 	}

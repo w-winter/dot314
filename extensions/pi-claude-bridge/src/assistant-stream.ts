@@ -648,15 +648,16 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 	// produced no content blocks, since `turnSawStreamEvent` only tracks those.
 	c.beginChildMessage(assistantMsg.id);
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}${sameMessage ? " (same message re-yield)" : ""}`);
-	// Deduped against the WHOLE current turn, not just same-id re-yields: a
-	// rejected turn's synthesized error message ("You've hit your weekly limit")
-	// arrives as multiple assistant yields whose ids DIFFER or are absent (one
-	// pi message, two byte-identical text blocks), so an id-keyed guard alone
-	// still renders it twice. A model legitimately
-	// producing two byte-identical full blocks in one turn is vanishingly rare;
-	// rendering such a duplicate once is the better failure mode.
+	// Deduped against everything the current SDK query rendered, not just
+	// same-id re-yields: a rejected turn's synthesized error message ("You've
+	// hit your weekly limit") arrives as multiple assistant yields whose ids
+	// DIFFER or are absent (one pi message, two byte-identical text blocks), so
+	// an id-keyed guard alone still renders it twice. A model legitimately
+	// producing two byte-identical full blocks in one query is vanishingly rare;
+	// rendering such a duplicate once is the better failure mode. Replies from
+	// earlier deferred-replay queries are not checked; repeating one is legitimate.
 	const alreadyRendered = (type: string, content: string): boolean =>
-		c.turnBlocks.some((b: any) => b.type === type && (type === "text" ? b.text : b.thinking) === content);
+		c.queryBlocks.some((b: any) => b.type === type && (type === "text" ? b.text : b.thinking) === content);
 	for (const block of assistantMsg.content) {
 		if (block.type === "text" && block.text) {
 			if (alreadyRendered("text", block.text)) continue;

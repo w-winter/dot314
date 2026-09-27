@@ -284,6 +284,47 @@ describe("legacy sessions (no account router)", () => {
 		assert.deepEqual(done.message.content.filter((block) => block.type === "text").map((block) => block.text), ["first reply", "continuation reply"]);
 	});
 
+	it("keeps a streamless deferred continuation reply that repeats the first before a tool call", async () => {
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			if (calls++ > 0) {
+				return fakeSdkQuery([
+					{ type: "assistant", message: { id: "m2", model: model.id, content: [
+						{ type: "text", text: "OK" },
+						{ type: "tool_use", id: "call-1", name: "mytool", input: {} },
+					] } },
+				], "legacy", observedState());
+			}
+			ctx().deferredUserMessages.push({ text: "steer" });
+			return fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: "session-legacy" },
+				{ type: "assistant", message: { id: "m1", model: model.id, content: [{ type: "text", text: "OK" }] } },
+				{ type: "result", subtype: "success", result: "OK" },
+			], "legacy", observedState());
+		});
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "continuation-repeat-before-tool" }));
+		// The tool-use turn ends Pi's stream; let the continuation query settle.
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const done = events.find((event) => event.type === "done");
+		assert.equal(done.reason, "toolUse");
+		assert.deepEqual(done.message.content.map((block) => block.type === "text" ? block.text : block.type), ["OK", "OK", "toolCall"]);
+	});
+
+	it("keeps a deferred continuation result that repeats the first reply", async () => {
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			if (calls++ === 0) ctx().deferredUserMessages.push({ text: "steer" });
+			return fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: "session-legacy" },
+				{ type: "result", subtype: "success", result: "OK" },
+			], "legacy", observedState());
+		});
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "continuation-repeat-result" }));
+		const done = events.find((event) => event.type === "done");
+		assert.deepEqual(textEvents(events), ["OK", "OK"]);
+		assert.deepEqual(done.message.content.map((block) => block.text), ["OK", "OK"]);
+	});
+
 	it("surfaces other non-success result subtypes as an explicit error and persists the session", async () => {
 		// error_max_turns and error_during_execution must surface while session
 		// bookkeeping remains intact.

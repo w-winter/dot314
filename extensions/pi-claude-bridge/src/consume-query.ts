@@ -168,9 +168,9 @@ export async function consumeQuery(
 					if (!streamLive) break;
 					const text = message.result || "";
 					// The no-stream-events assistant fallback may have already rendered
-					// this exact text (it does not set turnSawStreamEvent) — re-pushing
-					// it here is the other half of the duplicated-output bug.
-					if (queryCtx.turnBlocks.some((b: any) => b.type === "text" && b.text === text)) {
+					// this exact text in this query (it does not set turnSawStreamEvent)
+					// — re-pushing it here is the other half of the duplicated-output bug.
+					if (queryCtx.queryBlocks.some((b: any) => b.type === "text" && b.text === text)) {
 						debug("consumeQuery: result text already rendered by assistant fallback; skipping duplicate");
 						break;
 					}
