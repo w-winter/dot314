@@ -1093,7 +1093,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	};
 
 	const requestAbort = () => {
-		abortSdkQuery(sdkQuery);
+		// A deferred continuation replaces sdkQuery as the live child.
+		abortSdkQuery(abortCtx.activeQuery ?? sdkQuery);
 	};
 
 	// Decide whether a classified failure may be replayed on the next profile.
@@ -1135,22 +1136,22 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				activeQuery: abortCtx.activeQuery,
 				currentPiStream: abortCtx.currentPiStream,
 				turnOutput: abortCtx.turnOutput,
-				turnSawStreamEvent: abortCtx.turnSawStreamEvent,
-				turnStarted: abortCtx.turnStarted,
+				waitingToolCalls: abortCtx.pendingToolCalls.size,
 			}),
 			onTimeout: ({ idleMs, timeoutMs }) => {
-				if (streamIdleTimedOut || wasAborted || options?.signal?.aborted || abortCtx.activeQuery !== sdkQuery) return;
+				if (streamIdleTimedOut || wasAborted || options?.signal?.aborted || !abortCtx.activeQuery) return;
 				streamIdleTimedOut = true;
 				dropDeferredUserMessages("stream-idle-timeout");
-				markRebuildForThisQuery({ forceRotate: true });
+				quarantine();
 				const errorMessage = buildStreamIdleTimeoutErrorMessage(timeoutMs);
 				debug("provider: stream idle timeout", `model=${queryModel.id}`, `timeout=${timeoutMs}`, `idle=${idleMs}`);
 				const idleFailure: ClaudeAttemptFailure = { kind: "network", message: errorMessage };
 				// A managed attempt that went idle before ANY visible output can move
 				// to the next profile instead of surfacing the timeout. The idle
 				// specifics (needsRebuild/forceRotate, killing the child) stay here;
-				// eligibility and retry bookkeeping are requestRotation's.
-				if (requestRotation(idleFailure)) {
+				// eligibility and retry bookkeeping are requestRotation's. A deferred
+				// continuation never rotates: the original prompt already completed.
+				if (abortCtx.activeQuery === sdkQuery && requestRotation(idleFailure)) {
 					requestAbort();
 					return;
 				}

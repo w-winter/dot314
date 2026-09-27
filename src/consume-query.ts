@@ -3,7 +3,7 @@
 // generator and pushes events into the query's captured Pi stream.
 
 import { type Model } from "@earendil-works/pi-ai";
-import { type query } from "@anthropic-ai/claude-agent-sdk";
+import { type query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
 	classifyClaudeFailure,
 	rateLimitResetFromInfo,
@@ -21,7 +21,18 @@ import { debug } from "./debug.js";
 import { fallbackModelForPrimaryModel, modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
+import { sdkQueryAbandoned } from "./query-teardown.js";
 import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.js";
+
+const ABANDONED: unique symbol = Symbol("sdk-query-abandoned");
+
+/** Silence an `api_retry` notice announces: the backoff before the retry,
+ *  plus the retry's own wait for response headers after a no-response
+ *  failure. Claude Code is legitimately quiet for that long. */
+function announcedQuietMs(message: { type: string; subtype?: unknown; retry_delay_ms?: unknown; no_response?: { retry_wait_ms?: unknown } }): number {
+	if (message.type !== "system" || message.subtype !== "api_retry") return 0;
+	return (Number(message.retry_delay_ms) || 0) + (Number(message.no_response?.retry_wait_ms) || 0);
+}
 
 export function emitRateLimitEvent(payload: Record<string, unknown>): void {
 	try {
@@ -123,9 +134,24 @@ export async function consumeQuery(
 		if (attemptFailureBox) attemptFailureBox.failure = next;
 	};
 
-	for await (const message of sdkQuery) {
-		if (wasAborted()) break;
-		activeStreamIdleWatchdogs.get(queryCtx)?.noteChunk();
+	// Not `for await`: after an abort or idle timeout the iterator may never
+	// settle (a wedged child can survive close()), so every wait is raced
+	// against the query's abandonment and teardown proceeds regardless.
+	const iterator = sdkQuery[Symbol.asyncIterator]();
+	const abandoned = sdkQueryAbandoned(sdkQuery).then((): typeof ABANDONED => ABANDONED);
+	for (;;) {
+		const next = await Promise.race([iterator.next(), abandoned]);
+		if (next === ABANDONED) {
+			debug("consumeQuery: SDK iterator did not settle after abort; abandoning it");
+			break;
+		}
+		if (next.done) break;
+		const message = next.value as SDKMessage;
+		if (wasAborted()) {
+			await Promise.race([iterator.return?.(undefined), abandoned]);
+			break;
+		}
+		activeStreamIdleWatchdogs.get(queryCtx)?.noteChunk(announcedQuietMs(message));
 		if (account) {
 			// Thunk, not a value: this runs once per SDK message — including one
 			// stream_event per streamed token — and debug() only evaluates function

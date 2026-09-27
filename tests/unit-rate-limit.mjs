@@ -109,15 +109,14 @@ describe("stream-idle timeout", () => {
 		assert.match(message, new RegExp(String(STREAM_IDLE_BACKOFF_HINT_MS / 1000)));
 	});
 
-	it("fires only while a Pi stream is waiting for first assistant output", () => {
+	it("fires after the timeout of silence from Claude Code", () => {
 		let now = 0;
 		const timers = [];
 		const state = {
 			activeQuery: {},
 			currentPiStream: {},
 			turnOutput: { timestamp: 0 },
-			turnSawStreamEvent: false,
-			turnStarted: false,
+			waitingToolCalls: 0,
 		};
 		const timeouts = [];
 		const watchdog = createStreamIdleWatchdog({
@@ -148,33 +147,75 @@ describe("stream-idle timeout", () => {
 		assert.equal(watchdog.timedOut(), true);
 	});
 
-	it("does not fire after visible stream output starts", () => {
+	// A fake clock that runs every armed timer as time passes, so a test can
+	// state "N ms of silence" without knowing how the watchdog re-arms.
+	function clockedWatchdog(state, timeoutMs = 1_000) {
 		let now = 0;
-		let timer;
-		const state = {
-			activeQuery: {},
-			currentPiStream: {},
-			turnOutput: { timestamp: 0 },
-			turnSawStreamEvent: false,
-			turnStarted: false,
-		};
+		let timer = null;
 		const timeouts = [];
 		const watchdog = createStreamIdleWatchdog({
-			clearTimer: (handle) => { handle.cancelled = true; },
+			clearTimer: (handle) => { if (timer === handle) timer = null; },
 			getState: () => state,
 			now: () => now,
 			onTimeout: (info) => timeouts.push(info),
-			setTimer: (fn, delayMs) => {
-				timer = { cancelled: false, delayMs, fn };
-				return timer;
-			},
-			timeoutMs: 1_000,
+			setTimer: (fn, delayMs) => (timer = { at: now + delayMs, fn }),
+			timeoutMs,
 		});
+		const advance = (ms) => {
+			const until = now + ms;
+			while (timer && timer.at <= until) {
+				const due = timer;
+				timer = null;
+				now = due.at;
+				due.fn();
+			}
+			now = until;
+		};
+		return { watchdog, timeouts, advance };
+	}
+	const liveState = () => ({ activeQuery: {}, currentPiStream: {}, turnOutput: { timestamp: 0 }, waitingToolCalls: 0 });
+
+	it("still fires when Claude Code goes silent after its output started", () => {
+		const { watchdog, timeouts, advance } = clockedWatchdog(liveState());
 		watchdog.refresh();
-		state.turnSawStreamEvent = true;
-		now = 1_000;
-		timer.fn();
+		advance(300);
+		watchdog.noteChunk(); // first text delta
+		advance(999);
 		assert.equal(timeouts.length, 0);
-		assert.equal(timer.cancelled, true);
+		advance(1);
+		assert.equal(timeouts.length, 1);
+	});
+
+	it("never fires while an MCP handler waits on Pi, and restarts the clock when it is answered", () => {
+		const state = liveState();
+		const { watchdog, timeouts, advance } = clockedWatchdog(state);
+		watchdog.refresh();
+		state.waitingToolCalls = 1;
+		advance(60_000);
+		assert.equal(timeouts.length, 0);
+		state.waitingToolCalls = 0;
+		advance(900);
+		assert.equal(timeouts.length, 0, "silence is only counted from the end of the wait");
+		advance(2_000);
+		assert.equal(timeouts.length, 1);
+	});
+
+	it("never fires while Pi holds no stream because it is executing a tool", () => {
+		const state = liveState();
+		const { watchdog, timeouts, advance } = clockedWatchdog(state);
+		watchdog.refresh();
+		state.currentPiStream = null;
+		advance(60_000);
+		assert.equal(timeouts.length, 0);
+	});
+
+	it("grants the backoff an API retry notice announces", () => {
+		const { watchdog, timeouts, advance } = clockedWatchdog(liveState());
+		watchdog.refresh();
+		watchdog.noteChunk(5_000);
+		advance(5_999);
+		assert.equal(timeouts.length, 0);
+		advance(1);
+		assert.equal(timeouts.length, 1);
 	});
 });
