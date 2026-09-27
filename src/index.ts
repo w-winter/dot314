@@ -16,7 +16,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, modelDisplayName } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, drainPendingToolCalls, drainStrandedToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, drainStrandedToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
 import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
 import { loadConfig, recordProjectTrust } from "./config.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
@@ -1044,7 +1044,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// record with the child's session id and cursor. A foreign-conversation
 	// one-shot has exactly the same non-claim on the record.
 	const persistSession = (next: SessionState | null): void => {
-		if (isReentrant || foreignContext) return;
+		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
 		const restartPending = Boolean(abortCtx.restartRequest);
 		let replaced = next;
 		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending)) {
@@ -1054,8 +1054,19 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
 	};
 	const markRebuildForThisQuery = (opts: { forceRotate?: boolean } = {}): void => {
-		if (isReentrant || foreignContext) return;
+		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
 		markSessionForRebuild(opts);
+	};
+	// Pi can send the next prompt within milliseconds of an abort, long before
+	// this query's iterator settles. Left in the lane, this context would take
+	// that prompt as a steer and drop it with the aborted query, so it leaves
+	// now. The rotation mark comes first because the next prompt syncs the
+	// session synchronously; after the hand-off this query's late teardown must
+	// not touch the record the replacement owns.
+	const quarantine = (): void => {
+		markRebuildForThisQuery({ forceRotate: true });
+		detachContext(abortCtx);
+		abortCtx.detachedFromSharedSession = true;
 	};
 	//  invariant: a deferred (mid-query) user message may be dropped only
 	// LOUDLY — the cursor already advanced over it on the promise of replay.
@@ -1193,6 +1204,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		if (drained > 0) debug(`provider: abort drained ${drained} waiting MCP handler(s) as errors`);
 		abortCtx.pendingResults.clear();
 		requestAbort();
+		quarantine();
 	});
 	if (options?.signal) {
 		if (options.signal.aborted) onAbort();

@@ -841,6 +841,24 @@ export function popContextFor(target: QueryContext): boolean {
 	return true;
 }
 
+/** Take `target` out of its lane NOW instead of when its SDK iterator settles,
+ *  so the next provider call starts a fresh query rather than being routed
+ *  into a query that is shutting down as a tool-result/steer callback. A
+ *  pushed (reentrant) context is popped; a top-level one is replaced. No-op
+ *  unless `target` is the lane's current context: with a live subagent
+ *  context pushed above it, the lane is not this query's to hand over. */
+export function detachContext(target: QueryContext): void {
+	const state = lane();
+	if (state.current !== target) return;
+	if (state.stack.length > 0) {
+		popContext();
+		return;
+	}
+	state.current = new QueryContext();
+	// An orphaned tool result from a detached one-shot must stay attributed to it.
+	state.current.detachedFromSharedSession = target.detachedFromSharedSession;
+}
+
 // Test-only: drop every lane so test files can start clean.
 export function resetStack(): void {
 	clearQueryLanes();
