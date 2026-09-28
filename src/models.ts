@@ -37,12 +37,14 @@ type BridgeModelMetadata = {
 	maxTokens: number;
 };
 
+// `off: null` marks a model that rejects disabled thinking: Claude Code sends no
+// thinking mode for it, so the API's default thinking applies, and Pi hides off.
 const FALLBACK_MODELS: Record<string, BridgeModelMetadata> = {
 	[FABLE_MODEL_ID]: {
 		id: FABLE_MODEL_ID,
 		name: "Claude Fable 5.1",
 		reasoning: true,
-		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
 		input: ["text", "image"],
 		contextWindow: 1000000,
 		maxTokens: 128000,
@@ -51,7 +53,7 @@ const FALLBACK_MODELS: Record<string, BridgeModelMetadata> = {
 		id: OPUS_5_5_MODEL_ID,
 		name: "Claude Opus 5.5",
 		reasoning: true,
-		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+		thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
 		input: ["text", "image"],
 		contextWindow: 1000000,
 		maxTokens: 128000,

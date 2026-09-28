@@ -54,6 +54,17 @@ describe("Pi thinking off", () => {
 		assert.deepEqual(options.extraArgs, {});
 	});
 
+	it("hides off for bridge-listed models that cannot turn thinking off", () => {
+		const offShown = Object.fromEntries(buildModels([]).map((m) => [m.id, getSupportedThinkingLevels(m).includes("off")]));
+		assert.deepEqual(offShown, {
+			"claude-fable-5-1": false,
+			"claude-opus-5-5": false,
+			"claude-opus-5": true,
+			"claude-opus-4-8": true,
+			"claude-sonnet-5": true,
+		});
+	});
+
 	it("leaves every other level's options without a thinking mode", () => {
 		for (const model of MODELS) {
 			for (const level of getSupportedThinkingLevels(model).filter((l) => l !== "off")) {

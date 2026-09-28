@@ -56,9 +56,9 @@ describe("MODELS projection", () => {
 		assert.equal(models.find((m) => m.id === "claude-opus-5-5")?.name, "Claude Opus 5.5");
 		assert.equal(models.find((m) => m.id === "claude-opus-5-5")?.contextWindow, 1000000);
 		assert.equal(models.find((m) => m.id === "claude-opus-5-5")?.maxTokens, 128000);
-		assert.deepEqual(models.find((m) => m.id === "claude-opus-5-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
+		assert.deepEqual(models.find((m) => m.id === "claude-opus-5-5")?.thinkingLevelMap, { off: null, xhigh: "xhigh", max: "max" });
 		assert.deepEqual(models.find((m) => m.id === "claude-opus-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
-		assert.deepEqual(models.find((m) => m.id === "claude-fable-5-1")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
+		assert.deepEqual(models.find((m) => m.id === "claude-fable-5-1")?.thinkingLevelMap, { off: null, xhigh: "xhigh", max: "max" });
 		assert.deepEqual(models.find((m) => m.id === "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
 	});
 
