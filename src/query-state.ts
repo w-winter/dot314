@@ -594,13 +594,14 @@ export class QueryContext {
 	 *  its re-yields render only the blocks not rendered yet. */
 	fallbackMessageId: string | undefined;
 	/**
-	 * The reply blocks that were complete in this Pi message when the running
-	 * deferred continuation started (checkpointCompletedReply in
-	 * assistant-stream.ts), with the message they belong to. A failure of that
-	 * continuation ends the Pi message with exactly these blocks. Null outside
+	 * This Pi message as the running deferred continuation found it
+	 * (markContinuationStart in assistant-stream.ts): the blocks earlier SDK
+	 * queries rendered and their stop reason. A failure of the continuation
+	 * ends the Pi message with the completed replies among them; duplicate
+	 * render checks compare only against the blocks outside them. Null outside
 	 * a continuation, and cleared with the message it describes.
 	 */
-	completedReply: { output: AssistantMessage; blocks: object[]; stopReason: AssistantMessage["stopReason"] } | null = null;
+	continuationStart: { output: AssistantMessage; priorBlocks: object[]; stopReason: AssistantMessage["stopReason"] } | null = null;
 	/**
 	 * A terminal failure that ended this query after its last Pi turn (a tool
 	 * call) was already delivered. That turn must not change, so the
@@ -631,7 +632,7 @@ export class QueryContext {
 		this.handledTerminalError = false;
 		this.streamAttempt = null;
 		this.fallbackMessageId = undefined;
-		this.completedReply = null;
+		this.continuationStart = null;
 		// A fresh pi message means the previous turn's stream is done with; an
 		// armed end-timer for it must not fire into this turn's state.
 		if (this.scheduledToolUseEnd) {

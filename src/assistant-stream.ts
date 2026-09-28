@@ -113,34 +113,47 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 // failing continuation started, and the failure is reported beside it. The
 // failing continuation's own output (partial text, any tool call) is never
 // part of it.
+//
+// The same boundary scopes the duplicate-render guards (queryBlocks): a
+// continuation may legitimately repeat an earlier reply's text or thinking.
 
-/** Record the reply blocks that are complete now, before a deferred
- *  continuation starts. Called only after the previous query succeeded, so
- *  every live text and thinking block is finished. Tool calls are not
- *  replies: one still in the message could never get a result. */
-export function checkpointCompletedReply(c: QueryContext): void {
+/** Record where the next deferred continuation's output begins in this Pi
+ *  message: every block already in it belongs to earlier queries. Called
+ *  only after the previous query succeeded, so every live text and thinking
+ *  block among them is finished. */
+export function markContinuationStart(c: QueryContext): void {
 	const output = c.turnOutput;
-	if (!output || !c.currentPiStream) {
-		c.completedReply = null;
-		return;
-	}
-	const blocks = (output.content as Array<any>).filter((b) => isLiveBlock(b) && (
-		(b?.type === "text" && typeof b.text === "string" && b.text.length > 0) || b?.type === "thinking"
-	));
-	c.completedReply = { output, blocks, stopReason: output.stopReason };
+	c.continuationStart = output ? { output, priorBlocks: [...output.content], stopReason: output.stopReason } : null;
+}
+
+/** The blocks earlier SDK queries rendered into the current Pi message
+ *  (empty outside a deferred continuation). */
+function priorQueryBlocks(c: QueryContext): object[] {
+	const start = c.continuationStart;
+	return start && start.output === c.turnOutput ? start.priorBlocks : [];
+}
+
+/** The live blocks the CURRENT SDK query rendered into this Pi message: what
+ *  a duplicate-render check may compare against. */
+export function queryBlocks(c: QueryContext): Array<any> {
+	const prior = priorQueryBlocks(c);
+	return c.turnBlocks.filter((b: any) => isLiveBlock(b) && !prior.includes(b));
 }
 
 /** The reply to end with when the running continuation failed, or undefined
  *  when no completed reply text is in this Pi message (the failure is then
- *  an ordinary error). A copy: the live partial is left intact. */
+ *  an ordinary error). Tool calls are not replies: one still in the message
+ *  could never get a result. A copy: the live partial is left intact. */
 function completedReplyMessage(c: QueryContext): AssistantMessage | undefined {
-	const checkpoint = c.completedReply;
 	const output = c.turnOutput;
-	if (!checkpoint || !output || checkpoint.output !== output) return undefined;
-	const content = (output.content as Array<any>).filter((b) => checkpoint.blocks.includes(b) && isLiveBlock(b));
+	const prior = priorQueryBlocks(c);
+	if (!output || prior.length === 0) return undefined;
+	const content = (output.content as Array<any>).filter((b) => prior.includes(b) && isLiveBlock(b) && (
+		(b.type === "text" && typeof b.text === "string" && b.text.length > 0) || b.type === "thinking"
+	));
 	if (!content.some((b) => b.type === "text")) return undefined;
 	const { errorMessage: _errorMessage, ...reply } = output;
-	return { ...reply, content, stopReason: checkpoint.stopReason === "length" ? "length" : "stop" };
+	return { ...reply, content, stopReason: c.continuationStart!.stopReason === "length" ? "length" : "stop" };
 }
 
 /** End the current Pi stream for a failed query. Without a live stream (a
@@ -183,7 +196,7 @@ export function endStreamForFailure(
 	// query held while no stream was live (it would repeat it).
 	c.undeliveredFailure = null;
 	const reply = aborted ? undefined : completedReplyMessage(c);
-	c.completedReply = null;
+	c.continuationStart = null;
 	if (reply) {
 		// A call the failed continuation was still writing never reaches Pi,
 		// so no teardown report may count it as missing a result (as in
@@ -949,18 +962,21 @@ export function noteChildExecutedToolResults(message: SDKMessage, c: QueryContex
 
 /** Render a COMPLETED assistant message's blocks into the live Pi message:
  *  the content path for a message that produced no stream events of its own.
- *  Text and thinking are deduped against the whole turn and tool calls by id,
- *  so a re-yield of the same message renders only what is new. */
+ *  Text and thinking are deduped against what the current SDK query rendered
+ *  and tool calls by id, so a re-yield of the same message renders only what
+ *  is new. */
 function renderCompletedBlocks(c: QueryContext, content: Array<any>, customToolNameToPi: Map<string, string>, label: string): void {
-	// Deduped against the WHOLE current turn, not just same-id re-yields: a
-	// rejected turn's synthesized error message ("You've hit your weekly limit")
-	// arrives as multiple assistant yields whose ids DIFFER or are absent (one
-	// pi message, two byte-identical text blocks), so an id-keyed guard alone
-	// still renders it twice. A model legitimately
-	// producing two byte-identical full blocks in one turn is vanishingly rare;
-	// rendering such a duplicate once is the better failure mode.
+	// Deduped against everything the current SDK query rendered, not just
+	// same-id re-yields: a rejected turn's synthesized error message ("You've
+	// hit your weekly limit") arrives as multiple assistant yields whose ids
+	// DIFFER or are absent (one pi message, two byte-identical text blocks), so
+	// an id-keyed guard alone still renders it twice. A model legitimately
+	// producing two byte-identical full blocks in one query is vanishingly
+	// rare; rendering such a duplicate once is the better failure mode.
+	// Replies of earlier queries in this Pi message (deferred replay) are not
+	// compared: a continuation repeating one is legitimate.
 	const alreadyRendered = (type: string, value: string): boolean =>
-		c.turnBlocks.some((b: any) => b.type === type && isLiveBlock(b) && (type === "text" ? b.text : b.thinking) === value);
+		queryBlocks(c).some((b: any) => b.type === type && (type === "text" ? b.text : b.thinking) === value);
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
 			if (alreadyRendered("text", block.text)) continue;

@@ -33,7 +33,7 @@ import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, h
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
-import { ABORTED_MESSAGE, checkpointCompletedReply, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel } from "./assistant-stream.js";
+import { ABORTED_MESSAGE, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, markContinuationStart, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -1569,8 +1569,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
 					abortCtx.prepareContinuation();
 					// What Claude has completed so far outlives a failure of this
-					// continuation (endStreamForFailure).
-					checkpointCompletedReply(abortCtx);
+					// continuation (endStreamForFailure), and the continuation may
+					// repeat it (queryBlocks).
+					markContinuationStart(abortCtx);
 
 					// A foreign one-shot has no claim on the shared record: its steers
 					// continue ITS OWN child session, never --resume the parent's.

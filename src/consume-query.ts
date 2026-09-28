@@ -14,7 +14,7 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { endStreamForFailure, ensureTurnStarted, isLiveBlock, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, updateTurnResponseModel } from "./assistant-stream.js";
+import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.js";
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug, diagDump } from "./debug.js";
@@ -240,9 +240,11 @@ export async function consumeQuery(
 					if (!streamLive) break;
 					const text = message.result || "";
 					// The no-stream-events assistant fallback may have already rendered
-					// this exact text (it does not set turnSawStreamEvent) — re-pushing
-					// it here is the other half of the duplicated-output bug.
-					if (queryCtx.turnBlocks.some((b: any) => b.type === "text" && isLiveBlock(b) && b.text === text)) {
+					// this exact text in this query (it does not set
+					// turnSawStreamEvent) — re-pushing it here is the other half of the
+					// duplicated-output bug. An earlier deferred-replay query's reply
+					// may legitimately be repeated.
+					if (queryBlocks(queryCtx).some((b: any) => b.type === "text" && b.text === text)) {
 						debug("consumeQuery: result text already rendered by assistant fallback; skipping duplicate");
 						break;
 					}
