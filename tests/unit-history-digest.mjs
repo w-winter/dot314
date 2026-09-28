@@ -22,7 +22,7 @@ import { setExtensionApi } from "../src/bridge-state.ts";
 import { resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
 import { restoreSharedSessionFromPi, schedulePersistSharedSession } from "../src/session-persistence.ts";
-import { historyDigest } from "../src/history-digest.ts";
+import { deliveredAssistantDigest, deliveredSuffix, historyDigest } from "../src/history-digest.ts";
 import { createSession } from "cc-session-io";
 
 const model = {
@@ -44,6 +44,10 @@ const SYSTEM = { role: "system", content: "test system prompt", toolsAdded: [REA
 let clock = Date.now();
 const stamp = () => clock++;
 const user = (text) => ({ role: "user", content: text, timestamp: stamp() });
+// What Pi's convertToLlm makes of a `custom` message (intercom, subagent notify).
+const customAsUser = (text) => ({ role: "user", content: [{ type: "text", text }], timestamp: stamp() });
+// Pi 0.87 records prompt-section and tool-loadout updates as system messages.
+const systemUpdate = () => ({ role: "system", content: "", sections: { note: "updated" }, timestamp: stamp() });
 const LONG_BODY = (id) => `contents of ${id}\n${"line of file output\n".repeat(40)}`;
 const toolResult = (call) => ({ role: "toolResult", toolCallId: call.id, toolName: READ.name, content: [{ type: "text", text: LONG_BODY(call.id) }], isError: false, timestamp: stamp() });
 
@@ -413,6 +417,64 @@ describe("warm reuse follows the content Claude already holds", () => {
 		assert.deepEqual(syncPaths(), ["clean-start", "rebuild"]);
 	});
 
+	it("rebuilds when the tool-use reply a callback acknowledges was removed from Pi's view (review 2 finding 1)", async () => {
+		installFakeClaudeCode([[{ text: "hello" }], [{ read: ["a.txt"] }, { text: "read a" }], [{ text: "next" }]], observed);
+		let history = await prompt("digest-deleted-reply", [SYSTEM], "hello");
+		history = await prompt("digest-deleted-reply", history, "read a", {
+			beforeCallback: (messages) => messages.filter((message) => !(message.role === "assistant" && message.content.some((block) => block.type === "toolCall"))),
+		});
+		assert.equal(record("digest-deleted-reply")?.needsRebuild, true, "the completed query leaves a rebuild mark");
+		await prompt("digest-deleted-reply", history, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "reuse", "rebuild"]);
+	});
+
+	it("never vouches for an orphaned tool result's context holding input Claude never got (review 2 finding 2)", async () => {
+		installFakeClaudeCode([[{ read: ["a"] }, { text: "ok" }], [{ text: "next" }]], observed);
+		const history = await prompt("digest-orphan-user", [SYSTEM], "read a");
+		const live = record("digest-orphan-user");
+		const messages = [...history.slice(0, live.cursor), user("THIS WAS NEVER DELIVERED"), toolResult({ id: "orphan" })];
+		const events = await collect(streamClaudeAgentSdk(model, { messages: await piContext(messages) }, { sessionId: "digest-orphan-user" }));
+		const done = events.find((event) => event.type === "done");
+		assert.deepEqual(done.message.content, []);
+		assert.equal(record("digest-orphan-user").historyDigest, "unverified");
+		assert.equal(record("digest-orphan-user").needsRebuild, true);
+		// Even with the synthetic end_turn reply filtered out of the next context.
+		const transformed = [...messages, done.message].filter((message) => !(message.role === "assistant" && message.content.length === 0));
+		await prompt("digest-orphan-user", transformed, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "rebuild"]);
+	});
+
+	it("keeps reusing after a mid-query steer splits a parallel result batch", async () => {
+		installFakeClaudeCode([[{ read: ["a.txt", "b.txt"] }, { text: "read both" }], [{ text: "steer answered" }], [{ text: "next" }]], observed);
+		let history = await prompt("digest-split-batch", [SYSTEM], "read a and b", {
+			beforeCallback: (messages) => {
+				const first = messages.findIndex((message) => message.role === "toolResult");
+				return [...messages.slice(0, first + 1), user("also say hi"), ...messages.slice(first + 1)];
+			},
+		});
+		assert.equal(observed.resumes.length, 2, "the steer replays as a continuation");
+		assert.notEqual(record("digest-split-batch")?.needsRebuild, true);
+		history = await prompt("digest-split-batch", history, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "reuse"]);
+	});
+
+	it("keeps reusing after mid-query intercom and follow-up messages across two tool turns", async () => {
+		installFakeClaudeCode([[{ read: ["a.txt"] }, { read: ["b.txt"] }, { text: "read a then b" }], [{ text: "queued answered" }], [{ text: "more" }], [{ text: "next" }]], observed);
+		let callbacks = 0;
+		let history = await prompt("digest-intercom", [SYSTEM], "read a then b", {
+			beforeCallback: (messages) => {
+				callbacks += 1;
+				return callbacks === 1
+					? [...messages, customAsUser("intercom: status ping"), systemUpdate()]
+					: [...messages, user("follow-up question")];
+			},
+		});
+		assert.equal(callbacks, 2);
+		assert.notEqual(record("digest-intercom")?.needsRebuild, true);
+		history = await prompt("digest-intercom", history, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "reuse"]);
+	});
+
 	it("accepts a record without a digest once, stamps it, then guards it", async () => {
 		installFakeClaudeCode([[{ text: "ok" }], [{ text: "noted" }], [{ text: "answer" }]], observed);
 		let history = [SYSTEM];
@@ -498,5 +560,40 @@ describe("historyDigest coverage", () => {
 			["role", edit(1, (m) => ({ ...m, role: "assistant", content: [{ type: "text", text: "read a" }] }))],
 			["message removed", base().slice(0, 4)],
 		]) assert.notEqual(digest(messages), reference, label);
+	});
+});
+
+describe("deliveredSuffix: the covered suffix equals what the bridge delivered", () => {
+	const reply = (id, text = "calling") => ({ role: "assistant", provider: "pi-claude", api: "claude-bridge", stopReason: "toolUse", content: [{ type: "text", text }, { type: "toolCall", id, name: READ.name, arguments: { path: id } }] });
+	const result = (id) => ({ role: "toolResult", toolCallId: id, toolName: READ.name, content: [{ type: "text", text: "body" }], isError: false });
+	const a1 = reply("t1");
+	const a2 = reply("t2");
+	const ledger = (claimed = 0) => ({
+		assistants: [a1, a2].map((m) => ({ digest: deliveredAssistantDigest(m), callIds: [m.content[1].id] })),
+		claimedAssistants: claimed,
+		claimedResultIds: new Set(),
+	});
+	const opts = (queued = []) => ({ resultReceived: () => true, queuedUserIndexes: new Set(queued) });
+	const check = (suffix, l = ledger(), o = opts()) => deliveredSuffix([SYSTEM, ...suffix], 1, suffix.length + 1, l, o);
+
+	it("accepts exactly the delivered replies, their results, queued users and system messages", () => {
+		assert.deepEqual([...check([a1, result("t1"), a2, result("t2")])], ["t1", "t2"]);
+		assert.ok(check([a1, result("t1"), { role: "user", content: "steer" }, { role: "system", content: "" }, a2, result("t2")], ledger(), opts([3])));
+		assert.ok(check([a2, result("t2")], ledger(1)), "a claim already covering a1 leaves only a2 pending");
+	});
+
+	it("rejects a missing, extra, reordered or rewritten reply", () => {
+		assert.equal(check([a1, result("t1")]), undefined, "a2 missing");
+		assert.equal(check([a1, result("t1"), a2, result("t2"), reply("t3")]), undefined, "extra reply");
+		assert.equal(check([a2, result("t2"), a1, result("t1")]), undefined, "reordered");
+		assert.equal(check([a1, result("t1"), reply("t2", "rewritten"), result("t2")]), undefined, "rewritten");
+	});
+
+	it("rejects results Claude did not get and users this query did not queue", () => {
+		assert.equal(check([a1, result("t1"), result("t1"), a2]), undefined, "duplicate result");
+		assert.equal(check([a1, result("foreign"), a2]), undefined, "result for a call no delivered reply made");
+		assert.equal(check([result("t2"), a1, a2]), undefined, "result before its reply");
+		assert.equal(check([a1, result("t1"), a2], ledger(), { resultReceived: (id) => id !== "t1", queuedUserIndexes: new Set() }), undefined, "result never delivered to Claude");
+		assert.equal(check([a1, { role: "user", content: "never queued" }, a2]), undefined, "unqueued user");
 	});
 });

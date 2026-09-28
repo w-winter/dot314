@@ -280,11 +280,16 @@ export class QueryContext {
 	 *  record's or this query's own digest) — an extension or Pi context edit
 	 *  rewrote it mid-query. The record this query persists must rebuild. */
 	priorHistoryRewritten = false;
-	/** deliveredAssistantDigest of every tool-use reply this query handed Pi,
-	 *  keyed by each of its tool-call ids: a callback context's copy of that
-	 *  reply must still match before its history counts as Claude's.
-	 *  Query-scoped, cleared at fresh-query setup. */
-	deliveredAssistantDigests = new Map<string, string>();
+	/** Every reply this query handed Pi (tool-use turns and the final reply),
+	 *  in delivery order, with the digest of the exact copy Pi received: what
+	 *  Claude's history gained. A callback's new suffix must be exactly these
+	 *  (history-digest.ts deliveredSuffix). Query-scoped, cleared at
+	 *  fresh-query setup. */
+	deliveredAssistants: Array<{ digest: string; callIds: string[] }> = [];
+	/** How many of deliveredAssistants, and which tool results, the verified
+	 *  claim (latestCursor/latestCursorDigest) already covers. */
+	claimedAssistants = 0;
+	claimedResultIds = new Set<string>();
 	/** User messages this query owns: its starting history, plus every one it
 	 *  queued for replay or handed to a rebuild. Identity-based, because a
 	 *  callback context's positions need not match the starting context's. */

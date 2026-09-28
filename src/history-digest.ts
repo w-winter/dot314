@@ -96,20 +96,55 @@ export function deliveredAssistantDigest(message: AssistantMessage): string {
 	return historyDigest([{ ...message, content } as AssistantMessage]);
 }
 
-/** Index of the first assistant in messages[from, to) that is not exactly a
- *  reply the bridge delivered in this query (`delivered`: tool-call id ->
- *  deliveredAssistantDigest), or -1. Such a message is not what Claude holds. */
-export function firstUndeliveredAssistant(messages: Context["messages"], from: number, to: number, delivered: ReadonlyMap<string, string>): number {
-	for (let i = Math.max(0, from); i < Math.min(to, messages.length); i++) {
+/** What the bridge has put into Claude's history during one query, in
+ *  delivery order, and how much of it a verified claim already covers. */
+export interface DeliveryLedger {
+	/** Every reply the bridge delivered to Pi (deliveredAssistantDigest), in order. */
+	assistants: ReadonlyArray<{ digest: string; callIds: readonly string[] }>;
+	/** How many of `assistants` lie inside the verified claim already. */
+	claimedAssistants: number;
+	/** Tool results already inside the verified claim. */
+	claimedResultIds: ReadonlySet<string>;
+}
+
+/** Whether messages[from, to) is EXACTLY what the bridge put into Claude's
+ *  history since the claim at `from`: every reply delivered since then (none
+ *  missing, none extra, in delivery order), results only for calls those or
+ *  earlier delivered replies made, each once and only if Claude received it,
+ *  and user messages only at `queuedUserIndexes` (queued for delivery by this
+ *  query). System messages are invisible to the digest and pass. Returns the
+ *  result ids the suffix covers, or undefined when it is not Claude's. */
+export function deliveredSuffix(
+	messages: Context["messages"],
+	from: number,
+	to: number,
+	ledger: DeliveryLedger,
+	opts: { resultReceived: (id: string) => boolean; queuedUserIndexes: ReadonlySet<number> },
+): Set<string> | undefined {
+	const pending = ledger.assistants.slice(ledger.claimedAssistants);
+	const callable = new Set(ledger.assistants.slice(0, ledger.claimedAssistants).flatMap((entry) => entry.callIds));
+	const results = new Set<string>();
+	let next = 0;
+	for (let i = Math.max(0, from); i < to; i++) {
 		const message = messages[i];
-		if (message.role !== "assistant") continue;
-		const ids = Array.isArray(message.content)
-			? message.content.flatMap((block) => block.type === "toolCall" && typeof block.id === "string" ? [block.id] : [])
-			: [];
-		const recorded = ids.map((id) => delivered.get(id)).find((digest) => digest !== undefined);
-		if (recorded === undefined || recorded !== historyDigest([message])) return i;
+		if (!message) return undefined;
+		if (message.role === "system") continue;
+		if (message.role === "assistant") {
+			if (next >= pending.length || historyDigest([message]) !== pending[next].digest) return undefined;
+			for (const id of pending[next].callIds) callable.add(id);
+			next++;
+			continue;
+		}
+		if (message.role === "toolResult") {
+			const id = message.toolCallId;
+			if (!callable.has(id) || ledger.claimedResultIds.has(id) || results.has(id) || !opts.resultReceived(id)) return undefined;
+			results.add(id);
+			continue;
+		}
+		if (message.role === "user" && opts.queuedUserIndexes.has(i)) continue;
+		return undefined;
 	}
-	return -1;
+	return next === pending.length ? results : undefined;
 }
 
 /** REUSE check for a shared record: Pi's messages before the record's cursor

@@ -73,6 +73,14 @@ export function ensureTurnStarted(c: QueryContext = ctx()): void {
 	}
 }
 
+/** Note a reply as delivered into Claude's history, in delivery order, with
+ *  the digest of the exact copy Pi receives (history-digest.ts). */
+function recordDeliveredReply(c: QueryContext, message: AssistantMessage): void {
+	const callIds = (message.content as Array<{ type?: string; id?: unknown }>)
+		.flatMap((block) => block?.type === "toolCall" && typeof block.id === "string" ? [block.id] : []);
+	c.deliveredAssistants.push({ digest: deliveredAssistantDigest(message), callIds });
+}
+
 export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx()): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput.stopReason, error: c.turnOutput.errorMessage})}`);
@@ -85,6 +93,7 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	// count it as missing one.
 	const { message, prunedIds } = terminalMessage(c);
 	c.forgetToolCalls(prunedIds);
+	recordDeliveredReply(c, message);
 	c.currentPiStream.push({ type: "done", reason, message });
 	c.currentPiStream.end();
 	c.currentPiStream = null;
@@ -269,17 +278,12 @@ export function endToolUseTurn(c: QueryContext): void {
 	cancelScheduledToolUseEnd(c);
 	c.turnOutput.stopReason = "toolUse";
 	const { message } = terminalMessage(c);
-	// What Claude holds of this turn, for the tool-result callback to check
-	// Pi's copy against (history-digest.ts).
-	const delivered = deliveredAssistantDigest(message);
+	recordDeliveredReply(c, message);
 	// Every tool call Pi is about to execute from this turn is owed a result and
 	// must never be dispatched again: a lagging stream replays the same tool_use
 	// into the NEXT turn, whose per-message dedup cannot see it.
 	for (const block of message.content as Array<{ type?: string; id?: unknown }>) {
-		if (block?.type === "toolCall" && typeof block.id === "string") {
-			c.forwardedToolCallIds.add(block.id);
-			c.deliveredAssistantDigests.set(block.id, delivered);
-		}
+		if (block?.type === "toolCall" && typeof block.id === "string") c.forwardedToolCallIds.add(block.id);
 	}
 	c.currentPiStream.push({ type: "done", reason: "toolUse", message });
 	c.currentPiStream.end();

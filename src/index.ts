@@ -29,7 +29,7 @@ import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
 import { primeConnectorServers } from "./connector-runtime.js";
 import { cancelScheduledSessionPersistence, conversationFingerprint, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
-import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, firstUndeliveredAssistant, historyDigest, historyDigestMatches } from "./history-digest.js";
+import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, historyDigest } from "./history-digest.js";
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
@@ -605,13 +605,25 @@ export function onPiHistoryReplaced(event: string): void {
 	markSessionForRebuild({ forceRotate: restarts });
 }
 
-/** Whether `messages[0, through)` is history Claude holds, as far as this
- *  query context can vouch: the prefix it claimed (its starting context, then
- *  each callback it accepted) is unchanged, and every assistant after that is
- *  exactly a reply the bridge delivered in this query. */
-function heldHistoryVerified(queryCtx: QueryContext, messages: Context["messages"], through: number): boolean {
-	if (!historyDigestMatches(queryCtx.latestCursorDigest, messages.slice(0, queryCtx.latestCursor)).matches) return false;
-	return firstUndeliveredAssistant(messages, queryCtx.latestCursor, through, queryCtx.deliveredAssistantDigests) < 0;
+/** The tool results messages[0, through) adds beyond this query context's
+ *  claim when it is EXACTLY history Claude holds, else undefined. The claim
+ *  (latestCursor/latestCursorDigest: the starting context, then each accepted
+ *  callback) must be unchanged, and the suffix after it must be precisely what
+ *  the bridge put into Claude's history since (deliveredSuffix). No claim at
+ *  all vouches for nothing. */
+function verifiedHeldSuffix(
+	queryCtx: QueryContext,
+	messages: Context["messages"],
+	through: number,
+	opts: { resultReceived: (id: string) => boolean; queuedUserIndexes: ReadonlySet<number> },
+): Set<string> | undefined {
+	const claim = queryCtx.latestCursorDigest;
+	if (claim === undefined || claim !== historyDigest(messages.slice(0, queryCtx.latestCursor))) return undefined;
+	return deliveredSuffix(messages, queryCtx.latestCursor, through, {
+		assistants: queryCtx.deliveredAssistants,
+		claimedAssistants: queryCtx.claimedAssistants,
+		claimedResultIds: queryCtx.claimedResultIds,
+	}, opts);
 }
 
 /** Provider entry point. Pi calls this for each prompt and each tool result.
@@ -803,6 +815,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// declined: the query finishes on its own history and the record it
 		// persists already rebuilds.
 		const replay = planDeferredUserReplay(context.messages, ledger, { historyReplaced: queryCtx.piHistoryReplaced, isKnown });
+		// The users this callback queues for delivery to Claude.
+		let queuedUserIndexes: ReadonlySet<number> = new Set<number>();
 		for (const id of deliveredResultIds) queryCtx.acknowledgedToolResultIds.add(id);
 		if (replay.userMessageCount > 0) {
 			// Image-only runs have no usable text but must still replay — capture
@@ -810,6 +824,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			if (replay.prompt || replay.blocks) {
 				queryCtx.deferredUserMessages.push({ text: replay.prompt ?? "", blocks: replay.blocks ?? undefined });
 				for (const index of replay.freshIndexes) ledger.own(context.messages[index]);
+				queuedUserIndexes = new Set(replay.freshIndexes);
 				debug(`provider: deferred ${replay.userMessageCount} user message(s) for replay after query${replay.blocks ? ` (${replay.blocks.length} blocks incl. images)` : ""}: ${(replay.prompt ?? "[image-only]").slice(0, 60)}`);
 			} else {
 				// Not owned: a later callback plans these again together with
@@ -858,17 +873,23 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// remains the backstop for a legacy-record foreign context the
 		// fingerprint guard could not classify.
 		// Every cursor carries the digest of the history it covers, and that
-		// digest may only describe what Claude holds: the history this query
-		// started from (and verified or imported), then each reply the bridge
-		// delivered to Pi. An extension or a Pi context edit can rewrite either
-		// between callbacks without changing the length. This query keeps its
-		// stale transcript, but the record never blesses the rewritten view: it
-		// gets UNVERIFIED_HISTORY_DIGEST and a rebuild mark (history-digest.ts).
+		// digest may only describe what Claude holds. The new suffix must be
+		// exactly what the bridge put into Claude's history since this query's
+		// claim: every reply it delivered, in order, the results Claude
+		// received for their calls, and the users this callback queued. An
+		// extension or a Pi context edit can rewrite, drop or add messages
+		// without changing the length; this query then keeps its stale
+		// transcript, but the record never blesses the Pi view: it gets
+		// UNVERIFIED_HISTORY_DIGEST and a rebuild mark (history-digest.ts).
 		const activeSession = getSharedSession();
 		const holdsRecord = activeSession !== null && stackDepth() === 0 && !queryCtx.detachedFromSharedSession;
-		if (!queryCtx.priorHistoryRewritten && !heldHistoryVerified(queryCtx, context.messages, capturedThrough)) {
+		const heldResults = queryCtx.priorHistoryRewritten ? undefined : verifiedHeldSuffix(queryCtx, context.messages, capturedThrough, {
+			resultReceived: (id) => queryCtx.acknowledgedToolResultIds.has(id),
+			queuedUserIndexes,
+		});
+		if (!heldResults && !queryCtx.priorHistoryRewritten) {
 			queryCtx.priorHistoryRewritten = true;
-			debug(`provider: history Claude already holds was rewritten mid-query (context length ${context.messages.length}); the next turn rebuilds from Pi history`);
+			debug(`provider: callback context (length ${context.messages.length}) is not the history Claude holds; the next turn rebuilds from Pi history`);
 		}
 		const rewritten = queryCtx.priorHistoryRewritten;
 		const capturedDigest = rewritten ? UNVERIFIED_HISTORY_DIGEST : historyDigest(context.messages.slice(0, capturedThrough));
@@ -887,6 +908,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		if (capturedThrough >= queryCtx.latestCursor) {
 			queryCtx.latestCursor = capturedThrough;
 			queryCtx.latestCursorDigest = capturedDigest;
+			if (heldResults) {
+				queryCtx.claimedAssistants = queryCtx.deliveredAssistants.length;
+				for (const id of heldResults) queryCtx.claimedResultIds.add(id);
+			}
 		}
 		return stream;
 	}
@@ -908,10 +933,15 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// length here would move (even shrink) the parent's cursor.
 		const activeSession = getSharedSession();
 		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) {
-			// Stamped only when this lane's query context can vouch for the whole
-			// context (see heldHistoryVerified); the end_turn reply Pi appends
-			// here carries no reply digest, so a later REUSE past it rebuilds.
-			const verified = !activeSession.needsRebuild && heldHistoryVerified(ctx(), context.messages, context.messages.length);
+			// No query delivers anything here: beyond the ended query's claim the
+			// context may hold only its undelivered replies and results for calls
+			// it made (verifiedHeldSuffix with no queued users). Anything else is
+			// unverified. The end_turn reply Pi appends here carries no reply
+			// digest, so a later REUSE past it rebuilds.
+			const verified = !activeSession.needsRebuild && verifiedHeldSuffix(ctx(), context.messages, context.messages.length, {
+				resultReceived: () => true,
+				queuedUserIndexes: new Set<number>(),
+			}) !== undefined;
 			const { trailingAssistantDigest: _covered, ...claimed } = activeSession;
 			setSharedSession({
 				...claimed,
@@ -987,7 +1017,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().latestCursor = context.messages.length;
 	ctx().latestCursorDigest = historyDigest(context.messages);
 	ctx().priorHistoryRewritten = false;
-	ctx().deliveredAssistantDigests.clear();
+	ctx().deliveredAssistants = [];
+	ctx().claimedAssistants = 0;
+	ctx().claimedResultIds.clear();
 	// The query's prompt covers its whole starting context, so it owns every
 	// user message there: a mid-query callback never re-queues the prompt or
 	// earlier history, wherever a context transform moves them.
