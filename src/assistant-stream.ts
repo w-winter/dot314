@@ -99,16 +99,30 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	c.currentPiStream = null;
 }
 
-/** Remove tool calls whose streamed arguments never completed. Pi persists
- * every terminal message, errors included, so error paths prune too. */
-export function prunePartialToolCalls(output: AssistantMessage): void {
-	const partial = (output.content as Array<any>).filter((b) => b?.type === "toolCall" && "partialJson" in b);
-	if (partial.length === 0) return;
-	const calls = partial.map((b) => ({ id: b.id, name: b.name }));
-	debug(`prunePartialToolCalls: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-	diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
-	appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
-	output.content = (output.content as Array<any>).filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
+/** End the current Pi stream with an error (or abort) for a failed query.
+ *  Pi persists every terminal message, errors included, so the error
+ *  message is built like the done message (terminalMessage): no truncated
+ *  tool call, no block of an abandoned stream attempt. It is always a copy:
+ *  Pi may still be encoding queued events against the live partial, which
+ *  must keep every block at its index. `fields` ride the error message only
+ *  (rate-limit metadata). No-op without a live stream. */
+export function endStreamWithError(
+	c: QueryContext,
+	failure: { reason: "error" | "aborted"; errorMessage: string; fields?: Record<string, unknown> },
+): void {
+	const stream = c.currentPiStream;
+	if (!stream || !c.turnOutput) return;
+	const { message } = terminalMessage(c);
+	const error: AssistantMessage = {
+		...message,
+		...failure.fields,
+		content: [...message.content],
+		stopReason: failure.reason,
+		errorMessage: failure.errorMessage,
+	};
+	stream.push({ type: "error", reason: failure.reason, error });
+	stream.end();
+	c.currentPiStream = null;
 }
 
 // --- Abandoned stream attempts ---
