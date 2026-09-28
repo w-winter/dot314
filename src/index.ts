@@ -51,6 +51,7 @@ import { registerBridgeCommands } from "./bridge-commands.js";
 import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.js";
 import { buildClaudeQueryOptions } from "./query-options.js";
 import { sdkQuery as startSdkQuery } from "./sdk-query.js";
+import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.js";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
 
 // Re-exports: the module decomposition must not change the entry's public
@@ -216,38 +217,63 @@ function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockPar
 }
 
 export interface DeferredUserReplayPlan {
-	// Index where the trailing consecutive user run begins (=== messages.length
-	// when the context doesn't end in a user message; never below the caller's
-	// capturedThrough bound).
+	// Index of the first fresh user message (=== messages.length when there is
+	// none). A caller that cannot capture the plan holds its cursor here.
 	runStart: number;
 	userMessageCount: number;
-	// All trailing user messages combined into one replay prompt, or null when
-	// there is nothing usable to replay (no trailing users, or all-empty text
-	// with no image blocks).
+	// Every fresh user message combined into one replay prompt, in order, or
+	// null when there is nothing usable to replay (no fresh users, or all-empty
+	// text with no image blocks).
 	prompt: string | null;
 	// Present when the run carries image blocks — the replay must send these
 	// (via wrapPromptStream) or the images are silently lost.
 	blocks: ContentBlockParam[] | null;
+	// Indexes of the fresh user messages the prompt/blocks were built from.
+	freshIndexes: number[];
+	// Indexes of user messages whose identity the ledger could not settle; the
+	// caller hands them to a rebuild instead of replaying or skipping them.
+	unresolvedIndexes: number[];
+	// The last message the query already knew (-1: none, or no ledger).
+	anchorIndex: number;
+	// Owned user messages this context no longer carries (0 without a ledger).
+	missingOwned: number;
 }
 
 /** Plan replay of user messages pi injected mid-query (steer drain, followUp).
- *  Captures the ENTIRE trailing consecutive user run, not just the last
- *  message, but never walks below `capturedThrough`, the position a prior callback
- *  of the SAME query already captured (or deliberately held at, for an
- *  all-empty run). Without that lower bound a second mid-query steer re-planned
- *  the whole run from scratch and the first steer was queued — and delivered to
- *  Claude — twice. */
-export function planDeferredUserReplay(messages: Context["messages"], capturedThrough = 0): DeferredUserReplayPlan {
-	let runStart = messages.length;
-	while (runStart > capturedThrough && messages[runStart - 1]?.role === "user") runStart--;
-	const trailingUsers = messages.slice(runStart);
-	const prompt = trailingUsers.length > 0 ? extractUserPrompt(trailingUsers) : null;
-	const blocks = trailingUsers.length > 0 ? extractUserPromptBlocks(trailingUsers) : null;
+ *  Captures EVERY new user message, wherever it sits, not just a trailing run:
+ *  a user followed by a system message or another tool result was skipped
+ *  while the cursor advanced past it, so Claude never saw it. `owned` is the
+ *  query's ledger (its starting history plus what earlier callbacks queued).
+ *  Ownership is by identity: an extension's context transform can drop,
+ *  insert or rewrite messages, so an index into the starting context
+ *  acknowledges nothing — a position floor lost a steer behind a pruned
+ *  history and replayed the prompt behind a grown one. Newness also uses the
+ *  ANCHOR, the last message the query already knew (an owned user, or
+ *  whatever `options.isKnown` accepts): an old message rewritten under new
+ *  content and a new timestamp matches no identity. An unknown message after
+ *  the anchor is new. One before it is new only while every owned message is
+ *  still present; with one missing it may be that message rewritten, and a
+ *  rebuild owns it (never replayed, never silently dropped). Without any
+ *  ledger every user message is fresh. `historyReplaced` (Pi compacted or
+ *  navigated while the query ran and the restart was declined) and a context
+ *  with no anchor send every unowned message to a rebuild. */
+export function planDeferredUserReplay(messages: Context["messages"], owned?: UserMessageLedger, options: ClassifyOptions = {}): DeferredUserReplayPlan {
+	const { fresh, unresolved, anchor, missingOwned } = owned
+		? owned.classify(messages, options)
+		: { fresh: messages.flatMap((message, index) => message?.role === "user" ? [index] : []), unresolved: [], anchor: -1, missingOwned: 0 };
+	const users = fresh.map((index) => messages[index]);
+	const runStart = fresh[0] ?? messages.length;
+	const prompt = users.length > 0 ? extractUserPrompt(users) : null;
+	const blocks = users.length > 0 ? extractUserPromptBlocks(users) : null;
 	return {
 		runStart,
-		userMessageCount: trailingUsers.length,
+		userMessageCount: users.length,
 		prompt: prompt?.trim() ? prompt : null,
 		blocks,
+		freshIndexes: fresh,
+		unresolvedIndexes: unresolved,
+		anchorIndex: anchor,
+		missingOwned,
 	};
 }
 
@@ -646,6 +672,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		syncServedTools(queryCtx, context);
 		const toolsSettling = queryCtx.servedToolsSettling;
 		const unmatchedResultIds: string[] = [];
+		// Results THIS callback delivers: new input, never an anchor for the
+		// user-message split below. Acknowledged once that split is done.
+		const deliveredResultIds: string[] = [];
 		for (const result of allResults) {
 			const id = result.toolCallId;
 			if (id && !queryCtx.hasRecordedToolCall(id) && !queryCtx.forwardedToolCallIds.has(id)) {
@@ -658,6 +687,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				continue;
 			}
 			queryCtx.markToolResultDelivered(id);
+			if (id) deliveredResultIds.push(id);
 			if (id && queryCtx.pendingToolCalls.has(id)) {
 				const pending = queryCtx.pendingToolCalls.get(id)!;
 				queryCtx.pendingToolCalls.delete(id);
@@ -728,24 +758,52 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// The cursor may only advance over messages actually captured for replay:
 		// claiming Claude owns a user message that was never deferred is permanent
 		// silent input loss ( — only the LAST of several trailing user
-		// messages was captured while the cursor skipped them all).
+		// messages was captured while the cursor skipped them all). Every new
+		// user message is examined, not only a trailing run: a user followed by a
+		// system message or another tool result is just as unowned.
 		let capturedThrough = context.messages.length;
-		if (lastMsgRole === "user") {
-			// Bound the plan at this query's own captured position (latestCursor
-			// Math.max-advances with every callback's capturedThrough below), so a
-			// second steer callback only queues messages BEYOND what the first one
-			// already owns — re-planning the whole trailing run queued the earlier
-			// steer twice. latestCursor, not the shared record's
-			// cursor, deliberately: it lives on this QueryContext, so it is correct
-			// for reentrant and detached foreign queries too, whose contexts the
-			// shared cursor does not index.
-			const replay = planDeferredUserReplay(context.messages, queryCtx.latestCursor);
+		// "New" is decided by identity against this query's own ledger (its
+		// starting history plus everything earlier callbacks queued), never by
+		// position: an extension's context transform may prune, insert or
+		// rewrite messages between callbacks, so no index into an earlier context
+		// is a delivery boundary. The ledger keeps the prompt and already-queued
+		// steers from being queued again (a second steer callback once re-queued
+		// the first steer). It lives on this QueryContext, so it is correct for
+		// reentrant and detached foreign queries too.
+		const ledger = queryCtx.ownedUserMessages;
+		// Identity alone cannot tell a new message from an older one an
+		// extension rewrote under new content AND a new timestamp (that replayed
+		// history to Claude as a fresh instruction). Pi appends new input at the
+		// end, so the split is anchored on the last message the query knew
+		// before this callback: an owned user, an assistant message carrying a
+		// tool call this query forwarded to Pi, or a tool result an earlier
+		// callback delivered. This callback's own results are new, not anchors.
+		const isKnown = (message: { role: string }): boolean => {
+			if (message.role === "assistant") {
+				const content = (message as AssistantMessage).content;
+				return Array.isArray(content) && content.some((block) => block?.type === "toolCall" && queryCtx.forwardedToolCallIds.has(block.id));
+			}
+			if (message.role === "toolResult") {
+				const id = (message as { toolCallId?: unknown }).toolCallId;
+				return typeof id === "string" && queryCtx.acknowledgedToolResultIds.has(id);
+			}
+			return false;
+		};
+		// piHistoryReplaced is still set here only when the restart above was
+		// declined: the query finishes on its own history and the record it
+		// persists already rebuilds.
+		const replay = planDeferredUserReplay(context.messages, ledger, { historyReplaced: queryCtx.piHistoryReplaced, isKnown });
+		for (const id of deliveredResultIds) queryCtx.acknowledgedToolResultIds.add(id);
+		if (replay.userMessageCount > 0) {
 			// Image-only runs have no usable text but must still replay — capture
 			// whenever EITHER form has content.
 			if (replay.prompt || replay.blocks) {
-				ctx().deferredUserMessages.push({ text: replay.prompt ?? "", blocks: replay.blocks ?? undefined });
+				queryCtx.deferredUserMessages.push({ text: replay.prompt ?? "", blocks: replay.blocks ?? undefined });
+				for (const index of replay.freshIndexes) ledger.own(context.messages[index]);
 				debug(`provider: deferred ${replay.userMessageCount} user message(s) for replay after query${replay.blocks ? ` (${replay.blocks.length} blocks incl. images)` : ""}: ${(replay.prompt ?? "[image-only]").slice(0, 60)}`);
 			} else {
+				// Not owned: a later callback plans these again together with
+				// whatever arrives behind them.
 				capturedThrough = replay.runStart;
 				diagDump("deferred_user_replay_skipped", {
 					contextLength: context.messages.length,
@@ -754,6 +812,28 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 				});
 			}
+		}
+		if (replay.unresolvedIndexes.length > 0) {
+			// Identity unknown: queueing could resend content Claude already has
+			// (an extension rewrote an owned message, or replaced the history so
+			// no anchor is left), skipping could lose input (an extension may
+			// have moved a new message before a known one while an owned message
+			// went missing). A rebuild re-imports Pi's history, so it owns them.
+			// Owning them in the ledger reports each one once per query. An
+			// extension that re-stamps rewritten history on every call therefore
+			// costs one rebuild per prompt; the diag entry below records it.
+			for (const index of replay.unresolvedIndexes) ledger.own(context.messages[index]);
+			queryCtx.userInputNeedsRebuild = true;
+			debug(`provider: ${replay.unresolvedIndexes.length} mid-query user message(s) could not be identified${replay.anchorIndex < 0 ? " (no known message left in the context)" : ` (anchor ${replay.anchorIndex}, ${replay.missingOwned} owned message(s) missing)`}; the next turn rebuilds from Pi history`);
+			diagDump("user_message_identity_unresolved", {
+				contextLength: context.messages.length,
+				indexes: replay.unresolvedIndexes,
+				anchor: replay.anchorIndex,
+				missingOwned: replay.missingOwned,
+				beforeAnchor: replay.unresolvedIndexes.filter((index) => index < replay.anchorIndex).length,
+				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
+			});
+			if (stackDepth() === 0 && !queryCtx.detachedFromSharedSession) markSessionForRebuild();
 		}
 
 		// Cursor may only ADVANCE, and only for a query that holds the record's
@@ -855,6 +935,12 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	ctx().latestCursor = 0;
+	// The query's prompt covers its whole starting context, so it owns every
+	// user message there: a mid-query callback never re-queues the prompt or
+	// earlier history, wherever a context transform moves them.
+	ctx().ownedUserMessages = UserMessageLedger.fromHistory(context.messages);
+	ctx().acknowledgedToolResultIds.clear();
+	ctx().userInputNeedsRebuild = false;
 	ctx().committedOutput = false;
 	ctx().piHistoryReplaced = false;
 	ctx().reportedHistoryRestartDecline = false;
@@ -1075,7 +1161,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
 		const restartPending = Boolean(abortCtx.restartRequest);
 		let replaced = next;
-		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending)) {
+		// A mid-query user message the ledger could not identify is owned by
+		// the rebuild; a completed query's fresh record must not erase that.
+		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending || abortCtx.userInputNeedsRebuild)) {
 			replaced = { ...next, needsRebuild: true };
 			if (restartPending) replaced.forceRotate = true;
 		}

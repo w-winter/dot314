@@ -13,6 +13,7 @@ import type { McpResult } from "./extract-tool-results.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { debug } from "./debug.js";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
+import { UserMessageLedger } from "./user-message-ledger.js";
 
 /** A mid-query user run captured for replay after the active query ends.
  *  `text` is the joined text form (previews, and the replay prompt when no
@@ -272,6 +273,21 @@ export class QueryContext {
 	reportedHistoryRestartDecline = false;
 	restartRequest: QueryRestartRequest | null = null;
 	latestCursor = 0;
+	/** User messages this query owns: its starting history, plus every one it
+	 *  queued for replay or handed to a rebuild. Identity-based, because a
+	 *  callback context's positions need not match the starting context's. */
+	ownedUserMessages = new UserMessageLedger();
+	/** Tool-result ids delivered by an EARLIER provider callback of this query.
+	 *  One of them in a callback context is something the query already knew,
+	 *  so it can anchor the old/new split of unknown user messages (see
+	 *  UserMessageLedger.classify). Updated after a callback's user messages
+	 *  are classified, so that callback's own results are never anchors.
+	 *  Query-scoped, cleared at fresh-query setup. */
+	acknowledgedToolResultIds = new Set<string>();
+	/** A mid-query user message could not be identified (see
+	 *  UserMessageLedger.classify), so a rebuild owns it: the record this query
+	 *  persists must carry needsRebuild. */
+	userInputNeedsRebuild = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
 	/** Results a message-boundary reap moved OUT of pendingResults so they stop

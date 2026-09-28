@@ -14,6 +14,9 @@ const tool = { name: "echo", description: "Return a value", parameters: { type: 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const system = { role: "system", content: "Pi instructions", toolsAdded: [tool], timestamp: 0 };
 const user = (content) => ({ role: "user", content, timestamp: Date.now() });
+// Pi keeps one message object (and its timestamp) for the prompt across every
+// provider call of the turn; the bridge identifies user messages by it.
+const runEcho = user("run echo");
 const toolCall = { role: "assistant", content: [{ type: "toolCall", id: "t0", name: "echo", arguments: { id: "t0" } }], timestamp: Date.now() };
 const toolResult = { role: "toolResult", toolCallId: "t0", content: [{ type: "text", text: "tool output" }], timestamp: Date.now() };
 const collect = async (stream) => { const events = []; for await (const event of stream) events.push(event); return events; };
@@ -91,7 +94,7 @@ async function withWaitingQuery(run, childToolName, throwsOnClose = false) {
 		return calls.length === 1 ? waitingQuery(record, childToolName, throwsOnClose) : (queued.shift() ?? (() => answeringQuery(options.resume)))();
 	});
 	try {
-		const opening = await collect(streamClaudeAgentSdk(model, { messages: [system, user("run echo")] }, { cwd: root }));
+		const opening = await collect(streamClaudeAgentSdk(model, { messages: [system, runEcho] }, { cwd: root }));
 		assert.equal(opening.filter((event) => event.type === "done").length, 1);
 		assert.notEqual(ctx().activeQuery, null);
 		await run({ root, record, calls, queued, oldSession, oldBytes, opening });
@@ -139,19 +142,22 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 				record.release();
 				await waitFor(() => ctx().activeQuery === null);
 				assert.equal(__testGetBridgeIntegrityState().sharedSession?.needsRebuild, true);
+				// The compacted context's summary is history Claude already has; it
+				// must not come back as a continuation prompt.
+				assert.equal(calls.length, 1, "the compaction summary is not replayed to Claude as a steer");
 			}, childToolName);
 		});
 	}
 
 	it("restarts a later connector-free query in the same session", async () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
-			streamClaudeAgentSdk(model, { messages: [system, user("run echo"), toolCall, toolResult] }, { cwd: root });
+			streamClaudeAgentSdk(model, { messages: [system, runEcho, toolCall, toolResult] }, { cwd: root });
 			record.release();
 			await waitFor(() => ctx().activeQuery === null);
 
 			const later = {};
 			queued.push(() => waitingQuery(later));
-			await collect(streamClaudeAgentSdk(model, { messages: [system, user("run echo"), toolCall, toolResult, user("again")] }, { cwd: root }));
+			await collect(streamClaudeAgentSdk(model, { messages: [system, runEcho, toolCall, toolResult, user("again")] }, { cwd: root }));
 			onPiHistoryReplaced("session_compact");
 			const events = await collect(streamClaudeAgentSdk(model, { messages: [system, user("summary"), toolCall, toolResult] }, { cwd: root }));
 			assert.equal(later.closed, true);
@@ -190,7 +196,8 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
 			const continuation = {};
 			queued.push(() => waitingQuery(continuation, undefined, false, "t1"));
-			const steered = [system, user("summary"), toolCall, toolResult, user("steer one")];
+			// Before the compaction, Pi's context still holds the query's prompt.
+			const steered = [system, runEcho, toolCall, toolResult, user("steer one")];
 			streamClaudeAgentSdk(model, { messages: steered }, { cwd: root });
 			streamClaudeAgentSdk(model, { messages: [...steered, user("steer two")] }, { cwd: root });
 			record.release();
@@ -210,7 +217,7 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
 			const continuation = {};
 			queued.push(() => throwingContinuation(continuation));
-			const steered = [system, user("summary"), toolCall, toolResult, user("steer one")];
+			const steered = [system, runEcho, toolCall, toolResult, user("steer one")];
 			streamClaudeAgentSdk(model, { messages: steered }, { cwd: root });
 			streamClaudeAgentSdk(model, { messages: [...steered, user("steer two")] }, { cwd: root });
 			record.release();
