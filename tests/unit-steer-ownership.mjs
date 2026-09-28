@@ -354,7 +354,11 @@ describe("mid-query user ownership survives context transforms", () => {
 		assertDeliveredOnceInOrder(result, ["STEER-AFTER-PRUNE"]);
 		assert.deepEqual(result.snapshot.queued, ["STEER-AFTER-PRUNE"]);
 		assert.deepEqual(result.observed.continuationPrompts, ["STEER-AFTER-PRUNE"]);
-		assert.notEqual(sharedRecord("steer-after-prune")?.needsRebuild, true, "plain pruning identifies every message; no rebuild needed");
+		assert.ok(!diagLabels().includes("user_message_identity_unresolved"), "plain pruning identifies every message; steer ownership needs no rebuild");
+		// The pruned messages are history Claude already holds, and Pi's view of
+		// it changed under the cursor: the next turn rebuilds from Pi's history
+		// (history-digest.ts), which is independent of steer ownership.
+		assert.equal(sharedRecord("steer-after-prune")?.needsRebuild, true);
 	});
 
 	it("never replays the prompt when inserted messages grow the context ahead of it", async () => {

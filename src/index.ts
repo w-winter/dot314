@@ -29,10 +29,11 @@ import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
 import { primeConnectorServers } from "./connector-runtime.js";
 import { cancelScheduledSessionPersistence, conversationFingerprint, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
+import { historyDigest, historyDigestMatches } from "./history-digest.js";
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
-import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, updateTurnResponseModel } from "./assistant-stream.js";
+import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -847,11 +848,35 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// advance it past history Claude never saw; Math.max
 		// remains the backstop for a legacy-record foreign context the
 		// fingerprint guard could not classify.
+		// Every cursor carries the digest of the history it covers, and the
+		// history already claimed must still match: an extension or a Pi
+		// context edit can rewrite it between callbacks without changing its
+		// length. This query keeps its stale transcript, but the record it
+		// leaves must rebuild (see history-digest.ts).
 		const activeSession = getSharedSession();
-		if (activeSession && stackDepth() === 0 && !queryCtx.detachedFromSharedSession) {
-			setSharedSession({ ...activeSession, cursor: Math.max(activeSession.cursor, capturedThrough) });
+		const holdsRecord = activeSession !== null && stackDepth() === 0 && !queryCtx.detachedFromSharedSession;
+		const priorRewritten =
+			(holdsRecord && !historyDigestMatches(activeSession.historyDigest, context.messages.slice(0, activeSession.cursor)).matches) ||
+			!historyDigestMatches(queryCtx.latestCursorDigest, context.messages.slice(0, queryCtx.latestCursor)).matches;
+		if (priorRewritten && !queryCtx.priorHistoryRewritten) {
+			queryCtx.priorHistoryRewritten = true;
+			debug(`provider: history Claude already holds was rewritten mid-query (context length ${context.messages.length}); the next turn rebuilds from Pi history`);
 		}
-		queryCtx.latestCursor = Math.max(queryCtx.latestCursor, capturedThrough);
+		const capturedDigest = historyDigest(context.messages.slice(0, capturedThrough));
+		if (holdsRecord) {
+			const cursor = Math.max(activeSession.cursor, capturedThrough);
+			const { trailingAssistantDigest: _covered, ...claimed } = activeSession;
+			setSharedSession({
+				...claimed,
+				cursor,
+				historyDigest: cursor === capturedThrough ? capturedDigest : activeSession.historyDigest,
+				...(queryCtx.priorHistoryRewritten ? { needsRebuild: true } : {}),
+			});
+		}
+		if (capturedThrough >= queryCtx.latestCursor) {
+			queryCtx.latestCursor = capturedThrough;
+			queryCtx.latestCursorDigest = capturedDigest;
+		}
 		return stream;
 	}
 
@@ -871,7 +896,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// from a foreign one-shot indexes ITS conversation, and writing that
 		// length here would move (even shrink) the parent's cursor.
 		const activeSession = getSharedSession();
-		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) setSharedSession({ ...activeSession, cursor: context.messages.length });
+		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) {
+			const { trailingAssistantDigest: _covered, ...claimed } = activeSession;
+			setSharedSession({ ...claimed, cursor: context.messages.length, historyDigest: historyDigest(context.messages) });
+		}
 		const c = ctx();  // capture current context for the microtask
 		queueMicrotask(() => {
 			c.resetTurnState(model);
@@ -935,6 +963,8 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	ctx().latestCursor = 0;
+	ctx().latestCursorDigest = undefined;
+	ctx().priorHistoryRewritten = false;
 	// The query's prompt covers its whole starting context, so it owns every
 	// user message there: a mid-query callback never re-queues the prompt or
 	// earlier history, wherever a context transform moves them.
@@ -1157,15 +1187,42 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// session: its completion/failure handlers would overwrite the PARENT's
 	// record with the child's session id and cursor. A foreign-conversation
 	// one-shot has exactly the same non-claim on the record.
+	// The digest a record persisted at `cursor` must carry (history-digest.ts):
+	// the one this query's latest callback or the live record bound to that
+	// cursor, else this query's starting context when the cursor is its
+	// length. A cursor none of them covers stays undigested, which the next
+	// REUSE accepts once.
+	const persistedHistoryDigest = (cursor: number): string | undefined => {
+		if (cursor === abortCtx.latestCursor && abortCtx.latestCursorDigest) return abortCtx.latestCursorDigest;
+		const active = getSharedSession();
+		if (active && cursor === active.cursor && active.historyDigest) return active.historyDigest;
+		return cursor === context.messages.length ? historyDigest(context.messages) : undefined;
+	};
+	// The reply still to be delivered through the live Pi stream: Pi appends
+	// it at the persisted cursor (finalizeCurrentStream sends terminalMessage,
+	// which also drops calls whose arguments never finished). None once a
+	// failure ended the stream: Pi's copy is then an error message.
+	const deliveredReplyDigest = (): string | undefined => {
+		if (!abortCtx.turnOutput || !abortCtx.currentPiStream) return undefined;
+		const { message } = terminalMessage(abortCtx, { prunePartialCalls: false });
+		const content = (message.content as Array<{ type?: string }>).filter((block) => !(block?.type === "toolCall" && "partialJson" in block));
+		return historyDigest([{ ...message, content } as AssistantMessage]);
+	};
 	const persistSession = (next: SessionState | null): void => {
 		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
 		const restartPending = Boolean(abortCtx.restartRequest);
 		let replaced = next;
 		// A mid-query user message the ledger could not identify is owned by
-		// the rebuild; a completed query's fresh record must not erase that.
-		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending || abortCtx.userInputNeedsRebuild)) {
+		// the rebuild, as is history rewritten under Claude mid-query; a
+		// completed query's fresh record must not erase either mark.
+		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending || abortCtx.userInputNeedsRebuild || abortCtx.priorHistoryRewritten)) {
 			replaced = { ...next, needsRebuild: true };
 			if (restartPending) replaced.forceRotate = true;
+		}
+		if (replaced && replaced.historyDigest === undefined) {
+			const digest = persistedHistoryDigest(replaced.cursor);
+			const reply = deliveredReplyDigest();
+			replaced = { ...replaced, ...(digest ? { historyDigest: digest } : {}), ...(reply ? { trailingAssistantDigest: reply } : {}) };
 		}
 		setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
 	};

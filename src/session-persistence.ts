@@ -7,6 +7,7 @@ import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, saf
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
 import { DEBUG, DEBUG_LOG_PATH, debug, diagDump } from "./debug.js";
+import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import {
 	findUnpairedToolUses,
@@ -214,6 +215,10 @@ export function restoreSharedSessionFromPi(ctx: { sessionManager?: unknown; cwd?
 		// Absent on pre-3.1.1 markers: restore as identity-unknown (the foreign
 		// guard fails open) rather than rejecting the entry.
 		...(typeof persisted.conversationFingerprint === "string" ? { conversationFingerprint: persisted.conversationFingerprint } : {}),
+		// The digest of the history Claude holds travels with the marker; absent
+		// on older markers, where the next REUSE adopts one (history-digest.ts).
+		...(typeof persisted.historyDigest === "string" ? { historyDigest: persisted.historyDigest } : {}),
+		...(typeof persisted.trailingAssistantDigest === "string" ? { trailingAssistantDigest: persisted.trailingAssistantDigest } : {}),
 		...(accountProfileId ? { accountProfileId, claudeConfigDir } : {}),
 	});
 	debug(`restoreSharedSession: restored ${persisted.sessionId.slice(0, 8)}, cursor=${cursor}, account=${accountProfileId ?? "default"}`);
@@ -482,6 +487,10 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string, claude
 //     advances (past the one optional assistant), so everything from
 //     promptStart on is uncaptured input. Returns the existing sessionId. Keeps CC's
 //     prompt cache warm.
+//     The count check alone cannot see a same-length rewrite of the history
+//     Claude holds, so REUSE also requires the record's history digest to
+//     match Pi's messages before the cursor (Case 7 otherwise; see
+//     history-digest.ts for what the digest covers and ignores).
 //   REBUILD — no session yet, or pi's history has diverged (non-trailing
 //     missed messages, e.g. another provider took a turn). Wipes the existing
 //     session file (if any) and writes a fresh one containing all prior
@@ -565,7 +574,17 @@ export function syncSharedSession(
 	// profile that created its JSONL and prompt cache.
 	if (sharedSession && sameAccount && !sharedSession.needsRebuild) {
 		const batch = planIncrementalPromptBatch(messages, sharedSession.cursor);
-		if (batch) {
+		// The count-based plan only says the tail is new user input. The history
+		// Claude already holds (before the cursor, plus the reply Pi appended at
+		// it) must also still be Pi's: a same-length rewrite of it (a Pi context
+		// edit, an extension's context transform) would otherwise leave Claude on
+		// its stale transcript for good. See history-digest.ts.
+		const prior = batch ? sharedHistoryMatches(sharedSession, messages, batch.promptStart) : undefined;
+		if (batch && prior && !prior.matches) {
+			debug(`Case 7 history-rewritten: Pi's history through prompt start ${batch.promptStart} no longer matches what session ${sharedSession.sessionId.slice(0, 8)} holds (cursor=${sharedSession.cursor}) — rebuilding`);
+		}
+		if (batch && prior?.matches) {
+			if (!prior.checked) debug(`Case 3: record had no history digest — accepting it once and stamping one`);
 			// Read the pre-update cursor first: setSharedSession reassigns the live
 			// binding, so comparing against sharedSession.cursor afterwards would
 			// always be equal and the "advanced past trailing assistant" debug
@@ -576,9 +595,13 @@ export function syncSharedSession(
 			// upgrades to the two-component form once the conversation has its
 			// first assistant message (see conversationFingerprintUpgrade).
 			const upgradedFingerprint = conversationFingerprintUpgrade(sharedSession.conversationFingerprint, incomingFingerprint);
+			// The reply the trailing-assistant digest described is now inside the
+			// digested history.
+			const { trailingAssistantDigest: _covered, ...reused } = sharedSession;
 			setSharedSession({
-				...sharedSession,
+				...reused,
 				cursor: batch.promptStart,
+				historyDigest: historyDigest(messages.slice(0, batch.promptStart)),
 				cwd,
 				...(upgradedFingerprint ? { conversationFingerprint: upgradedFingerprint } : {}),
 			});
@@ -628,6 +651,7 @@ export function syncSharedSession(
 	setSharedSession({
 		sessionId: session.sessionId,
 		cursor: priorMessages.length,
+		historyDigest: historyDigest(priorMessages),
 		cwd,
 		// The rebuilt file's content IS this context, so its anchor is the
 		// record's identity — including after a compact/tree-nav that moved it.

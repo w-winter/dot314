@@ -30,6 +30,18 @@ export interface SessionState {
 	// to the two-component form on the next REUSE. Absent on records restored
 	// from pre-3.1.1 markers → identity unknown, pre-fingerprint behavior.
 	conversationFingerprint?: string;
+	// Digest (history-digest.ts) of Pi's messages [0, cursor) as the bridge
+	// imports them: the content Claude Code holds. Every cursor write carries
+	// the digest of the slice it covers, and REUSE requires the slice to still
+	// match, so a same-length rewrite of that history rebuilds instead of
+	// resuming a stale transcript. Absent on records from before digests: the
+	// next REUSE accepts the record once and stamps one.
+	historyDigest?: string;
+	// historyDigest of the one assistant message the record's query delivered
+	// to Pi last, which Pi appends at index `cursor` and the next REUSE skips
+	// past as already Claude's. Checked only then, and dropped once a cursor
+	// write moves past it; absent when the query ended without delivering one.
+	trailingAssistantDigest?: string;
 	// Force the next syncSharedSession call down the REBUILD path. Set when
 	// pi has mutated its messages array out from under us (compact, tree
 	// navigation) or after an abort left the JSONL in an indeterminate state.

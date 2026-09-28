@@ -15,6 +15,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { conversationFingerprint, syncSharedSession } from "../src/session-persistence.js";
+import { historyDigest } from "../src/history-digest.js";
 import { __testGetBridgeIntegrityState, setSharedSession } from "../src/bridge-state.js";
 
 const user = (text) => ({ role: "user", content: text });
@@ -57,6 +58,9 @@ describe("syncSharedSession REUSE path", () => {
 		assert.deepEqual(__testGetBridgeIntegrityState().sharedSession, {
 			sessionId: "sess-reuse",
 			cursor: 2,
+			// The history Claude now holds, [0, cursor); a pre-digest record is
+			// accepted once and stamped.
+			historyDigest: historyDigest(messages.slice(0, 2)),
 			cwd: CWD,
 			// A REUSE match proves identity, so a pre-fingerprint record adopts
 			// the conversation anchor.
@@ -191,6 +195,7 @@ describe("syncSharedSession foreign-conversation guard (#1001)", () => {
 		assert.deepEqual(__testGetBridgeIntegrityState().sharedSession, {
 			sessionId: "sess-reuse",
 			cursor: 2,
+			historyDigest: historyDigest(messages.slice(0, 2)),
 			cwd: CWD,
 			conversationFingerprint: fp,
 		});

@@ -273,6 +273,13 @@ export class QueryContext {
 	reportedHistoryRestartDecline = false;
 	restartRequest: QueryRestartRequest | null = null;
 	latestCursor = 0;
+	/** historyDigest of the callback context slice [0, latestCursor): the
+	 *  digest a record persisted at that cursor must carry. */
+	latestCursorDigest: string | undefined = undefined;
+	/** A callback context no longer matched the history Claude holds (the
+	 *  record's or this query's own digest) — an extension or Pi context edit
+	 *  rewrote it mid-query. The record this query persists must rebuild. */
+	priorHistoryRewritten = false;
 	/** User messages this query owns: its starting history, plus every one it
 	 *  queued for replay or handed to a rebuild. Identity-based, because a
 	 *  callback context's positions need not match the starting context's. */
