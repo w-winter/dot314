@@ -12,6 +12,7 @@ import { connectorServersSnapshot } from "./connector-runtime.js";
 import { PROVIDER_ID } from "./convert.js";
 import { makeCliDebugOptions } from "./debug.js";
 import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.js";
+import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.js";
 
 // --- Effort level mapping ---
 // Pi reasoning levels → CC SDK effort levels
@@ -49,6 +50,9 @@ export interface BuildClaudeQueryOptionsInput {
 	account?: ClaudeAccountRoute;
 	bridgeConfig: Config;
 	systemPrompt?: string;
+	/** Where the system prompt came from; without it the prompt is treated as
+	 * a caller's own and sent unchanged. */
+	systemPromptOrigin?: SystemPromptOrigin;
 	/** Pi reasoning level from the stream options, if any. */
 	reasoning?: string;
 	resumeSessionId: string | null;
@@ -60,12 +64,15 @@ export interface BuiltClaudeQueryOptions {
 	queryOptions: NonNullable<Parameters<typeof query>[0]["options"]>;
 	// Diagnostics-ish bits the caller's debug line reports.
 	enableCloudMcp: boolean;
+	/** `pi-main:<evidence>` for Pi's main agent prompt, the only prompt a
+	 * configured replacement changes; `caller` for any other prompt. */
+	systemPromptSource: "pi-main:sections" | "pi-main:session" | "caller";
 	effort?: EffortLevel;
 	fallbackModel?: string;
 }
 
 export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): BuiltClaudeQueryOptions {
-	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
+	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
 	const providerSettings = bridgeConfig.provider ?? {};
 	const accountScope = accountSessionScope(account);
 	// Whether to expose the Claude account's claude.ai cloud MCP connectors
@@ -80,11 +87,12 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// before the CLI has fetched them.
 	const connectorServers = enableCloudMcp ? connectorServersSnapshot(accountScope.claudeConfigDir) : {};
 	if (systemPrompt === undefined) throw new Error("pi-claude-bridge: missing Pi system prompt");
-	const resolvedSystemPrompt = resolveSystemPrompt(
-		systemPrompt,
-		`${queryModel.provider}/${queryModel.id}`,
-		bridgeConfig.systemPrompt,
-	);
+	// Only Pi's main agent prompt takes the configured replacement; a prompt
+	// from compaction or an extension's own call keeps its instructions.
+	const mainPromptEvidence = piMainPromptEvidence(systemPromptOrigin);
+	const resolvedSystemPrompt = mainPromptEvidence
+		? resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt)
+		: systemPrompt;
 
 	// Non-connector queries load no Claude Code filesystem settings by default.
 	// Connector mode needs user settings for account connector discovery.
@@ -172,6 +180,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	return {
 		queryOptions,
 		enableCloudMcp,
+		systemPromptSource: mainPromptEvidence ? `pi-main:${mainPromptEvidence}` : "caller",
 		...(effort ? { effort } : {}),
 		...(fallbackModel ? { fallbackModel } : {}),
 	};

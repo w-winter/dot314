@@ -1,6 +1,7 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { debug, diagDump, diagGuidance } from "./debug.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
+import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
 import { type QueryContext } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.js";
@@ -141,6 +142,7 @@ function startedLaneStore(): WeakMap<object, string> {
 
 export function recordStartedLane(sessionManager: object, sessionId: string): void {
 	startedLaneStore().set(sessionManager, sessionId);
+	notePiSessionStarted(sessionId);
 }
 
 /** The lane recorded at this manager's session_start, removed as it is read —
@@ -150,6 +152,7 @@ export function takeStartedLane(sessionManager: object): string | undefined {
 	const store = startedLaneStore();
 	const sessionId = store.get(sessionManager);
 	store.delete(sessionManager);
+	if (sessionId !== undefined) notePiSessionEnded(sessionId);
 	return sessionId;
 }
 

@@ -46,9 +46,9 @@ The bridge reads `claude-bridge.json` from `~/.pi/agent` and from a trusted proj
 The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-compat`, which continues to read `anthropicOAuthCompat` from `settings.json`.
 
 - `enabled`: register the `pi-claude/*` models; reload required.
-- `systemPrompt.replacement`: replace Pi's base instructions while retaining Pi-managed project context and skills.
+- `systemPrompt.replacement`: replace the base instructions of Pi's main agent prompt while retaining Pi-managed project context and skills. Other system prompts reach Claude unchanged, whatever they contain, including those of Pi's compaction and branch summaries and extensions' own model calls.
 - `systemPrompt.includeModelLine`: prepend `Active model: provider/modelId` to the replacement.
-- `systemPrompt.preservePiContext`: retain Pi-managed context after the replacement; defaults to `true`.
+- `systemPrompt.preservePiContext`: retain Pi-managed context after the replacement; defaults to `true`. `false` sends only the replacement in place of Pi's main agent prompt.
 - `provider.fastMode`, `provider.pathToClaudeCodeExecutable`: control how the Claude Code subprocess is launched.
 - `provider.forceEffort`, `provider.modelEffortOverrides`: pin a Claude effort for every request or per model. Override keys are bare ids (`claude-opus-4-8`), `pi-claude/<id>` or `*`; values are `low`, `medium`, `high`, `xhigh` or `max`; a per-model entry beats the global force.
 - `provider.settingSources`: explicitly load selected filesystem settings from Claude Code. By default, no settings load when connectors are disabled. When connectors are enabled, the bridge loads the user's settings.

@@ -1,4 +1,5 @@
 import {
+	getCurrentSystemMessage,
 	getCurrentSystemPrompt,
 	getCurrentTools,
 	type AssistantMessage,
@@ -1240,6 +1241,11 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		account,
 		bridgeConfig,
 		systemPrompt: getCurrentSystemPrompt(context.messages),
+		systemPromptOrigin: {
+			sectioned: getCurrentSystemMessage(context.messages)?.sections !== undefined,
+			sessionId: options?.sessionId,
+			cacheRetention: options?.cacheRetention,
+		},
 		reasoning: options?.reasoning,
 		resumeSessionId,
 		mcpServers,
@@ -1251,7 +1257,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		`model=${queryModel.id} requested=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
 		`resume=${resumeSessionId?.slice(0, 8) ?? "none"} effort=${built.effort ?? "default"} account=${account?.label ?? "legacy"}`,
 		`fallback=${built.fallbackModel ?? "none"}`,
-		`systemPrompt=pi strictMcp=true fastMode=${providerSettings.fastMode === true} connectors=${built.enableCloudMcp}`,
+		`systemPrompt=${built.systemPromptSource} strictMcp=true fastMode=${providerSettings.fastMode === true} connectors=${built.enableCloudMcp}`,
 		`claudeExec=${claudeExecutablePreflight ? `${claudeExecutablePreflight.fileType}:${claudeExecutablePreflight.path}` : "sdk-default"}`,
 		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
 

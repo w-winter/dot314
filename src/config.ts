@@ -20,7 +20,7 @@ const VALID_EFFORT_LEVELS = new Set<BridgeEffortLevel>(["low", "medium", "high",
  */
 export type ConnectorWriteMode = "deny" | "allow";
 
-/** Replaces Pi's base prompt while retaining its context suffix by default. */
+/** Replaces the base of Pi's main agent prompt while retaining its context suffix by default. */
 export interface SystemPromptConfig {
 	replacement?: string;
 	includeModelLine?: boolean;
@@ -169,7 +169,8 @@ export function recordProjectTrust(ctx: { cwd?: string; isProjectTrusted?: () =>
 function projectSettingsTrusted(settingsPath: string): boolean {
 	return projectTrustRegistry().projectSettings?.get(settingsPath) === true;
 }
-/** Applies a configured replacement for the base to one complete system prompt from Pi. */
+/** Applies a configured replacement for the base to Pi's main agent prompt.
+ * The caller decides which prompt that is (see pi-sessions.ts). */
 export function resolveSystemPrompt(prompt: string, modelKey: string, config: SystemPromptConfig = {}): string {
 	const replacement = `${config.includeModelLine ? `Active model: ${modelKey}\n\n` : ""}${config.replacement ?? ""}`.trim();
 	if (!replacement) return prompt;
