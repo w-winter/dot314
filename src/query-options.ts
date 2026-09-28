@@ -150,6 +150,12 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 			: normalizeEffortLevel(mapped) as EffortLevel | undefined
 		: undefined;
 	const effort = resolveConfiguredEffort(queryModel.id, requestedEffort, providerSettings);
+	// Pi sends no reasoning for its "off" level. Without a thinking mode Claude
+	// Code thinks by default (adaptive, or a token budget on models without
+	// adaptive thinking), so off sends the disabled mode (`--thinking disabled`).
+	// A null `off` entry marks a model that cannot turn thinking off; Pi hides the
+	// level there, and a caller's missing reasoning leaves Claude Code's default.
+	const thinkingOff = !reasoning && queryModel.thinkingLevelMap?.off !== null;
 
 	const extraArgs: Record<string, string | null> = {};
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
@@ -158,7 +164,8 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// ThinkingConfig also emits `--thinking adaptive` or `--max-thinking-tokens`
 	// (verified in sdk.mjs flag mapping), so the typed form cannot set display
 	// without overriding the model's thinking mode alongside our `--effort`.
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	// A configured effort still applies with thinking off; the display does not.
+	if (effort && !thinkingOff) extraArgs["thinking-display"] = "summarized";
 	// With a managed Fable pool, let every account's model-scoped allowance run
 	// out (rotation) before changing models — the CLI's own Opus fallback would
 	// silently skip accounts whose Fable quota is still available. Once the
@@ -204,6 +211,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,
+		...(thinkingOff ? { thinking: { type: "disabled" as const } } : {}),
 		...(effort ? { effort } : {}),
 		settingSources,
 		...(mcpServers || Object.keys(connectorServers).length > 0
