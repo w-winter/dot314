@@ -23,7 +23,7 @@ import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js
 import { loadConfig, recordProjectTrust } from "./config.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
 import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.js";
-import { ServedToolServer, type ServedToolHandler } from "./served-tools.js";
+import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
@@ -360,15 +360,16 @@ function toolNameManifest(aliases: Map<string, string>): {
 
 // The MCP handler that bridges one pi tool to the SDK. Each handler
 // blocks on a Promise until pi delivers the tool result via streamSimple.
-// Handlers claim their tool_call id by matching the actual MCP call
-// (tool name + arguments) against the recorded tool_use blocks, then results
-// are matched by ID. Handlers close over the captured `queryCtx`, ensuring they
-// operate on the correct query's state even after a quarantine replaced the
-// lane's current context.
+// Handlers claim the tool_use id Claude Code tags the MCP call with, or,
+// without one, match the call (tool name + arguments) against the recorded
+// tool_use blocks; results are then matched by ID. Handlers close over the
+// captured `queryCtx`, ensuring they operate on the correct query's state even
+// after a quarantine replaced the lane's current context.
 function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
-	return async (args?: Record<string, unknown>) => {
+	return async (args, extra) => {
 		const mappedArgs = mapToolArgs(tool.name, args);
-		const claim = queryCtx.claimToolCall(tool.name, mappedArgs);
+		const toolUseId = extra?._meta?.[CLAUDE_CODE_TOOL_USE_ID];
+		const claim = queryCtx.claimToolCall(tool.name, mappedArgs, typeof toolUseId === "string" ? toolUseId : undefined);
 		const toolCallId = claim.toolCallId;
 		if (toolCallId) {
 			// This invocation may have been the last one a postponed schema change
@@ -408,7 +409,9 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 				handlerArgKeys: argKeys(mappedArgs),
 				recordedArgKeys: argKeys(queryCtx.turnToolCalls.find((call) => call.id === toolCallId)?.arguments),
 			});
-		} else if (claim.match !== "tool-args" || claim.ambiguous) {
+		} else if (claim.recordedAhead) {
+			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed by tool_use id before the stream recorded it`);
+		} else if ((claim.match !== "tool-args" && claim.match !== "tool-use-id") || claim.ambiguous) {
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed by ${claim.match}${claim.ambiguous ? " (ambiguous)" : ""}`);
 		}
 		const earlyResult = toolCallId ? takeQueuedOrParkedResult(queryCtx, toolCallId) : undefined;

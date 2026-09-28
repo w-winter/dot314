@@ -142,7 +142,9 @@ export function advertisedInputSchema(parameters: unknown, toolName = "tool"): R
 	return advertised;
 }
 
-export type ServedToolHandler = (args?: Record<string, unknown>) => Promise<McpResult>;
+/** Registered as the MCP tool callback, so it receives the request's
+ *  RequestHandlerExtra, whose `_meta` carries CLAUDE_CODE_TOOL_USE_ID. */
+export type ServedToolHandler = (args?: Record<string, unknown>, extra?: { _meta?: Record<string, unknown> }) => Promise<McpResult>;
 export type ServedToolUpdate = "relisted" | "timeout" | "not-connected";
 export interface ServedToolHooks {
 	/** Whether `name`'s declaration must not change yet (see update). */

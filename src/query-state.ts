@@ -191,7 +191,7 @@ export interface TurnToolCallRecord {
 
 export interface ClaimedToolCall {
 	toolCallId?: string;
-	match: "tool-args" | "tool-name" | "none";
+	match: "tool-use-id" | "tool-args" | "tool-name" | "none";
 	ambiguous: boolean;
 	available: number;
 	/** True when the claim went through the sole-same-name fallback even though
@@ -200,6 +200,9 @@ export interface ClaimedToolCall {
 	 *  schema-validated copy, so a benign divergence (stripped unknown key,
 	 *  applied default) must not strand the call — but it is worth a diagnostic. */
 	argsMismatch?: boolean;
+	/** Claimed by tool_use id before the stream recorded the call, so the claim
+	 *  recorded it. */
+	recordedAhead?: boolean;
 }
 
 /** Token counters of one or more child messages; see `QueryContext.turnUsageCarry`. */
@@ -797,7 +800,11 @@ export class QueryContext {
 		if (id) this.foreignMcpCalls.set(id, name);
 	}
 
-	claimToolCall(toolName: string, args: Record<string, unknown> = {}): ClaimedToolCall {
+	claimToolCall(toolName: string, args: Record<string, unknown> = {}, toolUseId?: string): ClaimedToolCall {
+		if (toolUseId !== undefined) {
+			const byId = this.claimToolUseId(toolUseId, toolName, args);
+			if (byId) return byId;
+		}
 		const unclaimed = this.turnToolCalls.filter((call) => !this.claimedToolCallIds.has(call.id));
 		const byName = unclaimed.filter((call) => call.toolName === toolName);
 		const exact = byName.filter((call) => sameArgs(call.arguments, args));
@@ -861,6 +868,27 @@ export class QueryContext {
 		if (!chosen) return { match: "none", ambiguous: false, available: unclaimed.length };
 		this.claimedToolCallIds.add(chosen.id);
 		return { toolCallId: chosen.id, match, ambiguous, available: unclaimed.length, ...(argsMismatch ? { argsMismatch } : {}) };
+	}
+
+	/** Claims the call Claude Code tagged the tools/call with. The handler can
+	 *  run before the stream records its tool_use (Claude Code answers control
+	 *  requests at once while SDK messages queue), so an unknown id is recorded
+	 *  here; the stream's record of the same id then merges into it. Undefined
+	 *  when the id cannot be claimed: its invocation already arrived or can no
+	 *  longer arrive, it names another tool, or it is a new call under a tool
+	 *  Pi no longer serves. The name/args claim then decides, as without an id. */
+	private claimToolUseId(id: string, toolName: string, args: Record<string, unknown>): ClaimedToolCall | undefined {
+		if (this.claimedToolCallIds.has(id) || this.pendingToolCalls.has(id) || this.settledInvocationIds.has(id) || this.deadToolCallIds.has(id)) return undefined;
+		const recordedName = this.queryToolNames.get(id);
+		if (recordedName !== undefined && recordedName !== toolName) return undefined;
+		const recordedAhead = recordedName === undefined;
+		if (recordedAhead) {
+			if (this.servedTools && !this.servedTools.serves(toolName)) return undefined;
+			this.recordToolCall(id, toolName, args);
+		}
+		const available = this.turnToolCalls.filter((call) => !this.claimedToolCallIds.has(call.id)).length;
+		this.claimedToolCallIds.add(id);
+		return { toolCallId: id, match: "tool-use-id", ambiguous: false, available, ...(recordedAhead ? { recordedAhead } : {}) };
 	}
 
 	/**
