@@ -15,6 +15,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { conversationFingerprint, syncSharedSession } from "../src/session-persistence.js";
+import { getSessionPath, parseJsonlFile } from "cc-session-io";
 import { historyDigest } from "../src/history-digest.js";
 import { __testGetBridgeIntegrityState, setSharedSession } from "../src/bridge-state.js";
 
@@ -359,5 +360,45 @@ describe("syncSharedSession foreign-conversation guard (#1001)", () => {
 			__testGetBridgeIntegrityState().sharedSession.conversationFingerprint,
 			conversationFingerprint(messages),
 		);
+	});
+});
+
+describe("syncSharedSession REBUILD import", () => {
+	it("drops a latest Claude assistant turn whose thinking cannot be replayed exactly, with its tool results", () => {
+		withTempClaudeDir((claudeDir) => {
+			const cwd = mkdtempSync(join(tmpdir(), "bridge-sync-cwd-"));
+			try {
+				const messages = [
+					user("start"),
+					{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+						{ type: "thinking", thinking: "step one", thinkingSignature: "sig1" },
+						{ type: "toolCall", id: "t1", name: "read", arguments: { path: "a" } },
+					] },
+					{ role: "toolResult", toolCallId: "t1", toolName: "read", content: "a body" },
+					{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+						{ type: "thinking", thinking: "settled", thinkingSignature: "sig2" },
+						{ type: "thinking", thinking: "cut off mid-thought" },
+						{ type: "toolCall", id: "t2", name: "read", arguments: { path: "b" } },
+					] },
+					{ role: "toolResult", toolCallId: "t2", toolName: "read", content: "b body" },
+					user("next"),
+				];
+
+				const result = syncSharedSession(messages, cwd);
+
+				const imported = parseJsonlFile(getSessionPath(result.sessionId, cwd, claudeDir))
+					.filter((record) => record.type === "user" || record.type === "assistant")
+					.map((record) => [record.type, typeof record.message.content === "string"
+						? record.message.content
+						: record.message.content.map((block) => block.type === "tool_result" ? `tool_result:${block.tool_use_id}` : block.type === "tool_use" ? `tool_use:${block.id}` : block.type)]);
+				assert.deepEqual(imported, [
+					["user", "start"],
+					["assistant", ["thinking", "tool_use:t1"]],
+					["user", ["tool_result:t1"]],
+				]);
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
 	});
 });

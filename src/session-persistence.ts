@@ -326,14 +326,15 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 // Lossy: non-Anthropic thinking blocks are dropped (no valid signature). User and
 // tool-result image blocks are preserved when possible. If assistant blocks are
 // otherwise incompatible, convertPiMessages emits a text placeholder so the record
-// sequence stays valid before repairToolPairing runs.
+// sequence stays valid before repairToolPairing runs. A latest Claude assistant
+// turn whose thinking cannot be replayed exactly is dropped whole, like a failed turn.
 function convertAndImportMessages(
 	session: ReturnType<typeof createSession>,
 	messages: Context["messages"],
 	customToolNameToSdk?: Map<string, string>,
 	cwd?: string,
 ): void {
-	const { anthropicMessages, sanitizedIds } = convertPiMessages(messages, customToolNameToSdk);
+	const { anthropicMessages, sanitizedIds } = convertPiMessages(messages, customToolNameToSdk, { dropUnreplayableLatest: true });
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
 	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {

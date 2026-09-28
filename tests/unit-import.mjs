@@ -191,6 +191,57 @@ describe("thinking block filtering", () => {
 	});
 });
 
+// A rebuild's import (dropUnreplayableLatest). The drop itself is owned by the
+// REBUILD test in unit-sync-shared-session.mjs.
+describe("latest assistant thinking replay", () => {
+	const rebuildConvert = (messages) => convertPiMessages(messages, undefined, { dropUnreplayableLatest: true }).anthropicMessages;
+	const history = [
+		{ role: "user", content: "start" },
+		{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+			{ type: "thinking", thinking: "step one", thinkingSignature: "sig1" },
+			{ type: "toolCall", id: "t1", name: "read", arguments: { path: "a" } },
+		] },
+		{ role: "toolResult", toolCallId: "t1", toolName: "read", content: "body" },
+	];
+	const cutTail = (provider = "pi-claude") => ({ role: "assistant", provider, stopReason: "toolUse", content: [
+		{ type: "thinking", thinking: "settled", thinkingSignature: "sig2" },
+		{ type: "thinking", thinking: "settled too", thinkingSignature: "sig3" },
+		{ type: "thinking", thinking: "cut off mid-thought" },
+		{ type: "text", text: "reading b" },
+		{ type: "toolCall", id: "t2", name: "read", arguments: { path: "b" } },
+	] });
+	const tailResult = { role: "toolResult", toolCallId: "t2", toolName: "read", content: "b body" };
+
+	it("keeps a historical Claude assistant with only its signed thinking blocks", () => {
+		const result = rebuildConvert([...history, cutTail(), tailResult,
+			{ role: "assistant", provider: "pi-claude", stopReason: "stop", content: [{ type: "text", text: "done" }] }]);
+		assert.deepEqual(result[3], { role: "assistant", content: [
+			{ type: "thinking", thinking: "settled", signature: "sig2" },
+			{ type: "thinking", thinking: "settled too", signature: "sig3" },
+			{ type: "text", text: "reading b" },
+			{ type: "tool_use", id: "t2", name: "Read", input: { path: "b" } },
+		] });
+		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+		assert.equal(result.length, 6);
+	});
+
+	it("keeps a latest Claude assistant whose thinking blocks are all signed or redacted", () => {
+		const signed = cutTail();
+		signed.content = signed.content.filter((block) => block.type !== "thinking" || block.thinkingSignature);
+		signed.content.unshift({ type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque-payload", redacted: true });
+		const result = rebuildConvert([...history, signed, tailResult]);
+		assert.deepEqual(result[3].content.map((block) => block.type), ["redacted_thinking", "thinking", "thinking", "text", "tool_use"]);
+		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+	});
+
+	it("keeps a latest assistant from a non-Claude provider", () => {
+		const result = rebuildConvert([...history, cutTail("openai"), tailResult]);
+		assert.deepEqual(result[3].content.map((block) => block.type), ["text", "text", "tool_use"]);
+		assert.equal(result[3].content[1].text, "reading b");
+		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+	});
+});
+
 describe("message structure", () => {
 	it("aborted and errored assistant turns and their tool results are not imported", () => {
 		const msgs = [

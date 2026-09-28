@@ -126,6 +126,10 @@ function isClaudeAssistant(msg: PiMessage): msg is AssistantMessage {
 	return msg.role === "assistant" && (msg.provider === PROVIDER_ID || msg.api === "anthropic");
 }
 
+function isSkippedAssistant(msg: PiMessage): boolean {
+	return msg.role === "assistant" && (msg.stopReason === "error" || msg.stopReason === "aborted");
+}
+
 /** A Claude thinking block exactly as the API returned it, or undefined when
  *  it cannot be replayed (no signature, or a redacted block without its payload). */
 function claudeThinkingToAnthropic(block: { thinking?: string; thinkingSignature?: string; redacted?: boolean }): ContentBlock | undefined {
@@ -135,16 +139,31 @@ function claudeThinkingToAnthropic(block: { thinking?: string; thinkingSignature
 	return { type: "thinking", thinking: block.thinking ?? "", signature: sig };
 }
 
-/** Convert pi message array to Anthropic API format. */
+// The API rejects a request whose latest assistant message carries thinking
+// blocks that differ from its original response, so a REBUILD imports that
+// message whole or not at all. Older ones may lose blocks: the API strips
+// their thinking.
+function hasUnreplayableThinking(msg: PiMessage): boolean {
+	if (!isClaudeAssistant(msg) || !Array.isArray(msg.content)) return false;
+	return msg.content.some((block) => block.type === "thinking" && !claudeThinkingToAnthropic(block));
+}
+
+/** Convert pi message array to Anthropic API format. `dropUnreplayableLatest`
+ *  is for writing a Claude session only; history digests must not pass it. */
 export function convertPiMessages(
 	messages: PiMessage[],
 	customToolNameToSdk?: Map<string, string>,
+	opts: { dropUnreplayableLatest?: boolean } = {},
 ): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string> } {
 	const anthropicMessages = [];
 	const sanitizedIds = new Map();
 	const skippedToolCallIds = new Set<string>();
 	const isSkippedToolResult = (message: PiMessage): boolean =>
 		message.role === "toolResult" && skippedToolCallIds.has(message.toolCallId);
+	let latestAssistant = -1;
+	if (opts.dropUnreplayableLatest) for (let i = 0; i < messages.length; i++) {
+		if (messages[i].role === "assistant" && !isSkippedAssistant(messages[i])) latestAssistant = i;
+	}
 
 	const pushToolResultGroup = (toolMessages: PiMessage[]): void => {
 		const included = toolMessages.filter((message) => !isSkippedToolResult(message));
@@ -169,7 +188,7 @@ export function convertPiMessages(
 			// snapshots, not model-authored history. Pi's agent loop returns before
 			// dispatching their tool calls, so any associated results are orphaned
 			// history and must not be imported either.
-			if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+			if (isSkippedAssistant(msg) || (i === latestAssistant && hasUnreplayableThinking(msg))) {
 				for (const block of content) {
 					if (block.type === "toolCall") skippedToolCallIds.add(block.id);
 				}
