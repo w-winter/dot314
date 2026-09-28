@@ -77,8 +77,14 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput.stopReason, error: c.turnOutput.errorMessage})}`);
 	if (!c.turnStarted) ensureTurnStarted(c);
 	const reason = stopReason === "length" ? "length" : "stop";
-	// An abandoned stream attempt's blocks are not part of the answer.
-	c.currentPiStream.push({ type: "done", reason, message: terminalMessage(c, { prunePartialCalls: false }).message });
+	// Pi executes the tool calls of ANY terminal message, a stop included. A
+	// call still streaming when the query ended (Claude Code finalized a
+	// partial response) was never issued, and its arguments are truncated.
+	// Nothing can deliver a result for it either, so no teardown report may
+	// count it as missing one.
+	const { message, prunedIds } = terminalMessage(c);
+	c.forgetToolCalls(prunedIds);
+	c.currentPiStream.push({ type: "done", reason, message });
 	c.currentPiStream.end();
 	c.currentPiStream = null;
 }

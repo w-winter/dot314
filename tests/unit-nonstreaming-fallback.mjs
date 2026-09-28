@@ -278,6 +278,29 @@ describe("Claude Code's retry after a stalled stream", () => {
 	});
 });
 
+describe("Claude Code finalizing a partial response", () => {
+	it("never ends a turn with a truncated tool call", async () => {
+		// Once a block has completed, Claude Code does not retry a stalled
+		// stream: it keeps what completed and ends the response ("The response
+		// above may be incomplete"). A tool call still streaming at that point
+		// never gets its stop, and Pi executes every tool call in a stop message.
+		installFakeClaudeCode({ calls: [] }, [
+			se({ type: "message_start", message: { id: "msg_A", model: model.id, usage: { input_tokens: 100 } } }),
+			se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+			se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Checking." } }),
+			{ type: "assistant", message: { id: "msg_A", model: model.id, content: [{ type: "text", text: "Checking." }] } },
+			se({ type: "content_block_stop", index: 0 }),
+			se({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_cut", name: "mcp__custom-tools__bash", input: {} } }),
+			se({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"command":"rm -rf /tmp/scratch/' } }),
+		], { callsTool: false, finalResult: "Checking." });
+		const { done } = await runLikePi(initial(), "finalize-partial");
+		assert.equal(done.type, "done");
+		assert.deepEqual(summarize(done.message.content), [["text", "Checking."]], "the truncated call must not reach Pi");
+		assert.deepEqual(integrity.map((entry) => entry.label), ["partial_tool_calls_pruned"], "and no delivery mismatch for a call that was never issued");
+		assert.deepEqual(integrity[0].calls, [{ id: "toolu_cut", name: "bash" }]);
+	});
+});
+
 describe("discarding an abandoned attempt", () => {
 	it("keeps a tool call the abandoned attempt completed, and only that", async () => {
 		// Claude Code finalizes a partial response instead of retrying once a
