@@ -14,7 +14,7 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, updateTurnOutputModel } from "./assistant-stream.js";
+import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnOutputModel } from "./assistant-stream.js";
 import { extensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug } from "./debug.js";
@@ -168,9 +168,9 @@ export async function consumeQuery(
 					if (!streamLive) break;
 					const text = message.result || "";
 					// The no-stream-events assistant fallback may have already rendered
-					// this exact text (it does not set turnSawStreamEvent) — re-pushing
-					// it here is the other half of the duplicated-output bug.
-					if (queryCtx.turnBlocks.some((b: any) => b.type === "text" && b.text === text)) {
+					// this exact text in this query (it does not set turnSawStreamEvent)
+					// — re-pushing it here is the other half of the duplicated-output bug.
+					if (queryCtx.queryBlocks.some((b: any) => b.type === "text" && b.text === text)) {
 						debug("consumeQuery: result text already rendered by assistant fallback; skipping duplicate");
 						break;
 					}
@@ -195,11 +195,18 @@ export async function consumeQuery(
 						// USAGE_LIMIT_ERROR_PREFIXES). Surface it immediately, exactly as
 						// before, and suppress the SDK's raw follow-up throw.
 						queryCtx.handledTerminalError = true;
-						queryCtx.turnOutput.stopReason = "error";
-						queryCtx.turnOutput.errorMessage = errors;
-						queryCtx.currentPiStream?.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
-						queryCtx.currentPiStream?.end();
-						queryCtx.currentPiStream = null;
+						if (queryCtx.currentPiStream) {
+							queryCtx.turnOutput.stopReason = "error";
+							queryCtx.turnOutput.errorMessage = errors;
+							prunePartialToolCalls(queryCtx.turnOutput);
+							queryCtx.currentPiStream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
+							queryCtx.currentPiStream.end();
+							queryCtx.currentPiStream = null;
+						} else {
+							// A tool-use turn already reached Pi; its tool-result callback reports this.
+							debug(`consumeQuery: usage limit after the Pi turn was delivered; holding it for the next callback`);
+							queryCtx.undeliveredFailureMessage = errors;
+						}
 					}
 					// Other non-success subtypes (error_max_turns,
 					// error_during_execution) surface at completion via the held

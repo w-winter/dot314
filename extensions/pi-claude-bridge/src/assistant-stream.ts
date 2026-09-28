@@ -66,6 +66,18 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	c.currentPiStream = null;
 }
 
+/** Remove tool calls whose streamed arguments never completed. Pi persists
+ * every terminal message, errors included, so error paths prune too. */
+export function prunePartialToolCalls(output: AssistantMessage): void {
+	const partial = (output.content as Array<any>).filter((b) => b?.type === "toolCall" && "partialJson" in b);
+	if (partial.length === 0) return;
+	const calls = partial.map((b) => ({ id: b.id, name: b.name }));
+	debug(`prunePartialToolCalls: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
+	diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
+	appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
+	output.content = (output.content as Array<any>).filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
+}
+
 // --- Tool-use turn end: deferred to the stream's terminal events ---
 //
 // The Claude Code CLI dispatches MCP tool calls (and the SDK yields the
@@ -94,14 +106,7 @@ const TOOL_USE_END_GRACE_MS = 1500;
 export function endToolUseTurn(c: QueryContext): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	cancelScheduledToolUseEnd(c);
-	const partial = (c.turnOutput.content as Array<any>).filter((b) => b?.type === "toolCall" && "partialJson" in b);
-	if (partial.length > 0) {
-		const calls = partial.map((b) => ({ id: b.id, name: b.name }));
-		debug(`endToolUseTurn: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-		diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
-		appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
-		c.turnOutput.content = (c.turnOutput.content as Array<any>).filter((b) => !(b?.type === "toolCall" && "partialJson" in b));
-	}
+	prunePartialToolCalls(c.turnOutput);
 	// Every tool call Pi is about to execute from this turn is owed a result and
 	// must never be dispatched again: a lagging stream replays the same tool_use
 	// into the NEXT turn, whose per-message dedup cannot see it.
@@ -599,6 +604,14 @@ export function noteChildExecutedToolResults(message: SDKMessage, c: QueryContex
 export function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext = ctx()): void {
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
+	// A completed SDK message can lag behind the tool-use turn that Pi already
+	// consumed. In particular, repeated no-stream assistant yields can expand as
+	// later siblings in a parallel batch become available. Keep their ids for
+	// handler matching, but never append to the delivered turnOutput object.
+	if (!c.currentPiStream || !c.turnOutput) {
+		appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c);
+		return;
+	}
 	updateTurnOutputModel(assistantMsg.model, c);
 	if (c.turnSawStreamEvent) {
 		// The SDK yields the completed assistant message BEFORE the stream's
@@ -635,15 +648,16 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 	// produced no content blocks, since `turnSawStreamEvent` only tracks those.
 	c.beginChildMessage(assistantMsg.id);
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}${sameMessage ? " (same message re-yield)" : ""}`);
-	// Deduped against the WHOLE current turn, not just same-id re-yields: a
-	// rejected turn's synthesized error message ("You've hit your weekly limit")
-	// arrives as multiple assistant yields whose ids DIFFER or are absent (one
-	// pi message, two byte-identical text blocks), so an id-keyed guard alone
-	// still renders it twice. A model legitimately
-	// producing two byte-identical full blocks in one turn is vanishingly rare;
-	// rendering such a duplicate once is the better failure mode.
+	// Deduped against everything the current SDK query rendered, not just
+	// same-id re-yields: a rejected turn's synthesized error message ("You've
+	// hit your weekly limit") arrives as multiple assistant yields whose ids
+	// DIFFER or are absent (one pi message, two byte-identical text blocks), so
+	// an id-keyed guard alone still renders it twice. A model legitimately
+	// producing two byte-identical full blocks in one query is vanishingly rare;
+	// rendering such a duplicate once is the better failure mode. Replies from
+	// earlier deferred-replay queries are not checked; repeating one is legitimate.
 	const alreadyRendered = (type: string, content: string): boolean =>
-		c.turnBlocks.some((b: any) => b.type === type && (type === "text" ? b.text : b.thinking) === content);
+		c.queryBlocks.some((b: any) => b.type === type && (type === "text" ? b.text : b.thinking) === content);
 	for (const block of assistantMsg.content) {
 		if (block.type === "text" && block.text) {
 			if (alreadyRendered("text", block.text)) continue;

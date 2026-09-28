@@ -16,6 +16,8 @@ import {
 	streamClaudeAgentSdk,
 } from "../src/index.ts";
 import * as piAi from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
+import { runAgentLoop } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js";
 import { buildModels } from "../src/models.ts";
 import { resolveGetModels } from "../src/pi-ai-compat.ts";
 import { buildNativeProvider } from "../src/native-provider.ts";
@@ -173,6 +175,12 @@ const STREAMED_TEXT = (text) => [
 	{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } },
 	{ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } },
 ];
+const COMPLETED_TEXT = (text) => [
+	...STREAMED_TEXT(text),
+	{ type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+	{ type: "stream_event", event: { type: "message_stop" } },
+	{ type: "result", subtype: "success" },
+];
 
 describe("legacy sessions (no account router)", () => {
 	it("completes a rejected rate limit + streamed recovery exactly like a success", async () => {
@@ -259,6 +267,62 @@ describe("legacy sessions (no account router)", () => {
 		// the entry records count + text length — never the steer's content.
 		assert.doesNotMatch(diag, /queued steer/, "no user-authored text in the diagnostic");
 		assert.match(diag, /"textLengths":\[12\]/, "the entry records the dropped steer's length");
+	});
+
+	it("keeps the original reply and the deferred continuation reply in Pi's completed message", async () => {
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			if (calls++ > 0) return fakeSdkQuery(COMPLETED_TEXT("continuation reply"), "legacy", observedState());
+			ctx().deferredUserMessages.push({ text: "steer" });
+			return fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: "session-legacy" },
+				...COMPLETED_TEXT("first reply"),
+			], "legacy", observedState());
+		});
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "continuation-text" }));
+		const done = events.find((event) => event.type === "done");
+		assert.deepEqual(done.message.content.filter((block) => block.type === "text").map((block) => block.text), ["first reply", "continuation reply"]);
+	});
+
+	it("keeps a streamless deferred continuation reply that repeats the first before a tool call", async () => {
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			if (calls++ > 0) {
+				return fakeSdkQuery([
+					{ type: "assistant", message: { id: "m2", model: model.id, content: [
+						{ type: "text", text: "OK" },
+						{ type: "tool_use", id: "call-1", name: "mytool", input: {} },
+					] } },
+				], "legacy", observedState());
+			}
+			ctx().deferredUserMessages.push({ text: "steer" });
+			return fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: "session-legacy" },
+				{ type: "assistant", message: { id: "m1", model: model.id, content: [{ type: "text", text: "OK" }] } },
+				{ type: "result", subtype: "success", result: "OK" },
+			], "legacy", observedState());
+		});
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "continuation-repeat-before-tool" }));
+		// The tool-use turn ends Pi's stream; let the continuation query settle.
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const done = events.find((event) => event.type === "done");
+		assert.equal(done.reason, "toolUse");
+		assert.deepEqual(done.message.content.map((block) => block.type === "text" ? block.text : block.type), ["OK", "OK", "toolCall"]);
+	});
+
+	it("keeps a deferred continuation result that repeats the first reply", async () => {
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			if (calls++ === 0) ctx().deferredUserMessages.push({ text: "steer" });
+			return fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: "session-legacy" },
+				{ type: "result", subtype: "success", result: "OK" },
+			], "legacy", observedState());
+		});
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "continuation-repeat-result" }));
+		const done = events.find((event) => event.type === "done");
+		assert.deepEqual(textEvents(events), ["OK", "OK"]);
+		assert.deepEqual(done.message.content.map((block) => block.text), ["OK", "OK"]);
 	});
 
 	it("surfaces other non-success result subtypes as an explicit error and persists the session", async () => {
@@ -864,6 +928,72 @@ describe("reentrant subagent queries and the shared session (C1)", () => {
 });
 
 describe("stream-independent metadata capture (C3)", () => {
+	for (const [kind, failureText] of [
+		["an execution error", "internal server error"],
+		["a usage limit", "You've hit your weekly limit · resets Thursday 4am"],
+	]) {
+		it(`reports ${kind} that arrives after the tool turn as a fresh error, keeping the executed turn sealed`, async () => {
+			let releaseLateFailure;
+			const toolStarted = new Promise((resolve) => { releaseLateFailure = resolve; });
+			let markQueryClosed;
+			const queryClosed = new Promise((resolve) => { markQueryClosed = resolve; });
+			__testSetSdkQueryFactory(() => ({
+				async *[Symbol.asyncIterator]() {
+					for (const event of [
+						{ type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } },
+						{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "mcp__custom-tools__mytool", input: {} } },
+						{ type: "content_block_stop", index: 0 },
+						{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+						{ type: "message_stop" },
+					]) yield { type: "stream_event", event };
+					await toolStarted;
+					yield { type: "result", subtype: "error_during_execution", errors: [failureText] };
+				},
+				close() { markQueryClosed(); },
+				async interrupt() {},
+			}));
+
+			let executions = 0;
+			const history = await runAgentLoop(
+				[{ role: "user", content: "run it", timestamp: Date.now() }],
+				{ messages: [], tools: [{
+					name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
+					async execute() {
+						executions++;
+						releaseLateFailure();
+						// Finish only after the failed query is torn down, so Pi's
+						// tool-result callback finds no live query.
+						await queryClosed;
+						return { content: [{ type: "text", text: "REAL RESULT" }], details: {} };
+					},
+				}] },
+				{ model, convertToLlm: (messages) => messages, sessionId: `late-failure-${failureText.length}` },
+				() => {},
+				undefined,
+				streamClaudeAgentSdk,
+			);
+
+			const assistants = history.filter((message) => message.role === "assistant");
+			assert.equal(executions, 1);
+			assert.equal(assistants[0].stopReason, "toolUse", "late failure must not mutate the delivered assistant");
+			assert.equal(history.find((message) => message.role === "toolResult")?.content[0].text, "REAL RESULT");
+			assert.equal(assistants.at(-1).stopReason, "error", "the failure reaches Pi as its own message");
+			assert.equal(assistants.at(-1).errorMessage, failureText);
+		});
+	}
+
+	it("prunes a partial tool call from an immediate usage-limit error", async () => {
+		__testSetSdkQueryFactory(() => fakeSdkQuery([
+			{ type: "stream_event", event: { type: "message_start", message: { id: "m1", model: model.id, usage: { input_tokens: 1 } } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "partial-call", name: "mytool", input: {} } } },
+			{ type: "result", subtype: "error_during_execution", errors: ["You've hit your weekly limit · resets Thursday 4am"] },
+		], "legacy", observedState()));
+
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "partial-usage-limit" }));
+		const terminal = events.find((event) => event.type === "error");
+		assert.deepEqual(terminal.error.content, []);
+	});
+
 	it("captures a terminal result failure that arrives after a tool-use turn ended the stream", async () => {
 		// A tool-use message_stop ends the Pi stream (currentPiStream = null). A
 		// terminal `result` failure arriving after that boundary was skipped by

@@ -32,7 +32,7 @@ import { cancelScheduledSessionPersistence, conversationFingerprint, restoreShar
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs } from "./tool-mapping.js";
-import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, scheduleToolUseTurnEnd, updateTurnOutputModel } from "./assistant-stream.js";
+import { finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, prunePartialToolCalls, scheduleToolUseTurnEnd, updateTurnOutputModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -725,20 +725,29 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	}
 
 	// --- Orphaned tool result (e.g. user aborted a tool call) ---
-	// The query is gone but pi still delivered the result. Nothing to do — just
-	// emit end_turn so pi waits for the next real user message.
+	// The query is gone but pi still delivered the result. Report the failure
+	// that ended the query after its tool turn, if one did; otherwise emit
+	// end_turn so pi waits for the next real user message.
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
-		debug(`provider: orphaned tool result after abort, emitting end_turn`);
 		// The detached flag deliberately survives query end: an orphaned result
 		// from a foreign one-shot indexes ITS conversation, and writing that
 		// length here would move (even shrink) the parent's cursor.
 		const activeSession = getSharedSession();
 		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) setSharedSession({ ...activeSession, cursor: context.messages.length });
 		const c = ctx();  // capture current context for the microtask
+		const failureMessage = c.undeliveredFailureMessage;
+		c.undeliveredFailureMessage = null;
+		debug(`provider: orphaned tool result, emitting ${failureMessage === null ? "end_turn" : "the held terminal failure"}`);
 		queueMicrotask(() => {
 			c.resetTurnState(model);
-			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			if (failureMessage === null) {
+				stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			} else {
+				c.turnOutput.stopReason = "error";
+				c.turnOutput.errorMessage = failureMessage;
+				stream.push({ type: "error", reason: "error", error: c.turnOutput });
+			}
 			stream.end();
 			releaseEphemeralLane();
 		});
@@ -793,6 +802,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().deadToolCallIds.clear();
 	ctx().callbackGeneration = 0;
 	ctx().deferredUserMessages = [];
+	// Reported only by the tool-result callback that directly follows the
+	// failed query; a fresh query means that callback carried a new prompt.
+	if (ctx().undeliveredFailureMessage !== null) debug(`provider: fresh query drops an unreported terminal failure: ${ctx().undeliveredFailureMessage}`);
+	ctx().undeliveredFailureMessage = null;
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	ctx().latestCursor = 0;
@@ -1115,7 +1128,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					timeoutMs,
 				});
 				safeNotify(`${RATE_LIMIT_TOKEN} Claude stream idle timeout after ${formatDurationShort(timeoutMs)} — retrying via rate-limit backoff`, "warning");
-				if (abortCtx.turnOutput) {
+				if (abortCtx.turnOutput && abortCtx.currentPiStream) {
 					abortCtx.turnOutput.stopReason = "error";
 					abortCtx.turnOutput.errorMessage = errorMessage;
 					Object.assign(abortCtx.turnOutput as AssistantMessage & Record<string, unknown>, {
@@ -1123,10 +1136,11 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 						retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS,
 						streamIdleTimeoutMs: timeoutMs,
 					});
+					prunePartialToolCalls(abortCtx.turnOutput);
+					abortCtx.currentPiStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput });
+					abortCtx.currentPiStream.end();
+					abortCtx.currentPiStream = null;
 				}
-				abortCtx.currentPiStream?.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
-				abortCtx.currentPiStream?.end();
-				abortCtx.currentPiStream = null;
 				requestAbort();
 			},
 			timeoutMs: streamIdleTimeoutMs,
@@ -1173,13 +1187,18 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			});
 			safeNotify(`${RATE_LIMIT_TOKEN} Claude ${failure.message} — resets ${formatResetTimestamp(resetAtMs ?? resetAt)}`, "warning");
 		}
-		if (abortCtx.turnOutput) {
+		if (abortCtx.turnOutput && abortCtx.currentPiStream) {
 			abortCtx.turnOutput.stopReason = aborted ? "aborted" : "error";
 			abortCtx.turnOutput.errorMessage = failure.message;
+			prunePartialToolCalls(abortCtx.turnOutput);
+			abortCtx.currentPiStream.push({ type: "error", reason: aborted ? "aborted" : "error", error: abortCtx.turnOutput });
+			abortCtx.currentPiStream.end();
+			abortCtx.currentPiStream = null;
+		} else if (!aborted) {
+			// A tool-use turn already reached Pi; its tool-result callback reports this.
+			debug(`provider: terminal failure after the Pi turn was delivered; holding it for the next callback: ${failure.message}`);
+			abortCtx.undeliveredFailureMessage = failure.message;
 		}
-		abortCtx.currentPiStream?.push({ type: "error", reason: aborted ? "aborted" : "error", error: abortCtx.turnOutput! });
-		abortCtx.currentPiStream?.end();
-		abortCtx.currentPiStream = null;
 	};
 
 	// Background consumer — runs until this attempt's query ends. Before any
@@ -1258,8 +1277,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					const steer = abortCtx.deferredUserMessages.shift()!;
 					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
-					abortCtx.resetTurnState(queryModel);
-					abortCtx.resetToolTracking();
+					abortCtx.prepareContinuation();
 
 					// A foreign one-shot has no claim on the shared record: its steers
 					// continue ITS OWN child session, never --resume the parent's.
@@ -1396,10 +1414,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				// the retry without terminating here left the consumer hanging on a
 				// stream that never ends.
 				debug("provider: abort after queued account retry — terminating stream without retrying");
-				if (abortCtx.turnOutput) {
-					abortCtx.turnOutput.stopReason = "aborted";
-					abortCtx.turnOutput.errorMessage = "Operation aborted";
-				}
+				abortCtx.resetTurnState(queryModel);
+				abortCtx.turnOutput!.stopReason = "aborted";
+				abortCtx.turnOutput!.errorMessage = "Operation aborted";
 				reentryStream.push({ type: "error", reason: "aborted", error: abortCtx.turnOutput! });
 				reentryStream.end();
 				return;
@@ -1424,11 +1441,11 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				abortCtx.restartRequest = null;
 				reentryStream = restart.stream;
 				abortCtx.resetTurnState(restart.model);
-			}
-			if (abortCtx.turnOutput) {
-				abortCtx.turnOutput.stopReason = "error";
-				abortCtx.turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
-			}
+			} else abortCtx.resetTurnState(queryModel);
+			// The previous turn may already have been delivered. Re-entry errors are
+			// represented by a fresh message instead of mutating that sealed object.
+			abortCtx.turnOutput!.stopReason = "error";
+			abortCtx.turnOutput!.errorMessage = error instanceof Error ? error.message : String(error);
 			reentryStream.push({ type: "error", reason: "error", error: abortCtx.turnOutput! });
 			reentryStream.end();
 		})

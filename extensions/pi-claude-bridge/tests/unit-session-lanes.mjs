@@ -283,6 +283,34 @@ describe("provider request session lanes", () => {
 		assert.equal(runInRequestLane("child", () => ctx().activeQuery), null);
 	});
 
+	it("does not ship a half-streamed tool call when the request is aborted", async () => {
+		const gate = deferred();
+		__testSetSdkQueryFactory(() => {
+			return {
+				async *[Symbol.asyncIterator]() {
+					yield { type: "system", subtype: "init", session_id: "sdk-abort-partial" };
+					yield { type: "stream_event", event: { type: "message_start", message: { id: "m-partial", model: model.id, usage: { input_tokens: 1 } } } };
+					yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_partial", name: "mytool", input: {} } } };
+					await gate.promise;
+				},
+				close() { gate.resolve(); },
+				async interrupt() { gate.resolve(); },
+			};
+		});
+
+		const controller = new AbortController();
+		const pending = collect(streamWithPrompt(
+			{ messages: [userMessage("abort partial tool call")] },
+			{ sessionId: "abort-partial", signal: controller.signal },
+		));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		controller.abort();
+
+		const error = (await pending).find((event) => event.type === "error");
+		assert.equal(error?.reason, "aborted");
+		assert.deepEqual(error.error.content, []);
+	});
+
 	it("does not let one lane overwrite another lane's mutable state", () => {
 		runInRequestLane("parent", () => {
 			ctx().activeQuery = { id: "parent-query" };

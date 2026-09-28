@@ -314,6 +314,11 @@ export class QueryContext {
 	reportedToolResultMismatch = false;
 	deferredUserMessages: DeferredUserMessage[] = [];
 	handledTerminalError = false;
+	/** Message of a terminal failure that ended this query after its last Pi
+	 *  turn was already delivered. That turn must not change, so the next
+	 *  provider callback reports the failure as its own error message.
+	 *  Survives resetTurnState and teardown; cleared at fresh-query setup. */
+	undeliveredFailureMessage: string | null = null;
 	// Once visible text/thinking, a complete tool call, or a child-executed
 	// connector/foreign-MCP dispatch reaches Pi, the request must never be
 	// replayed on another account (duplicate side effects). Query-scoped, not per-turn:
@@ -414,10 +419,20 @@ export class QueryContext {
 	turnStarted = false;
 	turnSawStreamEvent = false;
 	turnSawToolCall = false;
+	/** Index in turnBlocks where the current SDK query's blocks begin. Nonzero
+	 *  only after deferred replay appends a continuation query's reply to the
+	 *  same Pi message. */
+	queryContentStart = 0;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
 		return this.turnOutput.content;
+	}
+
+	/** The blocks the current SDK query rendered. Duplicate-render checks read
+	 *  only these: a continuation may legitimately repeat an earlier reply. */
+	get queryBlocks(): Array<any> {
+		return this.turnBlocks.slice(this.queryContentStart);
 	}
 
 	resetTurnState(model: Model<any>): void {
@@ -431,6 +446,7 @@ export class QueryContext {
 		this.turnStarted = false;
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
+		this.queryContentStart = 0;
 		this.handledTerminalError = false;
 		// A fresh pi message means the previous turn's stream is done with; an
 		// armed end-timer for it must not fire into this turn's state.
@@ -446,6 +462,18 @@ export class QueryContext {
 		// Tool-call tracking is NOT reset here — it persists across the
 		// tool-result delivery callback for the same assistant message. Each
 		// assistant message boundary calls resetToolTracking() explicitly.
+	}
+
+	/** Start another SDK query within the same live Pi request. Unlike
+	 * resetTurnState, keeps the accumulated Pi message and usage: deferred replay
+	 * can add several Claude replies before Pi's single terminal event. Per-query
+	 * flags reset so a streamless continuation is not mistaken for the prior reply. */
+	prepareContinuation(): void {
+		this.turnSawStreamEvent = false;
+		this.turnSawToolCall = false;
+		this.queryContentStart = this.turnBlocks.length;
+		this.handledTerminalError = false;
+		this.resetToolTracking();
 	}
 
 	resetToolTracking(): void {
