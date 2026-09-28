@@ -91,7 +91,10 @@ const count = (lines, pattern) => lines.filter((line) => pattern.test(line)).len
 const firstIndex = (lines, pattern) => lines.findIndex((line) => pattern.test(line));
 
 /** Claude's own transcript for the asker's session, found by the id prefix the
- *  bridge logs. Returns the user-authored prompt texts, in order. */
+ *  bridge logs. Returns the user-authored prompt texts, in order. A message
+ *  written to a running query (live steering) is persisted as a
+ *  `queued_command` attachment instead of a user entry; both shapes are
+ *  prompts here, marked by `shape`. */
 function claudeUserPrompts(session) {
 	const lines = debugLines(session);
 	const prefix = lines.map((line) => line.match(/query done, session=([0-9a-f]{8})/)?.[1]).filter(Boolean).at(-1);
@@ -106,12 +109,18 @@ function claudeUserPrompts(session) {
 	}).filter(Boolean);
 	const entries = [];
 	for (const record of records) {
+		if (record.type === "attachment" && record.attachment?.type === "queued_command") {
+			const prompt = record.attachment.prompt;
+			const texts = typeof prompt === "string" ? [prompt] : Array.isArray(prompt) ? prompt.filter((block) => block.type === "text").map((block) => block.text) : [];
+			for (const text of texts) entries.push({ kind: "prompt", shape: "queued_command", text });
+			continue;
+		}
 		if (record.type !== "user" || record.isMeta) continue;
 		const content = record.message?.content;
-		if (typeof content === "string") entries.push({ kind: "prompt", text: content });
+		if (typeof content === "string") entries.push({ kind: "prompt", shape: "user", text: content });
 		else if (Array.isArray(content)) {
 			for (const block of content) {
-				if (block.type === "text") entries.push({ kind: "prompt", text: block.text });
+				if (block.type === "text") entries.push({ kind: "prompt", shape: "user", text: block.text });
 				if (block.type === "tool_result") entries.push({ kind: "tool_result", text: JSON.stringify(block.content) });
 			}
 		}
@@ -185,19 +194,20 @@ describe("pi-intercom with the Claude bridge (real Pi, isolated broker)", { skip
 
 		const lines = debugLines(asker).slice(startLine);
 		const resolved = firstIndex(lines, /provider: resolving intercom .*DELAY-DONE/);
-		const deferred = firstIndex(lines, /provider: deferred \d+ user message\(s\) .*From d2-side-cli/);
-		const replayed = firstIndex(lines, /provider: replaying deferred user message: .*From d2-side-cli/);
 		assert.notEqual(resolved, -1, "the ask result must reach the waiting MCP handler");
-		assert.notEqual(deferred, -1, "the side message must be queued while the query is active");
-		assert.ok(resolved < deferred && deferred < replayed, `order must be ask result, queue, replay (${resolved}, ${deferred}, ${replayed})`);
-		assert.equal(count(lines, /provider: deferred \d+ user message\(s\) .*From d2-side-cli/), 1, "queued exactly once");
-		assert.equal(count(lines, /provider: replaying deferred user message: .*From d2-side-cli/), 1, "replayed exactly once");
+		// Live steering: the side message goes to the running query, written
+		// before the ask result is released; Claude's transcript (below) shows
+		// what Claude saw, in order.
+		assert.equal(count(lines, /provider: sending \d+ user message\(s\) to the running query before its tool results: .*From d2-side-cli/), 1, "sent to the running query exactly once");
+		assert.equal(count(lines, /provider: deferred \d+ user message\(s\) .*From d2-side-cli/), 0, "never also queued for a continuation");
+		assert.equal(count(lines, /provider: replaying deferred user message: .*From d2-side-cli/), 0, "never replayed");
 		assert.equal(count(lines, /deferred_user_messages_dropped|orphaned tool result/), 0);
 
 		const prompts = claudeUserPrompts(asker);
 		if (prompts) {
 			const sideAt = prompts.map((entry, index) => entry.kind === "prompt" && entry.text.includes("SIDE-TOKEN-993") ? index : -1).filter((index) => index >= 0);
-			assert.equal(sideAt.length, 1, `Claude's transcript must hold the side message exactly once: ${JSON.stringify(prompts.map((entry) => entry.text.slice(0, 60)))}`);
+			// Counted across both shapes: a user prompt entry and a queued_command attachment.
+			assert.equal(sideAt.length, 1, `Claude's transcript must hold the side message exactly once: ${JSON.stringify(prompts.map((entry) => `${entry.shape ?? entry.kind}:${entry.text.slice(0, 60)}`))}`);
 			const askResultAt = prompts.findIndex((entry) => entry.kind === "tool_result" && entry.text.includes("DELAY-DONE"));
 			assert.ok(askResultAt !== -1 && askResultAt < sideAt[0], "Claude must see the ask result before the side message");
 		} else {
