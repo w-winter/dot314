@@ -12,7 +12,7 @@
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -26,6 +26,7 @@ import { __testSharedSessionLaneCount, setExtensionApi } from "../src/bridge-sta
 import { UNVERIFIED_HISTORY_DIGEST } from "../src/history-digest.ts";
 import { __testQueryLaneCount, ctx, resetStack } from "../src/query-state.ts";
 import * as queryState from "../src/query-state.ts";
+import * as sessionPersistence from "../src/session-persistence.ts";
 
 // Read through the namespace so this file still loads against a bridge
 // without fork lanes (the fail-before proof runs it on the parent commit).
@@ -719,10 +720,10 @@ describe("a lane holding a failure for its tool-result callback", () => {
 		await parentFailedAfterToolTurn("MAIN", run.signal);
 		run.abort();
 		assert.equal(runInRequestLane("MAIN", () => ctx().undeliveredFailure), null, "a cancelled run delivers no callback to report it");
-		// The lane is idle: the next request without the call runs in it, as before.
-		await collect(streamClaudeAgentSdk(model, { messages: [systemMessage("You are a reviewer"), user(REVIEWER_PROMPT)] }, { sessionId: "MAIN" }));
-		await tick(10);
-		assert.equal(__testQueryLaneCount(), 1, "no fork lane was opened");
+		// The lane is idle: a request without the call is no longer sent to a
+		// fork because the lane is busy.
+		assert.equal(queryState.requestLaneFor("MAIN", [systemMessage("sys"), user("next prompt")]), "MAIN");
+		assert.equal(forkLaneCount(), 0, "no fork lane was opened");
 	});
 
 	it("drops the hold when Pi replaces the history the callback would answer", BOUNDED, async () => {
@@ -1108,4 +1109,192 @@ describe("a request that throws before its query exists releases its lane", () =
 		const done = await collect(streamClaudeAgentSdk(model, { messages: [...parent, first.at(-1).message, toolResult("parent-call")] }, { sessionId: "MAIN" }));
 		assert.equal(textOf(done), "parent done");
 	});
+});
+
+// --- An idle lane: a foreign call must leave the conversation's state alone ---
+//
+// While the lane's conversation is idle there is no running query to join,
+// and its next request can arrive at any moment. A request the existing
+// evidence identifies as another conversation (the conversation-fingerprint
+// guard, or a tool result for a call no query of the lane handed to Pi) runs
+// in a fork lane of its own, exactly like one that finds the lane busy.
+
+const MAIN_TURN = (n) => `MAIN turn ${n}`;
+const FOREIGN_TOOL_PROMPT = "FOREIGN: inspect something";
+const IDLE_LANES = [["the conversation's session id", "MAIN"], ["no session id, conversation in the default lane", undefined]];
+
+const debugLogText = () => { try { return readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8"); } catch { return ""; } };
+/** Runs the provider call `call` and returns its result with the session-sync
+ *  decisions ("reuse", "rebuild", "clean-start", ...) it logged. The sync is
+ *  synchronous inside the call, so only this call's lines are read. */
+function withSyncPaths(call) {
+	const start = debugLogText().length;
+	const result = call();
+	const log = debugLogText();
+	const since = log.length >= start ? log.slice(start) : log;
+	return { result, paths: [...since.matchAll(/syncResult: path=([a-z-]+)/g)].map((match) => match[1]) };
+}
+
+const mainTurnScript = (prompt) => {
+	const turn = /^MAIN turn (\d+)$/.exec(prompt);
+	if (!turn) return undefined;
+	return async function* ({ text }) {
+		yield* text(`answer ${turn[1]}`);
+		yield { type: "result", subtype: "success" };
+	};
+};
+
+/** The per-query state an idle conversation keeps for its next request. */
+function idleState(sessionId) {
+	return runInRequestLane(sessionId, () => {
+		const c = ctx();
+		const record = __testGetBridgeIntegrityState().sharedSession;
+		return {
+			context: c,
+			activeQuery: c.activeQuery,
+			detachedFromSharedSession: c.detachedFromSharedSession,
+			latestCursor: c.latestCursor,
+			latestCursorDigest: c.latestCursorDigest,
+			forwardedToolCallIds: [...c.forwardedToolCallIds],
+			undeliveredFailure: c.undeliveredFailure,
+			record: record ? { ...record } : null,
+		};
+	});
+}
+
+describe("a foreign call while the conversation's lane is idle", () => {
+	for (const [label, sessionId] of IDLE_LANES) {
+		it(`still running when the next prompt arrives, it does not cost that prompt its warm Claude session (${label})`, BOUNDED, async () => {
+			let releaseReviewer;
+			const reviewerGate = new Promise((resolve) => { releaseReviewer = resolve; });
+			const observed = installFakeClaudeCode((prompt) => {
+				if (prompt === REVIEWER_PROMPT) return async function* (helpers) {
+					await reviewerGate;
+					yield* reviewerScript(helpers);
+				};
+				return mainTurnScript(prompt);
+			});
+			let history = [systemMessage("main system"), user(MAIN_TURN(1))];
+			const turn1 = await collect(streamClaudeAgentSdk(model, { messages: history }, { sessionId }));
+			assert.equal(textOf(turn1), "answer 1");
+			history = [...history, turn1.at(-1).message];
+			await tick(10);
+			const idle = laneCounts();
+			const before = idleState(sessionId);
+
+			// A reviewer with the same lane key, still thinking when the user
+			// sends the next prompt.
+			const reviewer = collect(streamClaudeAgentSdk(model, { messages: [systemMessage("You are a reviewer"), user(REVIEWER_PROMPT)] }, { sessionId }), 3000);
+			reviewer.catch(() => {});
+			let turn2;
+			try {
+				await tick(10);
+				history = [...history, user(MAIN_TURN(2))];
+				const second = withSyncPaths(() => streamClaudeAgentSdk(model, { messages: history }, { sessionId }));
+				assert.deepEqual(second.paths, ["reuse"], "the next prompt resumes the conversation's own Claude session");
+				turn2 = await collect(second.result);
+				assert.equal(textOf(turn2), "answer 2");
+				assert.equal(observed.queries.find((query) => query.prompt === MAIN_TURN(2))?.resume, "sdk-1", "turn 2 resumes turn 1's Claude session");
+			} finally {
+				releaseReviewer();
+			}
+			const reviewed = await reviewer;
+			assert.deepEqual(lastEvent(reviewed), ["done", "stop"]);
+			assert.equal(textOf(reviewed), REVIEWER_ANSWER, "the reviewer gets its own answer");
+			assert.equal(observed.queries.find((query) => query.prompt === REVIEWER_PROMPT)?.resume, undefined, "the reviewer never resumes the conversation's session");
+
+			history = [...history, turn2.at(-1).message, user(MAIN_TURN(3))];
+			const third = withSyncPaths(() => streamClaudeAgentSdk(model, { messages: history }, { sessionId }));
+			assert.deepEqual(third.paths, ["reuse"], "the turn after resumes it too: the record followed turn 2");
+			assert.equal(textOf(await collect(third.result)), "answer 3");
+			const record = runInRequestLane(sessionId, () => __testGetBridgeIntegrityState().sharedSession);
+			assert.equal(record?.cursor, history.length, "the record covers the conversation through turn 3's prompt");
+			assert.equal(record?.needsRebuild, undefined);
+			assert.equal(before.record?.sessionId, "sdk-1");
+			await tick(20);
+			assert.deepEqual(laneCounts(), idle, "no fork, query lane or session record is left behind");
+		});
+
+		it(`finished before the next prompt, it leaves the idle conversation's query state alone (${label})`, BOUNDED, async () => {
+			installFakeClaudeCode((prompt) => prompt === REVIEWER_PROMPT ? reviewerScript : mainTurnScript(prompt));
+			let history = [systemMessage("main system"), user(MAIN_TURN(1))];
+			const turn1 = await collect(streamClaudeAgentSdk(model, { messages: history }, { sessionId }));
+			history = [...history, turn1.at(-1).message];
+			await tick(10);
+			const idle = laneCounts();
+			const before = idleState(sessionId);
+			// Longer than the conversation's own context, so no cursor or digest
+			// could coincide.
+			const reviewer = await collect(streamClaudeAgentSdk(model, { messages: [systemMessage("You are a reviewer"), user("REVIEW CONTEXT"), user(REVIEWER_PROMPT)] }, { sessionId }));
+			assert.equal(textOf(reviewer), REVIEWER_ANSWER);
+			await tick(10);
+			const after = idleState(sessionId);
+			const lanesAfter = laneCounts();
+			// The next prompt reuses the session either way: the one-shot never
+			// touched the record, and a fresh query resets the context.
+			history = [...history, user(MAIN_TURN(2))];
+			const second = withSyncPaths(() => streamClaudeAgentSdk(model, { messages: history }, { sessionId }));
+			assert.deepEqual(second.paths, ["reuse"]);
+			assert.equal(textOf(await collect(second.result)), "answer 2");
+			assert.deepEqual(after, before, "the conversation's query context and record are unchanged");
+			assert.deepEqual(lanesAfter, idle, "the reviewer's lane is gone");
+		});
+
+		it(`an orphaned tool result of another conversation does not mark the idle conversation's record for rebuild (${label})`, BOUNDED, async () => {
+			let releaseParent;
+			const parentGate = new Promise((resolve) => { releaseParent = resolve; });
+			const observed = installFakeClaudeCode((prompt) => {
+				if (prompt === PARENT_PROMPT) return async function* ({ tools, text }) {
+					yield* tools([{ id: "parent-call", tool: SLOW.name, args: { id: "parent" } }]);
+					await parentGate;
+					yield* text("parent done");
+					yield { type: "result", subtype: "success" };
+				};
+				// Claude Code hands Pi a call, then stops waiting for it and ends.
+				if (prompt === FOREIGN_TOOL_PROMPT) return async function* () {
+					yield* toolMessage("f1", [{ id: "foreign-call", tool: "inspect", args: { id: "f" } }]);
+					yield { type: "result", subtype: "success" };
+				};
+				return mainTurnScript(prompt);
+			});
+			const parent = [systemMessage("parent", [SLOW]), user(PARENT_PROMPT)];
+			const first = await collect(streamClaudeAgentSdk(model, { messages: parent }, { sessionId }));
+			assert.deepEqual(lastEvent(first), ["done", "toolUse"]);
+			await tick(10);
+
+			// While the parent waits on its tool, the other conversation's query
+			// hands Pi a call and ends. Its history is longer than what the
+			// parent's record covers, so the fingerprint guard cannot place it;
+			// only its unclaimed tool result can.
+			const foreign = [systemMessage("You are a reviewer"), user("REVIEW CONTEXT 1"), user("REVIEW CONTEXT 2"), user("REVIEW CONTEXT 3"), user(FOREIGN_TOOL_PROMPT)];
+			const foreignTurn = await collect(streamClaudeAgentSdk(model, { messages: foreign }, { sessionId }));
+			assert.deepEqual(lastEvent(foreignTurn), ["done", "toolUse"]);
+
+			releaseParent();
+			const done = await collect(streamClaudeAgentSdk(model, { messages: [...parent, first.at(-1).message, toolResult("parent-call")] }, { sessionId }));
+			assert.equal(textOf(done), "parent done");
+			let history = [...parent, first.at(-1).message, toolResult("parent-call"), done.at(-1).message];
+			await tick(20);
+			const idle = laneCounts();
+			const before = idleState(sessionId);
+			assert.equal(before.activeQuery, null, "the parent is idle");
+			assert.equal(before.record?.needsRebuild, undefined);
+
+			// Pi finishes the other conversation's tool and hands its result back.
+			const orphanContext = [...foreign, foreignTurn.at(-1).message, toolResult("foreign-call")];
+			assert.notEqual(sessionPersistence.isForeignConversation?.(before.record, orphanContext), true, "the fingerprint guard does not place this request");
+			const orphan = await collect(streamClaudeAgentSdk(model, { messages: orphanContext }, { sessionId }));
+			assert.deepEqual(lastEvent(orphan), ["done", "stop"], "the orphaned result ends its turn");
+			await tick(10);
+			const recordAfter = idleState(sessionId).record;
+			const lanesAfter = laneCounts();
+			history = [...history, user(MAIN_TURN(2))];
+			const next = withSyncPaths(() => streamClaudeAgentSdk(model, { messages: history }, { sessionId }));
+			assert.deepEqual(next.paths, ["reuse"], "the conversation's next prompt resumes its warm session");
+			assert.equal(textOf(await collect(next.result)), "answer 2");
+			assert.equal(observed.queries.find((query) => query.prompt === MAIN_TURN(2))?.resume, "sdk-1");
+			assert.deepEqual(recordAfter, before.record, "the idle conversation's record is unchanged");
+			assert.deepEqual(lanesAfter, idle, "no fork, query lane or session record is left behind");
+		});
+	}
 });

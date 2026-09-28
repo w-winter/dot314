@@ -105,6 +105,19 @@ function conversationFingerprintUpgrade(recorded: string | undefined, incoming: 
 	return rec && inc && !rec.assistant && inc.assistant && rec.user === inc.user ? incoming : undefined;
 }
 
+/** Whether `messages` is provably another conversation than the one `record`
+ *  holds: both identity anchors are known and differ, and the context is no
+ *  longer than what the record covers. A record owed a rebuild never
+ *  qualifies: Pi just rewrote its conversation, so its anchor may have moved.
+ *  syncSharedSession's Case 6 explains both limits. */
+export function isForeignConversation(record: SessionState | null, messages: Context["messages"]): boolean {
+	if (!record || record.needsRebuild || !record.conversationFingerprint) return false;
+	const incoming = conversationFingerprint(messages);
+	return incoming !== undefined &&
+		!conversationFingerprintsMatch(record.conversationFingerprint, incoming) &&
+		messages.length - 1 <= record.cursor;
+}
+
 function fingerprintMessages(messages: Context["messages"]): string {
 	const normalized = messages.map((message) => {
 		if (message.role === "assistant") {
@@ -560,14 +573,12 @@ export function syncSharedSession(
 	//     parent turn to a historyless one-shot with no recovery.
 	// Either fingerprint being unknown (no user message, image-only opener,
 	// pre-3.1.1 record) fails open to the pre-fingerprint behavior.
-	if (
-		sharedSession && !sharedSession.needsRebuild &&
-		sharedSession.conversationFingerprint && incomingFingerprint &&
-		!conversationFingerprintsMatch(sharedSession.conversationFingerprint, incomingFingerprint) &&
-		priorMessages.length <= sharedSession.cursor
-	) {
+	// The provider routes such a request to a fork lane before it gets here
+	// (requestLaneFor); this guard still covers the re-entries that skip
+	// routing (restart, account retry).
+	if (sharedSession && incomingFingerprint && isForeignConversation(sharedSession, messages)) {
 		debug(
-			`Case 6 foreign-conversation: fingerprint ${incomingFingerprint.slice(0, 8)} != record ${sharedSession.conversationFingerprint.slice(0, 8)} ` +
+			`Case 6 foreign-conversation: fingerprint ${incomingFingerprint.slice(0, 8)} != record ${sharedSession.conversationFingerprint?.slice(0, 8)} ` +
 			`(cursor=${sharedSession.cursor}, priors=${priorMessages.length}) — clean one-shot, record untouched`,
 		);
 		debug(`syncResult: path=foreign-one-shot`);

@@ -1071,6 +1071,12 @@ export function __testQueryLaneCount(): number {
 // of its own: a fresh query with its own QueryContext and session record,
 // never touching the running one. Its callbacks find their way back by the
 // same proof. A fork is released when its query settles (index.ts).
+//
+// While the lane is idle, a request runs in it unless the evidence shows it
+// belongs to another conversation: a tool result for a call no query of the
+// lane handed to Pi, or the lane's record naming another conversation (the
+// caller's fingerprint check). Such a request gets a fork too, so it never
+// resets the idle conversation's query state or marks its record.
 
 /** Fork lane id -> the lane key it was opened from. Process-global like the
  *  lane store, for the same reason: parent and child agents can reach the
@@ -1118,13 +1124,19 @@ function handedToPi(queryCtx: QueryContext, ids: readonly string[]): boolean {
  *  - the lane (or a fork of it) whose query handed Pi a tool call the context
  *    carries: the request is that query's callback, running or ended;
  *  - otherwise the `sessionId` lane itself while its conversation is idle,
- *    exactly as before;
+ *    unless the request ends with a tool result (a callback no query of the
+ *    lane owns) or `otherConversation(sessionId)` says the lane's record
+ *    belongs to another conversation;
  *  - otherwise a new fork lane: another conversation's request (or one that
- *    cannot prove it is not), which must not join the running query.
+ *    cannot prove it is not), which must not join or disturb the lane's.
  *  A conversation is still mid-turn after its query ended with a failure held
  *  for the tool-result callback (E3): a fresh query in its lane would drop
  *  that failure. Its own next prompt still carries the call and joins. */
-export function requestLaneFor(sessionId: string | undefined, messages: ReadonlyArray<unknown>): string | undefined {
+export function requestLaneFor(
+	sessionId: string | undefined,
+	messages: ReadonlyArray<unknown>,
+	otherConversation: (laneId: string | undefined) => boolean = () => false,
+): string | undefined {
 	const own = peekQueryContext(sessionId);
 	const ids = contextToolCallIds(messages);
 	if (ids.length > 0) {
@@ -1135,9 +1147,14 @@ export function requestLaneFor(sessionId: string | undefined, messages: Readonly
 			if (forkCtx && handedToPi(forkCtx, ids)) return forkId;
 		}
 	}
-	if (!own?.activeQuery && !own?.undeliveredFailure) return sessionId;
+	const reason = own?.activeQuery || own?.undeliveredFailure ? "its lane is busy"
+		: (messages.at(-1) as { role?: unknown } | undefined)?.role === "toolResult" ? "its tool result answers no call of its lane"
+		: otherConversation(sessionId) ? "its lane holds another conversation"
+		: undefined;
+	if (reason === undefined) return sessionId;
 	const forkId = `${FORK_LANE_PREFIX}${randomUUID()}`;
 	forkLaneStore().set(forkId, { base: sessionId });
+	debug(`provider: request (session ${sessionId === undefined ? "none" : sessionId.slice(0, 8)}) is not its lane's callback and ${reason}; running it as its own query in ${forkId}`);
 	return forkId;
 }
 

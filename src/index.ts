@@ -29,7 +29,7 @@ import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-exe
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
 import { primeConnectorServers } from "./connector-runtime.js";
-import { cancelScheduledSessionPersistence, conversationFingerprint, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
+import { cancelScheduledSessionPersistence, conversationFingerprint, isForeignConversation, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
 import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, historyDigest } from "./history-digest.js";
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
@@ -638,10 +638,7 @@ function verifiedHeldSuffix(
  *  The request joins its lane's running query only as that query's own
  *  callback; anything else runs as a query of its own (requestLaneFor). */
 export function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	const laneId = requestLaneFor(options?.sessionId, context.messages);
-	if (laneId !== options?.sessionId) {
-		debug(`provider: request (session ${options?.sessionId === undefined ? "none" : options.sessionId.slice(0, 8)}) carries no tool call of the query running in its lane; running it as its own query in ${laneId}`);
-	}
+	const laneId = requestLaneFor(options?.sessionId, context.messages, (lane) => runInRequestLane(lane, () => isForeignConversation(getSharedSession(), context.messages)));
 	return runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, options));
 }
 
