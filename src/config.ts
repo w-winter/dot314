@@ -172,6 +172,12 @@ function projectSettingsTrusted(settingsPath: string): boolean {
 }
 // The last line of Pi's default base (system-prompt.ts, the docs section).
 const PI_DOCS_LINE = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
+// How Pi renders its rules section and closes its docs section, which follows
+// the rules (buildSystemPromptSections, getSystemMessageText).
+const PI_RULES_OPEN = "\n\n<rules>\n";
+const PI_RULES_CLOSE = "\n</rules>";
+const PI_DOCS_OPEN = "\n\n<docs>\n";
+const PI_DOCS_CLOSE = "\n</docs>";
 
 /** The preamble buildSystemPromptSections sets when the session supplies no
  * base of its own. Pi does not export its builder from the package index, so
@@ -203,6 +209,10 @@ function hasPiDefaultBase(prompt: string, preamble: string | undefined): boolean
  * not Pi context, so it is kept: the replacement is prepended to the complete
  * prompt, whatever preservePiContext says. The same holds for a content-only
  * prompt that does not open with Pi's default base.
+ *
+ * Over Pi's default base, the replacement takes the place of Pi's preamble,
+ * tools and docs. Pi's rules section (its rules, the tool guidelines and the
+ * extensions' promptGuidelines) directly precedes the docs and is kept.
  */
 export function resolveSystemPrompt(prompt: string, modelKey: string, config: SystemPromptConfig = {}, preamble?: string): string {
 	const replacement = `${config.includeModelLine ? `Active model: ${modelKey}\n\n` : ""}${config.replacement ?? ""}`.trim();
@@ -214,7 +224,14 @@ export function resolveSystemPrompt(prompt: string, modelKey: string, config: Sy
 	if (config.preservePiContext === false) return replacement;
 	if (prompt === replacement || prompt.startsWith(`${replacement}\n`)) return prompt;
 	const end = prompt.indexOf(PI_DOCS_LINE);
-	if (end !== -1) return replacement + prompt.slice(end + PI_DOCS_LINE.length);
+	if (end !== -1) {
+		const docsStart = prompt.lastIndexOf(PI_DOCS_OPEN, end);
+		const rulesEnd = docsStart - PI_RULES_CLOSE.length;
+		const rulesStart = docsStart === -1 || !prompt.startsWith(PI_RULES_CLOSE, rulesEnd) ? -1 : prompt.lastIndexOf(PI_RULES_OPEN, rulesEnd);
+		const rules = rulesStart === -1 ? "" : prompt.slice(rulesStart, docsStart);
+		const rest = prompt.slice(end + PI_DOCS_LINE.length);
+		return replacement + rules + (rest.startsWith(PI_DOCS_CLOSE) ? rest.slice(PI_DOCS_CLOSE.length) : rest);
+	}
 	const starts = ["\n\n<project_context>", "\n\n# Project Context\n\n", "\nThe following skills provide specialized instructions for specific tasks.", "\nCurrent date:"]
 		.map((marker) => prompt.indexOf(marker)).filter((index) => index !== -1);
 	return replacement + (starts.length ? prompt.slice(Math.min(...starts)) : "");

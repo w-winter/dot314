@@ -3,8 +3,11 @@
 // systemPrompt, a pi-subagents replace-mode agent), that base is the
 // session's instructions, so Claude receives the replacement followed by the
 // complete prompt Pi built, under every replacement setting. Pi's default
-// base keeps the output it had before (legacyResolve, byte for byte). Prompts
-// come from Pi's own builder, section diff and forced-prompt projection.
+// base is replaced by the replacement, followed by Pi's rules section and what
+// Pi placed after its docs section; without Pi's docs section, and with
+// preservePiContext false, the output is the one it had before (legacyResolve,
+// byte for byte). Prompts come from Pi's own builder, section diff and
+// forced-prompt projection.
 
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -150,11 +153,27 @@ function assertKeepsEverything(messages, expectedPrompt = getCurrentSystemPrompt
 	}
 }
 
-// Pi's default base: the output d603a2b sent, byte for byte.
+// Pi's default base without Pi's docs section: the output d603a2b sent, byte for byte.
 function assertLegacyOutput(messages) {
 	const prompt = getCurrentSystemPrompt(messages);
 	for (const [label, { config }] of Object.entries(CONFIGS)) {
 		assert.equal(sent(messages, config), legacyResolve(prompt, MODEL_KEY, config), label);
+	}
+}
+
+// Pi's default base: the replacement, then Pi's rules section and the sections
+// after Pi's docs, in their order, then a before_agent_start hook's `extra`.
+// preservePiContext false still sends d603a2b's output, byte for byte.
+function assertKeepsRules(messages, sections, extra) {
+	const prompt = getCurrentSystemPrompt(messages);
+	const names = Object.keys(sections);
+	const afterDocs = names.slice(names.indexOf("docs") + 1).map((name) => sections[name]);
+	for (const [label, { config, head }] of Object.entries(CONFIGS)) {
+		const expected = config.preservePiContext === false
+			? legacyResolve(prompt, MODEL_KEY, config)
+			: [head, sections.rules, ...afterDocs, ...(extra ? [extra] : [])].join("\n\n");
+		assert.equal(sent(messages, config), expected, label);
+		assert.ok(!sent(messages, config).includes("docs>"), `${label} sent a docs tag`);
 	}
 }
 
@@ -167,6 +186,14 @@ describe("Pi's default preamble", () => {
 	it("matches the preamble of the installed Pi build", { timeout: 10_000, skip: !existsSync(INSTALLED_PI_BUILDER) && "installed Pi not found" }, async () => {
 		const installed = await import(INSTALLED_PI_BUILDER);
 		assert.equal(bridgeConfig.PI_DEFAULT_PREAMBLE, installed.buildSystemPromptSections(buildOptions({})).preamble);
+	});
+
+	it("keeps the installed Pi build's rules and drops its docs under a replacement", { timeout: 10_000, skip: !existsSync(INSTALLED_PI_BUILDER) && "installed Pi not found" }, async () => {
+		const installed = await import(INSTALLED_PI_BUILDER);
+		const sections = installed.buildSystemPromptSections(buildOptions({ contextFiles, promptGuidelines: ["Use the todo tool to track multi-step work"] }));
+		assert.deepEqual(Object.keys(sections), ["preamble", "tools", "rules", "docs", "project_context", "cwd"]);
+		assert.ok(sections.docs.endsWith(`${PI_DOCS_LINE}\n</docs>`));
+		assertKeepsRules([{ role: "system", content: "", sections, timestamp: 1 }, user("hello")], sections);
 	});
 });
 
@@ -246,11 +273,28 @@ describe("systemPrompt replacement over Pi's default base", () => {
 		"default base with context files and skills": { contextFiles, skills },
 		"APPEND_SYSTEM.md": { appendSystemPrompt: APPEND_MD, contextFiles },
 		"a pi-subagents append-mode agent (the addendum)": { appendSystemPrompt: SUBAGENT_PROMPT, contextFiles, skills },
+		"extension promptGuidelines and tool guidelines": { contextFiles, promptGuidelines: ["Use the todo tool to track multi-step work"], toolGuidelines: { read: ["Read a file before editing it"] } },
+		"an extension section overriding rules": { contextFiles, sections: { rules: "EXT RULES" } },
+	};
+	// An extension replaced Pi's docs section, so Pi's docs line is absent.
+	const EXTENSION_DOCS = {
 		"extension sections overriding tools, rules and docs": { contextFiles, sections: COLLIDING },
 		"an extension section overriding docs only": { contextFiles, skills, sections: { docs: "EXT DOCS" } },
 	};
 
 	for (const [name, options] of Object.entries(DEFAULT_BASES)) {
+		it(`sends the replacement, Pi's rules and what follows Pi's docs for ${name}`, () => {
+			const messages = sessionMessages(options);
+			assertKeepsRules(messages, getCurrentSystemMessage(messages).sections);
+		});
+		it(`sends the replacement, Pi's rules and what follows Pi's docs for a before_agent_start prompt over ${name}`, { timeout: 10_000 }, async () => {
+			const base = sessionMessages(options);
+			const extra = "Pinned skill instructions.";
+			assertKeepsRules(await forcedMessages(base, `${getCurrentSystemPrompt(base)}\n\n${extra}`), getCurrentSystemMessage(base).sections, extra);
+		});
+	}
+
+	for (const [name, options] of Object.entries(EXTENSION_DOCS)) {
 		it(`sends d603a2b's output for ${name}`, () => assertLegacyOutput(sessionMessages(options)));
 		it(`sends d603a2b's output for a before_agent_start prompt over ${name}`, { timeout: 10_000 }, async () => {
 			const base = sessionMessages(options);
@@ -259,8 +303,9 @@ describe("systemPrompt replacement over Pi's default base", () => {
 	}
 
 	it("still replaces the default base under an append-mode agent", () => {
-		const out = sent(sessionMessages(DEFAULT_BASES["a pi-subagents append-mode agent (the addendum)"]), CONFIGS.preserve.config);
-		assert.ok(out.startsWith(`${REPLACEMENT}\n</docs>\n\n<addendum>\n${SUBAGENT_PROMPT}\n</addendum>`));
+		const messages = sessionMessages(DEFAULT_BASES["a pi-subagents append-mode agent (the addendum)"]);
+		const out = sent(messages, CONFIGS.preserve.config);
+		assert.ok(out.startsWith(`${REPLACEMENT}\n\n${getCurrentSystemMessage(messages).sections.rules}\n\n<addendum>\n${SUBAGENT_PROMPT}\n</addendum>`));
 		assert.ok(!out.includes("expert coding assistant operating inside pi"));
 	});
 
@@ -273,11 +318,13 @@ describe("systemPrompt replacement over Pi's default base", () => {
 		assert.equal(sent(messages, CONFIGS.replaceAll.config), REPLACEMENT);
 	});
 
-	// Review finding 1, inverse: Pi's re-added tools, rules and docs replay after cwd.
-	it("sends d603a2b's output once a session switches from a custom base back to Pi's default (review P2-1)", () => {
+	// Review finding 1, inverse: Pi's re-added tools, rules and docs replay
+	// after cwd. Nothing follows Pi's docs, and what precedes Pi's tools is
+	// dropped with the base, as before.
+	it("sends the replacement and Pi's rules once a session switches from a custom base back to Pi's default (review P2-1)", () => {
 		const messages = switchedMessages({ customPrompt: SUBAGENT_PROMPT, contextFiles }, { contextFiles });
 		assert.deepEqual(Object.keys(getCurrentSystemMessage(messages).sections), ["preamble", "project_context", "cwd", "tools", "rules", "docs"]);
-		assertLegacyOutput(messages);
+		assertKeepsRules(messages, getCurrentSystemMessage(messages).sections);
 		assert.equal(sent(messages, CONFIGS.replaceAll.config), REPLACEMENT);
 	});
 
