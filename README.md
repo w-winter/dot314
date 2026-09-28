@@ -4,7 +4,7 @@ A Pi provider that uses a logged-in Claude Code account through the Claude Agent
 
 Requires Pi 0.86.0 or later.
 
-This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [Eli Dickinson's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge). It adds the fixes from [w-winter/dot314#20](https://github.com/w-winter/dot314/pull/20), which keep the Claude session the bridge rebuilds in sync with Pi's history.
+This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [vanillagreen's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), itself a fork of [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). It adds the fixes from [w-winter/dot314#20](https://github.com/w-winter/dot314/pull/20), which keep the Claude session the bridge rebuilds in sync with Pi's history.
 
 ![Response from Claude through the bridge](assets/bridge-demo.png)
 
