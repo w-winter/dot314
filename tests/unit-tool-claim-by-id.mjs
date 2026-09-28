@@ -101,6 +101,10 @@ function resultMessage(id, text) {
 	return { role: "toolResult", toolCallId: id, toolName: ECHO.name, content: [{ type: "text", text }], isError: false, timestamp: Date.now() };
 }
 
+function toolCallIds(done) {
+	return done.message.content.filter((block) => block.type === "toolCall").map((call) => call.id);
+}
+
 let diagDir;
 beforeEach(() => {
 	process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "0";
@@ -183,5 +187,156 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		assert.deepEqual((await observed.callA).content, [{ type: "text", text: "RESULT A" }]);
 		assert.deepEqual((await observed.callB).content, [{ type: "text", text: "RESULT B" }]);
 		await second;
+	});
+
+	it("keeps an early call's id from an untagged same-name sibling after message_start", async () => {
+		let handlersIssued;
+		const observed = { issued: new Promise((resolve) => { handlersIssued = resolve; }) };
+		installFakeClaudeCode(observed, async function* (client) {
+			observed.callA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+			await settle(20);
+			yield* toolUseMessage("m1", ["toolu_a", "toolu_b"]);
+			observed.callB = client.callTool({ name: "echo", arguments: ARGS });
+			await settle(10);
+			handlersIssued();
+			await Promise.all([observed.callA, observed.callB]);
+			yield* FINAL_REPLY;
+		});
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: "claim-untagged-sibling" }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), ["toolu_a", "toolu_b"]);
+		await observed.issued;
+
+		const second = collect(streamClaudeAgentSdk(model, {
+			messages: [...initial.messages, done.message, resultMessage("toolu_a", "RESULT A"), resultMessage("toolu_b", "RESULT B")],
+		}, { sessionId: "claim-untagged-sibling" }));
+		assert.deepEqual((await observed.callB).content, [{ type: "text", text: "RESULT B" }], "the untagged sibling gets its own result");
+		assert.deepEqual((await observed.callA).content, [{ type: "text", text: "RESULT A" }], "the early call keeps its waiter");
+		await second;
+	});
+
+	it("resolves an early call and its duplicate tools/call with the same result", async () => {
+		let handlersIssued;
+		const observed = { issued: new Promise((resolve) => { handlersIssued = resolve; }) };
+		installFakeClaudeCode(observed, async function* (client) {
+			observed.callA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+			await settle(20);
+			yield* toolUseMessage("m1", ["toolu_a", "toolu_b"]);
+			observed.duplicateA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+			await settle(10);
+			observed.callB = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_b") });
+			await settle(10);
+			handlersIssued();
+			await Promise.all([observed.callA, observed.duplicateA, observed.callB]);
+			yield* FINAL_REPLY;
+		});
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: "claim-duplicate-waiting" }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), ["toolu_a", "toolu_b"]);
+		await observed.issued;
+
+		const second = collect(streamClaudeAgentSdk(model, {
+			messages: [...initial.messages, done.message, resultMessage("toolu_a", "RESULT A"), resultMessage("toolu_b", "RESULT B")],
+		}, { sessionId: "claim-duplicate-waiting" }));
+		const settled = await Promise.race([
+			Promise.all([observed.callA, observed.duplicateA, observed.callB]),
+			settle(500).then(() => "timed out"),
+		]);
+		assert.notEqual(settled, "timed out", "every waiter must be answered");
+		const [a, duplicateA, b] = settled;
+		assert.deepEqual(a.content, [{ type: "text", text: "RESULT A" }]);
+		assert.deepEqual(duplicateA.content, [{ type: "text", text: "RESULT A" }]);
+		assert.deepEqual(b.content, [{ type: "text", text: "RESULT B" }]);
+		await second;
+	});
+
+	it("answers a duplicate tools/call for an already answered id with an explicit error", async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			yield* toolUseMessage("m1", ["toolu_a"]);
+			observed.callA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+			await observed.callA;
+			observed.duplicateA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+			await observed.duplicateA;
+			yield* FINAL_REPLY;
+		});
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: "claim-duplicate-answered" }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), ["toolu_a"]);
+
+		const second = collect(streamClaudeAgentSdk(model, {
+			messages: [...initial.messages, done.message, resultMessage("toolu_a", "RESULT A")],
+		}, { sessionId: "claim-duplicate-answered" }));
+		assert.deepEqual((await observed.callA).content, [{ type: "text", text: "RESULT A" }]);
+		const duplicate = await observed.duplicateA;
+		assert.equal(duplicate.isError, true);
+		assert.match(duplicate.content[0].text, /toolu_a/);
+		assert.match(duplicate.content[0].text, /already returned/);
+		await second;
+	});
+
+	it("rejects a new tagged call under a withdrawn tool without taking another call's result", async () => {
+		let openGate, freshIssued;
+		const observed = {
+			gate: new Promise((resolve) => { openGate = resolve; }),
+			issued: new Promise((resolve) => { freshIssued = resolve; }),
+		};
+		installFakeClaudeCode(observed, async function* (client) {
+			yield* toolUseMessage("m1", ["toolu_old"]);
+			await observed.gate;
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			freshIssued();
+			await observed.fresh;
+			observed.old = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_old") });
+			await observed.old;
+			yield* FINAL_REPLY;
+		});
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: "claim-withdrawn" }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), ["toolu_old"]);
+
+		const second = collect(streamClaudeAgentSdk(model, {
+			messages: [
+				...initial.messages, done.message, resultMessage("toolu_old", "RESULT OLD"),
+				{ role: "system", content: "", toolsRemoved: [{ name: ECHO.name }], timestamp: Date.now() },
+			],
+		}, { sessionId: "claim-withdrawn" }));
+		await settle(20);
+		openGate();
+		await observed.issued;
+		const fresh = await observed.fresh;
+		assert.deepEqual(fresh.content, [{ type: "text", text: "Tool echo is no longer active in Pi." }]);
+		assert.equal(fresh.isError, true);
+		assert.deepEqual((await observed.old).content, [{ type: "text", text: "RESULT OLD" }], "the executed call's late invocation still gets its result");
+		await second;
+	});
+
+	it("forwards every early call to Pi when the stream stalls past the grace timer", async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			observed.callA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+			observed.callB = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_b") });
+			await settle(1700); // past the 1.5 s grace
+			yield* toolUseMessage("m1", ["toolu_a", "toolu_b"]);
+			await Promise.all([observed.callA, observed.callB]);
+			yield* FINAL_REPLY;
+		});
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: "claim-early-batch" }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), ["toolu_a", "toolu_b"], "Pi gets each early call exactly once");
+		assert.deepEqual(done.message.content.filter((block) => block.type === "toolCall").map((call) => call.arguments), [ARGS, ARGS]);
+
+		const second = collect(streamClaudeAgentSdk(model, {
+			messages: [...initial.messages, done.message, resultMessage("toolu_a", "RESULT A"), resultMessage("toolu_b", "RESULT B")],
+		}, { sessionId: "claim-early-batch" }));
+		assert.deepEqual((await observed.callA).content, [{ type: "text", text: "RESULT A" }]);
+		assert.deepEqual((await observed.callB).content, [{ type: "text", text: "RESULT B" }], "the second early call is not failed as stranded");
+		const rest = await second;
+		assert.equal(rest.filter((event) => event.type === "toolcall_start").length, 0, "the stream's own blocks for the forwarded calls are not re-emitted");
 	});
 });

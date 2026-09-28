@@ -17,7 +17,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, modelDisplayName } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, isForkLane, laneInUse, releaseForkLane, requestLaneFor, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, isForkLane, laneInUse, releaseForkLane, requestLaneFor, strandedToolCallResult, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type ClaimedToolCall, type DeferredUserMessage, type QueryRestartRequest, type ToolUseIdClaim } from "./query-state.js";
 import { answersKnownCall, deliverSteerBeforeResults, resolveToolResults } from "./tool-result-delivery.js";
 import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
 import { loadConfig, recordProjectTrust } from "./config.js";
@@ -369,7 +369,14 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	return async (args, extra) => {
 		const mappedArgs = mapToolArgs(tool.name, args);
 		const toolUseId = extra?._meta?.[CLAUDE_CODE_TOOL_USE_ID];
-		const claim = queryCtx.claimToolCall(tool.name, mappedArgs, typeof toolUseId === "string" ? toolUseId : undefined);
+		let claim: ClaimedToolCall;
+		if (typeof toolUseId === "string") {
+			const tagged = queryCtx.claimToolUseId(toolUseId, tool.name, mappedArgs);
+			if (tagged.outcome !== "claimed") return answerUnclaimedToolUse(queryCtx, tool.name, toolUseId, tagged);
+			claim = tagged.claim;
+		} else {
+			claim = queryCtx.claimToolCall(tool.name, mappedArgs);
+		}
 		const toolCallId = claim.toolCallId;
 		if (toolCallId) {
 			// This invocation may have been the last one a postponed schema change
@@ -442,6 +449,32 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			});
 		});
 	};
+}
+
+/** Answers a tagged tools/call whose own id it cannot claim, touching no
+ *  other id. */
+function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUseId: string, tagged: Exclude<ToolUseIdClaim, { outcome: "claimed" }>): McpResult | Promise<McpResult> {
+	switch (tagged.outcome) {
+		case "waiting":
+			debug(`mcp handler: ${toolName} [${toolUseId}] invoked again while its first invocation waits; both get Pi's result`);
+			return queryCtx.joinPendingToolCall(toolUseId);
+		case "dead":
+			// A dead id was never forwarded to Pi and never will be.
+			debug(`mcp handler: ${toolName} [${toolUseId}] is dead (never forwarded to Pi); answering as stranded`);
+			return strandedToolCallResult();
+		case "answered":
+			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] invoked again after it was answered`);
+			diagDump("tool_call_already_answered", { toolName, toolCallId: toolUseId });
+			return { content: [{ type: "text", text: `Claude bridge: tool call ${toolUseId} (${toolName}) was already answered and its result already returned. This repeated invocation did not run the tool.` }], isError: true };
+		case "withdrawn":
+			// A new call under a tool Pi has since deactivated (see served-tools.ts).
+			debug(`mcp handler: ${toolName} is no longer active in Pi; rejecting new call [${toolUseId}]`);
+			return { content: [{ type: "text", text: `Tool ${toolName} is no longer active in Pi.` }], isError: true };
+		case "other-tool":
+			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] names a call recorded for ${tagged.recordedName}`);
+			diagDump("tool_call_id_other_tool", { toolName, toolCallId: toolUseId, recordedName: tagged.recordedName });
+			return { content: [{ type: "text", text: `Claude bridge internal error: tool call ${toolUseId} was issued for ${tagged.recordedName}, not ${toolName}` }], isError: true };
+	}
 }
 
 /** Brings the query's served tools in line with Pi's current ones (an
@@ -1043,6 +1076,8 @@ function streamRequestInLane(
 	ctx().deadToolCallIds.clear();
 	ctx().abandonedToolCalls.clear();
 	ctx().settledInvocationIds.clear();
+	ctx().taggedToolCallIds.clear();
+	ctx().earlyToolCallIds.clear();
 	ctx().callbackGeneration = 0;
 	ctx().deferredUserMessages = [];
 	ctx().steeringWriteQuery = null;

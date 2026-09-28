@@ -205,6 +205,13 @@ export interface ClaimedToolCall {
 	recordedAhead?: boolean;
 }
 
+/** How a tools/call tagged with a tool_use id relates to that id; see
+ *  QueryContext.claimToolUseId. */
+export type ToolUseIdClaim =
+	| { outcome: "claimed"; claim: ClaimedToolCall }
+	| { outcome: "waiting" | "dead" | "answered" | "withdrawn" }
+	| { outcome: "other-tool"; recordedName: string };
+
 /** Token counters of one or more child messages; see `QueryContext.turnUsageCarry`. */
 interface UsageCounters {
 	input: number;
@@ -403,6 +410,14 @@ export class QueryContext {
 	 *  sole-same-name, which can hand it a LIVE sibling's id. */
 	queryToolArgs = new Map<string, Record<string, unknown>>();
 	claimedToolCallIds = new Set<string>();
+	/** Ids claimed by a tools/call tagged with them. Query-scoped: the handler
+	 *  can run before the stream records its tool_use, and message_start's
+	 *  resetToolTracking must not drop that ownership (name/args claims skip
+	 *  these ids). Cleared at fresh-query setup. */
+	taggedToolCallIds = new Set<string>();
+	/** Tagged ids whose handler recorded the call before the stream did, in
+	 *  arrival order: the grace finalizer forwards those still waiting. */
+	earlyToolCallIds = new Set<string>();
 	deliveredToolResultIds = new Set<string>();
 	resolvedToolResultIds = new Set<string>();
 	unmatchedToolResultIds = new Set<string>();
@@ -800,12 +815,10 @@ export class QueryContext {
 		if (id) this.foreignMcpCalls.set(id, name);
 	}
 
-	claimToolCall(toolName: string, args: Record<string, unknown> = {}, toolUseId?: string): ClaimedToolCall {
-		if (toolUseId !== undefined) {
-			const byId = this.claimToolUseId(toolUseId, toolName, args);
-			if (byId) return byId;
-		}
-		const unclaimed = this.turnToolCalls.filter((call) => !this.claimedToolCallIds.has(call.id));
+	/** Claims a tools/call that carries no tool_use id, by name and arguments.
+	 *  Never takes an id a tagged call owns. */
+	claimToolCall(toolName: string, args: Record<string, unknown> = {}): ClaimedToolCall {
+		const unclaimed = this.turnToolCalls.filter((call) => this.claimableByMatch(call.id));
 		const byName = unclaimed.filter((call) => call.toolName === toolName);
 		const exact = byName.filter((call) => sameArgs(call.arguments, args));
 		// Ids whose RESULT already sits queued or parked. A handler can fire after
@@ -817,7 +830,7 @@ export class QueryContext {
 		// so a late handler can never steal a live sibling's id while its own
 		// result waits; without an exact match it is only a last resort.
 		const resultBacked = [...new Set([...this.pendingResults.keys(), ...this.reapedResults.keys()])]
-			.filter((id) => !this.claimedToolCallIds.has(id) && this.queryToolNames.get(id) === toolName);
+			.filter((id) => this.claimableByMatch(id) && this.queryToolNames.get(id) === toolName);
 		const backedExact = resultBacked.filter((id) => sameArgs(this.queryToolArgs.get(id), args));
 		const claimBacked = (id: string, viaExact: boolean): ClaimedToolCall => {
 			this.claimedToolCallIds.add(id);
@@ -870,25 +883,45 @@ export class QueryContext {
 		return { toolCallId: chosen.id, match, ambiguous, available: unclaimed.length, ...(argsMismatch ? { argsMismatch } : {}) };
 	}
 
-	/** Claims the call Claude Code tagged the tools/call with. The handler can
-	 *  run before the stream records its tool_use (Claude Code answers control
-	 *  requests at once while SDK messages queue), so an unknown id is recorded
-	 *  here; the stream's record of the same id then merges into it. Undefined
-	 *  when the id cannot be claimed: its invocation already arrived or can no
-	 *  longer arrive, it names another tool, or it is a new call under a tool
-	 *  Pi no longer serves. The name/args claim then decides, as without an id. */
-	private claimToolUseId(id: string, toolName: string, args: Record<string, unknown>): ClaimedToolCall | undefined {
-		if (this.claimedToolCallIds.has(id) || this.pendingToolCalls.has(id) || this.settledInvocationIds.has(id) || this.deadToolCallIds.has(id)) return undefined;
+	private claimableByMatch(id: string): boolean {
+		return !this.claimedToolCallIds.has(id) && !this.taggedToolCallIds.has(id);
+	}
+
+	/** Claims the id Claude Code tagged a tools/call with. A tagged call only
+	 *  ever touches its own id; any outcome but "claimed" is answered without
+	 *  claiming anything. The handler can run before the stream records its
+	 *  tool_use, so an unknown id of a served tool is recorded here, and the
+	 *  stream's record of it merges in. */
+	claimToolUseId(id: string, toolName: string, args: Record<string, unknown>): ToolUseIdClaim {
+		if (this.pendingToolCalls.has(id)) return { outcome: "waiting" };
+		if (this.deadToolCallIds.has(id)) return { outcome: "dead" };
+		// The handler settles its id as it claims it; Claude Code's own answer
+		// and a finished Claude Code process settle it too.
+		if (this.settledInvocationIds.has(id)) return { outcome: "answered" };
 		const recordedName = this.queryToolNames.get(id);
-		if (recordedName !== undefined && recordedName !== toolName) return undefined;
+		if (recordedName !== undefined && recordedName !== toolName) return { outcome: "other-tool", recordedName };
 		const recordedAhead = recordedName === undefined;
 		if (recordedAhead) {
-			if (this.servedTools && !this.servedTools.serves(toolName)) return undefined;
+			if (this.servedTools && !this.servedTools.serves(toolName)) return { outcome: "withdrawn" };
 			this.recordToolCall(id, toolName, args);
+			this.earlyToolCallIds.add(id);
 		}
-		const available = this.turnToolCalls.filter((call) => !this.claimedToolCallIds.has(call.id)).length;
+		const available = this.turnToolCalls.filter((call) => this.claimableByMatch(call.id)).length;
 		this.claimedToolCallIds.add(id);
-		return { toolCallId: id, match: "tool-use-id", ambiguous: false, available, ...(recordedAhead ? { recordedAhead } : {}) };
+		this.taggedToolCallIds.add(id);
+		return { outcome: "claimed", claim: { toolCallId: id, match: "tool-use-id", ambiguous: false, available, ...(recordedAhead ? { recordedAhead } : {}) } };
+	}
+
+	/** Waits for the result of `id`'s waiting handler, which then answers both. */
+	joinPendingToolCall(id: string): Promise<McpResult> {
+		const pending = this.pendingToolCalls.get(id)!;
+		return new Promise((resolve) => {
+			const first = pending.resolve;
+			pending.resolve = (result) => {
+				first(result);
+				resolve(result);
+			};
+		});
 	}
 
 	/**

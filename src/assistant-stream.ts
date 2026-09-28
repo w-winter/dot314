@@ -618,6 +618,18 @@ function settlePartialCallsOrEndTurn(
 	rearmSource: string,
 ): void {
 	if (!queryCtx.currentPiStream || !queryCtx.turnOutput) return;
+	// A tagged handler can run before the stream records its tool_use: forward
+	// every such call still waiting that Pi has not been given, with its
+	// handler's arguments. The stream's later blocks for them dedup by id.
+	for (const id of queryCtx.earlyToolCallIds) {
+		const waiting = queryCtx.pendingToolCalls.get(id);
+		if (!waiting || queryCtx.forwardedToolCallIds.has(id) || queryCtx.deadToolCallIds.has(id)) continue;
+		if (queryCtx.turnBlocks.some((b: any) => b.type === "toolCall" && b.id === id && isLiveBlock(b))) continue;
+		const idx = addTurnBlock(queryCtx, { type: "toolCall", id, name: waiting.toolName, arguments: waiting.args });
+		const block = queryCtx.turnBlocks[idx] as any;
+		queryCtx.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: queryCtx.turnOutput });
+		queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
+	}
 	// Settle every OTHER still-partial block whose handler has fired: each
 	// waiting handler carries the authoritative args for its own call.
 	for (let i = 0; i < queryCtx.turnBlocks.length; i++) {
