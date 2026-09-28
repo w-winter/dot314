@@ -42,9 +42,9 @@ const CONFIGS = {
 	replaceAll: { replacement: REPLACEMENT, preservePiContext: false },
 };
 
-// Over Pi's default base, the main prompt is the replacement, Pi's rules
-// section, the sections after Pi's docs and a before_agent_start hook's
-// `extra`; with preservePiContext false it is what the bridge sent before
+// Over Pi's default base, the main prompt is the replacement, every section
+// but Pi's preamble, tools and docs in Pi's order, and a before_agent_start
+// hook's `extra`; with preservePiContext false it is what the bridge sent before
 // issue #1 (legacyResolve, verbatim). A base the session supplied itself
 // (SYSTEM.md here) is kept since issue #1: the replacement leads and the
 // complete prompt follows, under every setting.
@@ -53,9 +53,8 @@ function expectedMain(prompt, config, options, extra) {
 	if (options.customPrompt === undefined) {
 		if (config.preservePiContext === false) return legacyResolve(prompt, "pi-claude/claude-haiku-4-5", config);
 		const sections = sessionMessages(options)[0].sections;
-		const names = Object.keys(sections);
-		const afterDocs = names.slice(names.indexOf("docs") + 1).map((name) => sections[name]);
-		return [head, sections.rules, ...afterDocs, ...(extra ? [extra] : [])].join("\n\n");
+		const kept = Object.entries(sections).filter(([name]) => !["preamble", "tools", "docs"].includes(name)).map(([, text]) => text);
+		return [head, ...kept, ...(extra ? [extra] : [])].join("\n\n");
 	}
 	return `${head}\n\n${prompt}`;
 }

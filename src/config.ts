@@ -172,12 +172,18 @@ function projectSettingsTrusted(settingsPath: string): boolean {
 }
 // The last line of Pi's default base (system-prompt.ts, the docs section).
 const PI_DOCS_LINE = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
-// How Pi renders its rules section and closes its docs section, which follows
-// the rules (buildSystemPromptSections, getSystemMessageText).
-const PI_RULES_OPEN = "\n\n<rules>\n";
-const PI_RULES_CLOSE = "\n</rules>";
-const PI_DOCS_OPEN = "\n\n<docs>\n";
-const PI_DOCS_CLOSE = "\n</docs>";
+// How Pi renders its tools and docs sections in the prompt: each opens with
+// its tag after a blank line and ends with a fixed line and its closing tag
+// (buildSystemPromptSections, getSystemMessageText).
+const PI_TOOLS_BLOCK = { open: "\n\n<tools>\n", close: "\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>" };
+const PI_DOCS_BLOCK = { open: "\n\n<docs>\n", close: `\n${PI_DOCS_LINE}\n</docs>` };
+
+/** Where Pi's rendered block sits in the prompt, found by its closing text. */
+function piBlockRange(prompt: string, block: { open: string; close: string }): [number, number] | undefined {
+	const close = prompt.indexOf(block.close);
+	const open = close === -1 ? -1 : prompt.lastIndexOf(block.open, close);
+	return open === -1 ? undefined : [open, close + block.close.length];
+}
 
 /** The preamble buildSystemPromptSections sets when the session supplies no
  * base of its own. Pi does not export its builder from the package index, so
@@ -211,8 +217,10 @@ function hasPiDefaultBase(prompt: string, preamble: string | undefined): boolean
  * prompt that does not open with Pi's default base.
  *
  * Over Pi's default base, the replacement takes the place of Pi's preamble,
- * tools and docs. Pi's rules section (its rules, the tool guidelines and the
- * extensions' promptGuidelines) directly precedes the docs and is kept.
+ * tools and docs; every other section Pi rendered follows in Pi's order,
+ * including its rules (its rules, the tool guidelines and the extensions'
+ * promptGuidelines). Pi appends a section it re-adds, so a session that
+ * switches to Pi's default base has its tools and docs after cwd.
  */
 export function resolveSystemPrompt(prompt: string, modelKey: string, config: SystemPromptConfig = {}, preamble?: string): string {
 	const replacement = `${config.includeModelLine ? `Active model: ${modelKey}\n\n` : ""}${config.replacement ?? ""}`.trim();
@@ -225,12 +233,18 @@ export function resolveSystemPrompt(prompt: string, modelKey: string, config: Sy
 	if (prompt === replacement || prompt.startsWith(`${replacement}\n`)) return prompt;
 	const end = prompt.indexOf(PI_DOCS_LINE);
 	if (end !== -1) {
-		const docsStart = prompt.lastIndexOf(PI_DOCS_OPEN, end);
-		const rulesEnd = docsStart - PI_RULES_CLOSE.length;
-		const rulesStart = docsStart === -1 || !prompt.startsWith(PI_RULES_CLOSE, rulesEnd) ? -1 : prompt.lastIndexOf(PI_RULES_OPEN, rulesEnd);
-		const rules = rulesStart === -1 ? "" : prompt.slice(rulesStart, docsStart);
-		const rest = prompt.slice(end + PI_DOCS_LINE.length);
-		return replacement + rules + (rest.startsWith(PI_DOCS_CLOSE) ? rest.slice(PI_DOCS_CLOSE.length) : rest);
+		const docs = piBlockRange(prompt, PI_DOCS_BLOCK);
+		if (!docs) return replacement + prompt.slice(end + PI_DOCS_LINE.length);
+		const tools = piBlockRange(prompt, PI_TOOLS_BLOCK);
+		// Pi renders its tools and docs as separate sections, in either order.
+		const dropped = (tools && (tools[1] <= docs[0] || tools[0] >= docs[1]) ? [tools, docs] : [docs]).sort((a, b) => a[0] - b[0]);
+		let kept = "";
+		let from = prompt.startsWith(PI_DEFAULT_PREAMBLE) ? PI_DEFAULT_PREAMBLE.length : 0;
+		for (const [start, stop] of dropped) {
+			kept += prompt.slice(from, start);
+			from = stop;
+		}
+		return replacement + kept + prompt.slice(from);
 	}
 	const starts = ["\n\n<project_context>", "\n\n# Project Context\n\n", "\nThe following skills provide specialized instructions for specific tasks.", "\nCurrent date:"]
 		.map((marker) => prompt.indexOf(marker)).filter((index) => index !== -1);

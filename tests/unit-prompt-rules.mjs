@@ -1,8 +1,9 @@
 // Under a configured systemPrompt.replacement, Claude receives the replacement,
-// then Pi's <rules> section exactly as Pi rendered it (Pi's rules, the selected
-// tools' guidelines, every extension's promptGuidelines), then everything Pi
-// placed after <docs>. Pi's preamble, <tools> and <docs> are dropped whole.
-// The prompt comes from Pi's own builder and is captured at a fake SDK.
+// then every section Pi rendered except its preamble, <tools> and <docs>, in
+// Pi's order: its <rules> exactly as rendered (Pi's rules, the selected tools'
+// guidelines, every extension's promptGuidelines) and everything else. Pi's
+// preamble, <tools> and <docs> are dropped whole, wherever they sit. The
+// prompt comes from Pi's own builder and is captured at a fake SDK.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
@@ -11,8 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-// Not in the package's exports map: Pi's session prompt builder.
-import { buildSystemPromptSections } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
+// Not in the package's exports map: Pi's session prompt builder and section diff.
+import { buildSystemPromptSections, diffSystemPromptSections } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 
 import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
@@ -108,6 +109,27 @@ describe("systemPrompt replacement keeps Pi's rules", () => {
 		assert.equal(prompt, [REPLACEMENT, sections.rules, sections.addendum, sections.project_context, sections.cwd].join("\n\n"));
 		for (const docsText of ["<docs>", "</docs>", "Pi documentation", "docs/", sections.preamble, "<tools>"]) {
 			assert.ok(!prompt.includes(docsText), `sent ${JSON.stringify(docsText)}`);
+		}
+	});
+
+	// Pi replays a section patch by name and appends a section it re-adds, so a
+	// session that starts on its own base and switches to Pi's default renders
+	// preamble, project_context, cwd, tools, rules, docs.
+	it("keeps the sections Pi rendered before <tools> once a session switches to Pi's default base", { timeout: 10_000 }, async () => {
+		const contextFiles = [{ path: "/tmp/project/AGENTS.md", content: "Use tabs." }];
+		const options = { cwd: "/tmp/project", selectedTools: ["read", "bash"], toolSnippets: { read: "Read file contents", bash: "Execute bash commands" }, contextFiles };
+		const first = buildSystemPromptSections({ ...options, customPrompt: "My own base." });
+		const second = buildSystemPromptSections({ ...options, promptGuidelines: [EXTENSION_GUIDELINE] });
+		const prompt = await capturedSystemPrompt([
+			{ role: "system", content: "", sections: first, timestamp: 1 },
+			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: 2 },
+			{ role: "system", content: "", sections: diffSystemPromptSections(first, second), timestamp: 3 },
+			{ role: "user", content: [{ type: "text", text: "again" }], timestamp: 4 },
+		]);
+
+		assert.equal(prompt, [REPLACEMENT, second.project_context, second.cwd, second.rules].join("\n\n"));
+		for (const dropped of ["<docs>", "</docs>", "<tools>", "</tools>", second.preamble, "My own base."]) {
+			assert.ok(!prompt.includes(dropped), `sent ${JSON.stringify(dropped)}`);
 		}
 	});
 });

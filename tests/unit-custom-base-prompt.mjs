@@ -3,8 +3,8 @@
 // systemPrompt, a pi-subagents replace-mode agent), that base is the
 // session's instructions, so Claude receives the replacement followed by the
 // complete prompt Pi built, under every replacement setting. Pi's default
-// base is replaced by the replacement, followed by Pi's rules section and what
-// Pi placed after its docs section; without Pi's docs section, and with
+// base (its preamble, tools and docs) is replaced by the replacement, followed
+// by every other section in Pi's order; without Pi's docs section, and with
 // preservePiContext false, the output is the one it had before (legacyResolve,
 // byte for byte). Prompts come from Pi's own builder, section diff and
 // forced-prompt projection.
@@ -161,19 +161,19 @@ function assertLegacyOutput(messages) {
 	}
 }
 
-// Pi's default base: the replacement, then Pi's rules section and the sections
-// after Pi's docs, in their order, then a before_agent_start hook's `extra`.
+// Pi's default base: the replacement, then every section but Pi's preamble,
+// tools and docs, in Pi's order, then a before_agent_start hook's `extra`.
 // preservePiContext false still sends d603a2b's output, byte for byte.
-function assertKeepsRules(messages, sections, extra) {
+function assertKeepsPiSections(messages, sections, extra) {
 	const prompt = getCurrentSystemPrompt(messages);
-	const names = Object.keys(sections);
-	const afterDocs = names.slice(names.indexOf("docs") + 1).map((name) => sections[name]);
+	const kept = Object.entries(sections).filter(([name]) => !["preamble", "tools", "docs"].includes(name)).map(([, text]) => text);
 	for (const [label, { config, head }] of Object.entries(CONFIGS)) {
 		const expected = config.preservePiContext === false
 			? legacyResolve(prompt, MODEL_KEY, config)
-			: [head, sections.rules, ...afterDocs, ...(extra ? [extra] : [])].join("\n\n");
+			: [head, ...kept, ...(extra ? [extra] : [])].join("\n\n");
 		assert.equal(sent(messages, config), expected, label);
 		assert.ok(!sent(messages, config).includes("docs>"), `${label} sent a docs tag`);
+		assert.ok(!sent(messages, config).includes("tools>"), `${label} sent a tools tag`);
 	}
 }
 
@@ -188,12 +188,13 @@ describe("Pi's default preamble", () => {
 		assert.equal(bridgeConfig.PI_DEFAULT_PREAMBLE, installed.buildSystemPromptSections(buildOptions({})).preamble);
 	});
 
-	it("keeps the installed Pi build's rules and drops its docs under a replacement", { timeout: 10_000, skip: !existsSync(INSTALLED_PI_BUILDER) && "installed Pi not found" }, async () => {
+	it("keeps the installed Pi build's rules and drops its tools and docs under a replacement", { timeout: 10_000, skip: !existsSync(INSTALLED_PI_BUILDER) && "installed Pi not found" }, async () => {
 		const installed = await import(INSTALLED_PI_BUILDER);
 		const sections = installed.buildSystemPromptSections(buildOptions({ contextFiles, promptGuidelines: ["Use the todo tool to track multi-step work"] }));
 		assert.deepEqual(Object.keys(sections), ["preamble", "tools", "rules", "docs", "project_context", "cwd"]);
+		assert.ok(sections.tools.endsWith("\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>"));
 		assert.ok(sections.docs.endsWith(`${PI_DOCS_LINE}\n</docs>`));
-		assertKeepsRules([{ role: "system", content: "", sections, timestamp: 1 }, user("hello")], sections);
+		assertKeepsPiSections([{ role: "system", content: "", sections, timestamp: 1 }, user("hello")], sections);
 	});
 });
 
@@ -283,16 +284,24 @@ describe("systemPrompt replacement over Pi's default base", () => {
 	};
 
 	for (const [name, options] of Object.entries(DEFAULT_BASES)) {
-		it(`sends the replacement, Pi's rules and what follows Pi's docs for ${name}`, () => {
+		it(`sends the replacement and every section but Pi's preamble, tools and docs for ${name}`, () => {
 			const messages = sessionMessages(options);
-			assertKeepsRules(messages, getCurrentSystemMessage(messages).sections);
+			assertKeepsPiSections(messages, getCurrentSystemMessage(messages).sections);
 		});
-		it(`sends the replacement, Pi's rules and what follows Pi's docs for a before_agent_start prompt over ${name}`, { timeout: 10_000 }, async () => {
+		it(`sends the replacement and every section but Pi's preamble, tools and docs for a before_agent_start prompt over ${name}`, { timeout: 10_000 }, async () => {
 			const base = sessionMessages(options);
 			const extra = "Pinned skill instructions.";
-			assertKeepsRules(await forcedMessages(base, `${getCurrentSystemPrompt(base)}\n\n${extra}`), getCurrentSystemMessage(base).sections, extra);
+			assertKeepsPiSections(await forcedMessages(base, `${getCurrentSystemPrompt(base)}\n\n${extra}`), getCurrentSystemMessage(base).sections, extra);
 		});
 	}
+
+	// An extension's own tools section is not Pi's tool list: it is kept, like
+	// an extension's rules section.
+	it("keeps an extension section overriding tools", () => {
+		const messages = sessionMessages({ contextFiles, sections: { tools: "EXT TOOLS" } });
+		const sections = getCurrentSystemMessage(messages).sections;
+		assert.equal(sent(messages, CONFIGS.preserve.config), [REPLACEMENT, sections.tools, sections.rules, sections.project_context, sections.cwd].join("\n\n"));
+	});
 
 	for (const [name, options] of Object.entries(EXTENSION_DOCS)) {
 		it(`sends d603a2b's output for ${name}`, () => assertLegacyOutput(sessionMessages(options)));
@@ -318,15 +327,40 @@ describe("systemPrompt replacement over Pi's default base", () => {
 		assert.equal(sent(messages, CONFIGS.replaceAll.config), REPLACEMENT);
 	});
 
-	// Review finding 1, inverse: Pi's re-added tools, rules and docs replay
-	// after cwd. Nothing follows Pi's docs, and what precedes Pi's tools is
-	// dropped with the base, as before.
-	it("sends the replacement and Pi's rules once a session switches from a custom base back to Pi's default (review P2-1)", () => {
-		const messages = switchedMessages({ customPrompt: SUBAGENT_PROMPT, contextFiles }, { contextFiles });
-		assert.deepEqual(Object.keys(getCurrentSystemMessage(messages).sections), ["preamble", "project_context", "cwd", "tools", "rules", "docs"]);
-		assertKeepsRules(messages, getCurrentSystemMessage(messages).sections);
-		assert.equal(sent(messages, CONFIGS.replaceAll.config), REPLACEMENT);
-	});
+	// Review finding 1, inverse: Pi patches a section in place and appends one
+	// it re-adds, so Pi's tools, rules and docs replay after cwd, and Pi's docs
+	// replace an extension's docs section where it stood, before Pi's tools.
+	const SWITCHES = {
+		"a session switching from a custom base back to Pi's default (review P2-1)": {
+			from: { customPrompt: SUBAGENT_PROMPT, contextFiles },
+			to: { contextFiles },
+			order: ["preamble", "project_context", "cwd", "tools", "rules", "docs"],
+		},
+		"a session switching from a custom base with an extension docs section to Pi's default": {
+			from: { customPrompt: SUBAGENT_PROMPT, contextFiles, sections: { docs: "EXT DOCS" } },
+			to: { contextFiles, skills },
+			order: ["preamble", "project_context", "cwd", "docs", "tools", "rules", "skills"],
+		},
+		"a session switching to Pi's default, its AGENTS.md quoting Pi's docs line ahead of Pi's docs": {
+			from: { customPrompt: SUBAGENT_PROMPT, contextFiles: [{ path: "/tmp/project/AGENTS.md", content: `Quoted from Pi:\n${PI_DOCS_LINE}` }] },
+			to: { contextFiles: [{ path: "/tmp/project/AGENTS.md", content: `Quoted from Pi:\n${PI_DOCS_LINE}` }] },
+			order: ["preamble", "project_context", "cwd", "tools", "rules", "docs"],
+		},
+	};
+	for (const [name, { from, to, order }] of Object.entries(SWITCHES)) {
+		it(`sends the replacement and every section but Pi's preamble, tools and docs for ${name}`, () => {
+			const messages = switchedMessages(from, to);
+			const sections = getCurrentSystemMessage(messages).sections;
+			assert.deepEqual(Object.keys(sections), order);
+			assertKeepsPiSections(messages, sections);
+			assert.equal(sent(messages, CONFIGS.replaceAll.config), REPLACEMENT);
+		});
+		it(`sends the replacement and every section but Pi's preamble, tools and docs for a before_agent_start prompt over ${name}`, { timeout: 10_000 }, async () => {
+			const base = switchedMessages(from, to);
+			const extra = "Pinned skill instructions.";
+			assertKeepsPiSections(await forcedMessages(base, `${getCurrentSystemPrompt(base)}\n\n${extra}`), getCurrentSystemMessage(base).sections, extra);
+		});
+	}
 
 	// The documented limit: a custom base is told from Pi's by its preamble
 	// alone. A sectioned preamble must equal Pi's sentence; one that only
