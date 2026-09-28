@@ -49,6 +49,7 @@ run "provider: print mode responds" \
 run "provider: --provider flag works" \
   pi --no-session -ne -e "$DIR" \
   --provider pi-claude \
+  --model claude-haiku-4-5 \
   -p "Reply with just the word 'yes'"
 
 run "provider: model list includes provider" \
