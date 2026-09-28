@@ -111,15 +111,16 @@ export interface DeliveryLedger {
  *  history since the claim at `from`: every reply delivered since then (none
  *  missing, none extra, in delivery order), results only for calls those or
  *  earlier delivered replies made, each once and only if Claude received it,
- *  and user messages only at `queuedUserIndexes` (queued for delivery by this
- *  query). System messages are invisible to the digest and pass. Returns the
+ *  and user messages only at `acceptedUserIndexes` (accepted for delivery by
+ *  this query: written to its running child, or queued for a continuation).
+ *  System messages are invisible to the digest and pass. Returns the
  *  result ids the suffix covers, or undefined when it is not Claude's. */
 export function deliveredSuffix(
 	messages: Context["messages"],
 	from: number,
 	to: number,
 	ledger: DeliveryLedger,
-	opts: { resultReceived: (id: string) => boolean; queuedUserIndexes: ReadonlySet<number> },
+	opts: { resultReceived: (id: string) => boolean; acceptedUserIndexes: ReadonlySet<number> },
 ): Set<string> | undefined {
 	const pending = ledger.assistants.slice(ledger.claimedAssistants);
 	const callable = new Set(ledger.assistants.slice(0, ledger.claimedAssistants).flatMap((entry) => entry.callIds));
@@ -141,7 +142,7 @@ export function deliveredSuffix(
 			results.add(id);
 			continue;
 		}
-		if (message.role === "user" && opts.queuedUserIndexes.has(i)) continue;
+		if (message.role === "user" && opts.acceptedUserIndexes.has(i)) continue;
 		return undefined;
 	}
 	return next === pending.length ? results : undefined;

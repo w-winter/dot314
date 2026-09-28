@@ -18,6 +18,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { openSession } from "cc-session-io";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { AssistantMessageFrameEncoder, Type } from "@earendil-works/pi-ai";
 import { SessionManager, convertToLlm } from "@earendil-works/pi-coding-agent";
@@ -29,7 +31,7 @@ import {
 	streamClaudeAgentSdk,
 } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
-import { resetStack } from "../src/query-state.ts";
+import { ctx, resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
 import { encodeLikePi } from "./lib/pi-frame-consumer.mjs";
 
@@ -161,23 +163,59 @@ function fakeQuery(steps) {
 	};
 }
 
+/** Steps in which Claude Code gives up on call `id` while Pi's tool still
+ *  runs: the MCP handler is invoked, then Claude Code answers the call
+ *  itself, and `gaveUp` resolves. A steer delivered with tool results goes to
+ *  the running query; one whose results are all for calls Claude Code gave up
+ *  on is a production path that still defers it to a continuation, which is
+ *  what these suites exercise. `connect` returns the query's MCP client. */
+function claudeCodeGivesUp(sessionId, connect, id, gaveUp) {
+	return [
+		async () => {
+			const client = await connect();
+			void client.callTool({ name: "mytool", arguments: {}, _meta: { "claudecode/toolUseId": id } }).catch(() => {});
+			while (!runInRequestLane(sessionId, () => ctx().pendingToolCalls.has(id))) await new Promise((resolve) => setTimeout(resolve, 1));
+		},
+		{ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: "Claude Code stopped waiting for this call", is_error: true }] } },
+		() => gaveUp.resolve(),
+	];
+}
+
+/** Connects to the query's MCP server once, on first use. */
+function mcpClient(options) {
+	let client;
+	return async () => {
+		if (!client) {
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			await options.mcpServers["custom-tools"].instance.connect(serverTransport);
+			client = new Client({ name: "fake-claude-code", version: "1.0.0" });
+			await client.connect(clientTransport);
+		}
+		return client;
+	};
+}
+
 /**
  * Real Pi turn: the original query calls `mytool` once per steer; while each
- * call runs, the user sends one steer, so each reaches the bridge in its own
- * tool-result callback and is deferred. The original query then answers
- * `original` and succeeds; continuation i answers `continuations[i]` (a
- * string: success) or fails (an object: { partial, failure }).
+ * call runs, Claude Code gives up on it and the user sends one steer, so
+ * each reaches the bridge in its own tool-result callback and is deferred.
+ * The original query then answers `original` and succeeds; continuation i
+ * answers `continuations[i]` (a string: success) or fails (an object:
+ * { partial, failure }).
  */
 async function runSteeredTurn(sessionId, { steers, continuations, original = "ORIGINAL-REPLY" }) {
 	const callbackSeen = [];
 	for (let i = 0; i <= steers.length; i++) callbackSeen.push(Promise.withResolvers());
+	const gaveUp = steers.map(() => Promise.withResolvers());
 	let queries = 0;
-	__testSetSdkQueryFactory(() => {
+	__testSetSdkQueryFactory(({ options }) => {
 		queries += 1;
 		if (queries === 1) {
+			const connect = mcpClient(options);
 			const steps = [];
 			for (let i = 0; i < steers.length; i++) {
 				steps.push(...toolUseMessage(`call-${i}`));
+				steps.push(...claudeCodeGivesUp(sessionId, connect, `call-${i}`, gaveUp[i]));
 				// Wait for Pi's callback that carries this call's result and steer.
 				steps.push(() => callbackSeen[i + 1].promise);
 			}
@@ -201,7 +239,11 @@ async function runSteeredTurn(sessionId, { steers, continuations, original = "OR
 		[{ role: "user", content: "start the task", timestamp: Date.now() }],
 		{ messages: [], tools: [{
 			name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
-			async execute() { executed += 1; return { content: [{ type: "text", text: "TOOL-RESULT" }], details: {} }; },
+			async execute() {
+				await gaveUp[executed].promise;
+				executed += 1;
+				return { content: [{ type: "text", text: "TOOL-RESULT" }], details: {} };
+			},
 		}] },
 		{
 			model,
@@ -443,17 +485,20 @@ function piStreamFn(streams) {
 }
 
 /** Run 1 ends after a terminate:true tool batch; run 2 continues with the
- *  tool result and a steer; the original query answers and a continuation
+ *  tool result and a steer (Claude Code gave up on the call, see
+ *  claudeCodeGivesUp); the original query answers and a continuation
  *  replays the steer, during which run 2 is cancelled (`cancellation`). */
 async function runTwoPiRuns(sessionId, cancellation) {
 	const run2Callback = Promise.withResolvers();
+	const gaveUp = Promise.withResolvers();
 	const continuation = { interrupted: false };
 	let queries = 0;
-	__testSetSdkQueryFactory(() => {
+	__testSetSdkQueryFactory(({ options }) => {
 		queries += 1;
 		if (queries === 1) {
 			return fakeQuery([
 				...toolUseMessage("call-0"),
+				...claudeCodeGivesUp(sessionId, mcpClient(options), "call-0", gaveUp),
 				() => run2Callback.promise,
 				...textMessage("ORIGINAL-REPLY"),
 				{ type: "result", subtype: "success", result: "ORIGINAL-REPLY" },
@@ -482,7 +527,10 @@ async function runTwoPiRuns(sessionId, cancellation) {
 	const tools = [{
 		name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
 		// Every tool of the batch says terminate: Pi ends run 1 after it.
-		async execute() { return { content: [{ type: "text", text: "TOOL-RESULT" }], details: {}, terminate: true }; },
+		async execute() {
+			await gaveUp.promise;
+			return { content: [{ type: "text", text: "TOOL-RESULT" }], details: {}, terminate: true };
+		},
 	}];
 	const run1 = new AbortController();
 	const run2 = new AbortController();

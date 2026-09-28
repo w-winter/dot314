@@ -405,6 +405,14 @@ export class QueryContext {
 	unmatchedToolResultIds = new Set<string>();
 	reportedToolResultMismatch = false;
 	deferredUserMessages: DeferredUserMessage[] = [];
+	/** The query a live steering write is in flight on (tool-result-delivery.ts),
+	 *  from the streamInput() call until Claude Code acknowledged the write or
+	 *  it failed. A steer arriving meanwhile is deferred, never written
+	 *  concurrently. Cleared at fresh-query setup. */
+	steeringWriteQuery: ReturnType<typeof query> | null = null;
+	/** Bumped only at fresh-query setup. An async continuation acts on the
+	 *  record only while no newer query has claimed this context. */
+	queryGeneration = 0;
 	handledTerminalError = false;
 	/** The bridge's own abort path ran for this query (onAbort). */
 	abortRequested = false;

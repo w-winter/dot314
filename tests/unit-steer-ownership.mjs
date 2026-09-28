@@ -1,8 +1,9 @@
 // Provider level: a user message Pi hands the bridge while a Claude query is
-// running must reach Claude. The bridge cannot inject into the running query,
-// so it queues the message and replays it as a continuation after the query.
-// The cursor is an acknowledgement: it may pass a user message only once that
-// message is delivered, queued for replay, or owned by a rebuild.
+// running must reach Claude, exactly once. With a tool result for the query,
+// the bridge writes it to the running query (live); otherwise it queues it
+// and replays it as a continuation after the query. The cursor is an
+// acknowledgement: it may pass a user message only once that message is
+// delivered, accepted for delivery, or owned by a rebuild.
 //
 // Pi converts `custom` messages (intercom, subagent notifications) to role
 // `user` before calling the provider, so they take this same path.
@@ -68,8 +69,8 @@ const textTurn = (text, sessionId) => [
 /** Fake Claude Code. The first query runs one assistant message per entry of
  *  `turns`, each calling `slow_tool` once per id in it, and waits for Pi's
  *  results through the real MCP server before the next; then it answers.
- *  Every later query is a deferred-replay continuation; its prompt text is
- *  recorded. */
+ *  Steering written to the running query is recorded in `live`. Every later
+ *  query is a deferred-replay continuation; its prompt text is recorded. */
 function installFakeClaudeCode(observed, turns) {
 	__testSetSdkQueryFactory(({ prompt, options }) => {
 		observed.queries += 1;
@@ -106,6 +107,9 @@ function installFakeClaudeCode(observed, turns) {
 					if (closed) return;
 					yield message;
 				}
+			},
+			async streamInput(input) {
+				for await (const message of input) observed.live.push(await promptText((async function* () { yield message; })()));
 			},
 			close() { closed = true; },
 			async interrupt() { closed = true; },
@@ -184,7 +188,7 @@ const snapshotOwnership = (sessionId) => runInRequestLane(sessionId, () => ({
  *  stands in for an extension's context transform and returns the callback
  *  context from (starting messages, assistant tool message, suffix). */
 async function runCallback(sessionId, callIds, buildSuffix, { earlier = [], project, rebuildOwned = new Set() } = {}) {
-	const observed = { queries: 0, continuationPrompts: [] };
+	const observed = { queries: 0, continuationPrompts: [], live: [] };
 	installFakeClaudeCode(observed, [callIds]);
 	const initial = {
 		messages: [
@@ -209,24 +213,27 @@ async function runCallback(sessionId, callIds, buildSuffix, { earlier = [], proj
 function assertDeliveredOnceInOrder(result, steers) {
 	const { observed, messages, startedWith, rebuildOwned, snapshot, events } = result;
 	const cursor = Math.max(snapshot.latestCursor, snapshot.sharedCursor);
+	// What reached Claude: steering written to the running query, then
+	// continuation prompts.
+	const delivered = [...observed.live, ...observed.continuationPrompts];
 	assert.equal(
-		unownedBelowCursor(messages, startedWith, rebuildOwned, cursor, snapshot.queued),
+		unownedBelowCursor(messages, startedWith, rebuildOwned, cursor, [...observed.live, ...snapshot.queued]),
 		undefined,
-		`the cursor (${cursor}) passed a user message that was neither delivered nor queued; queued=${JSON.stringify(snapshot.queued)}`,
+		`the cursor (${cursor}) passed a user message that was neither delivered nor queued; live=${JSON.stringify(observed.live)} queued=${JSON.stringify(snapshot.queued)}`,
 	);
-	const replayed = observed.continuationPrompts.join("\u0000");
+	const replayed = delivered.join("\u0000");
 	let searchFrom = 0;
 	for (const steer of steers) {
 		const at = replayed.indexOf(steer);
-		assert.notEqual(at, -1, `${steer} never reached Claude; continuation prompts=${JSON.stringify(observed.continuationPrompts)}`);
+		assert.notEqual(at, -1, `${steer} never reached Claude; delivered=${JSON.stringify(delivered)}`);
 		assert.equal(replayed.indexOf(steer, at + steer.length), -1, `${steer} reached Claude more than once`);
-		assert.ok(at >= searchFrom, `${steer} reached Claude out of order: ${JSON.stringify(observed.continuationPrompts)}`);
+		assert.ok(at >= searchFrom, `${steer} reached Claude out of order: ${JSON.stringify(delivered)}`);
 		searchFrom = at + steer.length;
 	}
-	const replayedParts = observed.continuationPrompts.flatMap((prompt) => prompt.split("\n\n"));
+	const replayedParts = delivered.flatMap((prompt) => prompt.split("\n\n"));
 	for (const message of startedWith) {
 		if (message.role !== "user") continue;
-		assert.ok(!replayedParts.includes(userText(message)), `history the query started with was replayed: ${userText(message)}; prompts=${JSON.stringify(observed.continuationPrompts)}`);
+		assert.ok(!replayedParts.includes(userText(message)), `history the query started with was replayed: ${userText(message)}; delivered=${JSON.stringify(delivered)}`);
 	}
 	assert.ok(events.some((event) => event.type === "done"), "the callback's Pi stream must complete");
 }
@@ -235,7 +242,7 @@ function assertDeliveredOnceInOrder(result, steers) {
  *  build each callback context from the previous one plus the new assistant
  *  message; both run through the same (possibly transforming) projection. */
 async function runTwoCallbacks(sessionId, { earlier, project1, project2 }) {
-	const observed = { queries: 0, continuationPrompts: [] };
+	const observed = { queries: 0, continuationPrompts: [], live: [] };
 	installFakeClaudeCode(observed, [["call-1"], ["call-2"]]);
 	const initial = { messages: [{ role: "system", content: "test system prompt", toolsAdded: [SLOW], timestamp: 0 }, ...earlier, user("start")] };
 	const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId }));
@@ -246,11 +253,12 @@ async function runTwoCallbacks(sessionId, { earlier, project1, project2 }) {
 	const done2 = callback1.find((event) => event.type === "done");
 	assert.equal(done2?.reason, "toolUse", "the second tool turn reaches Pi through the first callback's stream");
 	const snapshot1 = snapshotOwnership(sessionId);
+	const live1 = [...observed.live];
 	const messages2 = project2(messages1, done2.message);
 	const callback2 = collect(streamClaudeAgentSdk(model, { messages: messages2 }, { sessionId }));
 	const snapshot2 = snapshotOwnership(sessionId);
 	const events = await callback2;
-	return { observed, snapshot1, snapshot2, events, startedWith: new Set(initial.messages) };
+	return { observed, snapshot1, snapshot2, live1, events, startedWith: new Set(initial.messages) };
 }
 
 const sharedRecord = (sessionId) => runInRequestLane(sessionId, () => __testGetBridgeIntegrityState().sharedSession);
@@ -318,8 +326,7 @@ describe("mid-query user messages are owned before the cursor passes them", () =
 			customAsUser("INTERCOM-CUSTOM"),
 		]);
 		assertDeliveredOnceInOrder(result, ["STEER-TYPED", "INTERCOM-CUSTOM"]);
-		assert.equal(result.observed.continuationPrompts.length, 1, "a contiguous trailing run still replays as one continuation");
-		assert.equal(result.observed.continuationPrompts[0], "STEER-TYPED\n\nINTERCOM-CUSTOM");
+		assert.deepEqual(result.observed.live, ["STEER-TYPED\n\nINTERCOM-CUSTOM"], "a contiguous trailing run is still sent as one message");
 	});
 
 	it("never re-queues the original prompt or earlier history", async () => {
@@ -328,6 +335,7 @@ describe("mid-query user messages are owned before the cursor passes them", () =
 			systemUpdate(),
 		]);
 		assert.deepEqual(result.snapshot.queued, [], "nothing new to queue");
+		assert.deepEqual(result.observed.live, [], "nothing new to send");
 		assert.deepEqual(result.observed.continuationPrompts, [], "no continuation without a new user message");
 		assert.equal(result.observed.queries, 1);
 	});
@@ -352,8 +360,8 @@ describe("mid-query user ownership survives context transforms", () => {
 		});
 		assert.equal(result.messages.length, 5);
 		assertDeliveredOnceInOrder(result, ["STEER-AFTER-PRUNE"]);
-		assert.deepEqual(result.snapshot.queued, ["STEER-AFTER-PRUNE"]);
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER-AFTER-PRUNE"]);
+		assert.deepEqual(result.observed.live, ["STEER-AFTER-PRUNE"]);
+		assert.deepEqual(result.observed.continuationPrompts, []);
 		assert.ok(!diagLabels().includes("user_message_identity_unresolved"), "plain pruning identifies every message; steer ownership needs no rebuild");
 		// The pruned messages are history Claude already holds, and Pi's view of
 		// it changed under the cursor: the next turn rebuilds from Pi's history
@@ -370,7 +378,8 @@ describe("mid-query user ownership survives context transforms", () => {
 			project: (initial, assistant, suffix) => [initial[0], systemUpdate(), systemUpdate(), ...initial.slice(1), assistant, ...suffix],
 		});
 		assertDeliveredOnceInOrder(result, ["STEER-AFTER-GROWTH"]);
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER-AFTER-GROWTH"]);
+		assert.deepEqual(result.observed.live, ["STEER-AFTER-GROWTH"]);
+		assert.deepEqual(result.observed.continuationPrompts, []);
 	});
 
 	it("hands a rewritten earlier message to a rebuild, never replays it, and still delivers the steer", async () => {
@@ -391,7 +400,8 @@ describe("mid-query user ownership survives context transforms", () => {
 		});
 		for (const message of rewritten) result.rebuildOwned.add(message);
 		assertDeliveredOnceInOrder(result, ["STEER-AFTER-REWRITE"]);
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER-AFTER-REWRITE"], "neither the rewritten message nor the prompt is replayed");
+		assert.deepEqual(result.observed.live, ["STEER-AFTER-REWRITE"], "neither the rewritten message nor the prompt is sent");
+		assert.deepEqual(result.observed.continuationPrompts, []);
 		assert.equal(sharedRecord("steer-after-rewrite")?.needsRebuild, true, "the rewritten message is owned by a rebuild");
 	});
 
@@ -409,24 +419,25 @@ describe("mid-query user ownership survives context transforms", () => {
 		});
 		for (const copy of copies) result.rebuildOwned.add(copy);
 		assertDeliveredOnceInOrder(result, ["STEER-AFTER-RESTAMP"]);
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER-AFTER-RESTAMP"]);
+		assert.deepEqual(result.observed.live, ["STEER-AFTER-RESTAMP"]);
+		assert.deepEqual(result.observed.continuationPrompts, []);
 		assert.equal(sharedRecord("steer-after-restamp")?.needsRebuild, true, "the unidentifiable copy is owned by a rebuild");
 	});
 
 	it("delivers each steer exactly once across two callbacks when the history is pruned in between", async () => {
-		const { observed, snapshot1, snapshot2, events, startedWith } = await runTwoCallbacks("steer-prune-between", {
+		const { observed, live1, events, startedWith } = await runTwoCallbacks("steer-prune-between", {
 			earlier: [user("earlier-one"), user("earlier-two")],
 			project1: (initial, assistant) => [...initial, assistant, toolResult("call-1"), user("STEER-ONE")],
 			// Keep the system prompt and only the newest messages: the first
 			// steer survives at a lower index, everything older is gone.
 			project2: (previous, assistant) => [previous[0], previous.at(-1), assistant, toolResult("call-2"), user("STEER-TWO")],
 		});
-		assert.deepEqual(snapshot1.queued, ["STEER-ONE"]);
-		assert.deepEqual(snapshot2.queued, ["STEER-ONE", "STEER-TWO"], "the second callback queues only the new steer");
+		assert.deepEqual(live1, ["STEER-ONE"]);
+		assert.deepEqual(observed.live, ["STEER-ONE", "STEER-TWO"], "the second callback sends only the new steer");
 		assert.ok(events.some((event) => event.type === "done"));
-		assert.deepEqual(observed.continuationPrompts, ["STEER-ONE", "STEER-TWO"]);
+		assert.deepEqual(observed.continuationPrompts, []);
 		for (const message of startedWith) {
-			if (message.role === "user") assert.ok(!observed.continuationPrompts.includes(userText(message)));
+			if (message.role === "user") assert.ok(!observed.live.includes(userText(message)));
 		}
 	});
 
@@ -449,8 +460,8 @@ describe("mid-query user ownership survives context transforms", () => {
 			},
 		});
 		for (const message of rewritten) result.rebuildOwned.add(message);
-		assert.deepEqual(result.snapshot.queued, ["STEER"], "only the new steer is queued");
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER"], "the rewritten history is not replayed as an instruction");
+		assert.deepEqual(result.observed.live, ["STEER"], "only the new steer is sent; the rewritten history is not sent as an instruction");
+		assert.deepEqual(result.observed.continuationPrompts, []);
 		assertDeliveredOnceInOrder(result, ["STEER"]);
 		assert.ok(diagLabels().includes("user_message_identity_unresolved"), `the ambiguous message is logged; diag=${JSON.stringify(diagLabels())}`);
 		assert.equal(sharedRecord("steer-after-rewrite-restamp")?.needsRebuild, true, "a rebuild owns the rewritten message");
@@ -470,8 +481,8 @@ describe("mid-query user ownership survives context transforms", () => {
 			})),
 		});
 		assert.deepEqual(result.messages.map((message) => message.role), ["system", "user", "user", "assistant", "toolResult"]);
-		assert.deepEqual(result.snapshot.queued, ["STEER-RELOCATED"]);
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER-RELOCATED"]);
+		assert.deepEqual(result.observed.live, ["STEER-RELOCATED"]);
+		assert.deepEqual(result.observed.continuationPrompts, []);
 		assertDeliveredOnceInOrder(result, ["STEER-RELOCATED"]);
 		assert.notEqual(sharedRecord("steer-relocated")?.needsRebuild, true, "a moved new message needs no rebuild");
 	});
@@ -496,8 +507,8 @@ describe("mid-query user ownership survives context transforms", () => {
 		const relocated = result.messages[1];
 		assert.equal(userText(relocated), "STEER-RELOCATED-PRUNED");
 		result.rebuildOwned.add(relocated);
-		assert.deepEqual(result.snapshot.queued, ["STEER-AFTER"], "the ambiguous message is not replayed as a steer");
-		assert.deepEqual(result.observed.continuationPrompts, ["STEER-AFTER"]);
+		assert.deepEqual(result.observed.live, ["STEER-AFTER"], "the ambiguous message is not sent as a steer");
+		assert.deepEqual(result.observed.continuationPrompts, []);
 		assertDeliveredOnceInOrder(result, ["STEER-AFTER"]);
 		assert.equal(sharedRecord("steer-relocated-pruned")?.needsRebuild, true, "a rebuild owns the ambiguous message: nothing is silently dropped");
 		assert.ok(diagLabels().includes("user_message_identity_unresolved"), `diag=${JSON.stringify(diagLabels())}`);
@@ -521,6 +532,7 @@ describe("mid-query user ownership survives context transforms", () => {
 		});
 		for (const message of replacedUsers) result.rebuildOwned.add(message);
 		assert.deepEqual(result.snapshot.queued, [], "nothing is queued as a steer");
+		assert.deepEqual(result.observed.live, [], "nothing is sent as a steer");
 		assert.deepEqual(result.observed.continuationPrompts, [], "nothing is replayed");
 		assertDeliveredOnceInOrder(result, []);
 		assert.equal(sharedRecord("steer-replaced-context")?.needsRebuild, true, "the rebuild owns every unmatched user message");
@@ -528,19 +540,19 @@ describe("mid-query user ownership survives context transforms", () => {
 	});
 
 	it("delivers a steer once when a later callback carries it again", async () => {
-		const { observed, snapshot1, snapshot2, events, startedWith } = await runTwoCallbacks("steer-repeated-callback", {
+		const { observed, live1, events, startedWith } = await runTwoCallbacks("steer-repeated-callback", {
 			earlier: [],
 			project1: (initial, assistant) => [...initial, assistant, toolResult("call-1"), user("STEER-ONCE")],
 			// Pi's next callback carries the same steer again, now followed by the
 			// next tool turn.
 			project2: (previous, assistant) => [...previous, assistant, toolResult("call-2")],
 		});
-		assert.deepEqual(snapshot1.queued, ["STEER-ONCE"]);
-		assert.deepEqual(snapshot2.queued, ["STEER-ONCE"], "the repeated steer is not queued again");
+		assert.deepEqual(live1, ["STEER-ONCE"]);
+		assert.deepEqual(observed.live, ["STEER-ONCE"], "the repeated steer is not sent again");
 		assert.ok(events.some((event) => event.type === "done"));
-		assert.deepEqual(observed.continuationPrompts, ["STEER-ONCE"]);
+		assert.deepEqual(observed.continuationPrompts, []);
 		for (const message of startedWith) {
-			if (message.role === "user") assert.ok(!observed.continuationPrompts.includes(userText(message)));
+			if (message.role === "user") assert.ok(!observed.live.includes(userText(message)));
 		}
 	});
 });

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { createSession, openSession } from "cc-session-io";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, onPiHistoryReplaced, streamClaudeAgentSdk } from "../src/index.ts";
 import { cancelScheduledToolUseEnd } from "../src/assistant-stream.ts";
@@ -55,6 +57,36 @@ function answeringQuery(session) {
 	};
 }
 
+/** A waitingQuery whose tool call Claude Code gives up on while Pi's tool
+ *  still runs: the MCP handler is invoked, then Claude Code answers the call
+ *  itself (`record.gaveUp` resolves). A steer delivered with tool results
+ *  goes to the running query; one whose results are all for calls Claude
+ *  Code gave up on is a production path that still defers it to a
+ *  continuation, which the tests using this exercise. */
+function abandoningQuery(record, options) {
+	const gate = Promise.withResolvers();
+	record.closed = false;
+	record.release = () => gate.resolve();
+	record.gaveUp = Promise.withResolvers();
+	return {
+		async *[Symbol.asyncIterator]() {
+			yield { type: "system", subtype: "init", session_id: sessionId };
+			yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t0", name: "mcp__custom-tools__echo", input: { id: "t0" } }] } };
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			await options.mcpServers["custom-tools"].instance.connect(serverTransport);
+			const client = new Client({ name: "fake-claude-code", version: "1.0.0" });
+			await client.connect(clientTransport);
+			void client.callTool({ name: "echo", arguments: { id: "t0" }, _meta: { "claudecode/toolUseId": "t0" } }).catch(() => {});
+			while (!ctx().pendingToolCalls.has("t0")) await new Promise((resolve) => setTimeout(resolve, 1));
+			yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t0", content: "Claude Code stopped waiting for this call", is_error: true }] } };
+			record.gaveUp.resolve();
+			await gate.promise;
+		},
+		close() { record.closed = true; gate.resolve(); },
+		async interrupt() { record.closed = true; gate.resolve(); },
+	};
+}
+
 function throwingContinuation(record) {
 	const gate = Promise.withResolvers();
 	record.closed = false;
@@ -75,7 +107,7 @@ function importedMessages(root, id) {
 		.trim().split("\n").map((line) => JSON.parse(line).message);
 }
 
-async function withWaitingQuery(run, childToolName, throwsOnClose = false) {
+async function withWaitingQuery(run, childToolName, throwsOnClose = false, firstQuery = undefined) {
 	const root = mkdtempSync(join(tmpdir(), "bridge-compact-"));
 	const env = { CLAUDE_CONFIG_DIR: root, PI_CODING_AGENT_DIR: root, CLAUDE_CODE_OAUTH_TOKEN: "offline-test", CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT: "0" };
 	const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
@@ -91,7 +123,8 @@ async function withWaitingQuery(run, childToolName, throwsOnClose = false) {
 	const queued = [];
 	__testSetSdkQueryFactory(({ prompt, options }) => {
 		calls.push({ prompt, options });
-		return calls.length === 1 ? waitingQuery(record, childToolName, throwsOnClose) : (queued.shift() ?? (() => answeringQuery(options.resume)))();
+		if (calls.length === 1) return firstQuery ? firstQuery(record, options) : waitingQuery(record, childToolName, throwsOnClose);
+		return (queued.shift() ?? (() => answeringQuery(options.resume)))();
 	});
 	try {
 		const opening = await collect(streamClaudeAgentSdk(model, { messages: [system, runEcho] }, { cwd: root }));
@@ -196,6 +229,7 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
 			const continuation = {};
 			queued.push(() => waitingQuery(continuation, undefined, false, "t1"));
+			await record.gaveUp.promise;
 			// Before the compaction, Pi's context still holds the query's prompt.
 			const steered = [system, runEcho, toolCall, toolResult, user("steer one")];
 			streamClaudeAgentSdk(model, { messages: steered }, { cwd: root });
@@ -210,13 +244,14 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 			assert.notEqual(calls[2].options.resume, sessionId);
 			assert.equal(importedMessages(root, calls[2].options.resume).filter((message) => message.content === "steer two").length, 1);
 			assert.equal(continued.filter((event) => event.type === "done").length, 1);
-		});
+		}, undefined, false, abandoningQuery);
 	});
 
 	it("keeps a deferred steer when the killed continuation throws", async () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
 			const continuation = {};
 			queued.push(() => throwingContinuation(continuation));
+			await record.gaveUp.promise;
 			const steered = [system, runEcho, toolCall, toolResult, user("steer one")];
 			streamClaudeAgentSdk(model, { messages: steered }, { cwd: root });
 			streamClaudeAgentSdk(model, { messages: [...steered, user("steer two")] }, { cwd: root });
@@ -228,7 +263,7 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 			assert.equal(calls.length, 3);
 			assert.equal(result.filter((event) => event.type === "done").length, 1);
 			assert.equal(importedMessages(root, calls[2].options.resume).filter((message) => message.content === "steer two").length, 1);
-		});
+		}, undefined, false, abandoningQuery);
 	});
 
 	it("restarts even if the killed child's close throws", async () => {

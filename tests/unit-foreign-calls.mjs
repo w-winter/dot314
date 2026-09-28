@@ -101,7 +101,7 @@ function installFakeClaudeCode(pick, { construct } = {}) {
 	const observed = { queries: [] };
 	__testSetSdkQueryFactory(({ prompt, options }) => {
 		construct?.(observed.queries.length);
-		const record = { prompt: undefined, resume: options.resume, closed: false, results: {} };
+		const record = { prompt: undefined, resume: options.resume, closed: false, results: {}, live: [] };
 		observed.queries.push(record);
 		let client;
 		let messageNo = 0;
@@ -142,6 +142,13 @@ function installFakeClaudeCode(pick, { construct } = {}) {
 			},
 			close,
 			async interrupt() { close(); },
+			// Steering the bridge writes to the running query.
+			async streamInput(input) {
+				for await (const message of input) {
+					const content = message.message.content;
+					record.live.push(typeof content === "string" ? content : content.filter((block) => block.type === "text").map((block) => block.text).join(""));
+				}
+			},
 			// Account routing probes the child's identity and usage.
 			async accountInfo() { return {}; },
 			async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() { return {}; },
@@ -473,7 +480,7 @@ const SHAPES = {
 		const first = await collect(streamClaudeAgentSdk(model, { messages: initial }, { sessionId }));
 		await intrude();
 		const events = await collect(streamClaudeAgentSdk(model, { messages: [...initial, first.at(-1).message, toolResult("c1"), user("STEER-FIRST"), toolResult("c2"), user("STEER-SECOND")] }, { sessionId }));
-		return { last: lastEvent(events), text: textOf(events), continuations: observed.continuations(), results: observed.parent().results };
+		return { last: lastEvent(events), text: textOf(events), live: observed.parent().live, continuations: observed.continuations(), results: observed.parent().results };
 	},
 	"a D2 steer and an intercom follow-up": async ({ sessionId, intrude, installParent }) => {
 		const observed = installParent(async function* ({ tools, text }) {
@@ -486,7 +493,7 @@ const SHAPES = {
 		await intrude();
 		const events = await collect(streamClaudeAgentSdk(model, { messages: [...initial, first.at(-1).message, toolResult("c1"), user("STEER"), customAsUser("INTERCOM")] }, { sessionId }));
 		await tick(10);
-		return { last: lastEvent(events), text: textOf(events), continuations: observed.continuations(), record: recordFlags(sessionId) };
+		return { last: lastEvent(events), text: textOf(events), live: observed.parent().live, continuations: observed.continuations(), record: recordFlags(sessionId) };
 	},
 	"E3: a failure held for the orphaned tool-result callback": async ({ sessionId, intrude, installParent }) => {
 		let fail;
@@ -608,7 +615,7 @@ const SHAPES = {
 		await intrude();
 		const events = await collect(streamClaudeAgentSdk(model, { messages: [initial[0], user("Summary so far"), toolResult("c1"), user("STEER-REPLACED")] }, { sessionId }));
 		await tick(10);
-		return { last: lastEvent(events), text: textOf(events), continuations: observed.continuations(), results: observed.parent().results, record: recordFlags(sessionId) };
+		return { last: lastEvent(events), text: textOf(events), live: observed.parent().live, continuations: observed.continuations(), results: observed.parent().results, record: recordFlags(sessionId) };
 	},
 };
 
@@ -668,15 +675,15 @@ describe("genuine callbacks join their own query, even with a foreign call betwe
 		const expectations = {
 			"parallel tool results in one callback": { last: ["done", "stop"], text: "parallel done" },
 			"sequential tool turns": { middle: ["done", "toolUse"], last: ["done", "stop"], text: "sequential done" },
-			"a steer-split batch (toolResult, user, toolResult, user)": { last: ["done", "stop"], continuations: ["STEER-FIRST\n\nSTEER-SECOND"] },
-			"a D2 steer and an intercom follow-up": { last: ["done", "stop"], continuations: ["STEER\n\nINTERCOM"] },
+			"a steer-split batch (toolResult, user, toolResult, user)": { last: ["done", "stop"], live: ["STEER-FIRST\n\nSTEER-SECOND"], continuations: [] },
+			"a D2 steer and an intercom follow-up": { last: ["done", "stop"], live: ["STEER\n\nINTERCOM"], continuations: [] },
 			"E3: a failure held for the orphaned tool-result callback": { last: ["error", "error"], error: "API Error: 500 internal server error" },
 			"E3: a usage limit reported while the query winds down": { last: ["error", "error"], error: "You've hit your weekly limit · resets Thursday 4am" },
 			"an abort, then the next prompt (stage B quarantine)": { last: ["done", "stop"], text: "recovered", resumedAborted: false },
 			"a callback from a later Pi run, then Esc in that run": { middle: ["done", "toolUse"], queryEnded: true, interrupted: true },
 			"compaction restarts the query on Pi's new history": { last: ["done", "stop"], text: "restarted", parentQueries: 2, firstClosed: true },
 			"a pruned history with rewritten tool-result bodies": { last: ["done", "stop"], text: "pruned done", results: { c1: "Output pruned by pi-prune." } },
-			"a fully replaced context that keeps only the tool result": { last: ["done", "stop"], continuations: [], results: { c1: "result c1" } },
+			"a fully replaced context that keeps only the tool result": { last: ["done", "stop"], live: [], continuations: [], results: { c1: "result c1" } },
 		};
 		for (const [name, expected] of Object.entries(expectations)) {
 			const { summary } = await runShape(SHAPES[name], "MAIN", false);

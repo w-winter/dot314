@@ -100,6 +100,10 @@ function installFakeClaudeCode(scripts, observed) {
 				}
 				if (!closed) yield { type: "result", subtype: "success", session_id: "digest-session" };
 			},
+			// Steering the bridge writes to the running query.
+			async streamInput(input) {
+				for await (const message of input) observed.live.push(message.message.content);
+			},
 			close() { closed = true; },
 			async interrupt() { closed = true; },
 		};
@@ -223,7 +227,7 @@ beforeEach(() => {
 	process.env.CLAUDE_CODE_OAUTH_TOKEN = "test-token";
 	claudeDir = mkdtempSync(join(tmpdir(), "bridge-digest-claude-"));
 	process.env.CLAUDE_CONFIG_DIR = claudeDir;
-	observed = { resumes: [], messageId: 0 };
+	observed = { resumes: [], messageId: 0, live: [] };
 	logStart = logSize();
 	resetStack();
 	__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: () => {} } });
@@ -259,17 +263,17 @@ describe("warm reuse follows the content Claude already holds", () => {
 		assert.deepEqual(observed.resumes, [null, "digest-session", "digest-session", "digest-session"]);
 	});
 
-	it("keeps reusing the session after a mid-query steer is replayed as a continuation", async () => {
+	it("keeps reusing the session after a mid-query steer is delivered to the running query", async () => {
 		installFakeClaudeCode([
 			[{ read: ["a.txt"] }, { text: "read a" }],
-			[{ text: "steer answered" }],
 			[{ text: "next answer" }],
 		], observed);
 		let history = [SYSTEM];
 		history = await prompt("digest-steer", history, "read a", {
 			beforeCallback: (messages) => [...messages, user("also mention b")],
 		});
-		assert.equal(observed.resumes.length, 2, "the steer replays as a continuation query");
+		assert.deepEqual(observed.live, ["also mention b"], "the steer goes to the running query");
+		assert.equal(observed.resumes.length, 1, "no continuation query");
 		history = await prompt("digest-steer", history, "and next");
 		assert.deepEqual(syncPaths(), ["clean-start", "reuse"]);
 	});
@@ -445,21 +449,22 @@ describe("warm reuse follows the content Claude already holds", () => {
 	});
 
 	it("keeps reusing after a mid-query steer splits a parallel result batch", async () => {
-		installFakeClaudeCode([[{ read: ["a.txt", "b.txt"] }, { text: "read both" }], [{ text: "steer answered" }], [{ text: "next" }]], observed);
+		installFakeClaudeCode([[{ read: ["a.txt", "b.txt"] }, { text: "read both" }], [{ text: "next" }]], observed);
 		let history = await prompt("digest-split-batch", [SYSTEM], "read a and b", {
 			beforeCallback: (messages) => {
 				const first = messages.findIndex((message) => message.role === "toolResult");
 				return [...messages.slice(0, first + 1), user("also say hi"), ...messages.slice(first + 1)];
 			},
 		});
-		assert.equal(observed.resumes.length, 2, "the steer replays as a continuation");
+		assert.deepEqual(observed.live, ["also say hi"], "the steer goes to the running query");
+		assert.equal(observed.resumes.length, 1, "no continuation query");
 		assert.notEqual(record("digest-split-batch")?.needsRebuild, true);
 		history = await prompt("digest-split-batch", history, "next");
 		assert.deepEqual(syncPaths(), ["clean-start", "reuse"]);
 	});
 
 	it("keeps reusing after mid-query intercom and follow-up messages across two tool turns", async () => {
-		installFakeClaudeCode([[{ read: ["a.txt"] }, { read: ["b.txt"] }, { text: "read a then b" }], [{ text: "queued answered" }], [{ text: "more" }], [{ text: "next" }]], observed);
+		installFakeClaudeCode([[{ read: ["a.txt"] }, { read: ["b.txt"] }, { text: "read a then b" }], [{ text: "next" }]], observed);
 		let callbacks = 0;
 		let history = await prompt("digest-intercom", [SYSTEM], "read a then b", {
 			beforeCallback: (messages) => {
@@ -470,6 +475,8 @@ describe("warm reuse follows the content Claude already holds", () => {
 			},
 		});
 		assert.equal(callbacks, 2);
+		assert.deepEqual(observed.live, ["intercom: status ping", "follow-up question"], "each callback's input goes to the running query");
+		assert.equal(observed.resumes.length, 1, "no continuation query");
 		assert.notEqual(record("digest-intercom")?.needsRebuild, true);
 		history = await prompt("digest-intercom", history, "next");
 		assert.deepEqual(syncPaths(), ["clean-start", "reuse"]);
@@ -573,10 +580,10 @@ describe("deliveredSuffix: the covered suffix equals what the bridge delivered",
 		claimedAssistants: claimed,
 		claimedResultIds: new Set(),
 	});
-	const opts = (queued = []) => ({ resultReceived: () => true, queuedUserIndexes: new Set(queued) });
+	const opts = (accepted = []) => ({ resultReceived: () => true, acceptedUserIndexes: new Set(accepted) });
 	const check = (suffix, l = ledger(), o = opts()) => deliveredSuffix([SYSTEM, ...suffix], 1, suffix.length + 1, l, o);
 
-	it("accepts exactly the delivered replies, their results, queued users and system messages", () => {
+	it("accepts exactly the delivered replies, their results, accepted users and system messages", () => {
 		assert.deepEqual([...check([a1, result("t1"), a2, result("t2")])], ["t1", "t2"]);
 		assert.ok(check([a1, result("t1"), { role: "user", content: "steer" }, { role: "system", content: "" }, a2, result("t2")], ledger(), opts([3])));
 		assert.ok(check([a2, result("t2")], ledger(1)), "a claim already covering a1 leaves only a2 pending");
@@ -589,11 +596,11 @@ describe("deliveredSuffix: the covered suffix equals what the bridge delivered",
 		assert.equal(check([a1, result("t1"), reply("t2", "rewritten"), result("t2")]), undefined, "rewritten");
 	});
 
-	it("rejects results Claude did not get and users this query did not queue", () => {
+	it("rejects results Claude did not get and users this query did not accept", () => {
 		assert.equal(check([a1, result("t1"), result("t1"), a2]), undefined, "duplicate result");
 		assert.equal(check([a1, result("foreign"), a2]), undefined, "result for a call no delivered reply made");
 		assert.equal(check([result("t2"), a1, a2]), undefined, "result before its reply");
-		assert.equal(check([a1, result("t1"), a2], ledger(), { resultReceived: (id) => id !== "t1", queuedUserIndexes: new Set() }), undefined, "result never delivered to Claude");
-		assert.equal(check([a1, { role: "user", content: "never queued" }, a2]), undefined, "unqueued user");
+		assert.equal(check([a1, result("t1"), a2], ledger(), { resultReceived: (id) => id !== "t1", acceptedUserIndexes: new Set() }), undefined, "result never delivered to Claude");
+		assert.equal(check([a1, { role: "user", content: "never accepted" }, a2]), undefined, "unaccepted user");
 	});
 });
