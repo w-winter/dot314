@@ -10,6 +10,10 @@
 // provider stream encoded by Pi's real frame consumer, persisted through Pi's
 // real SessionManager and read back from disk, then imported into Claude by a
 // forced bridge rebuild whose JSONL is inspected.
+// This file is the only coverage of the contract: a steer sent during a
+// Pi tool now goes to the running query (live steering), so real Pi no
+// longer produces a continuation deterministically. The steers here are
+// deferred because Claude Code gave up on the call (claudeCodeGivesUp).
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
