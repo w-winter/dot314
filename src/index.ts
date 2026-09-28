@@ -934,20 +934,29 @@ function streamRequestInLane(
 	// The query is gone but pi still delivered the result. Report the failure
 	// that ended the query after this tool turn, if one did (never an abort);
 	// otherwise emit end_turn so pi waits for the next real user message.
+	// Pi 0.87.1 appends a steer after the results, so the callback of the
+	// same Pi run (its signal) that answers a call of the failed query is this
+	// callback even when it ends in a user message; a rebuild then owns the
+	// steer. A later run's new prompt of the same shape still starts fresh.
 	const lastMsg = context.messages[context.messages.length - 1];
-	if (lastMsg?.role === "toolResult") {
+	const heldForRun = ctx().undeliveredFailure;
+	const steeredResultId = lastMsg?.role !== "toolResult" && heldForRun && options?.signal && !options.signal.aborted && heldForRun.runSignals.has(options.signal)
+		? extractAllToolResults(context).map((result) => result.toolCallId).find((id) => id !== undefined && heldForRun.toolCallIds.has(id))
+		: undefined;
+	if (lastMsg?.role === "toolResult" || steeredResultId !== undefined) {
+		const resultId = steeredResultId ?? (lastMsg as { toolCallId: string }).toolCallId;
 		// Taken whatever happens: only the callback that directly follows the
 		// failed query may report it.
 		const held = ctx().undeliveredFailure;
 		ctx().undeliveredFailure = null;
-		const lateFailure = held && !options?.signal?.aborted && held.toolCallIds.has(lastMsg.toolCallId) ? held : null;
+		const lateFailure = held && !options?.signal?.aborted && held.toolCallIds.has(resultId) ? held : null;
 		if (held && !lateFailure) debug(`provider: orphaned tool result does not report the held terminal failure (${options?.signal?.aborted ? "aborted" : "not a call of the failed query"})`);
-		const abandoned = ctx().abandonedToolCalls.get(lastMsg.toolCallId);
+		const abandoned = ctx().abandonedToolCalls.get(resultId);
 		if (abandoned) {
-			debug(`provider: orphaned tool result for ${abandoned.toolName} [${lastMsg.toolCallId}] that Claude Code gave up on (${abandoned.reason}); the query already ended, emitting ${lateFailure ? "its terminal failure" : "end_turn"}`);
-			appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id: lastMsg.toolCallId, toolName: abandoned.toolName, queryEnded: true });
+			debug(`provider: orphaned tool result for ${abandoned.toolName} [${resultId}] that Claude Code gave up on (${abandoned.reason}); the query already ended, emitting ${lateFailure ? "its terminal failure" : "end_turn"}`);
+			appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id: resultId, toolName: abandoned.toolName, queryEnded: true });
 		} else {
-			debug(`provider: orphaned tool result, emitting ${lateFailure ? `the query's terminal failure: ${lateFailure.errorMessage}` : "end_turn"}`);
+			debug(`provider: orphaned tool result${steeredResultId !== undefined ? " under a trailing user message" : ""}, emitting ${lateFailure ? `the query's terminal failure: ${lateFailure.errorMessage}` : "end_turn"}`);
 		}
 		// The detached flag deliberately survives query end: an orphaned result
 		// from a foreign one-shot indexes ITS conversation, and writing that

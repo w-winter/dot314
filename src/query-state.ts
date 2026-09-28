@@ -471,6 +471,11 @@ export class QueryContext {
 		for (const signal of this.abortSignals.keys()) if (signal.aborted) return true;
 		return false;
 	}
+
+	/** The signals of the Pi runs this query currently serves. */
+	runSignals(): Set<AbortSignal> {
+		return new Set(this.abortSignals.keys());
+	}
 	// Once visible text/thinking, a complete tool call, or a child-executed
 	// connector/foreign-MCP dispatch reaches Pi, the request must never be
 	// replayed on another account (duplicate side effects). Query-scoped, not per-turn:
@@ -641,8 +646,13 @@ export class QueryContext {
 	 * only a callback answering one of them reports it. Survives
 	 * resetTurnState and teardown; cleared at fresh-query setup and by the
 	 * next orphaned tool-result callback.
+	 * `runSignals` are the signals of the Pi runs the query served when it
+	 * failed. Pi 0.87.1 hands one signal per agent run to every provider call
+	 * of that run, so a callback carrying one belongs to the same run: its
+	 * context may end in a steer Pi appended after the results and still be
+	 * the callback that follows, while a later run's new prompt is not.
 	 */
-	undeliveredFailure: { errorMessage: string; fields?: Record<string, unknown>; toolCallIds: Set<string> } | null = null;
+	undeliveredFailure: { errorMessage: string; fields?: Record<string, unknown>; toolCallIds: Set<string>; runSignals: Set<AbortSignal> } | null = null;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");

@@ -192,7 +192,7 @@ export function endStreamForFailure(
 		// Never for an abort, and only when this query handed Pi a call.
 		if (!aborted && c.forwardedToolCallIds.size > 0) {
 			debug(`provider: terminal failure after the Pi turn was delivered; holding it for the tool-result callback: ${failure.errorMessage}`);
-			c.undeliveredFailure = { errorMessage: failure.errorMessage, fields: failure.fields, toolCallIds: new Set(c.forwardedToolCallIds) };
+			c.undeliveredFailure = { errorMessage: failure.errorMessage, fields: failure.fields, toolCallIds: new Set(c.forwardedToolCallIds), runSignals: c.runSignals() };
 			return "held";
 		}
 		return aborted ? "aborted" : "unreported";

@@ -8,7 +8,8 @@
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { openSession } from "cc-session-io";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -348,5 +349,88 @@ describe("a cancelled request is never held for a later callback", () => {
 		await new Promise((resolve) => setTimeout(resolve, 40));
 		assert.ok(queryCtx, "captured the query's context");
 		assert.equal(queryCtx.undeliveredFailure, null, "a cancellation is never held for the next callback");
+	});
+});
+
+describe("a held terminal failure under a trailing steer", () => {
+	it("is reported on the same run's callback that ends in a steer, and a rebuild delivers the steer once", async () => {
+		// Pi 0.87.1 appends steering after every tool result, so the callback
+		// that follows the failed query ends in the steer, not the result.
+		const sessionId = "held-under-steer";
+		const gate = Promise.withResolvers();
+		let markClosed;
+		const closed = new Promise((resolve) => { markClosed = resolve; });
+		const { tail, message } = FAILURES["an execution error (surfaced at completion)"];
+		const prompts = [];
+		let resumed;
+		let queries = 0;
+		__testSetSdkQueryFactory(({ prompt, options }) => {
+			queries += 1;
+			if (queries === 1) {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield { type: "system", subtype: "init", session_id: "33333333-3333-4333-8333-333333333333" };
+						for (const event of toolTurn()) yield event;
+						await gate.promise;
+						yield tail();
+					},
+					close() { markClosed(); },
+					async interrupt() {},
+				};
+			}
+			resumed = options.resume;
+			prompts.push(prompt);
+			return {
+				async *[Symbol.asyncIterator]() { yield { type: "result", subtype: "success", result: "answer" }; },
+				close() {},
+				async interrupt() {},
+			};
+		});
+		let executed = false;
+		let steered = false;
+		const run = new AbortController();
+		const history = await runAgentLoop(
+			[{ role: "user", content: "run it", timestamp: Date.now() }],
+			{ messages: [], tools: [{
+				name: "mytool", label: "My tool", description: "test tool", parameters: Type.Object({}),
+				async execute() {
+					gate.resolve();
+					// Finish only after the failed query is torn down.
+					await closed;
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					executed = true;
+					return { content: [{ type: "text", text: "REAL RESULT" }], details: {} };
+				},
+			}] },
+			{
+				model,
+				convertToLlm: (messages) => messages,
+				sessionId,
+				// The user types it while the tool runs; Pi polls it after the tool.
+				getSteeringMessages: async () => {
+					if (steered || !executed) return [];
+					steered = true;
+					return [{ role: "user", content: "STEER-UNDER-FAILURE", timestamp: Date.now() }];
+				},
+			},
+			async () => {},
+			run.signal,
+			(m, context, options) => streamClaudeAgentSdk(m, context, options),
+		);
+		assert.deepEqual(history.filter((entry) => entry.role !== "system").map((entry) => entry.role), ["user", "assistant", "toolResult", "user", "assistant"]);
+		const last = history.at(-1);
+		assert.equal(last.stopReason, "error", `the held failure must reach Pi: ${JSON.stringify({ stopReason: last.stopReason, errorMessage: last.errorMessage })}`);
+		assert.equal(last.errorMessage, message);
+		assert.deepEqual(last.content, [], "a fresh message");
+		assert.equal(queries, 1, "nothing was sent to Claude on that callback");
+		// Pi's retry (a new run) drops the error message and calls again with
+		// the same history: the steer reaches Claude once, through the rebuild.
+		const retry = await callback(sessionId, history.slice(0, -1), { signal: new AbortController().signal });
+		assert.equal(retry.type, "done");
+		assert.equal(queries, 2);
+		const imported = readFileSync(openSession({ sessionId: resumed, projectPath: process.cwd(), claudeDir: root }).jsonlPath, "utf8");
+		const delivered = [...prompts.filter((prompt) => typeof prompt === "string"), imported].join("\n");
+		assert.equal(delivered.split("STEER-UNDER-FAILURE").length - 1, 1, `the steer reaches Claude exactly once: prompts=${JSON.stringify(prompts)}`);
+		assert.match(imported, /REAL RESULT/, "the rebuild carries the tool result");
 	});
 });
