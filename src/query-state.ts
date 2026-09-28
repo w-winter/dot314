@@ -390,7 +390,16 @@ export class QueryContext {
 	 *  message_stop, AFTER message_delta delivered the real output-token count;
 	 *  this is the deadlock backstop for streams that go silent instead. Managed
 	 *  by schedule/cancelToolUseTurnEnd in assistant-stream.ts. */
-	scheduledToolUseEnd: { stream: unknown; timer: ReturnType<typeof setTimeout> } | null = null;
+	scheduledToolUseEnd: {
+		stream: unknown;
+		timer: ReturnType<typeof setTimeout>;
+		fire: () => void;
+		/** What the grace runs when it elapses. */
+		action: () => void;
+		/** The same finalizer with its silence count back at zero: stream
+		 *  activity swaps it in, so only CONSECUTIVE silence spends the budget. */
+		fresh?: () => void;
+	} | null = null;
 
 	/** The query's live MCP tool server (null when it serves no tools) and the
 	 *  SDK→Pi name map consumeQuery reads. The map is updated IN PLACE with the

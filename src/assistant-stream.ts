@@ -5,6 +5,7 @@ import { connectorResultByteSize, recordConnectorCallResult } from "./connector-
 import { isChildExecutedTool } from "./connectors.js";
 import { debug, diagDump } from "./debug.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
 import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
 
 // --- Usage helpers ---
@@ -109,8 +110,28 @@ export function prunePartialToolCalls(output: AssistantMessage): void {
 // produces one): pi cannot execute tools before the stream ends, and the MCP
 // handler cannot resolve before pi executes, so a stream that has gone silent
 // must be ended by force — TOOL_USE_END_GRACE_MS later instead of immediately.
+//
+// "Gone silent" is measured from the stream's LAST event, not from the arming:
+// the SDK yields a completed assistant copy per content block, just before that
+// block's content_block_stop, so the first finished call of a parallel batch
+// arms the timer while the model may still be writing a sibling's arguments.
+// A timer counted from the arming cut such a sibling off mid-stream, pruned it
+// as truncated, and split one Claude message into two Pi turns (P3). Every
+// stream event therefore restarts the grace (noteToolUseStreamActivity).
+//
+// That alone is not enough: Claude Code 2.1.283 sends NO stream events while
+// the model writes a tool call's arguments, and flushes them in one burst when
+// the block completes. A real Haiku call with ~1,200 tokens of arguments was
+// silent for about 5.5 s. So a still-partial call gets up to
+// PARTIAL_CALL_MAX_SILENCE_MS of CONSECUTIVE silence (FINALIZE_MAX_REARMS
+// re-arms, counted from the last stream event; activity resets the count). That is
+// the same silence the bridge's stream idle watchdog treats as a stalled child
+// (and a watchdog that is paused while a handler waits cannot cover this).
+// Only after that is the call pruned as truncated. A stream that goes silent
+// with every call complete still ends after one grace period.
 
 const TOOL_USE_END_GRACE_MS = 1500;
+const PARTIAL_CALL_MAX_SILENCE_MS = DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 
 /** End the current pi stream as a tool_use turn boundary. Safe to call when the
  *  turn already ended (no-op). Every end path funnels here, so this is where
@@ -146,19 +167,35 @@ export function cancelScheduledToolUseEnd(c: QueryContext): void {
  * resetTurnState) disarms it. `action` runs only if the SAME stream is still
  * current when the grace elapses — a turn that ended normally makes it a no-op.
  */
-export function scheduleToolUseTurnEnd(c: QueryContext, action: () => void, source: string): void {
+export function scheduleToolUseTurnEnd(c: QueryContext, action: () => void, source: string, fresh?: () => void): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	if (c.scheduledToolUseEnd?.stream === c.currentPiStream) return;
 	cancelScheduledToolUseEnd(c);
 	const stream = c.currentPiStream;
-	const timer = setTimeout(() => {
+	const fire = (): void => {
 		if (c.currentPiStream !== stream) return;
-		debug(`scheduleToolUseTurnEnd: no terminal stream event within ${TOOL_USE_END_GRACE_MS}ms (${source}) — force-ending tool_use turn`);
+		debug(`scheduleToolUseTurnEnd: no stream event for ${TOOL_USE_END_GRACE_MS}ms (${source}) — grace elapsed`);
 		c.scheduledToolUseEnd = null;
-		action();
-	}, TOOL_USE_END_GRACE_MS);
+		entry.action();
+	};
+	const timer = setTimeout(fire, TOOL_USE_END_GRACE_MS);
 	timer.unref?.();
-	c.scheduledToolUseEnd = { stream, timer };
+	const entry: NonNullable<QueryContext["scheduledToolUseEnd"]> = { stream, timer, fire, action, ...(fresh ? { fresh } : {}) };
+	c.scheduledToolUseEnd = entry;
+}
+
+/** The stream is still delivering: restart the armed grace period, and reset
+ *  a re-arming finalizer's silence count, so a partial call's allowance is
+ *  measured from the LAST stream event rather than summed across every quiet
+ *  gap of a long write. A timer armed for an earlier stream is left alone
+ *  (its own identity check makes it a no-op anyway). */
+export function noteToolUseStreamActivity(c: QueryContext): void {
+	const scheduled = c.scheduledToolUseEnd;
+	if (!scheduled || scheduled.stream !== c.currentPiStream) return;
+	clearTimeout(scheduled.timer);
+	if (scheduled.fresh) scheduled.action = scheduled.fresh;
+	scheduled.timer = setTimeout(scheduled.fire, TOOL_USE_END_GRACE_MS);
+	scheduled.timer.unref?.();
 }
 
 /**
@@ -199,7 +236,7 @@ export function updateTurnResponseModel(modelId: unknown, c: QueryContext = ctx(
 	else c.turnOutput.responseModel = modelId;
 }
 
-export const FINALIZE_MAX_REARMS = 3;
+export const FINALIZE_MAX_REARMS = Math.ceil(PARTIAL_CALL_MAX_SILENCE_MS / TOOL_USE_END_GRACE_MS) - 1;
 
 /** Force-finalizes the current pi turn as a tool_use boundary when its terminal
  *  stream events never arrived (the grace-timer action armed by an MCP handler
@@ -211,8 +248,8 @@ export const FINALIZE_MAX_REARMS = 3;
  *  invocation itself proves the assistant turn is committed, so end the pi
  *  stream like the `message_stop` path — with this handler's schema-validated
  *  arguments, never a partial parse — after settling every sibling whose
- *  handler has fired and giving a merely-lagging stream up to
- *  FINALIZE_MAX_REARMS extra grace periods for the rest.
+ *  handler has fired and giving a sibling that is still being written up to
+ *  FINALIZE_MAX_REARMS extra grace periods of silence for the rest.
  *
  *  The dead-stream guard is a backstop: the grace timer's own stream-identity
  *  check means this normally never runs after the turn ended. The primary
@@ -274,6 +311,43 @@ export function finalizeToolUseTurnFromMcpInvocation(
 		queryCtx.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: queryCtx.turnOutput });
 		queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
 	}
+	settlePartialCallsOrEndTurn(
+		queryCtx,
+		rearmCount,
+		() => finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, toolName, mappedArgs, rearmCount + 1),
+		() => finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, toolName, mappedArgs, 0),
+		`mcp handler (${toolName} [${toolCallId}])`,
+		`finalize-rearm:${toolName}`,
+	);
+}
+
+/** Grace-timer action armed at the assistant boundary (a completed assistant
+ *  copy carried a tool_use the stream had not finished). Same settle / re-arm /
+ *  end policy as the MCP-invocation finalize: the boundary proves only that ONE
+ *  block finished, not that its siblings did. */
+export function finalizeToolUseTurnAtAssistantBoundary(c: QueryContext, rearmCount = 0): void {
+	if (!c.currentPiStream || !c.turnOutput) return;
+	settlePartialCallsOrEndTurn(
+		c,
+		rearmCount,
+		() => finalizeToolUseTurnAtAssistantBoundary(c, rearmCount + 1),
+		() => finalizeToolUseTurnAtAssistantBoundary(c, 0),
+		"assistant boundary",
+		"assistant-boundary-rearm",
+	);
+}
+
+/** Shared tail of the grace-timer finalizers. The stream is live and has been
+ *  silent for a full grace period. */
+function settlePartialCallsOrEndTurn(
+	queryCtx: QueryContext,
+	rearmCount: number,
+	rearm: () => void,
+	fresh: () => void,
+	label: string,
+	rearmSource: string,
+): void {
+	if (!queryCtx.currentPiStream || !queryCtx.turnOutput) return;
 	// Settle every OTHER still-partial block whose handler has fired: each
 	// waiting handler carries the authoritative args for its own call.
 	for (let i = 0; i < queryCtx.turnBlocks.length; i++) {
@@ -293,12 +367,8 @@ export function finalizeToolUseTurnFromMcpInvocation(
 	// hypothetical hazard — so give the lagging stream more grace first.
 	const unsettled = queryCtx.turnBlocks.filter((b: any) => b.type === "toolCall" && "partialJson" in b);
 	if (unsettled.length > 0 && rearmCount < FINALIZE_MAX_REARMS) {
-		debug(`mcp handler: ${unsettled.length} sibling tool call(s) still streaming — re-arming grace (${rearmCount + 1}/${FINALIZE_MAX_REARMS})`);
-		scheduleToolUseTurnEnd(
-			queryCtx,
-			() => finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, toolName, mappedArgs, rearmCount + 1),
-			`finalize-rearm:${toolName}`,
-		);
+		if (rearmCount % 10 === 0) debug(`${label}: ${unsettled.length} sibling tool call(s) still streaming — re-arming grace (${rearmCount + 1}/${FINALIZE_MAX_REARMS})`);
+		scheduleToolUseTurnEnd(queryCtx, rearm, rearmSource, fresh);
 		return;
 	}
 	// Grace exhausted with blocks still partial: endToolUseTurn prunes them —
@@ -311,11 +381,11 @@ export function finalizeToolUseTurnFromMcpInvocation(
 	// assistant message for it.
 	const executable = queryCtx.turnBlocks.some((b: any) => b.type === "toolCall" && !("partialJson" in b));
 	if (!executable) {
-		debug(`mcp handler: nothing executable in this turn after suppression — leaving the stream to its own terminal events (${toolName} [${toolCallId}])`);
+		debug(`${label}: nothing executable in this turn after suppression — leaving the stream to its own terminal events`);
 		return;
 	}
 	queryCtx.turnSawToolCall = true;
-	debug(`mcp handler: finalizing tool_use turn from MCP invocation [${toolCallId}] (${toolName}) — terminal stream events never arrived`);
+	debug(`${label}: finalizing tool_use turn — terminal stream events never arrived`);
 	endToolUseTurn(queryCtx);
 }
 
@@ -333,6 +403,7 @@ export function processStreamEvent(
 	if (!c.currentPiStream || !c.turnOutput) return;
 	const event = (message as SDKMessage & { event: any }).event;
 	if (event?.type === "ping") return;
+	noteToolUseStreamActivity(c);
 	if (event?.type === "message_stop" && !c.turnSawToolCall) {
 		debug("processStreamEvent: ignoring bare message_stop with no streamed content/tool call");
 		return;
@@ -636,18 +707,19 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 	}
 	updateTurnResponseModel(assistantMsg.model, c);
 	if (c.turnSawStreamEvent) {
-		// The SDK yields the completed assistant message BEFORE the stream's
-		// message_delta/message_stop on every tool-use turn (the norm, not a
-		// fallback). Record any tool_use blocks the stream hasn't delivered yet,
-		// but do NOT end the pi stream here: message_delta, which arrives tens of
-		// ms later, carries the message's real output-token count, and
-		// message_stop is the normal turn end. Ending here freezes usage at the
-		// message_start placeholders. The grace timer force-ends the turn if the
-		// terminal events never arrive, so pi still gets to execute the tools and
-		// unblock the MCP handlers.
+		// The SDK yields a completed assistant copy per content block, just
+		// before that block's content_block_stop and well before the stream's
+		// message_delta/message_stop (the norm, not a fallback). Record any
+		// tool_use blocks the stream hasn't delivered yet, but do NOT end the pi
+		// stream here: later sibling blocks may still be streaming, message_delta
+		// carries the message's real output-token count, and message_stop is the
+		// normal turn end. Ending here freezes usage at the message_start
+		// placeholders. The grace timer force-ends the turn if the stream goes
+		// silent, so pi still gets to execute the tools and unblock the MCP
+		// handlers.
 		if (appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c)) {
 			c.turnSawToolCall = true;
-			scheduleToolUseTurnEnd(c, () => endToolUseTurn(c), "assistant-boundary");
+			scheduleToolUseTurnEnd(c, () => finalizeToolUseTurnAtAssistantBoundary(c), "assistant-boundary");
 		}
 		return;
 	}
