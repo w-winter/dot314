@@ -44,12 +44,17 @@ describe("MODELS projection", () => {
 
 	it("fills supported model metadata missing from pi-ai and drops unknown missing IDs", () => {
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
-		assert.deepEqual(models.map((m) => m.id), ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]);
+		assert.deepEqual(models.map((m) => m.id), ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5", "claude-sonnet-5", "claude-haiku-4-5"]);
 		assert.equal(models.find((m) => m.id === "claude-fable-5-1")?.name, "Claude Fable 5.1");
 		assert.equal(models.find((m) => m.id === "claude-fable-5-1")?.contextWindow, 1000000);
 		assert.equal(models.find((m) => m.id === "claude-opus-4-8")?.maxTokens, 128000);
 		assert.equal(models.find((m) => m.id === "claude-sonnet-5")?.name, "Claude Sonnet 5");
 		assert.equal(models.find((m) => m.id === "claude-sonnet-5")?.contextWindow, 1000000);
+		assert.equal(models.find((m) => m.id === "claude-sonnet-5-5")?.name, "Claude Sonnet 5.5");
+		assert.equal(models.find((m) => m.id === "claude-sonnet-5-5")?.contextWindow, 1000000);
+		assert.equal(models.find((m) => m.id === "claude-sonnet-5-5")?.maxTokens, 128000);
+		assert.deepEqual(models.find((m) => m.id === "claude-sonnet-5-5")?.input, ["text", "image"]);
+		assert.deepEqual(models.find((m) => m.id === "claude-sonnet-5-5")?.thinkingLevelMap, { off: null, xhigh: "xhigh", max: "max" });
 		assert.equal(models.find((m) => m.id === "claude-opus-5")?.name, "Claude Opus 5");
 		assert.equal(models.find((m) => m.id === "claude-opus-5")?.contextWindow, 1000000);
 		assert.equal(models.find((m) => m.id === "claude-opus-5")?.maxTokens, 128000);
@@ -97,6 +102,7 @@ describe("model fallback pairing", () => {
 		assert.equal(fallbackModelForPrimaryModel(OPUS_5_5_MODEL_ID), FABLE_FALLBACK_MODEL_ID);
 		assert.equal(fallbackModelForPrimaryModel(FABLE_FALLBACK_MODEL_ID), undefined);
 		assert.equal(fallbackModelForPrimaryModel(SONNET_5_MODEL_ID), undefined);
+		assert.equal(fallbackModelForPrimaryModel("claude-sonnet-5-5"), undefined);
 		assert.equal(fallbackModelForPrimaryModel("claude-sonnet-4-6"), undefined);
 	});
 

@@ -7,6 +7,7 @@ export const FABLE_MODEL_ID = "claude-fable-5-1";
 export const FABLE_FALLBACK_MODEL_ID = "claude-opus-4-8";
 export const OPUS_5_5_MODEL_ID = "claude-opus-5-5";
 export const OPUS_5_MODEL_ID = "claude-opus-5";
+export const SONNET_5_5_MODEL_ID = "claude-sonnet-5-5";
 export const SONNET_5_MODEL_ID = "claude-sonnet-5";
 
 export function fallbackModelForPrimaryModel(modelId: string): string | undefined {
@@ -22,6 +23,7 @@ export const MODEL_IDS_IN_ORDER = [
 	FABLE_FALLBACK_MODEL_ID,
 	"claude-opus-4-7",
 	"claude-opus-4-6",
+	SONNET_5_5_MODEL_ID,
 	SONNET_5_MODEL_ID,
 	"claude-sonnet-4-6",
 	"claude-haiku-4-5",
@@ -72,6 +74,15 @@ const FALLBACK_MODELS: Record<string, BridgeModelMetadata> = {
 		name: "Claude Opus 4.8",
 		reasoning: true,
 		thinkingLevelMap: { xhigh: "xhigh" },
+		input: ["text", "image"],
+		contextWindow: 1000000,
+		maxTokens: 128000,
+	},
+	[SONNET_5_5_MODEL_ID]: {
+		id: SONNET_5_5_MODEL_ID,
+		name: "Claude Sonnet 5.5",
+		reasoning: true,
+		thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
 		input: ["text", "image"],
 		contextWindow: 1000000,
 		maxTokens: 128000,

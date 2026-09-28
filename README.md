@@ -93,7 +93,7 @@ A Claude Code login is required. Make `claude` available on `PATH` or set its ex
 
 Set `systemPrompt.replacement` in `claude-bridge.json` (see [Settings](#settings)) before the first request. Without it, the bridge refuses Pi's default main prompt.
 
-Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
+Claude Sonnet 5.5 (`pi-claude/claude-sonnet-5-5`) requires [Claude Code 2.1.284 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284). Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 
 ## Features
 
@@ -146,7 +146,7 @@ Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 - Sends Pi's system prompt, including project instructions, skills and extension context, on every request. With a `systemPrompt.replacement`, Pi's opening sentence, tool list and documentation section are swapped for the replacement. A system prompt that contains both of Pi's `docs/custom-provider.md` and `docs/packages.md` paths is refused, not sent (see Settings). Claude Code applies changes to the prompt on resumed turns.
 - Reads the fork's `systemPrompt` settings from `claude-bridge.json`. A trusted project's settings override user settings and can replace the base prompt or add an active-model line.
-- Registers Claude Opus 5.5 in Pi's model menu.
+- Registers Claude Opus 5.5 and Claude Sonnet 5.5 in Pi's model menu.
 - Uses strict MCP configuration on every query. Connector sessions load the user's Claude Code settings by default; `provider.settingSources` overrides the setting sources.
 
 Claude Code built-in tools are disabled by default, and Pi exposes its tools through MCP. The SDK may prepend its own identity text to the custom prompt.
