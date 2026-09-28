@@ -17,7 +17,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, modelDisplayName } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, drainStrandedToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, drainStrandedToolCalls, isForkLane, laneInUse, popContext, releaseForkLane, requestLaneFor, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
 import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
 import { loadConfig, recordProjectTrust } from "./config.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
@@ -601,6 +601,11 @@ export function onPiHistoryReplaced(event: string): void {
 	if (running) {
 		if (restarts) queryCtx.piHistoryReplaced = true;
 		reportToolResultMismatch(queryCtx, event, process.cwd(), { expectedInterruption: restarts });
+	} else if (queryCtx.undeliveredFailure) {
+		// The tool-result callback it was held for answers a history Pi has
+		// just replaced; the conversation's next request starts afresh.
+		debug(`${event}: dropping a terminal failure held for a tool-result callback`);
+		queryCtx.undeliveredFailure = null;
 	}
 	debug(event + ": marking Claude session for rebuild");
 	markSessionForRebuild({ forceRotate: restarts });
@@ -629,26 +634,64 @@ function verifiedHeldSuffix(
 
 /** Provider entry point. Pi calls this for each prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. Exported for
- *  the rotation-stream unit tests, which drive it with a fake SDK factory. */
+ *  the rotation-stream unit tests, which drive it with a fake SDK factory.
+ *  The request joins its lane's running query only as that query's own
+ *  callback; anything else runs as a query of its own (requestLaneFor). */
 export function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	return runInRequestLane(options?.sessionId, () => streamClaudeAgentSdkInLane(model, context, options));
+	const laneId = requestLaneFor(options?.sessionId, context.messages);
+	if (laneId !== options?.sessionId) {
+		debug(`provider: request (session ${options?.sessionId === undefined ? "none" : options.sessionId.slice(0, 8)}) carries no tool call of the query running in its lane; running it as its own query in ${laneId}`);
+	}
+	return runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, options));
 }
 
 function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	const stream = newAssistantMessageEventStream();
 	// The lane this request runs in, for callbacks that fire OUTSIDE it: an
 	// AbortSignal listener runs in the aborter's async context, not ours.
 	const laneId = currentRequestLaneId();
 	// Pi marks its compaction and branch-summary one-shots with cacheRetention
 	// "none" and a fresh sessionId per call; no session_shutdown ever prunes
 	// those lanes. Map the hint onto lane lifetime: nothing about this request
-	// is retained once it settles.
-	const ephemeralLane = laneId !== undefined && options?.cacheRetention === "none";
-	const releaseEphemeralLane = (): void => {
-		if (!ephemeralLane) return;
+	// is retained once it settles. A fork lane (requestLaneFor) serves one
+	// query and its callbacks, so it goes the same way.
+	const ephemeralLane = laneId !== undefined && (options?.cacheRetention === "none" || isForkLane(laneId));
+	const releaseLane = (): void => {
 		deleteSharedSessionLane(laneId);
 		deleteQueryLane(laneId);
+		if (laneId !== undefined) releaseForkLane(laneId);
 	};
+	// Every exit of this provider call asks to release; only the lane's last
+	// owner gets it. A restart or account retry replaces this call's query in
+	// the same lane, and this call's pipeline ends as soon as it has forwarded
+	// the replacement's Pi stream, which ends at a tool-use turn while the
+	// replacement still waits for the result. The replacement's own teardown
+	// releases the lane. So does the callback that takes a held failure (E3),
+	// or the run's cancellation (dropHeldFailureOnAbort).
+	const releaseEphemeralLane = (): void => {
+		if (!ephemeralLane || laneInUse(laneId)) return;
+		releaseLane();
+	};
+	// A synchronous exit (the executable/cwd preflight, SDK construction, any
+	// other setup throw) leaves before this call's query pipeline exists, so
+	// no .finally will ask. Ask here, under the same rule, and rethrow the
+	// error unchanged: a lane whose query or its replacement still runs, or
+	// that holds a failure for a later callback, is kept.
+	try {
+		return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane);
+	} catch (error) {
+		releaseEphemeralLane();
+		throw error;
+	}
+}
+
+function streamRequestInLane(
+	model: Model<any>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	laneId: string | undefined,
+	releaseEphemeralLane: () => void,
+): AssistantMessageEventStream {
+	const stream = newAssistantMessageEventStream();
 
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
@@ -1685,6 +1728,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		.finally(() => {
 			streamIdleWatchdog?.dispose();
 			activeStreamIdleWatchdogs.delete(abortCtx);
+			// A held failure (E3) keeps its lane busy for other conversations
+			// (requestLaneFor); a cancelled run drops it and frees the lane.
+			abortCtx.dropHeldFailureOnAbort(releaseEphemeralLane);
 			// No signal of this query may cancel a later one.
 			abortCtx.stopListeningForAbort();
 			if (abortCtx.onRequestAbort === onAbort) abortCtx.onRequestAbort = null;
@@ -1705,7 +1751,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					reentryStream.end();
 					return;
 				}
-				for await (const event of streamClaudeAgentSdk(restart.model, restartContext(restart), restart.options)) reentryStream.push(event);
+				// Re-entries continue THIS lane's conversation: never re-select it
+				// (requestLaneFor), which could move a fork's retry elsewhere.
+				for await (const event of runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(restart.model, restartContext(restart), restart.options))) reentryStream.push(event);
 				reentryStream.end();
 				return;
 			}
@@ -1731,10 +1779,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				return;
 			}
 			debug(`provider: starting account retry after ${retryFailure?.kind ?? "failure"}; excluded=${[...rotationState.excludedProfileIds].join(",")}`);
-			const retryStream = streamClaudeAgentSdk(model, context, {
+			const retryStream = runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, {
 				...(options ?? {}),
 				[ROTATION_STATE_KEY]: rotationState,
-			} as BridgeStreamOptions);
+			} as BridgeStreamOptions));
 			// End exactly once per outcome. Ending in a `finally` ran on
 			// the throw path too, BEFORE the .catch below could push its error
 			// event — and EventStream.push is a silent no-op after end, so a failed

@@ -229,7 +229,11 @@ describe("who reports a held terminal failure", () => {
 			close() {},
 			async interrupt() {},
 		}));
-		const fresh = await callback("held-fresh", [...promptContext(), { role: "user", content: "new prompt", timestamp: 5 }]);
+		// The conversation's own next prompt, after a run that ended without
+		// the tool-result callback (a terminate:true batch): its history
+		// carries the failed query's tool turn and result. A request without
+		// them is another conversation's and runs apart (unit-foreign-calls).
+		const fresh = await callback("held-fresh", [...history, toolResult(), { role: "user", content: "new prompt", timestamp: 5 }]);
 		assert.equal(fresh.type, "done");
 		const late = await callback("held-fresh", [...history, toolResult()]);
 		assert.equal(late.type, "done");
@@ -241,6 +245,10 @@ describe("who reports a held terminal failure", () => {
 		assert.equal(otherLane.type, "done", "another lane has its own state");
 		const foreignCall = await callback("held-lane", [...history.slice(0, -1), { ...history.at(-1), content: [{ type: "toolCall", id: "not-ours", name: "mytool", arguments: {} }] }, toolResult("not-ours")]);
 		assert.equal(foreignCall.type, "done", "a result for another call does not report it");
+		// The call above is not this query's callback, so it runs apart and
+		// leaves the held failure alone: the query's own callback reports it.
+		const own = await callback("held-lane", [...history, toolResult()]);
+		assert.equal(own.type, "error", "the query's own callback still reports it");
 		const late = await callback("held-lane", [...history, toolResult()]);
 		assert.equal(late.type, "done", "only the callback that directly follows may report it");
 	});

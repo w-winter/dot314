@@ -5,6 +5,7 @@
 //
 // Separate from index.ts so tests can import it without activating the extension.
 
+import { randomUUID } from "node:crypto";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -432,6 +433,26 @@ export class QueryContext {
 	stopListeningForAbort(): void {
 		for (const [signal, listener] of this.abortSignals) signal.removeEventListener("abort", listener);
 		this.abortSignals.clear();
+	}
+
+	/** Keep the failure this ended query holds for its tool-result callback
+	 *  (undeliveredFailure) only while that callback can still come: a run
+	 *  cancelled after the query ended delivers none, and a cancelled
+	 *  callback never reports it. Watches every signal the query listened
+	 *  to; call before stopListeningForAbort. `dropped` runs once the hold
+	 *  goes this way. */
+	dropHeldFailureOnAbort(dropped: () => void): void {
+		const held = this.undeliveredFailure;
+		if (!held) return;
+		for (const signal of this.abortSignals.keys()) {
+			const drop = (): void => {
+				if (this.undeliveredFailure !== held) return;
+				this.undeliveredFailure = null;
+				dropped();
+			};
+			if (signal.aborted) drop();
+			else signal.addEventListener("abort", drop, { once: true });
+		}
 	}
 
 	/** Whether this query's request was cancelled. Every failure ender reads
@@ -1026,8 +1047,119 @@ export function clearQueryLanes(): void {
 	store.sessionLanes.clear();
 	store.defaultLane.current = new QueryContext();
 	store.defaultLane.stack.length = 0;
+	forkLaneStore().clear();
 }
 
 export function __testQueryLaneCount(): number {
 	return queryLaneStore().sessionLanes.size;
+}
+
+// --- Which query a provider request belongs to ---
+//
+// A lane is keyed by the request's sessionId, and nothing stops two
+// conversations from sharing that key: every ctx.modelRegistry caller that
+// omits sessionId lands in the one default lane, and an extension may pass its
+// parent's id to a reviewer it runs while the parent waits on a tool. So the
+// key alone never proves that a request continues the lane's running query.
+// Only its own callbacks do that, and each one carries the proof: Pi calls
+// back to deliver the results of tool calls the query handed it, and those
+// call ids are unique to the query (forwardedToolCallIds). Pruners and
+// context edits keep them, as does a compacted or fully replaced context,
+// because Pi always ends a callback with the results it is delivering.
+//
+// A request without that proof, while its lane's query runs, gets a FORK lane
+// of its own: a fresh query with its own QueryContext and session record,
+// never touching the running one. Its callbacks find their way back by the
+// same proof. A fork is released when its query settles (index.ts).
+
+/** Fork lane id -> the lane key it was opened from. Process-global like the
+ *  lane store, for the same reason: parent and child agents can reach the
+ *  bridge through different module instances. */
+const FORK_LANES_SYMBOL = Symbol.for("kendex.pi.claude-bridge.fork-lanes.v1");
+const FORK_LANE_PREFIX = "claude-bridge:fork:";
+
+function forkLaneStore(): Map<string, { base: string | undefined }> {
+	const host = globalThis as Record<symbol, unknown>;
+	let store = host[FORK_LANES_SYMBOL] as Map<string, { base: string | undefined }> | undefined;
+	if (!store) {
+		store = new Map();
+		host[FORK_LANES_SYMBOL] = store;
+	}
+	return store;
+}
+
+/** The current context of lane `laneId`, without creating the lane. */
+function peekQueryContext(laneId: string | undefined): QueryContext | undefined {
+	const store = queryLaneStore();
+	return laneId === undefined ? store.defaultLane.current : store.sessionLanes.get(laneId)?.current;
+}
+
+/** Every tool-call id a provider context carries: assistant tool calls and
+ *  tool results. */
+function contextToolCallIds(messages: ReadonlyArray<unknown>): string[] {
+	const ids: string[] = [];
+	for (const message of messages as ReadonlyArray<{ role?: unknown; content?: unknown; toolCallId?: unknown } | null | undefined>) {
+		if (message?.role === "toolResult" && typeof message.toolCallId === "string") ids.push(message.toolCallId);
+		else if (message?.role === "assistant" && Array.isArray(message.content)) {
+			for (const block of message.content as Array<{ type?: unknown; id?: unknown } | null | undefined>) {
+				if (block?.type === "toolCall" && typeof block.id === "string") ids.push(block.id);
+			}
+		}
+	}
+	return ids;
+}
+
+/** Whether `queryCtx`'s query handed Pi one of `ids`. */
+function handedToPi(queryCtx: QueryContext, ids: readonly string[]): boolean {
+	return ids.some((id) => queryCtx.forwardedToolCallIds.has(id));
+}
+
+/** The lane a provider request with `sessionId` and `messages` runs in:
+ *  - the lane (or a fork of it) whose query handed Pi a tool call the context
+ *    carries: the request is that query's callback, running or ended;
+ *  - otherwise the `sessionId` lane itself while its conversation is idle,
+ *    exactly as before;
+ *  - otherwise a new fork lane: another conversation's request (or one that
+ *    cannot prove it is not), which must not join the running query.
+ *  A conversation is still mid-turn after its query ended with a failure held
+ *  for the tool-result callback (E3): a fresh query in its lane would drop
+ *  that failure. Its own next prompt still carries the call and joins. */
+export function requestLaneFor(sessionId: string | undefined, messages: ReadonlyArray<unknown>): string | undefined {
+	const own = peekQueryContext(sessionId);
+	const ids = contextToolCallIds(messages);
+	if (ids.length > 0) {
+		if (own && handedToPi(own, ids)) return sessionId;
+		for (const [forkId, fork] of forkLaneStore()) {
+			if (fork.base !== sessionId) continue;
+			const forkCtx = peekQueryContext(forkId);
+			if (forkCtx && handedToPi(forkCtx, ids)) return forkId;
+		}
+	}
+	if (!own?.activeQuery && !own?.undeliveredFailure) return sessionId;
+	const forkId = `${FORK_LANE_PREFIX}${randomUUID()}`;
+	forkLaneStore().set(forkId, { base: sessionId });
+	return forkId;
+}
+
+export function isForkLane(laneId: string | undefined): boolean {
+	return laneId !== undefined && forkLaneStore().has(laneId);
+}
+
+export function releaseForkLane(laneId: string): void {
+	forkLaneStore().delete(laneId);
+}
+
+/** Whether lane `laneId` is still in use: a query in it is running (the
+ *  original one, or a restart or account retry that replaced it), or its
+ *  ended query holds a terminal failure for a tool-result callback that has
+ *  not arrived yet (QueryContext.undeliveredFailure). A lane's lifetime
+ *  belongs to the query that owns it, never to whichever provider call's
+ *  Pi stream happens to end first. */
+export function laneInUse(laneId: string | undefined): boolean {
+	const queryCtx = peekQueryContext(laneId);
+	return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.undeliveredFailure));
+}
+
+export function __testForkLaneCount(): number {
+	return forkLaneStore().size;
 }
