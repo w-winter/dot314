@@ -347,36 +347,26 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		assert.equal(rest.filter((event) => event.type === "toolcall_start").length, 0, "the stream's own blocks for the forwarded calls are not re-emitted");
 	});
 
-	for (const withSibling of [true, false]) {
-		it(`keeps an early call waiting across a stream retry that discards its partial block${withSibling ? " next to a completed sibling" : ""}`, { timeout: 8000 }, async () => {
-			const observed = {};
-			installFakeClaudeCode(observed, async function* (client) {
-				if (withSibling) observed.callA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
-				observed.callB = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_b") });
-				await settle(20);
-				yield messageStart("m1");
-				if (withSibling) yield* [toolUseStart("toolu_a", 0), ...toolUseRest(0)];
-				yield toolUseStart("toolu_b", 1); // still partial when Claude Code retries the request
-				yield messageStart("m2");
-				await settle(1700); // past the 1.5 s grace
-				await Promise.all([observed.callA, observed.callB]);
-				yield* FINAL_REPLY;
-			});
-			const ids = withSibling ? ["toolu_a", "toolu_b"] : ["toolu_b"];
-			const initial = initialContext();
-			const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: `claim-retry-${withSibling}` }));
-			const done = first.find((event) => event.type === "done");
-			assert.deepEqual(toolCallIds(done), ids, "Pi gets each early call exactly once");
-			assert.deepEqual(done.message.content.filter((block) => block.type === "toolCall").map((call) => call.arguments), ids.map(() => ARGS));
-
-			const second = collect(streamClaudeAgentSdk(model, {
-				messages: [...initial.messages, done.message, ...ids.map((id) => resultMessage(id, `RESULT ${id}`))],
-			}, { sessionId: `claim-retry-${withSibling}` }));
-			if (withSibling) assert.deepEqual((await observed.callA).content, [{ type: "text", text: "RESULT toolu_a" }]);
-			assert.deepEqual((await observed.callB).content, [{ type: "text", text: "RESULT toolu_b" }], "the retried call is not failed as stranded");
-			await second;
+	// Claude Code aborts the tools an attempt started when it discards that
+	// attempt, and its retry issues fresh tool_use ids: forwarding the old call
+	// would run a tool Claude Code already cancelled.
+	it("never forwards an early call whose streamed attempt was retried, and answers it with an error", { timeout: 8000 }, async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			observed.callB = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_b") });
+			await settle(20);
+			yield messageStart("m1");
+			yield toolUseStart("toolu_b", 0); // still partial when Claude Code retries the request
+			yield messageStart("m2");
+			await settle(1700); // past the 1.5 s grace
+			yield* FINAL_REPLY;
 		});
-	}
+		const first = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "claim-retry" }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), [], "Pi never gets the abandoned attempt's call");
+		const answer = await observed.callB;
+		assert.equal(answer.isError, true, `the handler is answered, not left waiting: ${JSON.stringify(answer.content)}`);
+	});
 
 	for (const late of [false, true]) {
 		it(`joins a duplicate to its original while a re-list holds the ${late ? "queued result a late handler took" : "waiting handler's result"}`, async () => {
