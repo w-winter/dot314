@@ -34,6 +34,7 @@ Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or l
 - The bridge starts Claude Code, or resumes it, through the Claude Agent SDK, Anthropic's library for driving Claude Code from another program.
 - It sends your prompt to Claude Code and offers it Pi's tools.
 - When Claude Code calls a tool, Pi runs the tool and sends the result back to Claude Code.
+- Steering messages submitted during Pi tool execution reach the running Claude query for its next response.
 - Pi shows the reply and remembers which Claude Code conversation it belongs to, so your next message continues it.
 - When Pi compacts or changes the conversation history during a Pi tool call, the bridge resumes from Pi's new history with completed tool results. A query that used Claude Code's own connector finishes first; the next turn uses Pi's new history.
 

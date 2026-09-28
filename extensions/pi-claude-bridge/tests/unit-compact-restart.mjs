@@ -190,7 +190,7 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
 			const continuation = {};
 			queued.push(() => waitingQuery(continuation, undefined, false, "t1"));
-			const steered = [system, user("summary"), toolCall, toolResult, user("steer one")];
+			const steered = [system, user("summary"), toolCall, user("steer one")];
 			streamClaudeAgentSdk(model, { messages: steered }, { cwd: root });
 			streamClaudeAgentSdk(model, { messages: [...steered, user("steer two")] }, { cwd: root });
 			record.release();
@@ -210,7 +210,7 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 		await withWaitingQuery(async ({ root, record, calls, queued }) => {
 			const continuation = {};
 			queued.push(() => throwingContinuation(continuation));
-			const steered = [system, user("summary"), toolCall, toolResult, user("steer one")];
+			const steered = [system, user("summary"), toolCall, user("steer one")];
 			streamClaudeAgentSdk(model, { messages: steered }, { cwd: root });
 			streamClaudeAgentSdk(model, { messages: [...steered, user("steer two")] }, { cwd: root });
 			record.release();

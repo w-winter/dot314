@@ -38781,6 +38781,95 @@ function teardownQuery(queryCtx, sdkQuery, cause, cwd, isReentrant) {
   return true;
 }
 
+// src/tool-result-delivery.ts
+function resolveToolResults(queryCtx, allResults, cwd) {
+  const unmatchedResultIds = [];
+  for (const result of allResults) {
+    const id = result.toolCallId;
+    if (id && !queryCtx.hasRecordedToolCall(id) && !queryCtx.forwardedToolCallIds.has(id)) {
+      queryCtx.markToolResultUnmatched(id);
+      unmatchedResultIds.push(id);
+      debug(`ERROR: tool result [${id}] has no registered tool_call id; refusing to queue or deliver`);
+      continue;
+    }
+    queryCtx.markToolResultDelivered(id);
+    if (id && queryCtx.pendingToolCalls.has(id)) {
+      const pending = queryCtx.pendingToolCalls.get(id);
+      queryCtx.pendingToolCalls.delete(id);
+      debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
+      pending.resolve(result);
+    } else if (id) {
+      queryCtx.pendingResults.set(id, result);
+      debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
+    } else {
+      debug(`WARNING: tool result without toolCallId, cannot match`);
+    }
+    if (queryCtx.pendingToolCalls.size > 0 && queryCtx.pendingResults.size > 0) {
+      debug(`note: handlers and queued results coexist: handlers=${queryCtx.pendingToolCalls.size} results=${queryCtx.pendingResults.size}`);
+    }
+  }
+  if (unmatchedResultIds.length > 0) {
+    const errorResult = {
+      content: [{ type: "text", text: `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}` }],
+      isError: true
+    };
+    for (const [pendingId, pending] of queryCtx.pendingToolCalls) {
+      if (!queryCtx.forwardedToolCallIds.has(pendingId)) queryCtx.deadToolCallIds.add(pendingId);
+      pending.resolve(errorResult);
+    }
+    queryCtx.pendingToolCalls.clear();
+    reportToolResultMismatch(queryCtx, "unmatched tool result", cwd);
+  }
+  if (queryCtx.pendingToolCalls.size > 0) {
+    const stranded = drainStrandedToolCalls(queryCtx);
+    if (stranded.length > 0) {
+      const names = stranded.map((entry) => entry.toolName).join(", ");
+      debug(`provider: failed ${stranded.length} stranded MCP handler(s) never forwarded to Pi: ${names}`);
+      diagDump("tool_handlers_stranded", { count: stranded.length, stranded });
+      appendIntegrityEntry("tool_handlers_stranded", { count: stranded.length, stranded });
+      safeNotify(`Claude bridge: failed ${stranded.length} tool call(s) that never reached Pi before their turn ended (${names}). The model saw a retryable error.`, "warning");
+    }
+    if (queryCtx.pendingToolCalls.size > 0) {
+      debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
+      safeNotify(`Claude bridge: ${queryCtx.pendingToolCalls.size} tool handler(s) still waiting \u2014 provider may be stuck`, "warning");
+    }
+  }
+}
+function deliverToolResults(queryCtx, allResults, steer, cwd, signal) {
+  if (!Boolean(steer)) {
+    resolveToolResults(queryCtx, allResults, cwd);
+    return;
+  }
+  const sdkQuery = queryCtx.activeQuery;
+  async function* input() {
+    yield {
+      type: "user",
+      message: { role: "user", content: steer.blocks ?? steer.text },
+      parent_tool_use_id: null,
+      priority: "now"
+    };
+    if (Boolean(signal) && signal.aborted || queryCtx.activeQuery !== sdkQuery) return;
+    resolveToolResults(queryCtx, allResults, cwd);
+  }
+  void sdkQuery.streamInput(input()).catch((error51) => {
+    if (Boolean(signal) && signal.aborted || queryCtx.activeQuery !== sdkQuery) return;
+    queryCtx.piHistoryReplaced = true;
+    if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
+    appendIntegrityEntry("steering_delivery_failed", { resultCount: allResults.length });
+    debug("provider: steering delivery failed", error51);
+    queryCtx.handledTerminalError = true;
+    const stream = queryCtx.currentPiStream;
+    if (Boolean(stream)) {
+      queryCtx.turnOutput.stopReason = "error";
+      queryCtx.turnOutput.errorMessage = "Claude bridge could not deliver steering to Claude Code. Retry to rebuild from Pi history.";
+      stream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
+      stream.end();
+      queryCtx.currentPiStream = null;
+    }
+    abortSdkQuery(sdkQuery);
+  });
+}
+
 // src/auth-presence.ts
 import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
 import { homedir as homedir2, platform as osPlatform } from "os";
@@ -55994,8 +56083,11 @@ function extractUserPromptBlocks(messages) {
 }
 function planDeferredUserReplay(messages, capturedThrough = 0) {
   let runStart = messages.length;
-  while (runStart > capturedThrough && messages[runStart - 1]?.role === "user") runStart--;
-  const trailingUsers = messages.slice(runStart);
+  for (let i = messages.length - 1; i >= capturedThrough; i--) {
+    if (messages[i].role === "assistant") break;
+    if (messages[i].role === "user") runStart = i;
+  }
+  const trailingUsers = messages.slice(runStart).filter((message) => message.role === "user");
   const prompt = trailingUsers.length > 0 ? extractUserPrompt(trailingUsers) : null;
   const blocks = trailingUsers.length > 0 ? extractUserPromptBlocks(trailingUsers) : null;
   return {
@@ -56224,78 +56316,28 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     activeStreamIdleWatchdogs.get(queryCtx)?.refresh();
     const allResults = extractAllToolResults2(context);
     debug(`provider: tool results, ${allResults.length} results, ${queryCtx.pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`);
-    const unmatchedResultIds = [];
-    for (const result of allResults) {
-      const id = result.toolCallId;
-      if (id && !queryCtx.hasRecordedToolCall(id) && !queryCtx.forwardedToolCallIds.has(id)) {
-        queryCtx.markToolResultUnmatched(id);
-        unmatchedResultIds.push(id);
-        debug(`ERROR: tool result [${id}] has no registered tool_call id; refusing to queue or deliver`);
-        continue;
-      }
-      queryCtx.markToolResultDelivered(id);
-      if (id && queryCtx.pendingToolCalls.has(id)) {
-        const pending = queryCtx.pendingToolCalls.get(id);
-        queryCtx.pendingToolCalls.delete(id);
-        debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
-        pending.resolve(result);
-      } else if (id) {
-        queryCtx.pendingResults.set(id, result);
-        debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
-      } else {
-        debug(`WARNING: tool result without toolCallId, cannot match`);
-      }
-      if (queryCtx.pendingToolCalls.size > 0 && queryCtx.pendingResults.size > 0) {
-        debug(`note: handlers and queued results coexist: handlers=${queryCtx.pendingToolCalls.size} results=${queryCtx.pendingResults.size}`);
-      }
-    }
-    if (unmatchedResultIds.length > 0) {
-      const errorResult = {
-        content: [{ type: "text", text: `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}` }],
-        isError: true
-      };
-      for (const [pendingId, pending] of queryCtx.pendingToolCalls) {
-        if (!queryCtx.forwardedToolCallIds.has(pendingId)) queryCtx.deadToolCallIds.add(pendingId);
-        pending.resolve(errorResult);
-      }
-      queryCtx.pendingToolCalls.clear();
-      reportToolResultMismatch(queryCtx, "unmatched tool result", cwd);
-    }
-    if (queryCtx.pendingToolCalls.size > 0) {
-      const stranded = drainStrandedToolCalls(queryCtx);
-      if (stranded.length > 0) {
-        const names = stranded.map((entry) => entry.toolName).join(", ");
-        debug(`provider: failed ${stranded.length} stranded MCP handler(s) never forwarded to Pi: ${names}`);
-        diagDump("tool_handlers_stranded", { count: stranded.length, stranded });
-        appendIntegrityEntry("tool_handlers_stranded", { count: stranded.length, stranded });
-        safeNotify(`Claude bridge: failed ${stranded.length} tool call(s) that never reached Pi before their turn ended (${names}). The model saw a retryable error.`, "warning");
-      }
-      if (queryCtx.pendingToolCalls.size > 0) {
-        debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
-        safeNotify(`Claude bridge: ${queryCtx.pendingToolCalls.size} tool handler(s) still waiting \u2014 provider may be stuck`, "warning");
-      }
-    }
+    const replay = planDeferredUserReplay(context.messages, queryCtx.latestCursor);
     let capturedThrough = context.messages.length;
-    if (lastMsgRole === "user") {
-      const replay = planDeferredUserReplay(context.messages, queryCtx.latestCursor);
-      if (replay.prompt || replay.blocks) {
-        ctx().deferredUserMessages.push({ text: replay.prompt ?? "", blocks: replay.blocks ?? void 0 });
-        debug(`provider: deferred ${replay.userMessageCount} user message(s) for replay after query${replay.blocks ? ` (${replay.blocks.length} blocks incl. images)` : ""}: ${(replay.prompt ?? "[image-only]").slice(0, 60)}`);
-      } else {
-        capturedThrough = replay.runStart;
-        diagDump("deferred_user_replay_skipped", {
-          contextLength: context.messages.length,
-          runStart: replay.runStart,
-          userMessageCount: replay.userMessageCount,
-          messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" ")
-        });
-      }
+    let steer = null;
+    if (Boolean(replay.prompt) || Boolean(replay.blocks)) {
+      const message = { text: replay.prompt || "", blocks: Boolean(replay.blocks) ? replay.blocks : void 0 };
+      if (allResults.length > 0) steer = message;
+      else queryCtx.deferredUserMessages.push(message);
+    } else if (replay.userMessageCount > 0) {
+      capturedThrough = replay.runStart;
+      diagDump("deferred_user_replay_skipped", {
+        contextLength: context.messages.length,
+        runStart: replay.runStart,
+        userMessageCount: replay.userMessageCount,
+        messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" ")
+      });
     }
     const activeSession = getSharedSession();
     if (activeSession && stackDepth() === 0 && !queryCtx.detachedFromSharedSession) {
       setSharedSession({ ...activeSession, cursor: Math.max(activeSession.cursor, capturedThrough) });
     }
     queryCtx.latestCursor = Math.max(queryCtx.latestCursor, capturedThrough);
+    deliverToolResults(queryCtx, allResults, steer, cwd, Boolean(options) ? options.signal : void 0);
     return stream;
   }
   const lastMsg = context.messages[context.messages.length - 1];
@@ -56369,7 +56411,7 @@ function streamClaudeAgentSdkInLane(model, context, options) {
   ctx().undeliveredFailureMessage = null;
   ctx().resetTurnState(model);
   ctx().resetToolTracking();
-  ctx().latestCursor = 0;
+  ctx().latestCursor = context.messages.length;
   ctx().committedOutput = false;
   ctx().piHistoryReplaced = false;
   ctx().reportedHistoryRestartDecline = false;

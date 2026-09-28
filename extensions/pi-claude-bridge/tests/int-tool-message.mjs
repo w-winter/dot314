@@ -65,24 +65,22 @@ describe("tool-message integration", () => {
 		assert.match(text.toLowerCase(), /slowtool completed/);
 	});
 
-	it("steer during tool execution still delivers tool result", { timeout: 15_000 }, async () => {
-		// steer injects a user message into the context during an active
-		// tool call. extractAllToolResults stops at the user message and returns 0
-		// results, leaving the pending handler stuck.
+	it("steer changes the first response after tool execution", { timeout: 15_000 }, async () => {
 		const collector = collectText();
 		await send({
 			type: "prompt",
-			message: "Call SlowTool with seconds=2. Then repeat exactly what it returned.",
+			message: "Call SlowTool with seconds=2 without any introductory text. After it returns, reply ORIGINAL-REPLY only.",
 		});
 		await waitForEvent("tool_execution_start");
 		await send({
 			type: "prompt",
-			message: "This is a steer message during tool execution.",
+			message: "Change of instruction: reply STEERING-RECEIVED instead of ORIGINAL-REPLY. Do not call more tools.",
 			streamingBehavior: "steer",
 		});
 		await waitForEvent("agent_end");
 		const text = collector.stop();
-		assert.match(text.toLowerCase(), /slowtool completed/);
+		assert.match(text, /STEERING-RECEIVED/);
+		assert.doesNotMatch(text, /ORIGINAL-REPLY/);
 	});
 
 	it("parallel tool calls with steer delivers all results", { timeout: 30_000 }, async () => {

@@ -16,7 +16,8 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, modelDisplayName } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, drainPendingToolCalls, drainStrandedToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { QueryContext, ctx, deleteQueryLane, drainPendingToolCalls, popContext, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { deliverToolResults } from "./tool-result-delivery.js";
 import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
 import { loadConfig, recordProjectTrust } from "./config.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
@@ -216,31 +217,24 @@ function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockPar
 }
 
 export interface DeferredUserReplayPlan {
-	// Index where the trailing consecutive user run begins (=== messages.length
-	// when the context doesn't end in a user message; never below the caller's
-	// capturedThrough bound).
+	// First uncaptured user after the last assistant, or messages.length.
 	runStart: number;
 	userMessageCount: number;
-	// All trailing user messages combined into one replay prompt, or null when
-	// there is nothing usable to replay (no trailing users, or all-empty text
-	// with no image blocks).
+	// User messages in order, joined as one prompt; null for empty text.
 	prompt: string | null;
-	// Present when the run carries image blocks — the replay must send these
-	// (via wrapPromptStream) or the images are silently lost.
+	// Use the block form when images are present.
 	blocks: ContentBlockParam[] | null;
 }
 
-/** Plan replay of user messages pi injected mid-query (steer drain, followUp).
- *  Captures the ENTIRE trailing consecutive user run, not just the last
- *  message, but never walks below `capturedThrough`, the position a prior callback
- *  of the SAME query already captured (or deliberately held at, for an
- *  all-empty run). Without that lower bound a second mid-query steer re-planned
- *  the whole run from scratch and the first steer was queued — and delivered to
- *  Claude — twice. */
+/** Collect user input after the last assistant, including input between tool
+ *  results. capturedThrough excludes messages this query has already sent. */
 export function planDeferredUserReplay(messages: Context["messages"], capturedThrough = 0): DeferredUserReplayPlan {
 	let runStart = messages.length;
-	while (runStart > capturedThrough && messages[runStart - 1]?.role === "user") runStart--;
-	const trailingUsers = messages.slice(runStart);
+	for (let i = messages.length - 1; i >= capturedThrough; i--) {
+		if (messages[i].role === "assistant") break;
+		if (messages[i].role === "user") runStart = i;
+	}
+	const trailingUsers = messages.slice(runStart).filter((message) => message.role === "user");
 	const prompt = trailingUsers.length > 0 ? extractUserPrompt(trailingUsers) : null;
 	const blocks = trailingUsers.length > 0 ? extractUserPromptBlocks(trailingUsers) : null;
 	return {
@@ -602,107 +596,25 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		activeStreamIdleWatchdogs.get(queryCtx)?.refresh();
 		const allResults = extractAllToolResults(context);
 		debug(`provider: tool results, ${allResults.length} results, ${queryCtx.pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`);
-		const unmatchedResultIds: string[] = [];
-		for (const result of allResults) {
-			const id = result.toolCallId;
-			if (id && !queryCtx.hasRecordedToolCall(id) && !queryCtx.forwardedToolCallIds.has(id)) {
-				// A forwarded id is always legitimate even after the per-message
-				// records reset — Pi only answers calls it was handed (steer-split
-				// results land here after a boundary wiped the turn records).
-				queryCtx.markToolResultUnmatched(id);
-				unmatchedResultIds.push(id);
-				debug(`ERROR: tool result [${id}] has no registered tool_call id; refusing to queue or deliver`);
-				continue;
-			}
-			queryCtx.markToolResultDelivered(id);
-			if (id && queryCtx.pendingToolCalls.has(id)) {
-				const pending = queryCtx.pendingToolCalls.get(id)!;
-				queryCtx.pendingToolCalls.delete(id);
-				debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
-				pending.resolve(result);
-			} else if (id) {
-				queryCtx.pendingResults.set(id, result);
-				debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
-			} else {
-				debug(`WARNING: tool result without toolCallId, cannot match`);
-			}
-			if (queryCtx.pendingToolCalls.size > 0 && queryCtx.pendingResults.size > 0) {
-				// Legitimate under staggered SDK invocation (a waiting steer-split
-				// handler while a sibling's result queues) — informational only.
-				debug(`note: handlers and queued results coexist: handlers=${queryCtx.pendingToolCalls.size} results=${queryCtx.pendingResults.size}`);
-			}
-		}
-		if (unmatchedResultIds.length > 0) {
-			const errorResult: McpResult = {
-				content: [{ type: "text", text: `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}` }],
-				isError: true,
-			};
-			for (const [pendingId, pending] of queryCtx.pendingToolCalls) {
-				// The model is told these calls were stopped; an unforwarded one must
-				// never be dispatched by a later replay behind that message’s back.
-				if (!queryCtx.forwardedToolCallIds.has(pendingId)) queryCtx.deadToolCallIds.add(pendingId);
-				pending.resolve(errorResult);
-			}
-			queryCtx.pendingToolCalls.clear();
-			reportToolResultMismatch(queryCtx, "unmatched tool result", cwd);
-		}
-		if (queryCtx.pendingToolCalls.size > 0) {
-			// A waiting handler whose call never reached Pi can never be answered —
-			// fail it now with a retryable error instead of letting the SDK await it
-			// indefinitely.
-			// Forwarded-but-unanswered handlers stay: steer-split batches legitimately
-			// deliver their results in a later callback.
-			const stranded = drainStrandedToolCalls(queryCtx);
-			if (stranded.length > 0) {
-				const names = stranded.map((entry) => entry.toolName).join(", ");
-				debug(`provider: failed ${stranded.length} stranded MCP handler(s) never forwarded to Pi: ${names}`);
-				diagDump("tool_handlers_stranded", { count: stranded.length, stranded });
-				appendIntegrityEntry("tool_handlers_stranded", { count: stranded.length, stranded });
-				safeNotify(`Claude bridge: failed ${stranded.length} tool call(s) that never reached Pi before their turn ended (${names}). The model saw a retryable error.`, "warning");
-			}
-			if (queryCtx.pendingToolCalls.size > 0) {
-				debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);
-				safeNotify(`Claude bridge: ${queryCtx.pendingToolCalls.size} tool handler(s) still waiting — provider may be stuck`, "warning");
-			}
-		}
 
-		// Detect user messages (steer/followUp) that pi injected into context
-		// during the active query. This happens when:
-		//   - User sends a steer while a tool is executing; pi drains the steer
-		//     queue at the turn boundary and appends it to context alongside the
-		//     tool result, then calls the provider again.
-		//   - A followUp is delivered between tool-result turns.
-		// The bridge can't forward these mid-query (the SDK query is in progress),
-		// so we save them for replay as continuation queries after consumeQuery ends.
-		// The cursor may only advance over messages actually captured for replay:
-		// claiming Claude owns a user message that was never deferred is permanent
-		// silent input loss ( — only the LAST of several trailing user
-		// messages was captured while the cursor skipped them all).
+		// Pi may interleave steering with tool results. While a tool is pending,
+		// send it to the live query; input arriving after a text-only turn is
+		// replayed when that query finishes.
+		const replay = planDeferredUserReplay(context.messages, queryCtx.latestCursor);
 		let capturedThrough = context.messages.length;
-		if (lastMsgRole === "user") {
-			// Bound the plan at this query's own captured position (latestCursor
-			// Math.max-advances with every callback's capturedThrough below), so a
-			// second steer callback only queues messages BEYOND what the first one
-			// already owns — re-planning the whole trailing run queued the earlier
-			// steer twice. latestCursor, not the shared record's
-			// cursor, deliberately: it lives on this QueryContext, so it is correct
-			// for reentrant and detached foreign queries too, whose contexts the
-			// shared cursor does not index.
-			const replay = planDeferredUserReplay(context.messages, queryCtx.latestCursor);
-			// Image-only runs have no usable text but must still replay — capture
-			// whenever EITHER form has content.
-			if (replay.prompt || replay.blocks) {
-				ctx().deferredUserMessages.push({ text: replay.prompt ?? "", blocks: replay.blocks ?? undefined });
-				debug(`provider: deferred ${replay.userMessageCount} user message(s) for replay after query${replay.blocks ? ` (${replay.blocks.length} blocks incl. images)` : ""}: ${(replay.prompt ?? "[image-only]").slice(0, 60)}`);
-			} else {
-				capturedThrough = replay.runStart;
-				diagDump("deferred_user_replay_skipped", {
-					contextLength: context.messages.length,
-					runStart: replay.runStart,
-					userMessageCount: replay.userMessageCount,
-					messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-				});
-			}
+		let steer: DeferredUserMessage | null = null;
+		if (Boolean(replay.prompt) || Boolean(replay.blocks)) {
+			const message = { text: replay.prompt || "", blocks: Boolean(replay.blocks) ? replay.blocks : undefined };
+			if (allResults.length > 0) steer = message;
+			else queryCtx.deferredUserMessages.push(message);
+		} else if (replay.userMessageCount > 0) {
+			capturedThrough = replay.runStart;
+			diagDump("deferred_user_replay_skipped", {
+				contextLength: context.messages.length,
+				runStart: replay.runStart,
+				userMessageCount: replay.userMessageCount,
+				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
+			});
 		}
 
 		// Cursor may only ADVANCE, and only for a query that holds the record's
@@ -721,6 +633,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			setSharedSession({ ...activeSession, cursor: Math.max(activeSession.cursor, capturedThrough) });
 		}
 		queryCtx.latestCursor = Math.max(queryCtx.latestCursor, capturedThrough);
+		deliverToolResults(queryCtx, allResults, steer, cwd, Boolean(options) ? options.signal : undefined);
 		return stream;
 	}
 
@@ -808,7 +721,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().undeliveredFailureMessage = null;
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
-	ctx().latestCursor = 0;
+	ctx().latestCursor = context.messages.length;
 	ctx().committedOutput = false;
 	ctx().piHistoryReplaced = false;
 	ctx().reportedHistoryRestartDecline = false;
