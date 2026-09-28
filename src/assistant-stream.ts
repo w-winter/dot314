@@ -214,7 +214,10 @@ export function endStreamForFailure(
 		c.currentPiStream = null;
 		return;
 	}
-	const { message } = terminalMessage(c);
+	// As in finalizeCurrentStream: a pruned call never reaches Pi and is owed
+	// no result.
+	const { message, prunedIds } = terminalMessage(c);
+	c.forgetToolCalls(prunedIds);
 	if (aborted && failure.errorMessage !== ABORTED_MESSAGE) debug(`provider: request was cancelled; ending the Pi message as aborted instead of: ${failure.errorMessage}`);
 	const error: AssistantMessage = {
 		...message,

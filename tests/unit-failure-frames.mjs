@@ -3,9 +3,14 @@
 // event, which lags the provider (lib/pi-frame-consumer.mjs). So the error
 // path must never shrink the live partial: the error message is a copy that
 // leaves out truncated tool calls and the blocks of an abandoned stream
-// attempt, exactly as the done message does. Covers the three error paths:
+// attempt, exactly as the done message does. Covers the four error paths:
 // Claude Code's usage-limit result, a held failure surfaced at completion,
-// and the stream idle timeout. Each is encoded as consumed and at maximum lag.
+// a thrown process error, and the stream idle timeout. Each is encoded as
+// consumed and at maximum lag.
+//
+// The truncated tool call left out of the error message never reached Pi, so
+// no result is owed for it: the query's teardown must not report it as a
+// tool result that went missing.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
@@ -14,9 +19,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
+import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { resetStack } from "../src/query-state.ts";
+import { runInRequestLane } from "../src/request-lane.ts";
 import { consumeLikePi } from "./lib/pi-frame-consumer.mjs";
 
 const model = {
@@ -42,6 +48,8 @@ const se = (event) => ({ type: "stream_event", event });
 
 let root;
 let hold;
+let notifications;
+let integrityEntries;
 beforeEach(() => {
 	hold = setInterval(() => {}, 1000);
 	root = mkdtempSync(join(tmpdir(), "bridge-failure-frames-"));
@@ -50,8 +58,10 @@ beforeEach(() => {
 	process.env.CLAUDE_CONFIG_DIR = root;
 	process.env.CLAUDE_BRIDGE_DIAG_PATH = join(root, "diag.log");
 	resetStack();
-	__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: () => {} } });
-	setExtensionApi({ events: { emit: () => {} }, appendEntry: () => {} });
+	notifications = [];
+	integrityEntries = [];
+	__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: (message, level) => notifications.push({ message, level }) } });
+	setExtensionApi({ events: { emit: () => {} }, appendEntry: (customType, data) => integrityEntries.push({ customType, data }) });
 });
 
 afterEach(() => {
@@ -145,5 +155,38 @@ describe("error paths end the Pi message without touching the live partial", () 
 		assert.equal(error.rateLimitType, "stream_idle", "the idle metadata rides the error message");
 		assert.equal(error.streamIdleTimeoutMs, 200);
 		assert.ok(error.retryAfterMs > 0);
+	});
+});
+
+describe("a truncated tool call left out of the error message is owed no result", () => {
+	const PATHS = {
+		"Claude Code's usage-limit result": () => installFakeClaudeCode([{ type: "result", subtype: "error_during_execution", errors: ["You've hit your weekly limit · resets Thursday 4am"] }]),
+		"a failure held until the query completes": () => installFakeClaudeCode([{ type: "result", subtype: "error_during_execution", errors: ["API Error: 500 internal server error"] }]),
+		"a thrown Claude Code process error": () => installFakeClaudeCode([new Error("Claude Code process exited with code 1")]),
+		"the stream idle timeout": () => {
+			process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "200ms";
+			installFakeClaudeCode([], { stall: true });
+		},
+	};
+	for (const [path, install] of Object.entries(PATHS)) {
+		it(path, { timeout: 10_000 }, async () => {
+			install();
+			const sessionId = `frames-owed-${path.replace(/\W+/g, "-")}`;
+			const run = await consumeLikePi(streamClaudeAgentSdk(model, context(), { sessionId }));
+			assert.equal(run.events.at(-1).type, "error");
+			// Let the completion chain (persist, teardown) settle.
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.deepEqual(notifications.filter((entry) => /tool result delivery interrupted/.test(entry.message)), [], "no missing-result report");
+			assert.deepEqual(integrityEntries.filter((entry) => entry.data?.label === "tool_result_delivery_mismatch"), []);
+		});
+	}
+
+	it("the session record a failed query keeps does not rebuild for it", { timeout: 10_000 }, async () => {
+		PATHS["a failure held until the query completes"]();
+		await consumeLikePi(streamClaudeAgentSdk(model, context(), { sessionId: "frames-owed-record" }));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const record = runInRequestLane("frames-owed-record", () => __testGetBridgeIntegrityState().sharedSession);
+		assert.equal(record?.sessionId, "failure-frames", "the failed query's session is kept");
+		assert.equal(record.needsRebuild, undefined, "the next turn resumes it");
 	});
 });
