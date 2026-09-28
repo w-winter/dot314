@@ -98,9 +98,8 @@ const FALLBACK_MODELS: Record<string, BridgeModelMetadata> = {
 	},
 };
 
-// Human label for the safety-fallback notice. Every id that participates in a
-// fallbackModelForPrimaryModel pairing has an entry above; the raw id is the
-// last-resort label so an unmapped pairing still reads sensibly.
+// Human label for the safety-fallback notice. Every id Claude Code 2.1.284
+// reroutes from or to has an entry above; the raw id is the last-resort label.
 export function modelDisplayName(modelId: string): string {
 	return FALLBACK_MODELS[modelId]?.name ?? modelId;
 }

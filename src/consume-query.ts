@@ -18,7 +18,7 @@ import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, p
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug, diagDump } from "./debug.js";
-import { fallbackModelForPrimaryModel, modelDisplayName } from "./models.js";
+import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
 import { sdkQueryAbandoned } from "./query-teardown.js";
@@ -308,9 +308,10 @@ export async function consumeQuery(
 					const fallbackModel = (message as any).fallback_model;
 					updateTurnResponseModel(fallbackModel, queryCtx);
 					debug("consumeQuery: model_refusal_fallback", JSON.stringify({ originalModel, fallbackModel }));
-					// Notify only for reroutes we configured, so an unexpected pairing from
-					// Claude Code is still logged above but not announced as one of ours.
-					if (typeof fallbackModel === "string" && typeof originalModel === "string" && fallbackModelForPrimaryModel(originalModel) === fallbackModel) {
+					// Announce every reroute: Claude Code picks the target per refusal
+					// category (Opus 5.5 can land on Opus 5 or Opus 4.8), not only the
+					// fallback model the bridge configures.
+					if (typeof fallbackModel === "string" && typeof originalModel === "string" && fallbackModel !== originalModel) {
 						safeNotify(
 							`Pi Claude switched ${modelDisplayName(originalModel)} to ${modelDisplayName(fallbackModel)} after Claude Code safety fallback.`,
 							"info",

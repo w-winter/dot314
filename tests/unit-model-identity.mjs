@@ -155,4 +155,24 @@ describe("Pi model identity on bridge replies", () => {
 			`fallback notice missing: ${JSON.stringify(notifications)}`,
 		);
 	});
+
+	// Claude Code picks the fallback target per refusal category, so a reroute
+	// the bridge did not configure must still be announced.
+	for (const [original, fallback, notice] of [
+		["claude-opus-5-5", "claude-opus-5", "Pi Claude switched Claude Opus 5.5 to Claude Opus 5 after Claude Code safety fallback."],
+		["claude-sonnet-5-5", "claude-sonnet-5", "Pi Claude switched Claude Sonnet 5.5 to Claude Sonnet 5 after Claude Code safety fallback."],
+	]) {
+		it(`announces Claude Code's own ${original} to ${fallback} safety fallback`, async () => {
+			const selected = { ...opus55, id: original };
+			__testSetSdkQueryFactory(() => fakeSdkQuery([
+				{ type: "system", subtype: "init", session_id: `refusal-${original}` },
+				{ type: "system", subtype: "model_refusal_fallback", original_model: original, fallback_model: fallback },
+				...streamedReply(fallback, "fallback answer", { input: 10, output: 5 }),
+			]));
+
+			const message = finalMessage(await collect(streamClaudeAgentSdk(selected, context, { sessionId: `model-identity-${original}` })));
+			assert.equal(message.responseModel, fallback);
+			assert.deepEqual(notifications.filter((n) => /safety fallback/.test(n.message)), [{ message: notice, level: "info" }]);
+		});
+	}
 });
