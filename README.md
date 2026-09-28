@@ -91,6 +91,8 @@ To work on the bridge, clone it, run `npm install`, and add the folder's path to
 
 A Claude Code login is required. Make `claude` available on `PATH` or set its executable path below.
 
+Set `systemPrompt.replacement` in `claude-bridge.json` (see [Settings](#settings)) before the first request. Without it, the bridge refuses Pi's default main prompt.
+
 Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 
 ## Features
