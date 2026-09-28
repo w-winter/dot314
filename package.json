@@ -29,7 +29,7 @@
     "typescript": "^6.0.3"
   },
   "scripts": {
-    "test:unit": "node --import tsx --test tests/unit-*.mjs",
+    "test:unit": "node --import tsx --import ./tests/lib/test-env.mjs --test tests/unit-*.mjs",
     "check:exports": "! grep -rnE '^export (let|var) ' src",
     "test:ci": "npm run typecheck && npm run check:exports && npm run test:unit",
     "test": "set -a && [ -f .env.test ] && . ./.env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",

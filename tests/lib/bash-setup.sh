@@ -23,6 +23,7 @@ setup_test_env() {
 	export CLAUDE_BRIDGE_DEBUG=1
 	DEBUG_LOG="$LOGDIR/${name}-debug.log"
 	export CLAUDE_BRIDGE_DEBUG_PATH="$DEBUG_LOG"
+	export CLAUDE_BRIDGE_DIAG_PATH="$LOGDIR/${name}-diag.log"
 
 	if [[ "$log_suffix" != "none" ]]; then
 		LOGFILE="$LOGDIR/${name}${log_suffix}"

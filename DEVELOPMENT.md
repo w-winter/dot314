@@ -65,6 +65,8 @@ npm test               # unit, then the integration suites
 npm run test:usage     # A/B subscription-usage comparison against Claude Code direct
 ```
 
+`test:unit` preloads `tests/lib/test-env.mjs`, which points `PI_CODING_AGENT_DIR` at a scratch directory so unit tests never read the real `claude-bridge.json` or append to the real bridge logs. To run one file, keep the preload: `node --import tsx --import ./tests/lib/test-env.mjs --test tests/unit-foo.mjs`. `tests/unit-test-env.mjs` fails when it is missing. The integration harnesses give every suite its own debug and diag log under `.test-output/`.
+
 The integration suites (`tests/int-*.sh`, `tests/int-*.mjs`) need the `pi` CLI and a logged-in Claude Code; `tests/int-session-resume.mjs` also needs `CLAUDE_BRIDGE_TESTING_ALT_MODEL` and `CLAUDE_BRIDGE_TESTING_ALT_PROVIDER` from `.env.test`, which `npm test` sources when present. They also need a `claude-bridge.json` with `systemPrompt.replacement` in the agent directory they run under (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`); without one the bridge refuses Pi's main prompt and every Claude turn fails. The shell suites bound each run with `run_with_timeout` from `tests/lib/bash-setup.sh` because macOS has no `timeout`. `test:usage` spends real subscription usage. A test that spawns a child pins `HOME`, `PI_CODING_AGENT_DIR` and `CLAUDE_CONFIG_DIR` explicitly, because a spawned child inherits the process's start environment rather than a harness override.
 
 ## Syncing with dot314

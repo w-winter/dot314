@@ -53,7 +53,7 @@ export function createRpcHarness(opts) {
 		const spawnArgs = [...(baseArgs ?? ["--no-session", "-ne", "-e", DIR]), "--mode", "rpc", ...args];
 		pi = spawn("pi", spawnArgs, {
 			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, ...env },
+			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, CLAUDE_BRIDGE_DIAG_PATH: `${LOGDIR}/${name}-diag.log`, ...env },
 		});
 
 		pi.stderr.on("data", (d) => { if (!stopped) rpcLog.write(d); });
