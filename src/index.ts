@@ -33,7 +33,7 @@ import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, h
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
-import { endStreamWithError, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel } from "./assistant-stream.js";
+import { ABORTED_MESSAGE, checkpointCompletedReply, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -684,6 +684,16 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		}
 		queryCtx.currentPiStream = stream;
 		queryCtx.resetTurnState(model);
+		// Pi hands every provider call of one agent run the same signal, but
+		// this query may have started in an earlier run (a terminate:true tool
+		// batch ended it, then agent.continue() began this one): Esc here
+		// aborts only this call's signal, so it must cancel the query too.
+		queryCtx.listenForAbort(options?.signal);
+		if (options?.signal?.aborted) {
+			// Cancelled on entry: the query's abort path ends this stream.
+			debug("provider: tool-result callback arrived already cancelled; aborting the query");
+			return stream;
+		}
 		// A fresh callback separates handlers registered for settled turns from
 		// ones racing this callback's own stream — the stranded drain below only
 		// ever touches the former.
@@ -1010,6 +1020,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().settledInvocationIds.clear();
 	ctx().callbackGeneration = 0;
 	ctx().deferredUserMessages = [];
+	ctx().stopListeningForAbort();
+	ctx().onRequestAbort = null;
+	ctx().abortRequested = false;
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	// The starting context is what Claude holds once this query runs: the
@@ -1402,8 +1415,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					timeoutMs,
 				});
 				safeNotify(`${RATE_LIMIT_TOKEN} Claude stream idle timeout after ${formatDurationShort(timeoutMs)} — retrying via rate-limit backoff`, "warning");
-				endStreamWithError(abortCtx, {
-					reason: "error",
+				endStreamForFailure(abortCtx, {
 					errorMessage,
 					fields: { rateLimitType: "stream_idle", retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS, streamIdleTimeoutMs: timeoutMs },
 				});
@@ -1420,7 +1432,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// AsyncLocalStorage), so re-enter this request's lane explicitly: the
 	// mismatch report marks the shared record of whatever lane is current.
 	const onAbort = () => runInRequestLane(laneId, () => {
+		// Several signals can reach it (one per Pi run the query spans).
+		if (wasAborted) return;
 		wasAborted = true;
+		abortCtx.abortRequested = true;
 		// Prevent stale deferred messages from being replayed by parent on pop
 		dropDeferredUserMessages("abort");
 		reportToolResultMismatch(abortCtx, "abort", cwd, {
@@ -1433,12 +1448,14 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		requestAbort();
 		quarantine();
 	});
-	if (options?.signal) {
-		if (options.signal.aborted) onAbort();
-		else options.signal.addEventListener("abort", onAbort, { once: true });
-	}
+	// This request's signal, and (in the tool-result path) the signal of every
+	// later provider call that joins this query, cancel it.
+	abortCtx.onRequestAbort = onAbort;
+	abortCtx.listenForAbort(options?.signal);
 
-	const surfaceFailure = (failure: ClaudeAttemptFailure, aborted = false): void => {
+	// Ends the Pi message for `failure`; a cancelled request ends as aborted
+	// (endStreamForFailure decides that, from the query's own state).
+	const surfaceFailure = (failure: ClaudeAttemptFailure): void => {
 		attemptBuffer?.commit();
 		if (failure.rateLimitInfo) {
 			// Managed rate-limit that will NOT rotate — this is the single place its
@@ -1454,7 +1471,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			});
 			safeNotify(`${RATE_LIMIT_TOKEN} Claude ${failure.message} — resets ${formatResetTimestamp(resetAtMs ?? resetAt)}`, "warning");
 		}
-		endStreamWithError(abortCtx, { reason: aborted ? "aborted" : "error", errorMessage: failure.message });
+		endStreamForFailure(abortCtx, { errorMessage: failure.message });
 	};
 
 	// Background consumer — runs until this attempt's query ends. Before any
@@ -1482,7 +1499,7 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				markRebuildForThisQuery({ forceRotate: true });
 				dropDeferredUserMessages("abort-completion");
 				debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
-				surfaceFailure({ message: "Operation aborted" }, true);
+				surfaceFailure({ message: ABORTED_MESSAGE });
 				return;
 			}
 
@@ -1534,6 +1551,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
 					abortCtx.prepareContinuation();
+					// What Claude has completed so far outlives a failure of this
+					// continuation (endStreamForFailure).
+					checkpointCompletedReply(abortCtx);
 
 					// A foreign one-shot has no claim on the shared record: its steers
 					// continue ITS OWN child session, never --resume the parent's.
@@ -1598,6 +1618,12 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				abortCtx.activeQuery = sdkQuery;
 			}
 
+			// Cancelled while a continuation ran: the request did not complete.
+			if (abortCtx.requestAborted()) {
+				debug("provider: request cancelled during deferred replay; ending the Pi message as aborted");
+				surfaceFailure({ message: ABORTED_MESSAGE });
+				return;
+			}
 			finalizeCurrentStream(abortCtx.turnOutput?.stopReason, abortCtx);
 		})
 		.catch((error) => {
@@ -1630,12 +1656,14 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 				};
 			if (requestRotation(failure)) return;
 			if (!wasAborted && !options?.signal?.aborted) persistSession(null);
-			surfaceFailure(failure, Boolean(options?.signal?.aborted));
+			surfaceFailure(failure);
 		})
 		.finally(() => {
 			streamIdleWatchdog?.dispose();
 			activeStreamIdleWatchdogs.delete(abortCtx);
-			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
+			// No signal of this query may cancel a later one.
+			abortCtx.stopListeningForAbort();
+			if (abortCtx.onRequestAbort === onAbort) abortCtx.onRequestAbort = null;
 			const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, streamIdleTimedOut });
 			teardownQuery(abortCtx, sdkQuery, cause, cwd, isReentrant);
 			closeSdkQuery(sdkQuery);

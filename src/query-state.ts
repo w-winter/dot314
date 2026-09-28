@@ -404,6 +404,43 @@ export class QueryContext {
 	reportedToolResultMismatch = false;
 	deferredUserMessages: DeferredUserMessage[] = [];
 	handledTerminalError = false;
+	/** The bridge's own abort path ran for this query (onAbort). */
+	abortRequested = false;
+	/** The query's abort handling (stream setup's onAbort), run when any
+	 *  signal it listens to aborts. */
+	onRequestAbort: (() => void) | null = null;
+	/** Every AbortSignal of a Pi provider call that joined this query, with
+	 *  its listener. Pi creates one signal per agent run, and one query can
+	 *  span runs (a run ended by a terminate:true tool batch, then
+	 *  agent.continue()), so a later callback's signal must cancel it too. */
+	private readonly abortSignals = new Map<AbortSignal, () => void>();
+
+	/** Cancel this query when `signal` aborts, or now if it already has.
+	 *  Called for the query's own request and for every callback that joins
+	 *  it; removed together when the query ends (stopListeningForAbort). */
+	listenForAbort(signal: AbortSignal | undefined): void {
+		const onAbort = this.onRequestAbort;
+		if (!signal || !onAbort || this.abortSignals.has(signal)) return;
+		const listener = (): void => onAbort();
+		this.abortSignals.set(signal, listener);
+		if (signal.aborted) listener();
+		else signal.addEventListener("abort", listener, { once: true });
+	}
+
+	/** Drop every abort subscription: no signal of this query may cancel a
+	 *  later one. */
+	stopListeningForAbort(): void {
+		for (const [signal, listener] of this.abortSignals) signal.removeEventListener("abort", listener);
+		this.abortSignals.clear();
+	}
+
+	/** Whether this query's request was cancelled. Every failure ender reads
+	 *  this instead of trusting its call site (endStreamForFailure). */
+	requestAborted(): boolean {
+		if (this.abortRequested) return true;
+		for (const signal of this.abortSignals.keys()) if (signal.aborted) return true;
+		return false;
+	}
 	// Once visible text/thinking, a complete tool call, or a child-executed
 	// connector/foreign-MCP dispatch reaches Pi, the request must never be
 	// replayed on another account (duplicate side effects). Query-scoped, not per-turn:
@@ -556,6 +593,14 @@ export class QueryContext {
 	/** Id of the non-streamed replacement message rendered in this Pi turn, so
 	 *  its re-yields render only the blocks not rendered yet. */
 	fallbackMessageId: string | undefined;
+	/**
+	 * The reply blocks that were complete in this Pi message when the running
+	 * deferred continuation started (checkpointCompletedReply in
+	 * assistant-stream.ts), with the message they belong to. A failure of that
+	 * continuation ends the Pi message with exactly these blocks. Null outside
+	 * a continuation, and cleared with the message it describes.
+	 */
+	completedReply: { output: AssistantMessage; blocks: object[]; stopReason: AssistantMessage["stopReason"] } | null = null;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
@@ -576,6 +621,7 @@ export class QueryContext {
 		this.handledTerminalError = false;
 		this.streamAttempt = null;
 		this.fallbackMessageId = undefined;
+		this.completedReply = null;
 		// A fresh pi message means the previous turn's stream is done with; an
 		// armed end-timer for it must not fire into this turn's state.
 		if (this.scheduledToolUseEnd) {

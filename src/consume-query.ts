@@ -14,7 +14,7 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { endStreamWithError, ensureTurnStarted, isLiveBlock, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, updateTurnResponseModel } from "./assistant-stream.js";
+import { endStreamForFailure, ensureTurnStarted, isLiveBlock, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, updateTurnResponseModel } from "./assistant-stream.js";
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug, diagDump } from "./debug.js";
@@ -267,7 +267,7 @@ export async function consumeQuery(
 						// USAGE_LIMIT_ERROR_PREFIXES). Surface it immediately, exactly as
 						// before, and suppress the SDK's raw follow-up throw.
 						queryCtx.handledTerminalError = true;
-						endStreamWithError(queryCtx, { reason: "error", errorMessage: errors });
+						endStreamForFailure(queryCtx, { errorMessage: errors });
 					}
 					// Other non-success subtypes (error_max_turns,
 					// error_during_execution) surface at completion via the held

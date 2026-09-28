@@ -99,31 +99,109 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	c.currentPiStream = null;
 }
 
-/** End the current Pi stream with an error (or abort) for a failed query.
- *  Pi persists every terminal message, errors included, so the error
- *  message is built like the done message (terminalMessage): no truncated
- *  tool call, no block of an abandoned stream attempt. It is always a copy:
- *  Pi may still be encoding queued events against the live partial, which
- *  must keep every block at its index. `fields` ride the error message only
- *  (rate-limit metadata). No-op without a live stream. */
-export function endStreamWithError(
+// --- Failed deferred continuations ---
+//
+// A user message Pi delivers while a query runs (a steer) is replayed to
+// Claude as a continuation query once that query succeeds, and the answer
+// joins the same Pi message (QueryContext.prepareContinuation). Ending that
+// message as an error when a continuation fails would take the replies that
+// had already completed with it. Every consumer of Pi history drops error
+// turns whole: pi-ai's provider transform, the bridge's rebuild
+// (convertPiMessages), and Pi's auto-retry, which removes the error message
+// from the agent's context before it retries. So the Pi message ends as a
+// normal reply holding exactly the blocks that were complete when the
+// failing continuation started, and the failure is reported beside it. The
+// failing continuation's own output (partial text, any tool call) is never
+// part of it.
+
+/** Record the reply blocks that are complete now, before a deferred
+ *  continuation starts. Called only after the previous query succeeded, so
+ *  every live text and thinking block is finished. Tool calls are not
+ *  replies: one still in the message could never get a result. */
+export function checkpointCompletedReply(c: QueryContext): void {
+	const output = c.turnOutput;
+	if (!output || !c.currentPiStream) {
+		c.completedReply = null;
+		return;
+	}
+	const blocks = (output.content as Array<any>).filter((b) => isLiveBlock(b) && (
+		(b?.type === "text" && typeof b.text === "string" && b.text.length > 0) || b?.type === "thinking"
+	));
+	c.completedReply = { output, blocks, stopReason: output.stopReason };
+}
+
+/** The reply to end with when the running continuation failed, or undefined
+ *  when no completed reply text is in this Pi message (the failure is then
+ *  an ordinary error). A copy: the live partial is left intact. */
+function completedReplyMessage(c: QueryContext): AssistantMessage | undefined {
+	const checkpoint = c.completedReply;
+	const output = c.turnOutput;
+	if (!checkpoint || !output || checkpoint.output !== output) return undefined;
+	const content = (output.content as Array<any>).filter((b) => checkpoint.blocks.includes(b) && isLiveBlock(b));
+	if (!content.some((b) => b.type === "text")) return undefined;
+	const { errorMessage: _errorMessage, ...reply } = output;
+	return { ...reply, content, stopReason: checkpoint.stopReason === "length" ? "length" : "stop" };
+}
+
+/** End the current Pi stream for a failed query. No-op without a live stream.
+ *
+ *  A failed deferred continuation ends the message as the reply that
+ *  completed before it, when there is one (see the section note), and tells
+ *  the user the mid-turn message went unanswered.
+ *
+ *  A cancelled request (QueryContext.requestAborted) always ends as aborted,
+ *  whatever the caller saw: never as a kept reply, never held for a later
+ *  callback. Deciding it here, not at each call site, is what keeps a caller
+ *  from forgetting it.
+ *
+ *  Otherwise the message ends as an error. Pi persists every
+ *  terminal message, errors included, so the error message is built like the
+ *  done message (terminalMessage): no truncated tool call, no block of an
+ *  abandoned stream attempt. It is always a copy: Pi may still be encoding
+ *  queued events against the live partial, which must keep every block at
+ *  its index. `fields` ride the error message only (rate-limit metadata). */
+export function endStreamForFailure(
 	c: QueryContext,
-	failure: { reason: "error" | "aborted"; errorMessage: string; fields?: Record<string, unknown> },
+	failure: { errorMessage: string; fields?: Record<string, unknown> },
 ): void {
+	const aborted = c.requestAborted();
 	const stream = c.currentPiStream;
 	if (!stream || !c.turnOutput) return;
+	const reply = aborted ? undefined : completedReplyMessage(c);
+	c.completedReply = null;
+	if (reply) {
+		// A call the failed continuation was still writing never reaches Pi,
+		// so no teardown report may count it as missing a result (as in
+		// finalizeCurrentStream).
+		c.forgetToolCalls(terminalMessage(c).prunedIds);
+		const kept = reply.content.length;
+		const dropped = (c.turnOutput.content as Array<any>).filter((b) => isLiveBlock(b)).length - kept;
+		debug(`provider: deferred continuation failed after a completed reply; ending the Pi message with its ${kept} completed block(s), leaving out ${dropped} from the failed continuation: ${failure.errorMessage}`);
+		diagDump("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
+		appendIntegrityEntry("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
+		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${failure.errorMessage.slice(0, 200)}). Its reply before that message is kept; send the message again to get an answer.`, "warning");
+		ensureTurnStarted(c);
+		stream.push({ type: "done", reason: reply.stopReason === "length" ? "length" : "stop", message: reply });
+		stream.end();
+		c.currentPiStream = null;
+		return;
+	}
 	const { message } = terminalMessage(c);
+	if (aborted && failure.errorMessage !== ABORTED_MESSAGE) debug(`provider: request was cancelled; ending the Pi message as aborted instead of: ${failure.errorMessage}`);
 	const error: AssistantMessage = {
 		...message,
-		...failure.fields,
+		...(aborted ? {} : failure.fields),
 		content: [...message.content],
-		stopReason: failure.reason,
-		errorMessage: failure.errorMessage,
+		stopReason: aborted ? "aborted" : "error",
+		errorMessage: aborted ? ABORTED_MESSAGE : failure.errorMessage,
 	};
-	stream.push({ type: "error", reason: failure.reason, error });
+	stream.push({ type: "error", reason: aborted ? "aborted" : "error", error });
 	stream.end();
 	c.currentPiStream = null;
 }
+
+/** The error text of a cancelled request. */
+export const ABORTED_MESSAGE = "Operation aborted";
 
 // --- Abandoned stream attempts ---
 //
