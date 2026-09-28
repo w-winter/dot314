@@ -42,6 +42,13 @@ async function collect(stream) {
 
 const tagged = (id) => ({ _meta: { "claudecode/toolUseId": id } });
 
+const messageStart = (messageId) => ({ type: "stream_event", event: { type: "message_start", message: { id: messageId, model: model.id, usage: { input_tokens: 1 } } } });
+const toolUseStart = (id, index) => ({ type: "stream_event", event: { type: "content_block_start", index, content_block: { type: "tool_use", id, name: "mcp__custom-tools__echo", input: {} } } });
+const toolUseRest = (index) => [
+	{ type: "stream_event", event: { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(ARGS) } } },
+	{ type: "stream_event", event: { type: "content_block_stop", index } },
+];
+
 function toolUseMessage(messageId, ids) {
 	return [
 		{ type: "stream_event", event: { type: "message_start", message: { id: messageId, model: model.id, usage: { input_tokens: 1 } } } },
@@ -339,4 +346,90 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		const rest = await second;
 		assert.equal(rest.filter((event) => event.type === "toolcall_start").length, 0, "the stream's own blocks for the forwarded calls are not re-emitted");
 	});
+
+	for (const withSibling of [true, false]) {
+		it(`keeps an early call waiting across a stream retry that discards its partial block${withSibling ? " next to a completed sibling" : ""}`, { timeout: 8000 }, async () => {
+			const observed = {};
+			installFakeClaudeCode(observed, async function* (client) {
+				if (withSibling) observed.callA = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+				observed.callB = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_b") });
+				await settle(20);
+				yield messageStart("m1");
+				if (withSibling) yield* [toolUseStart("toolu_a", 0), ...toolUseRest(0)];
+				yield toolUseStart("toolu_b", 1); // still partial when Claude Code retries the request
+				yield messageStart("m2");
+				await settle(1700); // past the 1.5 s grace
+				await Promise.all([observed.callA, observed.callB]);
+				yield* FINAL_REPLY;
+			});
+			const ids = withSibling ? ["toolu_a", "toolu_b"] : ["toolu_b"];
+			const initial = initialContext();
+			const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: `claim-retry-${withSibling}` }));
+			const done = first.find((event) => event.type === "done");
+			assert.deepEqual(toolCallIds(done), ids, "Pi gets each early call exactly once");
+			assert.deepEqual(done.message.content.filter((block) => block.type === "toolCall").map((call) => call.arguments), ids.map(() => ARGS));
+
+			const second = collect(streamClaudeAgentSdk(model, {
+				messages: [...initial.messages, done.message, ...ids.map((id) => resultMessage(id, `RESULT ${id}`))],
+			}, { sessionId: `claim-retry-${withSibling}` }));
+			if (withSibling) assert.deepEqual((await observed.callA).content, [{ type: "text", text: "RESULT toolu_a" }]);
+			assert.deepEqual((await observed.callB).content, [{ type: "text", text: "RESULT toolu_b" }], "the retried call is not failed as stranded");
+			await second;
+		});
+	}
+
+	for (const late of [false, true]) {
+		it(`joins a duplicate to its original while a re-list holds the ${late ? "queued result a late handler took" : "waiting handler's result"}`, async () => {
+			let openGate, originalIssued, openDuplicate, duplicateIssued;
+			const observed = {
+				gate: new Promise((resolve) => { openGate = resolve; }),
+				issued: new Promise((resolve) => { originalIssued = resolve; }),
+				duplicateGate: new Promise((resolve) => { openDuplicate = resolve; }),
+				duplicateIssued: new Promise((resolve) => { duplicateIssued = resolve; }),
+				originalReturned: false,
+			};
+			installFakeClaudeCode(observed, async function* (client) {
+				observed.client = client;
+				await client.listTools();
+				yield* toolUseMessage("m1", ["toolu_a"]);
+				if (late) await observed.gate; // invoked only after Pi delivered its result
+				observed.original = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+				observed.original.then(() => { observed.originalReturned = true; });
+				await settle(20);
+				originalIssued();
+				await observed.duplicateGate;
+				observed.duplicate = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_a") });
+				duplicateIssued();
+				await Promise.all([observed.original, observed.duplicate]);
+				yield* FINAL_REPLY;
+			});
+			const initial = initialContext();
+			const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: `claim-relist-hold-${late}` }));
+			const done = first.find((event) => event.type === "done");
+			assert.deepEqual(toolCallIds(done), ["toolu_a"]);
+			if (!late) await observed.issued;
+
+			// Pi redefines echo together with the result: the result is held until Claude Code re-lists.
+			const second = collect(streamClaudeAgentSdk(model, {
+				messages: [
+					...initial.messages, done.message, resultMessage("toolu_a", "RESULT A"),
+					{ role: "system", content: "", toolsRemoved: [{ name: ECHO.name }], toolsAdded: [{ ...ECHO, description: "Updated echo" }], timestamp: Date.now() },
+				],
+			}, { sessionId: `claim-relist-hold-${late}` }));
+			await settle(30);
+			openGate();
+			await observed.issued;
+			assert.equal(observed.originalReturned, false, "the re-list still holds the original's result");
+			openDuplicate();
+			await observed.duplicateIssued;
+			await settle(20);
+			const listed = await observed.client.listTools();
+			assert.equal(listed.tools[0].description, "Updated echo");
+			assert.deepEqual((await observed.original).content, [{ type: "text", text: "RESULT A" }]);
+			const duplicate = await observed.duplicate;
+			assert.deepEqual(duplicate.content, [{ type: "text", text: "RESULT A" }], "the duplicate joins the held original");
+			assert.notEqual(duplicate.isError, true);
+			await second;
+		});
+	}
 });

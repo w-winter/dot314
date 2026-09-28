@@ -416,8 +416,13 @@ export class QueryContext {
 	 *  these ids). Cleared at fresh-query setup. */
 	taggedToolCallIds = new Set<string>();
 	/** Tagged ids whose handler recorded the call before the stream did, in
-	 *  arrival order: the grace finalizer forwards those still waiting. */
+	 *  arrival order, plus waiting ones whose partial block a stream retry
+	 *  discarded: the grace finalizer forwards those still waiting. */
 	earlyToolCallIds = new Set<string>();
+	/** id → the answer its invoked handler will return, from its claim until
+	 *  it returns. A re-list can hold a result after its handler left
+	 *  pendingToolCalls, so a duplicate tools/call joins this instead. */
+	answeringToolCalls = new Map<string, Promise<McpResult>>();
 	deliveredToolResultIds = new Set<string>();
 	resolvedToolResultIds = new Set<string>();
 	unmatchedToolResultIds = new Set<string>();
@@ -893,7 +898,7 @@ export class QueryContext {
 	 *  tool_use, so an unknown id of a served tool is recorded here, and the
 	 *  stream's record of it merges in. */
 	claimToolUseId(id: string, toolName: string, args: Record<string, unknown>): ToolUseIdClaim {
-		if (this.pendingToolCalls.has(id)) return { outcome: "waiting" };
+		if (this.answeringToolCalls.has(id)) return { outcome: "waiting" };
 		if (this.deadToolCallIds.has(id)) return { outcome: "dead" };
 		// The handler settles its id as it claims it; Claude Code's own answer
 		// and a finished Claude Code process settle it too.
@@ -912,16 +917,14 @@ export class QueryContext {
 		return { outcome: "claimed", claim: { toolCallId: id, match: "tool-use-id", ambiguous: false, available, ...(recordedAhead ? { recordedAhead } : {}) } };
 	}
 
-	/** Waits for the result of `id`'s waiting handler, which then answers both. */
-	joinPendingToolCall(id: string): Promise<McpResult> {
-		const pending = this.pendingToolCalls.get(id)!;
-		return new Promise((resolve) => {
-			const first = pending.resolve;
-			pending.resolve = (result) => {
-				first(result);
-				resolve(result);
-			};
-		});
+	/** Records `answer` as what `id`'s handler returns until it settles. */
+	trackAnswer(id: string, answer: Promise<McpResult>): Promise<McpResult> {
+		this.answeringToolCalls.set(id, answer);
+		const returned = (): void => {
+			if (this.answeringToolCalls.get(id) === answer) this.answeringToolCalls.delete(id);
+		};
+		answer.then(returned, returned);
+		return answer;
 	}
 
 	/**

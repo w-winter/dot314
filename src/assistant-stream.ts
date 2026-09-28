@@ -301,11 +301,17 @@ function discardAbandonedAttempt(c: QueryContext, why: string): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	const discarded: Array<{ index: number; type: string; id?: string }> = [];
 	const partialCallIds: string[] = [];
+	// A tagged handler already waiting on a partial call holds its complete
+	// arguments: that call stays owned and forwardable, not dead.
+	const heldCallIds: string[] = [];
 	for (const idx of attempt.slots) {
 		const block = c.turnBlocks[idx];
 		if (!block || !isLiveBlock(block)) continue;
 		if (block.type === "toolCall" && !("partialJson" in block)) continue;
-		if (block.type === "toolCall" && typeof block.id === "string") partialCallIds.push(block.id);
+		if (block.type === "toolCall" && typeof block.id === "string") {
+			if (c.taggedToolCallIds.has(block.id) && c.pendingToolCalls.has(block.id)) heldCallIds.push(block.id);
+			else partialCallIds.push(block.id);
+		}
 		discarded.push({ index: idx, type: block.type, ...(block.type === "toolCall" ? { id: block.id } : {}) });
 		discardedBlocks.add(block);
 		// The retry reuses the same Anthropic stream indexes: this block must no
@@ -316,10 +322,11 @@ function discardAbandonedAttempt(c: QueryContext, why: string): void {
 	// Never forwardable later: should a lagging replay of one of these ids
 	// arrive, every forward path skips dead ids.
 	for (const id of partialCallIds) c.deadToolCallIds.add(id);
+	for (const id of heldCallIds) c.earlyToolCallIds.add(id);
 	c.childExecutedStreamIndexes.clear();
 	c.suppressedStreamIndexes.clear();
 	c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));
-	if (!c.turnSawToolCall) cancelScheduledToolUseEnd(c);
+	if (!c.turnSawToolCall && heldCallIds.length === 0) cancelScheduledToolUseEnd(c);
 	debug(`discardAbandonedAttempt: ${why}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}`).join(", "));
 	diagDump("stream_attempt_abandoned", { why, messageId: attempt.id, discarded });
 }

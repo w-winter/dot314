@@ -425,8 +425,9 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 		if (earlyResult !== undefined) {
 			queryCtx.markToolResultResolved(toolCallId);
 			debug(`mcp handler: ${tool.name} [${toolCallId}] → resolved from queue/parked (${queryCtx.pendingResults.size} queued, ${queryCtx.reapedResults.size} parked remaining)`);
-			if (queryCtx.servedToolsSettling) await queryCtx.servedToolsSettling;
-			return earlyResult;
+			const settling = queryCtx.servedToolsSettling;
+			if (!settling) return earlyResult;
+			return queryCtx.trackAnswer(toolCallId, settling.then(() => earlyResult));
 		}
 		debug(`mcp handler: ${tool.name} [${toolCallId}] → waiting`);
 		// Don't end the pi turn here — message_delta (real output tokens) and
@@ -437,7 +438,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			() => finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, tool.name, mappedArgs),
 			`mcp-invocation:${tool.name}`,
 		);
-		return new Promise<McpResult>((resolve) => {
+		return queryCtx.trackAnswer(toolCallId, new Promise<McpResult>((resolve) => {
 			queryCtx.pendingToolCalls.set(toolCallId, {
 				toolName: tool.name,
 				args: mappedArgs,
@@ -447,7 +448,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 					resolve(result);
 				},
 			});
-		});
+		}));
 	};
 }
 
@@ -457,7 +458,7 @@ function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUs
 	switch (tagged.outcome) {
 		case "waiting":
 			debug(`mcp handler: ${toolName} [${toolUseId}] invoked again while its first invocation waits; both get Pi's result`);
-			return queryCtx.joinPendingToolCall(toolUseId);
+			return queryCtx.answeringToolCalls.get(toolUseId)!;
 		case "dead":
 			// A dead id was never forwarded to Pi and never will be.
 			debug(`mcp handler: ${toolName} [${toolUseId}] is dead (never forwarded to Pi); answering as stranded`);
@@ -1078,6 +1079,7 @@ function streamRequestInLane(
 	ctx().settledInvocationIds.clear();
 	ctx().taggedToolCallIds.clear();
 	ctx().earlyToolCallIds.clear();
+	ctx().answeringToolCalls.clear();
 	ctx().callbackGeneration = 0;
 	ctx().deferredUserMessages = [];
 	ctx().steeringWriteQuery = null;
