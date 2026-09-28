@@ -1,7 +1,7 @@
 // Pure pi→Anthropic message conversion helpers.
 // Extracted so they can be tested without pulling in the full extension runtime.
 
-import type { Message as PiMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai";
 import type { ContentBlock, Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
 import { isChildExecutedTool } from "./connectors.js";
@@ -122,6 +122,19 @@ function hasToolUse(msg: PiMessage): boolean {
 	return msg.role === "assistant" && Array.isArray(msg.content) && msg.content.some((block) => block.type === "toolCall");
 }
 
+function isClaudeAssistant(msg: PiMessage): msg is AssistantMessage {
+	return msg.role === "assistant" && (msg.provider === PROVIDER_ID || msg.api === "anthropic");
+}
+
+/** A Claude thinking block exactly as the API returned it, or undefined when
+ *  it cannot be replayed (no signature, or a redacted block without its payload). */
+function claudeThinkingToAnthropic(block: { thinking?: string; thinkingSignature?: string; redacted?: boolean }): ContentBlock | undefined {
+	const sig = block.thinkingSignature;
+	if (!sig) return undefined;
+	if (block.redacted) return { type: "redacted_thinking", data: sig } as unknown as ContentBlock;
+	return { type: "thinking", thinking: block.thinking ?? "", signature: sig };
+}
+
 /** Convert pi message array to Anthropic API format. */
 export function convertPiMessages(
 	messages: PiMessage[],
@@ -169,11 +182,8 @@ export function convertPiMessages(
 				if (block.type === "text" && block.text) {
 					blocks.push({ type: "text", text: block.text });
 				} else if (block.type === "thinking") {
-					const sig = block.thinkingSignature;
-					const isAnthropicProvider = msg.provider === PROVIDER_ID || msg.api === "anthropic";
-					if (isAnthropicProvider && sig) {
-						blocks.push({ type: "thinking", thinking: block.thinking ?? "", signature: sig });
-					}
+					const thinking = isClaudeAssistant(msg) ? claudeThinkingToAnthropic(block) : undefined;
+					if (thinking) blocks.push(thinking);
 				} else if (block.type === "toolCall") {
 					const toolName = mapPiToolNameToSdk(block.name, customToolNameToSdk);
 					blocks.push({ type: "tool_use", id: sanitizeToolId(block.id, sanitizedIds), name: toolName, input: block.arguments ?? {} });

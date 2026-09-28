@@ -169,6 +169,19 @@ describe("thinking block filtering", () => {
 		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
 	});
 
+	it("Claude redacted thinking → redacted_thinking with its data", () => {
+		const result = convert([
+			{ role: "assistant", provider: "pi-claude", stopReason: "stop", content: [
+				{ type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque-payload", redacted: true },
+				{ type: "text", text: "answer" },
+			] },
+		]);
+		assert.deepEqual(result[0].content, [
+			{ type: "redacted_thinking", data: "opaque-payload" },
+			{ type: "text", text: "answer" },
+		]);
+	});
+
 	it("non-Claude assistant provider provenance is preserved", () => {
 		const result = convert([
 			{ role: "assistant", provider: "openai", model: "gpt-test", content: [{ type: "text", text: "hello" }] },
