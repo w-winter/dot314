@@ -18,7 +18,7 @@ pi -e ./extensions/pi-claude-bridge/bundle/index.js
 
 The committed bundle includes its runtime dependencies. A Claude Code login is required. Make `claude` available on `PATH` or set its executable path below.
 
-Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
+Claude Sonnet 5.5 (`pi-claude/claude-sonnet-5-5`) requires [Claude Code 2.1.284 or later](https://github.com/anthropics/claude-code/releases/tag/v2.1.284). Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 
 ## Features
 
@@ -30,7 +30,7 @@ Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or l
 
 ## How it works
 
-- You pick one of the `pi-claude` models in Pi's model menu, including `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
+- You pick one of the `pi-claude` models in Pi's model menu, including `pi-claude/claude-sonnet-5-5`, `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
 - The bridge starts Claude Code, or resumes it, through the Claude Agent SDK, Anthropic's library for driving Claude Code from another program.
 - It sends your prompt to Claude Code and offers it Pi's tools.
 - When Claude Code calls a tool, Pi runs the tool and sends the result back to Claude Code.
