@@ -117,6 +117,8 @@ The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-com
 - `provider.settingSources`: explicitly load selected filesystem settings from Claude Code. By default, no settings load when connectors are disabled. When connectors are enabled, the bridge loads the user's settings.
 - `provider.inheritAnthropicEnv`: `true` passes `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment to Claude Code, for an intentional gateway or API-key setup. By default the bridge removes them, so an exported variable cannot route subscription requests through another endpoint or credential, and it does not count them as credentials when deciding whether the provider is connected. Only the user `claude-bridge.json` can set it, and managed account profiles never inherit these variables.
 
+Without a `systemPrompt.replacement`, Pi's default main prompt is refused with a Pi error, and no Claude request is made. Its documentation section names both `docs/custom-provider.md` and `docs/packages.md`. Anthropic treats a subscription request whose system prompt contains both as a third-party app: it is billed to Extra Usage, or rejected with HTTP 400 when the account has no Extra Usage credit. The bridge refuses any request whose system prompt contains both paths. That covers pi-subagents children in append mode and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
+
 Example `claude-bridge.json`:
 
 ```json
@@ -140,7 +142,7 @@ Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Differences from upstream
 
-- Sends Pi's full system prompt, including project instructions, skills and extension context, on every request. Claude Code applies changes to that prompt on resumed turns.
+- Sends Pi's system prompt, including project instructions, skills and extension context, on every request. With a `systemPrompt.replacement`, Pi's opening sentence, tool list and documentation section are swapped for the replacement. A system prompt that contains both of Pi's `docs/custom-provider.md` and `docs/packages.md` paths is refused, not sent (see Settings). Claude Code applies changes to the prompt on resumed turns.
 - Reads the fork's `systemPrompt` settings from `claude-bridge.json`. A trusted project's settings override user settings and can replace the base prompt or add an active-model line.
 - Registers Claude Opus 5.5 in Pi's model menu.
 - Uses strict MCP configuration on every query. Connector sessions load the user's Claude Code settings by default; `provider.settingSources` overrides the setting sources.

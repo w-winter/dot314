@@ -6,7 +6,8 @@ import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.js";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
-import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.js";
+import { join } from "path";
+import { normalizeEffortLevel, piUserDir, resolveSystemPrompt, type Config } from "./config.js";
 import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.js";
 import { connectorServersSnapshot } from "./connector-runtime.js";
 import { PROVIDER_ID } from "./convert.js";
@@ -71,6 +72,48 @@ export interface BuiltClaudeQueryOptions {
 	fallbackModel?: string;
 }
 
+export interface OutboundSystemPrompt {
+	prompt: string;
+	source: BuiltClaudeQueryOptions["systemPromptSource"];
+}
+
+/** The system prompt a query sends Claude. Only Pi's main agent prompt takes
+ * the configured replacement; a prompt from compaction or an extension's own
+ * call keeps its instructions. The preamble tells resolveSystemPrompt whether
+ * Pi built the base. */
+export function outboundSystemPrompt(
+	input: Pick<BuildClaudeQueryOptionsInput, "queryModel" | "bridgeConfig" | "systemPromptOrigin"> & { systemPrompt: string },
+): OutboundSystemPrompt {
+	const { queryModel, bridgeConfig, systemPrompt, systemPromptOrigin } = input;
+	const evidence = piMainPromptEvidence(systemPromptOrigin);
+	if (!evidence) return { prompt: systemPrompt, source: "caller" };
+	return {
+		prompt: resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt, systemPromptOrigin?.preamble),
+		source: `pi-main:${evidence}`,
+	};
+}
+
+// The two paths in Pi's docs section. Anthropic classifies a subscription
+// request whose system prompt carries both as a third-party app: it draws
+// Extra Usage, or fails with HTTP 400 without Extra Usage credit. Either path
+// alone, or Pi's preamble alone, passes.
+const THIRD_PARTY_APP_PATHS = ["docs/custom-provider.md", "docs/packages.md"] as const;
+
+/** The error a request ends with instead of sending `outbound`, or undefined
+ * when it may be sent. The text avoids everything Pi's isRetryableAssistantError
+ * and isContextOverflow match, so Pi neither retries nor compacts on it. */
+export function thirdPartyAppRefusal(outbound: OutboundSystemPrompt, bridgeConfig: Config): string | undefined {
+	if (!THIRD_PARTY_APP_PATHS.every((path) => outbound.prompt.includes(path))) return undefined;
+	const fix = outbound.source === "caller"
+		? "The extension that made this model call copied Pi's full system prompt into its own model call; it has to send a system prompt of its own."
+		: bridgeConfig.systemPrompt?.replacement
+			? "Pi's main prompt still carries both after the configured systemPrompt.replacement, so the session's own prompt text (its base, context files, skills, or an extension's section or hook) holds them; remove one of them there."
+			: `To fix it, set systemPrompt.replacement in ${join(piUserDir(), "claude-bridge.json")}; the replacement takes the place of Pi's default base and drops its documentation section.`;
+	return `Pi Claude did not send this request: its system prompt contains ${THIRD_PARTY_APP_PATHS.join(" and ")}, the two paths in Pi's documentation section. `
+		+ "Anthropic treats a subscription request whose system prompt carries both as a third-party app: it is charged to Extra Usage billing instead of the plan, "
+		+ `or rejected with HTTP 400 when the account has no Extra Usage credit. ${fix}`;
+}
+
 export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): BuiltClaudeQueryOptions {
 	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
 	const providerSettings = bridgeConfig.provider ?? {};
@@ -87,13 +130,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// before the CLI has fetched them.
 	const connectorServers = enableCloudMcp ? connectorServersSnapshot(accountScope.claudeConfigDir) : {};
 	if (systemPrompt === undefined) throw new Error("pi-claude-bridge: missing Pi system prompt");
-	// Only Pi's main agent prompt takes the configured replacement; a prompt
-	// from compaction or an extension's own call keeps its instructions. The
-	// preamble tells resolveSystemPrompt whether Pi built the base.
-	const mainPromptEvidence = piMainPromptEvidence(systemPromptOrigin);
-	const resolvedSystemPrompt = mainPromptEvidence
-		? resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt, systemPromptOrigin?.preamble)
-		: systemPrompt;
+	const outbound = outboundSystemPrompt({ queryModel, bridgeConfig, systemPrompt, systemPromptOrigin });
 
 	// Non-connector queries load no Claude Code filesystem settings by default.
 	// Connector mode needs user settings for account connector discovery.
@@ -164,7 +201,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		includePartialMessages: true,
 		...(fallbackModel ? { fallbackModel } : {}),
 		...(providerSettings.fastMode ? { settings: { fastMode: true } } : {}),
-		systemPrompt: { type: "custom", prompt: resolvedSystemPrompt, snapshot: false },
+		systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,
 		...(effort ? { effort } : {}),
@@ -181,7 +218,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	return {
 		queryOptions,
 		enableCloudMcp,
-		systemPromptSource: mainPromptEvidence ? `pi-main:${mainPromptEvidence}` : "caller",
+		systemPromptSource: outbound.source,
 		...(effort ? { effort } : {}),
 		...(fallbackModel ? { fallbackModel } : {}),
 	};
