@@ -88,10 +88,11 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	const connectorServers = enableCloudMcp ? connectorServersSnapshot(accountScope.claudeConfigDir) : {};
 	if (systemPrompt === undefined) throw new Error("pi-claude-bridge: missing Pi system prompt");
 	// Only Pi's main agent prompt takes the configured replacement; a prompt
-	// from compaction or an extension's own call keeps its instructions.
+	// from compaction or an extension's own call keeps its instructions. The
+	// preamble tells resolveSystemPrompt whether Pi built the base.
 	const mainPromptEvidence = piMainPromptEvidence(systemPromptOrigin);
 	const resolvedSystemPrompt = mainPromptEvidence
-		? resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt)
+		? resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt, systemPromptOrigin?.preamble)
 		: systemPrompt;
 
 	// Non-connector queries load no Claude Code filesystem settings by default.

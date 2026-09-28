@@ -5,9 +5,12 @@
 
 /** Where a request's system prompt came from, as the provider sees it. */
 export interface SystemPromptOrigin {
-	/** The request's system message carries named sections. Only Pi's session
-	 * builds its prompt that way; one-shot calls send plain content. */
-	sectioned: boolean;
+	/** The request's replayed `preamble` section ("" if absent) when its system
+	 * message carries sections, undefined when it carries none. Only Pi's
+	 * session builds its prompt from sections; one-shot calls send plain
+	 * content. The preamble tells Pi's default base from a session's own
+	 * (config.ts::resolveSystemPrompt). */
+	preamble?: string;
 	/** The request's `options.sessionId`. */
 	sessionId?: string;
 	/** The request's `options.cacheRetention`. */
@@ -55,7 +58,7 @@ export function notePiSessionEnded(sessionId: string): void {
  */
 export function piMainPromptEvidence(origin: SystemPromptOrigin | undefined): "sections" | "session" | undefined {
 	if (!origin) return undefined;
-	if (origin.sectioned) return "sections";
+	if (origin.preamble !== undefined) return "sections";
 	if (origin.sessionId !== undefined && origin.cacheRetention !== "none" && liveSessions().has(origin.sessionId)) return "session";
 	return undefined;
 }

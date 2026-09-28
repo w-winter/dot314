@@ -20,7 +20,8 @@ const VALID_EFFORT_LEVELS = new Set<BridgeEffortLevel>(["low", "medium", "high",
  */
 export type ConnectorWriteMode = "deny" | "allow";
 
-/** Replaces the base of Pi's main agent prompt while retaining its context suffix by default. */
+/** Replaces Pi's default base in Pi's main agent prompt while retaining its
+ * context suffix by default. A base the session supplies itself is kept. */
 export interface SystemPromptConfig {
 	replacement?: string;
 	includeModelLine?: boolean;
@@ -169,16 +170,51 @@ export function recordProjectTrust(ctx: { cwd?: string; isProjectTrusted?: () =>
 function projectSettingsTrusted(settingsPath: string): boolean {
 	return projectTrustRegistry().projectSettings?.get(settingsPath) === true;
 }
-/** Applies a configured replacement for the base to Pi's main agent prompt.
- * The caller decides which prompt that is (see pi-sessions.ts). */
-export function resolveSystemPrompt(prompt: string, modelKey: string, config: SystemPromptConfig = {}): string {
+// The last line of Pi's default base (system-prompt.ts, the docs section).
+const PI_DOCS_LINE = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
+
+/** The preamble buildSystemPromptSections sets when the session supplies no
+ * base of its own. Pi does not export its builder from the package index, so
+ * tests/unit-custom-base-prompt.mjs compares this copy with the builder's. */
+export const PI_DEFAULT_PREAMBLE = "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+
+/**
+ * Whether the prompt's base is Pi's default one. Pi builds a custom base
+ * (SYSTEM.md, --system-prompt, an SDK or pi-subagents systemPrompt) into the
+ * `preamble` section and its default base only when there is none, so a
+ * sectioned prompt is decided by that section alone: it always comes first
+ * and a change of base patches it in place. Section names and positions are
+ * no evidence, since a replayed patch keeps old positions and extensions may
+ * name sections `tools`, `rules` or `docs`. A content-only prompt (a
+ * before_agent_start forced prompt) is Pi's rendered prompt plus a hook's
+ * text, so it has Pi's default base when it starts with that preamble.
+ */
+function hasPiDefaultBase(prompt: string, preamble: string | undefined): boolean {
+	return preamble !== undefined ? preamble === PI_DEFAULT_PREAMBLE : prompt.startsWith(PI_DEFAULT_PREAMBLE);
+}
+
+/**
+ * Applies a configured replacement to Pi's main agent prompt. The caller
+ * decides which prompt that is (see pi-sessions.ts) and passes its replayed
+ * `preamble` section, or undefined for a content-only prompt.
+ *
+ * The replacement substitutes Pi's default base only, exactly as it always
+ * has. A base the session supplied itself is the session's own instructions,
+ * not Pi context, so it is kept: the replacement is prepended to the complete
+ * prompt, whatever preservePiContext says. The same holds for a content-only
+ * prompt that does not open with Pi's default base.
+ */
+export function resolveSystemPrompt(prompt: string, modelKey: string, config: SystemPromptConfig = {}, preamble?: string): string {
 	const replacement = `${config.includeModelLine ? `Active model: ${modelKey}\n\n` : ""}${config.replacement ?? ""}`.trim();
 	if (!replacement) return prompt;
+	if (!hasPiDefaultBase(prompt, preamble)) {
+		if (prompt === replacement || prompt.startsWith(`${replacement}\n`)) return prompt;
+		return prompt ? `${replacement}\n\n${prompt}` : replacement;
+	}
 	if (config.preservePiContext === false) return replacement;
 	if (prompt === replacement || prompt.startsWith(`${replacement}\n`)) return prompt;
-	const endMarker = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
-	const end = prompt.indexOf(endMarker);
-	if (end !== -1) return replacement + prompt.slice(end + endMarker.length);
+	const end = prompt.indexOf(PI_DOCS_LINE);
+	if (end !== -1) return replacement + prompt.slice(end + PI_DOCS_LINE.length);
 	const starts = ["\n\n<project_context>", "\n\n# Project Context\n\n", "\nThe following skills provide specialized instructions for specific tasks.", "\nCurrent date:"]
 		.map((marker) => prompt.indexOf(marker)).filter((index) => index !== -1);
 	return replacement + (starts.length ? prompt.slice(Math.min(...starts)) : "");

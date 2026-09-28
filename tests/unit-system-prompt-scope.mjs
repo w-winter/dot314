@@ -19,6 +19,7 @@ import { AgentSession } from "../node_modules/@earendil-works/pi-coding-agent/di
 
 import { recordStartedLane, takeStartedLane } from "../src/bridge-state.ts";
 import { buildClaudeQueryOptions } from "../src/query-options.ts";
+import { legacyResolve } from "./lib/legacy-system-prompt.mjs";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -41,21 +42,15 @@ const CONFIGS = {
 	replaceAll: { replacement: REPLACEMENT, preservePiContext: false },
 };
 
-// resolveSystemPrompt as of d79094d, verbatim, so the main prompt's
-// output is pinned to what the bridge sent before this change.
-function legacyResolve(prompt, modelKey, config = {}) {
-	const replacement = `${config.includeModelLine ? `Active model: ${modelKey}\n\n` : ""}${config.replacement ?? ""}`.trim();
-	if (!replacement) return prompt;
-	if (config.preservePiContext === false) return replacement;
-	if (prompt === replacement || prompt.startsWith(`${replacement}\n`)) return prompt;
-	const endMarker = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
-	const end = prompt.indexOf(endMarker);
-	if (end !== -1) return replacement + prompt.slice(end + endMarker.length);
-	const starts = ["\n\n<project_context>", "\n\n# Project Context\n\n", "\nThe following skills provide specialized instructions for specific tasks.", "\nCurrent date:"]
-		.map((marker) => prompt.indexOf(marker)).filter((index) => index !== -1);
-	return replacement + (starts.length ? prompt.slice(Math.min(...starts)) : "");
+// The main prompt's output over Pi's default base is pinned to what the
+// bridge sent before issue #1 (legacyResolve, verbatim). A base the session
+// supplied itself (SYSTEM.md here) is kept since issue #1:
+// the replacement leads and the complete prompt follows, under every setting.
+function expectedMain(prompt, config, customBase) {
+	if (!customBase) return legacyResolve(prompt, "pi-claude/claude-haiku-4-5", config);
+	const head = `${config.includeModelLine ? "Active model: pi-claude/claude-haiku-4-5\n\n" : ""}${config.replacement}`;
+	return `${head}\n\n${prompt}`;
 }
-const expectedMain = (prompt, config) => legacyResolve(prompt, "pi-claude/claude-haiku-4-5", config);
 
 // The main session, started the way the bridge's session_start handler
 // records it. Pi's main agent sends this id on every request (sdk.ts).
@@ -66,6 +61,7 @@ after(() => takeStartedLane(mainManager));
 
 // What index.ts passes for a request's messages and stream options.
 function sent(messages, config, requestOptions = {}) {
+	const sections = getCurrentSystemMessage(messages)?.sections;
 	const built = buildClaudeQueryOptions({
 		cwd: "/tmp/project",
 		requestedModel: model,
@@ -73,7 +69,7 @@ function sent(messages, config, requestOptions = {}) {
 		bridgeConfig: { systemPrompt: config },
 		systemPrompt: getCurrentSystemPrompt(messages),
 		systemPromptOrigin: {
-			sectioned: getCurrentSystemMessage(messages)?.sections !== undefined,
+			preamble: sections && (sections.preamble ?? ""),
 			sessionId: requestOptions.sessionId,
 			cacheRetention: requestOptions.cacheRetention,
 		},
@@ -170,12 +166,12 @@ const SIDE_CHAT_SUFFIX = "\n---\n## Side Chat\n\nYou're in a SIDE CHAT parallel 
 
 describe("systemPrompt replacement scope", () => {
 	for (const [name, options] of Object.entries(MAIN_PROMPTS)) {
-		it(`keeps today's output for Pi's main prompt: ${name}`, () => {
+		it(`sends the expected output for Pi's main prompt: ${name}`, () => {
 			const messages = sessionMessages(options);
 			const prompt = getCurrentSystemPrompt(messages);
 			for (const config of Object.values(CONFIGS)) {
 				const out = sent(messages, config, { sessionId: MAIN_ID });
-				assert.equal(out.prompt, expectedMain(prompt, config));
+				assert.equal(out.prompt, expectedMain(prompt, config, options.customPrompt !== undefined));
 				assert.equal(out.source, "pi-main:sections");
 			}
 			assert.ok(sent(messages, CONFIGS.preserve, { sessionId: MAIN_ID }).prompt.startsWith(REPLACEMENT));
@@ -183,22 +179,26 @@ describe("systemPrompt replacement scope", () => {
 	}
 
 	for (const [name, options] of Object.entries(MAIN_PROMPTS)) {
-		it(`keeps today's output for a before_agent_start prompt on the main session: ${name}`, async () => {
+		it(`sends the expected output for a before_agent_start prompt on the main session: ${name}`, async () => {
 			const messages = await forcedMessages(options, "Pinned skill instructions.");
 			const prompt = getCurrentSystemPrompt(messages);
 			for (const config of Object.values(CONFIGS)) {
 				const out = sent(messages, config, { sessionId: MAIN_ID });
-				assert.equal(out.prompt, expectedMain(prompt, config));
+				assert.equal(out.prompt, expectedMain(prompt, config, options.customPrompt !== undefined));
 				assert.equal(out.source, "pi-main:session");
 			}
 		});
 	}
 
-	it("replaces a SYSTEM.md main prompt that a before_agent_start hook extended (review finding 1)", async () => {
+	it("applies the replacement to a SYSTEM.md main prompt that a before_agent_start hook extended (review finding 1)", async () => {
+		// The replacement still applies; since issue #1 it leads the SYSTEM.md
+		// base instead of discarding it.
 		const messages = await forcedMessages({ customPrompt: "My SYSTEM.md base." }, "Pinned skill instructions.");
-		assert.equal(sent(messages, CONFIGS.replaceAll, { sessionId: MAIN_ID }).prompt, REPLACEMENT);
-		assert.equal(sent(messages, CONFIGS.modelLine, { sessionId: MAIN_ID }).prompt, `Active model: pi-claude/claude-haiku-4-5\n\n${REPLACEMENT}`);
-		assert.equal(sent(messages, CONFIGS.preserve, { sessionId: MAIN_ID }).prompt, REPLACEMENT);
+		const prompt = getCurrentSystemPrompt(messages);
+		assert.ok(prompt.startsWith("My SYSTEM.md base."));
+		assert.equal(sent(messages, CONFIGS.replaceAll, { sessionId: MAIN_ID }).prompt, `${REPLACEMENT}\n\n${prompt}`);
+		assert.equal(sent(messages, CONFIGS.modelLine, { sessionId: MAIN_ID }).prompt, `Active model: pi-claude/claude-haiku-4-5\n\n${REPLACEMENT}\n\n${prompt}`);
+		assert.equal(sent(messages, CONFIGS.preserve, { sessionId: MAIN_ID }).prompt, `${REPLACEMENT}\n\n${prompt}`);
 	});
 
 	const foreign = {

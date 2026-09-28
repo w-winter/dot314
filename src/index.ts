@@ -1255,6 +1255,7 @@ function streamRequestInLane(
 	const mcpServers = servedTools ? { [MCP_SERVER_NAME]: servedTools.config } : undefined;
 	// Pure SDK query-option assembly — see buildClaudeQueryOptions for the
 	// connector, system-prompt, setting-source, effort, and env rationale.
+	const systemSections = getCurrentSystemMessage(context.messages)?.sections;
 	const built = buildClaudeQueryOptions({
 		cwd,
 		requestedModel: model,
@@ -1263,7 +1264,7 @@ function streamRequestInLane(
 		bridgeConfig,
 		systemPrompt: getCurrentSystemPrompt(context.messages),
 		systemPromptOrigin: {
-			sectioned: getCurrentSystemMessage(context.messages)?.sections !== undefined,
+			preamble: systemSections && (systemSections.preamble ?? ""),
 			sessionId: options?.sessionId,
 			cacheRetention: options?.cacheRetention,
 		},
