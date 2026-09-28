@@ -412,6 +412,40 @@ describe("managed account stream rotation", () => {
 		assert.equal(events.some((event) => event.type === "error"), false);
 	});
 
+	it("rotates a request that went idle before any output, telling no one about a retry Pi never sees", { timeout: 10_000 }, async () => {
+		process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "200ms";
+		const observed = observedState();
+		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			calls += 1;
+			if (calls > 1) {
+				return fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "session-b" },
+					{ type: "result", subtype: "success", result: "idle-recovered" },
+				], "b", observed);
+			}
+			let wake = () => {};
+			const closed = new Promise((resolve) => { wake = resolve; });
+			return {
+				...fakeSdkQuery([], "a", observed),
+				async *[Symbol.asyncIterator]() {
+					yield { type: "system", subtype: "init", session_id: "session-a" };
+					await closed;
+				},
+				close() { wake(); },
+				async interrupt() { wake(); },
+			};
+		});
+
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "idle-rotation" }));
+		assert.equal(calls, 2);
+		assert.deepEqual(observed.failures, [{ profileId: "a", kind: "network" }]);
+		assert.ok(textEvents(events).includes("idle-recovered"));
+		assert.equal(events.some((event) => event.type === "error"), false);
+		assert.deepEqual(notifications.filter((entry) => /idle/.test(entry.message)), []);
+	});
+
 	it("terminates the stream when an abort lands after a rotation retry was queued", async () => {
 		// requestRotation discards the attempt buffer and nulls currentPiStream;
 		// only the retry re-entry ends the outer stream. An abort in the window

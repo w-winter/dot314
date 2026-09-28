@@ -174,11 +174,16 @@ function completedReplyMessage(c: QueryContext): AssistantMessage | undefined {
  *  done message (terminalMessage): no truncated tool call, no block of an
  *  abandoned stream attempt. It is always a copy: Pi may still be encoding
  *  queued events against the live partial, which must keep every block at
- *  its index. `fields` ride the error message only (rate-limit metadata). */
+ *  its index. `fields` ride the error message only (rate-limit metadata).
+ *
+ *  `notice` is the failure as the user is told it (defaults to
+ *  errorMessage): an error message may carry retry advice that only holds
+ *  when the request ends as that error. Returns how the request ended, so a
+ *  caller's own report can say what happened. */
 export function endStreamForFailure(
 	c: QueryContext,
-	failure: { errorMessage: string; fields?: Record<string, unknown> },
-): void {
+	failure: { errorMessage: string; notice?: string; fields?: Record<string, unknown> },
+): FailureEnding {
 	const aborted = c.requestAborted();
 	const stream = c.currentPiStream;
 	if (!stream) {
@@ -188,10 +193,11 @@ export function endStreamForFailure(
 		if (!aborted && c.forwardedToolCallIds.size > 0) {
 			debug(`provider: terminal failure after the Pi turn was delivered; holding it for the tool-result callback: ${failure.errorMessage}`);
 			c.undeliveredFailure = { errorMessage: failure.errorMessage, fields: failure.fields, toolCallIds: new Set(c.forwardedToolCallIds) };
+			return "held";
 		}
-		return;
+		return aborted ? "aborted" : "unreported";
 	}
-	if (!c.turnOutput) return;
+	if (!c.turnOutput) return "unreported";
 	// Reported on this stream: no later callback may report a failure this
 	// query held while no stream was live (it would repeat it).
 	c.undeliveredFailure = null;
@@ -207,12 +213,12 @@ export function endStreamForFailure(
 		debug(`provider: deferred continuation failed after a completed reply; ending the Pi message with its ${kept} completed block(s), leaving out ${dropped} from the failed continuation: ${failure.errorMessage}`);
 		diagDump("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
 		appendIntegrityEntry("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
-		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${failure.errorMessage.slice(0, 200)}). Its reply before that message is kept; send the message again to get an answer.`, "warning");
+		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${(failure.notice ?? failure.errorMessage).slice(0, 200)}). Its reply before that message is kept; send the message again to get an answer.`, "warning");
 		ensureTurnStarted(c);
 		stream.push({ type: "done", reason: reply.stopReason === "length" ? "length" : "stop", message: reply });
 		stream.end();
 		c.currentPiStream = null;
-		return;
+		return "kept-reply";
 	}
 	// As in finalizeCurrentStream: a pruned call never reaches Pi and is owed
 	// no result.
@@ -229,7 +235,14 @@ export function endStreamForFailure(
 	stream.push({ type: "error", reason: aborted ? "aborted" : "error", error });
 	stream.end();
 	c.currentPiStream = null;
+	return aborted ? "aborted" : "error";
 }
+
+/** How endStreamForFailure ended a failed request: as an error message
+ *  ("error"), as an error held for the tool-result callback ("held"), as the
+ *  reply completed before a failed continuation ("kept-reply"), as aborted,
+ *  or not at all ("unreported": no Pi message to end and nothing to hold). */
+export type FailureEnding = "error" | "held" | "kept-reply" | "aborted" | "unreported";
 
 /** The error text of a cancelled request. */
 export const ABORTED_MESSAGE = "Operation aborted";

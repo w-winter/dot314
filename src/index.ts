@@ -1480,11 +1480,20 @@ function streamRequestInLane(
 					status: "rejected",
 					timeoutMs,
 				});
-				safeNotify(`${RATE_LIMIT_TOKEN} Claude stream idle timeout after ${formatDurationShort(timeoutMs)} — retrying via rate-limit backoff`, "warning");
-				endStreamForFailure(abortCtx, {
+				const idle = `stream idle timeout after ${formatDurationShort(timeoutMs)}`;
+				const ending = endStreamForFailure(abortCtx, {
 					errorMessage,
+					notice: idle,
 					fields: { rateLimitType: "stream_idle", retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS, streamIdleTimeoutMs: timeoutMs },
 				});
+				// Only an error can be retried, by Pi's own auto-retry, which shows
+				// its own notice when it does. A kept reply was reported by the
+				// ender; a cancelled request needs no report.
+				if (ending === "error" || ending === "held") {
+					safeNotify(`Claude bridge: Claude ${idle}. The turn ends with an error that Pi's auto-retry treats as retryable.`, "warning");
+				} else {
+					debug(`provider: stream idle timeout ended the request as ${ending}; no retry follows`);
+				}
 				requestAbort();
 			},
 			timeoutMs: streamIdleTimeoutMs,

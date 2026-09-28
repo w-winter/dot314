@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
@@ -188,5 +189,21 @@ describe("a truncated tool call left out of the error message is owed no result"
 		const record = runInRequestLane("frames-owed-record", () => __testGetBridgeIntegrityState().sharedSession);
 		assert.equal(record?.sessionId, "failure-frames", "the failed query's session is kept");
 		assert.equal(record.needsRebuild, undefined, "the next turn resumes it");
+	});
+});
+
+describe("the user is told what follows a stream idle timeout", () => {
+	it("an error: retryable by Pi's auto-retry, which announces its own retries", { timeout: 10_000 }, async () => {
+		process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "200ms";
+		installFakeClaudeCode([], { stall: true });
+		const run = await consumeLikePi(streamClaudeAgentSdk(model, context(), { sessionId: "frames-idle-notice" }));
+		const error = run.events.at(-1).error;
+		assert.equal(error.stopReason, "error");
+		assert.equal(isRetryableAssistantError(error), true, "Pi's auto-retry takes this error");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.deepEqual(notifications, [{
+			message: "Claude bridge: Claude stream idle timeout after 200ms. The turn ends with an error that Pi's auto-retry treats as retryable.",
+			level: "warning",
+		}]);
 	});
 });

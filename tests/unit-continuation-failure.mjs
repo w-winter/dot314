@@ -345,6 +345,21 @@ describe("a failed continuation keeps the replies that completed before it (G3)"
 		});
 	}
 
+	it("a stream idle timeout in the continuation claims no retry for the kept reply", { timeout: 20_000 }, async () => {
+		process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "300ms";
+		await assertRepliesKept("g3-idle-notice", {
+			steers: ["STEER-ONE"],
+			continuations: [{ partial: "text", failure: "stream idle timeout" }],
+		}, ["ORIGINAL-REPLY"]);
+		// The request ended as a reply: Pi's auto-retry only retries an error,
+		// and nothing else resends the steer.
+		assert.deepEqual(notifications.filter((entry) => /retr(y|ies|ying)/i.test(entry.message)), [], `no retry is promised: ${JSON.stringify(notifications)}`);
+		assert.deepEqual(
+			notifications.filter((entry) => /idle|mid-turn/.test(entry.message)).map((entry) => entry.message),
+			["Claude bridge: Claude failed while answering your mid-turn message (stream idle timeout after 300ms). Its reply before that message is kept; send the message again to get an answer."],
+		);
+	});
+
 	it("original success, continuation fails after streaming text and a partial tool call", async () => {
 		await assertRepliesKept("g3-one-partial-tool", {
 			steers: ["STEER-ONE"],
