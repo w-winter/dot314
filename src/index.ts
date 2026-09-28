@@ -29,7 +29,7 @@ import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
 import { primeConnectorServers } from "./connector-runtime.js";
 import { cancelScheduledSessionPersistence, conversationFingerprint, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
-import { historyDigest, historyDigestMatches } from "./history-digest.js";
+import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, firstUndeliveredAssistant, historyDigest, historyDigestMatches } from "./history-digest.js";
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
@@ -605,6 +605,15 @@ export function onPiHistoryReplaced(event: string): void {
 	markSessionForRebuild({ forceRotate: restarts });
 }
 
+/** Whether `messages[0, through)` is history Claude holds, as far as this
+ *  query context can vouch: the prefix it claimed (its starting context, then
+ *  each callback it accepted) is unchanged, and every assistant after that is
+ *  exactly a reply the bridge delivered in this query. */
+function heldHistoryVerified(queryCtx: QueryContext, messages: Context["messages"], through: number): boolean {
+	if (!historyDigestMatches(queryCtx.latestCursorDigest, messages.slice(0, queryCtx.latestCursor)).matches) return false;
+	return firstUndeliveredAssistant(messages, queryCtx.latestCursor, through, queryCtx.deliveredAssistantDigests) < 0;
+}
+
 /** Provider entry point. Pi calls this for each prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. Exported for
  *  the rotation-stream unit tests, which drive it with a fake SDK factory. */
@@ -848,29 +857,31 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// advance it past history Claude never saw; Math.max
 		// remains the backstop for a legacy-record foreign context the
 		// fingerprint guard could not classify.
-		// Every cursor carries the digest of the history it covers, and the
-		// history already claimed must still match: an extension or a Pi
-		// context edit can rewrite it between callbacks without changing its
-		// length. This query keeps its stale transcript, but the record it
-		// leaves must rebuild (see history-digest.ts).
+		// Every cursor carries the digest of the history it covers, and that
+		// digest may only describe what Claude holds: the history this query
+		// started from (and verified or imported), then each reply the bridge
+		// delivered to Pi. An extension or a Pi context edit can rewrite either
+		// between callbacks without changing the length. This query keeps its
+		// stale transcript, but the record never blesses the rewritten view: it
+		// gets UNVERIFIED_HISTORY_DIGEST and a rebuild mark (history-digest.ts).
 		const activeSession = getSharedSession();
 		const holdsRecord = activeSession !== null && stackDepth() === 0 && !queryCtx.detachedFromSharedSession;
-		const priorRewritten =
-			(holdsRecord && !historyDigestMatches(activeSession.historyDigest, context.messages.slice(0, activeSession.cursor)).matches) ||
-			!historyDigestMatches(queryCtx.latestCursorDigest, context.messages.slice(0, queryCtx.latestCursor)).matches;
-		if (priorRewritten && !queryCtx.priorHistoryRewritten) {
+		if (!queryCtx.priorHistoryRewritten && !heldHistoryVerified(queryCtx, context.messages, capturedThrough)) {
 			queryCtx.priorHistoryRewritten = true;
 			debug(`provider: history Claude already holds was rewritten mid-query (context length ${context.messages.length}); the next turn rebuilds from Pi history`);
 		}
-		const capturedDigest = historyDigest(context.messages.slice(0, capturedThrough));
+		const rewritten = queryCtx.priorHistoryRewritten;
+		const capturedDigest = rewritten ? UNVERIFIED_HISTORY_DIGEST : historyDigest(context.messages.slice(0, capturedThrough));
 		if (holdsRecord) {
 			const cursor = Math.max(activeSession.cursor, capturedThrough);
 			const { trailingAssistantDigest: _covered, ...claimed } = activeSession;
 			setSharedSession({
 				...claimed,
 				cursor,
-				historyDigest: cursor === capturedThrough ? capturedDigest : activeSession.historyDigest,
-				...(queryCtx.priorHistoryRewritten ? { needsRebuild: true } : {}),
+				historyDigest: rewritten || activeSession.needsRebuild
+					? UNVERIFIED_HISTORY_DIGEST
+					: cursor === capturedThrough ? capturedDigest : activeSession.historyDigest,
+				...(rewritten ? { needsRebuild: true } : {}),
 			});
 		}
 		if (capturedThrough >= queryCtx.latestCursor) {
@@ -897,8 +908,17 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		// length here would move (even shrink) the parent's cursor.
 		const activeSession = getSharedSession();
 		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) {
+			// Stamped only when this lane's query context can vouch for the whole
+			// context (see heldHistoryVerified); the end_turn reply Pi appends
+			// here carries no reply digest, so a later REUSE past it rebuilds.
+			const verified = !activeSession.needsRebuild && heldHistoryVerified(ctx(), context.messages, context.messages.length);
 			const { trailingAssistantDigest: _covered, ...claimed } = activeSession;
-			setSharedSession({ ...claimed, cursor: context.messages.length, historyDigest: historyDigest(context.messages) });
+			setSharedSession({
+				...claimed,
+				cursor: context.messages.length,
+				historyDigest: verified ? historyDigest(context.messages) : UNVERIFIED_HISTORY_DIGEST,
+				...(verified ? {} : { needsRebuild: true }),
+			});
 		}
 		const c = ctx();  // capture current context for the microtask
 		queueMicrotask(() => {
@@ -962,9 +982,12 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().deferredUserMessages = [];
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
-	ctx().latestCursor = 0;
-	ctx().latestCursorDigest = undefined;
+	// The starting context is what Claude holds once this query runs: the
+	// history syncSharedSession verified or imported, plus the prompt.
+	ctx().latestCursor = context.messages.length;
+	ctx().latestCursorDigest = historyDigest(context.messages);
 	ctx().priorHistoryRewritten = false;
+	ctx().deliveredAssistantDigests.clear();
 	// The query's prompt covers its whole starting context, so it owns every
 	// user message there: a mid-query callback never re-queues the prompt or
 	// earlier history, wherever a context transform moves them.
@@ -1188,25 +1211,26 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// record with the child's session id and cursor. A foreign-conversation
 	// one-shot has exactly the same non-claim on the record.
 	// The digest a record persisted at `cursor` must carry (history-digest.ts):
-	// the one this query's latest callback or the live record bound to that
-	// cursor, else this query's starting context when the cursor is its
-	// length. A cursor none of them covers stays undigested, which the next
-	// REUSE accepts once.
-	const persistedHistoryDigest = (cursor: number): string | undefined => {
+	// the one this query's claim (its starting context or latest accepted
+	// callback) or the live record bound to that cursor. Anything else is not
+	// known to be Claude's, so it vouches for nothing.
+	const persistedHistoryDigest = (cursor: number): string => {
 		if (cursor === abortCtx.latestCursor && abortCtx.latestCursorDigest) return abortCtx.latestCursorDigest;
 		const active = getSharedSession();
 		if (active && cursor === active.cursor && active.historyDigest) return active.historyDigest;
-		return cursor === context.messages.length ? historyDigest(context.messages) : undefined;
+		return UNVERIFIED_HISTORY_DIGEST;
 	};
 	// The reply still to be delivered through the live Pi stream: Pi appends
 	// it at the persisted cursor (finalizeCurrentStream sends terminalMessage,
 	// which also drops calls whose arguments never finished). None once a
 	// failure ended the stream: Pi's copy is then an error message.
 	const deliveredReplyDigest = (): string | undefined => {
-		if (!abortCtx.turnOutput || !abortCtx.currentPiStream) return undefined;
-		const { message } = terminalMessage(abortCtx, { prunePartialCalls: false });
-		const content = (message.content as Array<{ type?: string }>).filter((block) => !(block?.type === "toolCall" && "partialJson" in block));
-		return historyDigest([{ ...message, content } as AssistantMessage]);
+		const output = abortCtx.turnOutput;
+		if (!output) return undefined;
+		// A surfaced failure already sent Pi an error message, which the import
+		// skips: the reply Claude holds there projects to nothing.
+		if (!abortCtx.currentPiStream) return output.stopReason === "error" || output.stopReason === "aborted" ? historyDigest([]) : undefined;
+		return deliveredAssistantDigest(terminalMessage(abortCtx, { prunePartialCalls: false }).message);
 	};
 	const persistSession = (next: SessionState | null): void => {
 		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
@@ -1220,9 +1244,14 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 			if (restartPending) replaced.forceRotate = true;
 		}
 		if (replaced && replaced.historyDigest === undefined) {
-			const digest = persistedHistoryDigest(replaced.cursor);
-			const reply = deliveredReplyDigest();
-			replaced = { ...replaced, ...(digest ? { historyDigest: digest } : {}), ...(reply ? { trailingAssistantDigest: reply } : {}) };
+			if (replaced.needsRebuild) {
+				// Owed a rebuild: vouch for nothing, so even a lost mark cannot
+				// reopen warm reuse of a history Claude may not hold.
+				replaced = { ...replaced, historyDigest: UNVERIFIED_HISTORY_DIGEST, trailingAssistantDigest: UNVERIFIED_HISTORY_DIGEST };
+			} else {
+				const reply = deliveredReplyDigest();
+				replaced = { ...replaced, historyDigest: persistedHistoryDigest(replaced.cursor), ...(reply ? { trailingAssistantDigest: reply } : {}) };
+			}
 		}
 		setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
 	};

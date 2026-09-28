@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { debug, diagDump, diagGuidance } from "./debug.js";
+import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { type QueryContext } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.js";
@@ -159,7 +160,9 @@ export function takeStartedLane(sessionManager: object): string | undefined {
 export function markSessionForRebuild(opts: { forceRotate?: boolean } = {}): void {
 	const sharedSession = getSharedSession();
 	if (!sharedSession) return;
-	setSharedSession({ ...sharedSession, needsRebuild: true, ...(opts.forceRotate ? { forceRotate: true } : {}) });
+	// A record owed a rebuild vouches for no history (history-digest.ts), so
+	// losing the mark alone cannot reopen warm reuse.
+	setSharedSession({ ...sharedSession, needsRebuild: true, historyDigest: UNVERIFIED_HISTORY_DIGEST, ...(opts.forceRotate ? { forceRotate: true } : {}) });
 }
 
 export function setExtensionApi(next: ExtensionAPI | undefined): void {

@@ -4,6 +4,7 @@ import { appendIntegrityEntry, safeNotify } from "./bridge-state.js";
 import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.js";
 import { isChildExecutedTool } from "./connectors.js";
 import { debug, diagDump } from "./debug.js";
+import { deliveredAssistantDigest } from "./history-digest.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
 import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
@@ -268,11 +269,17 @@ export function endToolUseTurn(c: QueryContext): void {
 	cancelScheduledToolUseEnd(c);
 	c.turnOutput.stopReason = "toolUse";
 	const { message } = terminalMessage(c);
+	// What Claude holds of this turn, for the tool-result callback to check
+	// Pi's copy against (history-digest.ts).
+	const delivered = deliveredAssistantDigest(message);
 	// Every tool call Pi is about to execute from this turn is owed a result and
 	// must never be dispatched again: a lagging stream replays the same tool_use
 	// into the NEXT turn, whose per-message dedup cannot see it.
 	for (const block of message.content as Array<{ type?: string; id?: unknown }>) {
-		if (block?.type === "toolCall" && typeof block.id === "string") c.forwardedToolCallIds.add(block.id);
+		if (block?.type === "toolCall" && typeof block.id === "string") {
+			c.forwardedToolCallIds.add(block.id);
+			c.deliveredAssistantDigests.set(block.id, delivered);
+		}
 	}
 	c.currentPiStream.push({ type: "done", reason: "toolUse", message });
 	c.currentPiStream.end();

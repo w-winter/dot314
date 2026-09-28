@@ -357,6 +357,62 @@ describe("warm reuse follows the content Claude already holds", () => {
 		assert.match(sessionFileText(claudeDir), /the answer is 42/);
 	});
 
+	it("keeps a detected mid-query rewrite's rebuild across a persisted restore (review finding 1)", async () => {
+		installFakeClaudeCode([[{ text: "41" }], [{ read: ["a.txt"] }, { text: "read a" }], [{ text: "later" }]], observed);
+		const entries = [];
+		setExtensionApi({ events: { emit: () => {} }, appendEntry: (type, data) => entries.push({ type, data }) });
+		let history = await prompt("digest-restore-rewrite", [SYSTEM], "compute");
+		history = await prompt("digest-restore-rewrite", history, "read a", {
+			beforeCallback: (messages) => messages.map((message) => message.role === "assistant" && message.content.some((block) => block.text === "41")
+				? { ...message, content: [{ type: "text", text: "42" }] }
+				: message),
+		});
+		const live = record("digest-restore-rewrite");
+		assert.equal(live.needsRebuild, true);
+		const sessionManager = {
+			buildSessionContext: () => ({ messages: history }),
+			getSessionId: () => "digest-restore-rewrite",
+			getCwd: () => process.cwd(),
+			getEntries: () => entries.map(({ type, data }) => ({ type: "custom", customType: type, data })),
+		};
+		runInRequestLane("digest-restore-rewrite", () => schedulePersistSharedSession({ sessionManager }));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(entries.at(-1).data.needsRebuild, true, "the marker carries the rebuild obligation");
+		const session = createSession({ projectPath: process.cwd(), claudeDir, sessionId: live.sessionId });
+		session.addUserMessage("stale Claude transcript");
+		session.save();
+		setRecord("digest-restore-rewrite", null);
+		runInRequestLane("digest-restore-rewrite", () => restoreSharedSessionFromPi({ cwd: process.cwd(), sessionManager }));
+		assert.equal(record("digest-restore-rewrite")?.needsRebuild, true, "restore keeps the rebuild obligation");
+		assert.notEqual(record("digest-restore-rewrite")?.historyDigest, historyDigest(history.slice(0, live.cursor)), "the rewritten Pi view is never recorded as what Claude holds");
+		await prompt("digest-restore-rewrite", history, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "reuse", "rebuild"]);
+	});
+
+	it("rebuilds when the tool call a callback acknowledges was rewritten after delivery (review finding 2)", async () => {
+		installFakeClaudeCode([[{ text: "hello" }], [{ read: ["a.txt"] }, { text: "read a" }], [{ text: "next" }]], observed);
+		let history = await prompt("digest-delivered-call", [SYSTEM], "hello");
+		history = await prompt("digest-delivered-call", history, "read a", {
+			beforeCallback: (messages) => messages.map((message) => message.role === "assistant"
+				? { ...message, content: message.content.map((block) => block.type === "toolCall" ? { ...block, arguments: { path: "other.txt" } } : block) }
+				: message),
+		});
+		assert.equal(record("digest-delivered-call")?.needsRebuild, true, "the completed query leaves a rebuild mark");
+		await prompt("digest-delivered-call", history, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "reuse", "rebuild"]);
+		assert.match(sessionFileText(claudeDir), /other\.txt/);
+	});
+
+	it("rebuilds when an earlier tool call's Pi name changes to one that PascalCases the same (review finding 3)", async () => {
+		installFakeClaudeCode([[{ read: ["a.txt"] }, { text: "read a" }], [{ text: "next" }]], observed);
+		let history = await prompt("digest-tool-name", [SYSTEM], "read a");
+		history = history.map((message) => message.role === "assistant"
+			? { ...message, content: message.content.map((block) => block.type === "toolCall" ? { ...block, name: "readFile" } : block) }
+			: message);
+		await prompt("digest-tool-name", history, "next");
+		assert.deepEqual(syncPaths(), ["clean-start", "rebuild"]);
+	});
+
 	it("accepts a record without a digest once, stamps it, then guards it", async () => {
 		installFakeClaudeCode([[{ text: "ok" }], [{ text: "noted" }], [{ text: "answer" }]], observed);
 		let history = [SYSTEM];
@@ -436,6 +492,7 @@ describe("historyDigest coverage", () => {
 			["assistant text", edit(4, (m) => ({ ...m, content: [{ type: "text", text: "not done" }] }))],
 			["tool arguments", edit(2, (m) => ({ ...m, content: m.content.map((b) => b.type === "toolCall" ? { ...b, arguments: { path: "b.txt" } } : b) }))],
 			["tool name", edit(2, (m) => ({ ...m, content: m.content.map((b) => b.type === "toolCall" ? { ...b, name: "write_file" } : b) }))],
+			["tool name with the same PascalCase", edit(2, (m) => ({ ...m, content: m.content.map((b) => b.type === "toolCall" ? { ...b, name: "readFile" } : b) }))],
 			["tool call id", edit(3, (m) => ({ ...m, toolCallId: "toolu_2" }))],
 			["order", [base()[0], base()[1], base()[4], base()[2], base()[3]]],
 			["role", edit(1, (m) => ({ ...m, role: "assistant", content: [{ type: "text", text: "read a" }] }))],

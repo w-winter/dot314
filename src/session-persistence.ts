@@ -219,6 +219,10 @@ export function restoreSharedSessionFromPi(ctx: { sessionManager?: unknown; cwd?
 		// on older markers, where the next REUSE adopts one (history-digest.ts).
 		...(typeof persisted.historyDigest === "string" ? { historyDigest: persisted.historyDigest } : {}),
 		...(typeof persisted.trailingAssistantDigest === "string" ? { trailingAssistantDigest: persisted.trailingAssistantDigest } : {}),
+		// A rebuild the record still owed must survive the restart: without it
+		// the next turn would resume a transcript known to differ from Pi's.
+		...(persisted.needsRebuild === true ? { needsRebuild: true } : {}),
+		...(persisted.forceRotate === true ? { forceRotate: true } : {}),
 		...(accountProfileId ? { accountProfileId, claudeConfigDir } : {}),
 	});
 	debug(`restoreSharedSession: restored ${persisted.sessionId.slice(0, 8)}, cursor=${cursor}, account=${accountProfileId ?? "default"}`);
