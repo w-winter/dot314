@@ -8,6 +8,77 @@ This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-w
 
 ![Response from Claude through the bridge](assets/bridge-demo.png)
 
+## How it works
+
+Pi keeps the terminal, the tools and the conversation history. Claude Code does the thinking. The bridge sits between them as a Pi model provider: it turns each Pi model request into a Claude Code query, and turns Claude Code's reply back into Pi's text, thinking and tool calls.
+
+### The pieces
+
+```
+┌─ Pi ──────────────────────────────────────────────────────────────────┐
+│                                                                       │
+│   Pi's agent loop                  ┌────────────────────────────────┐ │
+│   (TUI, tools, history)            │ pi-claude-bridge               │ │
+│                                    │ a Pi model provider            │ │
+│        model request ─────────────►│                                │ │
+│                                    │ · builds the system prompt     │ │
+│        text, tool calls ◄──────────│ · pairs each Pi session with   │ │
+│                                    │   a Claude Code session        │ │
+│                                    │ · offers Pi's tools to Claude  │ │
+│                                    │   Code over MCP                │ │
+│                                    └───────────────┬────────────────┘ │
+└────────────────────────────────────────────────────┼──────────────────┘
+                                                     │ Claude Agent SDK
+┌─ claude  (Claude Code, a child process) ───────────▼──────────────────┐
+│  signed in with your Claude account · its built-in tools are off      │
+│  sees Pi's tools as mcp__custom-tools__read, …__bash, …               │
+│  keeps its transcript under ~/.claude/projects/                       │
+└────────────────────────────────────────────────────┬──────────────────┘
+                                                     ▼
+                                               Anthropic API
+```
+
+### One turn, with a tool call
+
+```
+                  Pi                      bridge                 Claude Code
+                  │                         │                         │
+ your prompt      ├── prompt ──────────────►│                         │
+                  │                         ├── start or resume ─────►│
+                  │◄── text, thinking ──────┤◄── streamed reply ──────┤
+                  │◄── tool call: bash ─────┤◄── MCP call: bash ──────┤ waits
+ Pi runs bash     │                         │                         │   ⋮
+ (you may steer)  │                         │                         │   ⋮
+                  ├── result (+ steer) ────►├── steer, then result ──►│ goes on
+                  │◄── final text ──────────┤◄── rest of the reply ───┤
+ reply done       │                         │                         │
+```
+
+One Claude Code query spans the whole turn. While Pi runs a tool, Claude Code is waiting on that MCP call, so nothing restarts between tool calls. A steering message you send meanwhile goes into the same query just before the tool result, and Claude's very next response sees both.
+
+### The next turn: resume or rebuild
+
+```
+                          your next prompt
+                                 │
+                                 ▼
+          does Claude Code's copy of the conversation still
+          match Pi's history?   (checked with a digest)
+                                 │
+              ┌────── yes ───────┴─────── no ───────┐
+              ▼                                     ▼
+   ┌──────────────────────┐        ┌───────────────────────────────┐
+   │ RESUME               │        │ REBUILD                       │
+   │ send only the new    │        │ write Pi's history out as a   │
+   │ messages; the prompt │        │ Claude Code transcript, then  │
+   │ cache stays warm     │        │ resume from it                │
+   └──────────────────────┘        └───────────────────────────────┘
+                                    e.g. after /compact or /tree, or
+                                    when another model took turns
+```
+
+The bridge saves which Claude Code session belongs to the Pi session in the Pi session file, so reopening a Pi session resumes the same Claude Code conversation. When Pi compacts or rewrites the history during a Pi tool call, the bridge restarts from Pi's new history with the completed tool results. A query that used one of Claude Code's own connectors finishes first, and the next turn uses Pi's new history.
+
 ## Install
 
 Let Pi clone the repository and install its dependencies:
@@ -24,21 +95,12 @@ Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or l
 
 ## Features
 
-- Select Claude models from Pi's model menu.
+- Select Claude models from Pi's model menu, including `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
 - Run Pi tool calls during Claude conversations.
+- Steer Claude while a Pi tool runs.
 - Resume the Claude conversation across Pi turns.
 - Configure model effort and forwarded prompt context.
 - Optionally use the Claude account's connectors.
-
-## How it works
-
-- You pick one of the `pi-claude` models in Pi's model menu, including `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
-- The bridge starts Claude Code, or resumes it, through the Claude Agent SDK, Anthropic's library for driving Claude Code from another program.
-- It sends your prompt to Claude Code and offers it Pi's tools.
-- When Claude Code calls a tool, Pi runs the tool and sends the result back to Claude Code.
-- A steering message you send while a Pi tool runs reaches Claude's next response, together with the tool result.
-- Pi shows the reply and remembers which Claude Code conversation it belongs to, so your next message continues it.
-- When Pi compacts or changes the conversation history during a Pi tool call, the bridge resumes from Pi's new history with completed tool results. A query that used Claude Code's own connector finishes first; the next turn uses Pi's new history.
 
 ## Settings
 
