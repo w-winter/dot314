@@ -388,7 +388,7 @@ interface SyncResult {
 	// True when the incoming context's conversation fingerprint contradicts the
 	// shared record's (Case 6): the query runs as a clean one-shot and its
 	// completion must NOT persist over the module-level record — the caller
-	// gates its persistSession/markRebuild exactly like the reentrant path.
+	// gates its persistSession/markRebuild on it.
 	foreignContext?: boolean;
 }
 
@@ -413,7 +413,7 @@ export function planIncrementalPromptBatch(
 	if (lastIndex < 0 || (messages[lastIndex] as { role?: string }).role !== "user") return undefined;
 
 	// A cursor past the end is PROOF this messages array is not the conversation
-	// the cursor describes (e.g. a reentrant subagent's short context arriving
+	// the cursor describes (e.g. another conversation's short context arriving
 	// while the parent's cursor is large). Clamping it would fabricate a REUSE
 	// plan against foreign history — reject so the caller takes the rebuild path.
 	if (cursor > lastIndex) {
@@ -551,13 +551,13 @@ export function syncSharedSession(
 	const incomingFingerprint = conversationFingerprint(messages);
 
 	// FOREIGN-CONVERSATION guard. A subagent-shaped query
-	// arriving while the parent is IDLE is not reentrant, so it lands here as an
-	// outermost query. Without an identity check its short foreign context takes
+	// arriving while the parent is IDLE finds no running query to join, so it
+	// can land here. Without an identity check its short foreign context takes
 	// the REBUILD path — rewriting the PARENT's session file from foreign
 	// history — and its completion swaps the parent's record for the child's.
 	// A conversation-fingerprint mismatch is that identity signal: run the query
-	// as a clean one-shot (same semantics as the reentrant path) and leave the
-	// record completely alone. Two deliberate limits keep misclassification
+	// as a clean one-shot (no resume, prompt is the trailing message) and leave
+	// the record completely alone. Two deliberate limits keep misclassification
 	// self-healing instead of sticky:
 	//   - needsRebuild is a carve-out: pi just mutated its history out from
 	//     under us (compact, tree-nav, abort recovery), so the next outermost

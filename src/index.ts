@@ -17,7 +17,7 @@ import { PROVIDER_ID, messageContentToText } from "./convert.js";
 import { buildModels, modelDisplayName } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, drainStrandedToolCalls, isForkLane, laneInUse, popContext, releaseForkLane, requestLaneFor, stackDepth, pushContext, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
+import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, drainStrandedToolCalls, isForkLane, laneInUse, releaseForkLane, requestLaneFor, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type DeferredUserMessage, type QueryRestartRequest } from "./query-state.js";
 import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
 import { loadConfig, recordProjectTrust } from "./config.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
@@ -292,9 +292,9 @@ async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDK
 // --- Provider helpers: tool bridge ---
 
 // --- Query state ---
-// QueryContext + context stack live in query-state.js so tests can import
-// them without activating the extension. `ctx()`, `pushContext()`, `popContext()`
-// are imported at the top of this file.
+// QueryContext and the per-lane current context live in query-state.js so
+// tests can import them without activating the extension. `ctx()` is imported
+// at the top of this file.
 
 export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolName?: string): {
 	mcpTools: Tool[];
@@ -362,7 +362,8 @@ function toolNameManifest(aliases: Map<string, string>): {
 // Handlers claim their tool_call id by matching the actual MCP call
 // (tool name + arguments) against the recorded tool_use blocks, then results
 // are matched by ID. Handlers close over the captured `queryCtx`, ensuring they
-// operate on the correct query's state even across pushContext/popContext calls.
+// operate on the correct query's state even after a quarantine replaced the
+// lane's current context.
 function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	return async (args?: Record<string, unknown>) => {
 		const mappedArgs = mapToolArgs(tool.name, args);
@@ -693,7 +694,7 @@ function streamRequestInLane(
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
+	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}`);
 
 	// --- Tool result delivery ---
 	// Pi appends tool results to context and calls back. Extract this turn's results
@@ -842,7 +843,7 @@ function streamRequestInLane(
 		// is a delivery boundary. The ledger keeps the prompt and already-queued
 		// steers from being queued again (a second steer callback once re-queued
 		// the first steer). It lives on this QueryContext, so it is correct for
-		// reentrant and detached foreign queries too.
+		// detached foreign queries too.
 		const ledger = queryCtx.ownedUserMessages;
 		// Identity alone cannot tell a new message from an older one an
 		// extension rewrote under new content AND a new timestamp (that replayed
@@ -909,16 +910,11 @@ function streamRequestInLane(
 				beforeAnchor: replay.unresolvedIndexes.filter((index) => index < replay.anchorIndex).length,
 				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 			});
-			if (stackDepth() === 0 && !queryCtx.detachedFromSharedSession) markSessionForRebuild();
+			if (!queryCtx.detachedFromSharedSession) markSessionForRebuild();
 		}
 
 		// Cursor may only ADVANCE, and only for a query that holds the record's
-		// claim. A reentrant subagent call routed through this instance arrives
-		// here with a SHORT foreign context (its own [user…] conversation, not
-		// the one the cursor indexes). Writing its length would shrink the
-		// parent cursor and make the next REUSE replay already-owned history.
-		// The stackDepth guard covers a pushed subagent context; the detached
-		// flag covers a foreign one-shot on the top-level ctx, whose GROWN
+		// claim. The detached flag covers a foreign one-shot, whose GROWN
 		// mid-query context could otherwise out-length the parent's cursor and
 		// advance it past history Claude never saw; Math.max
 		// remains the backstop for a legacy-record foreign context the
@@ -933,7 +929,7 @@ function streamRequestInLane(
 		// transcript, but the record never blesses the Pi view: it gets
 		// UNVERIFIED_HISTORY_DIGEST and a rebuild mark (history-digest.ts).
 		const activeSession = getSharedSession();
-		const holdsRecord = activeSession !== null && stackDepth() === 0 && !queryCtx.detachedFromSharedSession;
+		const holdsRecord = activeSession !== null && !queryCtx.detachedFromSharedSession;
 		const heldResults = queryCtx.priorHistoryRewritten ? undefined : verifiedHeldSuffix(queryCtx, context.messages, capturedThrough, {
 			resultReceived: (id) => queryCtx.acknowledgedToolResultIds.has(id),
 			queuedUserIndexes,
@@ -990,7 +986,7 @@ function streamRequestInLane(
 		// from a foreign one-shot indexes ITS conversation, and writing that
 		// length here would move (even shrink) the parent's cursor.
 		const activeSession = getSharedSession();
-		if (activeSession && stackDepth() === 0 && !ctx().detachedFromSharedSession) {
+		if (activeSession && !ctx().detachedFromSharedSession) {
 			// No query delivers anything here: beyond the ended query's claim the
 			// context may hold only its undelivered replies and results for calls
 			// it made (verifiedHeldSuffix with no queued users). Anything else is
@@ -1055,13 +1051,9 @@ function streamRequestInLane(
 		return stream;
 	}
 
-	// 1. Determine reentrancy and push parent context if needed.
-	const isReentrant = ctx().activeQuery !== null;
-	if (isReentrant) pushContext();
-	debug(`provider: fresh query setup, isReentrant=${isReentrant}, stackDepth=${stackDepth()}`);
-
-	// 2. Fresh child context — constructor already gave us clean Maps and empty
-	//    arrays. For a reused top-level context, clear explicitly.
+	// The tool-result path above returns whenever a query runs in this lane,
+	// so the lane is idle here. Its context may still hold the previous
+	// query's state; reset it.
 	ctx().currentPiStream = stream;
 	ctx().pendingToolCalls.clear();
 	ctx().pendingResults.clear();
@@ -1101,9 +1093,9 @@ function streamRequestInLane(
 	ctx().piHistoryReplaced = false;
 	ctx().reportedHistoryRestartDecline = false;
 	ctx().servedToolsSettling = null;
-	// A reentrant query never claims the shared record; a foreign-conversation
-	// one-shot joins it below once syncSharedSession has ruled.
-	ctx().detachedFromSharedSession = isReentrant;
+	// A foreign-conversation one-shot sets it below once syncSharedSession has
+	// ruled.
+	ctx().detachedFromSharedSession = false;
 
 	// --- Account routing (optional) ---
 	// A companion router selects the subscription profile for this attempt.
@@ -1153,7 +1145,6 @@ function streamRequestInLane(
 				});
 			}
 			const errorOutput = ctx().turnOutput!;
-			if (isReentrant) popContext();
 			queueMicrotask(() => {
 				stream.push({ type: "error", reason: "error", error: errorOutput });
 				stream.end();
@@ -1185,9 +1176,9 @@ function streamRequestInLane(
 	// Buffer protocol setup events until the first visible output so a failed
 	// pre-output attempt can be retried on another profile without leaking a
 	// duplicate `start` frame into Pi. The query context is captured ONCE here:
-	// commit can fire while a reentrant subagent context is pushed, and stamping
-	// the live ctx() then would mark the WRONG query as committed and leave this
-	// one replayable after visible output.
+	// commit can fire after a quarantine handed the lane to a new context, and
+	// stamping the live ctx() then would mark the WRONG query as committed and
+	// leave this one replayable after visible output.
 	const attemptCtx = ctx();
 	const attemptBuffer = account
 		? new RetryEventBuffer(stream, () => attemptCtx.markOutputCommitted())
@@ -1207,20 +1198,12 @@ function streamRequestInLane(
 
 	const accountScope = accountSessionScope(account);
 	const cursorBeforeSync = getSharedSession()?.cursor ?? null;
-	// A REENTRANT (subagent) query never touches the module-level shared
-	// session: syncSharedSession's REBUILD path is destructive to the PARENT's
-	// session file, and any resume id borrowed from the parent would splice the
-	// subagent's turn into the parent's conversation of record. It runs as a
-	// clean one-shot instead (Case-1 semantics — no resume, prompt is the
-	// trailing message; the child session id lives in the QueryContext only).
-	const syncResult = isReentrant
-		? { sessionId: null, promptStart: context.messages.length - 1 }
-		: syncSharedSession(context.messages, cwd, customToolNameToSdk, queryModel.id, accountScope);
+	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, queryModel.id, accountScope);
 	const { sessionId: resumeSessionId, promptStart } = syncResult;
 	// A FOREIGN-conversation query (conversation-fingerprint mismatch against
 	// the shared record — a subagent-shaped request arriving while the parent
-	// is IDLE,) also runs as a clean one-shot and gets the same
-	// hands-off treatment as a reentrant one below: never persist over the
+	// is IDLE,) runs as a clean one-shot (no resume, prompt is the trailing
+	// message) with a hands-off treatment below: never persist over the
 	// module-level record, never mark it for rebuild. The flag also rides the
 	// QueryContext so the mismatch/abort/teardown paths that mutate the record
 	// OUTSIDE this closure (reportToolResultMismatch, the cursor advances in
@@ -1230,7 +1213,7 @@ function streamRequestInLane(
 	// Identity anchor stamped onto every record this outermost query persists,
 	// so the record created by a Case-1 clean start is protected from the very
 	// next idle-window foreign query.
-	const conversationFp = isReentrant || foreignContext ? undefined : conversationFingerprint(context.messages);
+	const conversationFp = foreignContext ? undefined : conversationFingerprint(context.messages);
 	const promptMessages = context.messages.slice(promptStart);
 	const promptBlocks = extractUserPromptBlocks(promptMessages);
 	let promptText = extractUserPrompt(promptMessages) ?? "";
@@ -1238,13 +1221,11 @@ function streamRequestInLane(
 	// Guard: a prompt with no usable content means the last context message
 	// isn't a user message (or the batch was all-empty — joined batches turn ""
 	// into "\n\n", so test the trimmed text, not truthiness). Should never
-	// happen with the state stack fix — dump diagnostics if it does.
+	// happen — dump diagnostics if it does.
 	if (!promptText.trim() && !promptBlocks) {
 		diagDump("empty_prompt", {
 			contextLength: context.messages.length,
 			lastMsgRole: lastMsg?.role,
-			isReentrant,
-			stackDepth: stackDepth(),
 			activeQueryExists: ctx().activeQuery !== null,
 			cursorBeforeSync,
 			promptStart,
@@ -1309,15 +1290,14 @@ function streamRequestInLane(
 	const sdkQuery = startSdkQuery({ prompt, options: queryOptions });
 	ctx().activeQuery = sdkQuery;
 
-	// 4. Capture context for abort handling (must be AFTER pushContext)
+	// 4. Capture context for abort handling
 	const abortCtx = ctx();
 	// Failure metadata from consumeQuery survives an iterator throw. The catch
 	// below reuses it instead of re-classifying it; see the C5 note.
 	const attemptFailure: { failure?: ClaudeAttemptFailure } = {};
-	// A reentrant (subagent) query must never write the module-level shared
+	// A foreign-conversation one-shot must never write the module-level shared
 	// session: its completion/failure handlers would overwrite the PARENT's
-	// record with the child's session id and cursor. A foreign-conversation
-	// one-shot has exactly the same non-claim on the record.
+	// record with the one-shot's session id and cursor.
 	// The digest a record persisted at `cursor` must carry (history-digest.ts):
 	// the one this query's claim (its starting context or latest accepted
 	// callback) or the live record bound to that cursor. Anything else is not
@@ -1341,7 +1321,7 @@ function streamRequestInLane(
 		return deliveredAssistantDigest(terminalMessage(abortCtx, { prunePartialCalls: false }).message);
 	};
 	const persistSession = (next: SessionState | null): void => {
-		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
+		if (foreignContext || abortCtx.detachedFromSharedSession) return;
 		const restartPending = Boolean(abortCtx.restartRequest);
 		let replaced = next;
 		// A mid-query user message the ledger could not identify is owned by
@@ -1364,7 +1344,7 @@ function streamRequestInLane(
 		setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
 	};
 	const markRebuildForThisQuery = (opts: { forceRotate?: boolean } = {}): void => {
-		if (isReentrant || foreignContext || abortCtx.detachedFromSharedSession) return;
+		if (foreignContext || abortCtx.detachedFromSharedSession) return;
 		markSessionForRebuild(opts);
 	};
 	// Pi can send the next prompt within milliseconds of an abort, long before
@@ -1416,10 +1396,7 @@ function streamRequestInLane(
 	const requestRotation = (failure: ClaudeAttemptFailure): boolean => {
 		recordAttemptFailure(failure);
 		const committed = abortCtx.committedOutput || attemptBuffer?.hasCommittedOutput === true;
-		// Rotation retries re-enter streamClaudeAgentSdk from the outer promise
-		// chain — an outermost-only path. A reentrant (subagent) query that fails
-		// just fails; it must never queue a retry or burn a profile exclusion.
-		const eligible = Boolean(!isReentrant && account && router && failure.kind && !committed && !wasAborted && !options?.signal?.aborted && rotationState.attempts < MAX_ROTATION_ATTEMPTS);
+		const eligible = Boolean(account && router && failure.kind && !committed && !wasAborted && !options?.signal?.aborted && rotationState.attempts < MAX_ROTATION_ATTEMPTS);
 		debug("provider: account rotation decision", JSON.stringify({
 			eligible,
 			account: account?.label,
@@ -1508,7 +1485,7 @@ function streamRequestInLane(
 		if (wasAborted) return;
 		wasAborted = true;
 		abortCtx.abortRequested = true;
-		// Prevent stale deferred messages from being replayed by parent on pop
+		// An aborted query must not replay its deferred messages later.
 		dropDeferredUserMessages("abort");
 		reportToolResultMismatch(abortCtx, "abort", cwd, {
 			expectedInterruption: true,
@@ -1550,11 +1527,10 @@ function streamRequestInLane(
 	// visible output, a classified failure on a managed attempt is replayed once
 	// on each remaining profile; after output/connector dispatch, replay is
 	// forbidden and the failure surfaces.
-	// The handlers below use the CAPTURED abortCtx, never the live ctx(): the two
-	// only differ while a reentrant (subagent) context is pushed, and a parent
-	// query CAN end in that window (abort, child process death throwing out of
-	// the generator). Live-ctx handlers there mutated the subagent's turn state
-	// and stream and skipped the parent's own teardown entirely.
+	// The handlers below use the CAPTURED abortCtx, never the live ctx(): once a
+	// quarantine (abort, stream-idle timeout) hands the lane to a new context,
+	// this query still ends later, and live-ctx handlers would mutate the next
+	// query's turn state and stream and skip this query's own teardown.
 	let reentryStream = stream;
 	consumeQuery(sdkQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router, attemptFailure)
 		.then(async ({ capturedSessionId, failure }) => {
@@ -1615,10 +1591,8 @@ function streamRequestInLane(
 			if (account && router) safeRouterCall("recordSuccess", () => router.recordSuccess(account.profileId, options?.sessionId));
 
 			// --- Replay deferred user messages as continuation queries ---
-			// Only for outermost queries — reentrant (subagent) queries leave
-			// deferred messages for the parent to handle after it finishes.
 			try {
-				while (abortCtx.deferredUserMessages.length > 0 && !isReentrant && !wasAborted && !Boolean(abortCtx.restartRequest)) {
+				while (abortCtx.deferredUserMessages.length > 0 && !wasAborted && !Boolean(abortCtx.restartRequest)) {
 					const steer = abortCtx.deferredUserMessages.shift()!;
 					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
@@ -1741,7 +1715,7 @@ function streamRequestInLane(
 			abortCtx.stopListeningForAbort();
 			if (abortCtx.onRequestAbort === onAbort) abortCtx.onRequestAbort = null;
 			const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, streamIdleTimedOut });
-			teardownQuery(abortCtx, sdkQuery, cause, cwd, isReentrant);
+			teardownQuery(abortCtx, sdkQuery, cause, cwd);
 			closeSdkQuery(sdkQuery);
 		})
 		.then(async () => {

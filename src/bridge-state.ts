@@ -266,7 +266,7 @@ export function reportToolResultMismatch(
 		queryCtx.reportedToolResultMismatch = true;
 		// The single choke point every mismatch path funnels through (abort,
 		// unmatched result, stream-idle, teardown). A context with no claim on
-		// the shared record (reentrant subagent or foreign one-shot,)
+		// the shared record (a foreign one-shot or a quarantined query)
 		// still gets the full diagnostics below, but its unresolved tool state is
 		// its own — marking the PARENT's record needsRebuild/forceRotate here
 		// would flush the parent's prompt cache for a query that never touched

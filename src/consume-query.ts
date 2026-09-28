@@ -136,10 +136,11 @@ function noteAbandonedToolCalls(message: unknown, queryCtx: QueryContext): void 
 export async function consumeQuery(
 	sdkQuery: ReturnType<typeof query>,
 	// The CAPTURED context of the query being consumed, never the live ctx():
-	// an MCP tool can push a reentrant subagent context while this iterator is
-	// suspended, and reading live state then would consult the WRONG query — a
-	// recovered success could retain its failure and surface an error, or a
-	// child session id could stamp the subagent's context.
+	// a quarantine (abort, stream-idle timeout) can hand the lane to a new
+	// context while this iterator is suspended, and reading live state then
+	// would consult the WRONG query — a recovered success could retain its
+	// failure and surface an error, or a child session id could stamp the next
+	// query's context.
 	queryCtx: QueryContext,
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,

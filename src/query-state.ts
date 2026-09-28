@@ -1,7 +1,8 @@
-// Query state: QueryContext class + context stack.
+// Query state: QueryContext class + one current context per request lane.
 //
-// All per-query and per-turn mutable state lives here. Reentrant queries
-// (subagents) push the parent context onto a stack and get a fresh instance.
+// All per-query and per-turn mutable state lives here. A request that is not
+// its lane's callback runs in a lane of its own (requestLaneFor), so a lane
+// never holds two queries.
 //
 // Separate from index.ts so tests can import it without activating the extension.
 
@@ -468,7 +469,8 @@ export class QueryContext {
 	// resetTurnState must not clear it.
 	committedOutput = false;
 	/** True when this query holds NO claim on the module-level shared session
-	 *  record: a reentrant (subagent) query, or a foreign-conversation one-shot.
+	 *  record: a foreign-conversation one-shot, or a query quarantined after
+	 *  an abort or stream-idle timeout.
 	 *  Every shared-record mutation reachable from this context —
 	 *  reportToolResultMismatch's needsRebuild/forceRotate mark, the cursor
 	 *  advances on the tool-result-delivery and orphaned-result paths — must
@@ -932,6 +934,10 @@ export class QueryContext {
 
 interface QueryLaneState {
 	current: QueryContext;
+	// Always empty here. It stays in the shape because every loaded copy of
+	// the bridge shares this store (QUERY_LANES_SYMBOL), and a copy from before
+	// lanes forked foreign requests still reads it, for example one whose
+	// query outlives a /reload.
 	stack: QueryContext[];
 }
 
@@ -969,61 +975,13 @@ function lane(): QueryLaneState {
 
 export function ctx(): QueryContext { return lane().current; }
 
-export function stackDepth(): number { return lane().stack.length; }
-
-export function pushContext(): void {
-	const state = lane();
-	if (!state.current.activeQuery) throw new Error("pushContext() called with no active query");
-	state.stack.push(state.current);
-	state.current = new QueryContext();
-}
-
-export function popContext(): void {
-	const state = lane();
-	if (state.stack.length === 0) throw new Error("popContext() called with empty stack");
-	const parent = state.stack[state.stack.length - 1];
-	parent.deferredUserMessages.push(...state.current.deferredUserMessages);
-	state.current = state.stack.pop()!;
-}
-
-/** Pop the context that belongs to ONE specific query, wherever it sits.
- *
- *  The common case is `target === ctx()` and this is exactly popContext(). The
- *  reason this exists: a reentrant parent query can end ABNORMALLY (abort, child
- *  process death) while its own subagent's context is still pushed above it. A
- *  bare popContext() there would discard the live grandchild's context and
- *  merge the wrong deferred messages. Instead, splice `target` out of the stack
- *  and hand its deferred messages to its own parent (the element below it), so
- *  the still-live contexts above keep their positions and later pops restore
- *  the correct lineage. Returns false when `target` is nowhere in the state —
- *  already popped — so callers can treat that as "someone else tore this down". */
-export function popContextFor(target: QueryContext): boolean {
-	const state = lane();
-	if (state.current === target) {
-		popContext();
-		return true;
-	}
-	const idx = state.stack.indexOf(target);
-	if (idx < 0) return false;
-	const parent = idx > 0 ? state.stack[idx - 1] : undefined;
-	parent?.deferredUserMessages.push(...target.deferredUserMessages);
-	state.stack.splice(idx, 1);
-	return true;
-}
-
 /** Take `target` out of its lane NOW instead of when its SDK iterator settles,
  *  so the next provider call starts a fresh query rather than being routed
- *  into a query that is shutting down as a tool-result/steer callback. A
- *  pushed (reentrant) context is popped; a top-level one is replaced. No-op
- *  unless `target` is the lane's current context: with a live subagent
- *  context pushed above it, the lane is not this query's to hand over. */
+ *  into a query that is shutting down as a tool-result/steer callback. No-op
+ *  unless `target` is still the lane's current context. */
 export function detachContext(target: QueryContext): void {
 	const state = lane();
 	if (state.current !== target) return;
-	if (state.stack.length > 0) {
-		popContext();
-		return;
-	}
 	state.current = new QueryContext();
 	// An orphaned tool result from a detached one-shot must stay attributed to it.
 	state.current.detachedFromSharedSession = target.detachedFromSharedSession;

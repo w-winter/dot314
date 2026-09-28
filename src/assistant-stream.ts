@@ -65,7 +65,7 @@ export function parsePartialJson(input: string, fallback: Record<string, unknown
 
 // Both take the query context explicitly (defaulting to the live one) so the
 // completion/teardown closures in index.ts can finalize the stream of the query
-// they were created for — under reentrancy the live ctx() is the subagent's.
+// they were created for — after a quarantine the live ctx() is a new query's.
 export function ensureTurnStarted(c: QueryContext = ctx()): void {
 	if (!c.turnStarted && c.currentPiStream && c.turnOutput) {
 		c.currentPiStream.push({ type: "start", partial: c.turnOutput });
@@ -666,8 +666,9 @@ export function processStreamEvent(
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,
 	// The consuming query's CAPTURED context, never the live ctx() (see the C4
-	// note in consumeQuery): a reentrant subagent can be pushed while the parent
-	// iterator is suspended, and live-state reads would hit the wrong query.
+	// note in consumeQuery): a quarantine can hand the lane to a new context
+	// while this iterator is suspended, and live-state reads would hit the
+	// wrong query.
 	c: QueryContext = ctx(),
 ): void {
 	if (!c.currentPiStream || !c.turnOutput) return;

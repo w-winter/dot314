@@ -1,15 +1,15 @@
 // End-of-query teardown, extracted from streamClaudeAgentSdk's .finally so it
 // operates on the ONE context captured at query start — never the live ctx().
-// The two only differ while a reentrant (subagent) context is pushed, which is
-// exactly when a parent query ending abnormally (abort, child process death)
-// teardown must run against the parent state. Using the subagent state skips
-// the parent's drain, audit flush, and activeQuery clear, which leaks handlers.
+// The two differ once a quarantine (abort, stream-idle timeout) handed the
+// lane to a new context that the next prompt's query may already use. Using
+// that context would skip this query's drain, audit flush, and activeQuery
+// clear, which leaks handlers.
 
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import { reportToolResultMismatch } from "./bridge-state.js";
 import { flushConnectorCallAudit } from "./connector-audit.js";
 import { debug } from "./debug.js";
-import { drainPendingToolCalls, popContextFor, type QueryContext, type ToolCallDrainCause } from "./query-state.js";
+import { drainPendingToolCalls, type QueryContext, type ToolCallDrainCause } from "./query-state.js";
 
 /** A child transport may throw during close; teardown must still reach its
  *  replacement query or report an error on the stream Pi is waiting for. */
@@ -72,7 +72,6 @@ export function teardownQuery(
 	sdkQuery: unknown,
 	cause: ToolCallDrainCause,
 	cwd: string,
-	isReentrant: boolean,
 ): boolean {
 	if (queryCtx.activeQuery !== sdkQuery) return false;
 	reportToolResultMismatch(queryCtx, "query teardown", cwd, { forceRotate: cause !== "query-end" });
@@ -88,12 +87,6 @@ export function teardownQuery(
 	const unobserved = flushConnectorCallAudit(queryCtx, cause);
 	if (unobserved > 0) debug(`provider: query teardown recorded ${unobserved} connector call(s) with no observed result (cause=${cause})`);
 
-	if (isReentrant) {
-		// Merges deferred messages and restores/repairs the stack. popContextFor
-		// (not popContext): a live subagent context may sit above this one.
-		if (!popContextFor(queryCtx)) debug("provider: query teardown found context already popped; skipping pop");
-	} else {
-		queryCtx.activeQuery = null;
-	}
+	queryCtx.activeQuery = null;
 	return true;
 }
