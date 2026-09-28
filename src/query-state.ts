@@ -490,11 +490,39 @@ export class QueryContext {
 		this.currentMessageId = id;
 	}
 
+	/**
+	 * Declare that `messageId` REPLACES the in-flight child message instead of
+	 * following it: Claude Code retried an abandoned attempt. The abandoned
+	 * attempt's counters are dropped rather than banked. Pi reads the last
+	 * assistant message's input and cache figures as the context size, and
+	 * banking both attempts would double it.
+	 */
+	replaceChildMessage(messageId?: unknown): void {
+		this.currentMessageUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+		this.currentMessageId = typeof messageId === "string" && messageId.length > 0 ? messageId : undefined;
+	}
+
 	// Per-turn (reset together)
 	turnOutput: AssistantMessage | null = null;
 	turnStarted = false;
 	turnSawStreamEvent = false;
 	turnSawToolCall = false;
+	/**
+	 * The streamed API attempt the current child message is being rendered
+	 * from: its message id, whether it has completed (message_delta or
+	 * message_stop), and the content indexes its blocks occupy in turnBlocks.
+	 *
+	 * An attempt still OPEN when another one begins was abandoned by Claude
+	 * Code: a stalled stream is retried as a new stream (a second
+	 * message_start) or as one non-streamed request, whose completed assistant
+	 * message arrives under a DIFFERENT id with no stream events of its own.
+	 * The abandoned attempt's blocks were never completed, and Pi has already
+	 * seen them (see discardAbandonedAttempt in assistant-stream.ts).
+	 */
+	streamAttempt: { id: string | undefined; open: boolean; slots: number[] } | null = null;
+	/** Id of the non-streamed replacement message rendered in this Pi turn, so
+	 *  its re-yields render only the blocks not rendered yet. */
+	fallbackMessageId: string | undefined;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
@@ -513,6 +541,8 @@ export class QueryContext {
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
 		this.handledTerminalError = false;
+		this.streamAttempt = null;
+		this.fallbackMessageId = undefined;
 		// A fresh pi message means the previous turn's stream is done with; an
 		// armed end-timer for it must not fire into this turn's state.
 		if (this.scheduledToolUseEnd) {
@@ -537,6 +567,10 @@ export class QueryContext {
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
 		this.handledTerminalError = false;
+		// A new Claude Code query: its first message is not a retry of the last
+		// query's.
+		this.streamAttempt = null;
+		this.fallbackMessageId = undefined;
 		this.resetToolTracking();
 		// The Claude Code process that was issued these calls has finished, so
 		// none of them can be invoked late any more.
@@ -611,6 +645,16 @@ export class QueryContext {
 
 	hasRecordedToolCall(id: string | undefined): boolean {
 		return Boolean(id && (this.turnToolCallIds.includes(id) || this.turnToolCalls.some((call) => call.id === id)));
+	}
+
+	/** Drop the per-message records of calls that will never be dispatched
+	 *  (a discarded abandoned attempt's): nothing may claim them, and a
+	 *  mismatch report must not expect a result for them. */
+	forgetToolCalls(ids: Iterable<string>): void {
+		const forget = new Set(ids);
+		if (forget.size === 0) return;
+		this.turnToolCallIds = this.turnToolCallIds.filter((id) => !forget.has(id));
+		this.turnToolCalls = this.turnToolCalls.filter((call) => !forget.has(call.id));
 	}
 
 	markOutputCommitted(): void {

@@ -14,7 +14,7 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnResponseModel } from "./assistant-stream.js";
+import { ensureTurnStarted, isLiveBlock, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnResponseModel } from "./assistant-stream.js";
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug, diagDump } from "./debug.js";
@@ -242,7 +242,7 @@ export async function consumeQuery(
 					// The no-stream-events assistant fallback may have already rendered
 					// this exact text (it does not set turnSawStreamEvent) — re-pushing
 					// it here is the other half of the duplicated-output bug.
-					if (queryCtx.turnBlocks.some((b: any) => b.type === "text" && b.text === text)) {
+					if (queryCtx.turnBlocks.some((b: any) => b.type === "text" && isLiveBlock(b) && b.text === text)) {
 						debug("consumeQuery: result text already rendered by assistant fallback; skipping duplicate");
 						break;
 					}
