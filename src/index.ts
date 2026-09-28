@@ -927,16 +927,23 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	}
 
 	// --- Orphaned tool result (e.g. user aborted a tool call) ---
-	// The query is gone but pi still delivered the result. Nothing to do — just
-	// emit end_turn so pi waits for the next real user message.
+	// The query is gone but pi still delivered the result. Report the failure
+	// that ended the query after this tool turn, if one did (never an abort);
+	// otherwise emit end_turn so pi waits for the next real user message.
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
+		// Taken whatever happens: only the callback that directly follows the
+		// failed query may report it.
+		const held = ctx().undeliveredFailure;
+		ctx().undeliveredFailure = null;
+		const lateFailure = held && !options?.signal?.aborted && held.toolCallIds.has(lastMsg.toolCallId) ? held : null;
+		if (held && !lateFailure) debug(`provider: orphaned tool result does not report the held terminal failure (${options?.signal?.aborted ? "aborted" : "not a call of the failed query"})`);
 		const abandoned = ctx().abandonedToolCalls.get(lastMsg.toolCallId);
 		if (abandoned) {
-			debug(`provider: orphaned tool result for ${abandoned.toolName} [${lastMsg.toolCallId}] that Claude Code gave up on (${abandoned.reason}); the query already ended, emitting end_turn`);
+			debug(`provider: orphaned tool result for ${abandoned.toolName} [${lastMsg.toolCallId}] that Claude Code gave up on (${abandoned.reason}); the query already ended, emitting ${lateFailure ? "its terminal failure" : "end_turn"}`);
 			appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id: lastMsg.toolCallId, toolName: abandoned.toolName, queryEnded: true });
 		} else {
-			debug(`provider: orphaned tool result after abort, emitting end_turn`);
+			debug(`provider: orphaned tool result, emitting ${lateFailure ? `the query's terminal failure: ${lateFailure.errorMessage}` : "end_turn"}`);
 		}
 		// The detached flag deliberately survives query end: an orphaned result
 		// from a foreign one-shot indexes ITS conversation, and writing that
@@ -963,7 +970,13 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 		const c = ctx();  // capture current context for the microtask
 		queueMicrotask(() => {
 			c.resetTurnState(model);
-			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			if (lateFailure) {
+				// A fresh message: the delivered tool-use turn stays as it was.
+				const error: AssistantMessage = { ...c.turnOutput!, ...lateFailure.fields, stopReason: "error", errorMessage: lateFailure.errorMessage };
+				stream.push({ type: "error", reason: "error", error });
+			} else {
+				stream.push({ type: "done", reason: "stop", message: c.turnOutput });
+			}
 			stream.end();
 			releaseEphemeralLane();
 		});
@@ -1023,6 +1036,10 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	ctx().stopListeningForAbort();
 	ctx().onRequestAbort = null;
 	ctx().abortRequested = false;
+	// Reported only by the tool-result callback that directly follows the
+	// failed query; a fresh query means that callback carried a new prompt.
+	if (ctx().undeliveredFailure) debug(`provider: fresh query drops an unreported terminal failure: ${ctx().undeliveredFailure!.errorMessage}`);
+	ctx().undeliveredFailure = null;
 	ctx().resetTurnState(model);
 	ctx().resetToolTracking();
 	// The starting context is what Claude holds once this query runs: the

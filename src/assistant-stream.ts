@@ -143,7 +143,9 @@ function completedReplyMessage(c: QueryContext): AssistantMessage | undefined {
 	return { ...reply, content, stopReason: checkpoint.stopReason === "length" ? "length" : "stop" };
 }
 
-/** End the current Pi stream for a failed query. No-op without a live stream.
+/** End the current Pi stream for a failed query. Without a live stream (a
+ *  tool-use turn already reached Pi), an error is held for the tool-result
+ *  callback that follows (QueryContext.undeliveredFailure).
  *
  *  A failed deferred continuation ends the message as the reply that
  *  completed before it, when there is one (see the section note), and tells
@@ -166,7 +168,20 @@ export function endStreamForFailure(
 ): void {
 	const aborted = c.requestAborted();
 	const stream = c.currentPiStream;
-	if (!stream || !c.turnOutput) return;
+	if (!stream) {
+		// The last Pi turn (a tool call) was already delivered and must not
+		// change: the tool-result callback that follows reports the failure.
+		// Never for an abort, and only when this query handed Pi a call.
+		if (!aborted && c.forwardedToolCallIds.size > 0) {
+			debug(`provider: terminal failure after the Pi turn was delivered; holding it for the tool-result callback: ${failure.errorMessage}`);
+			c.undeliveredFailure = { errorMessage: failure.errorMessage, fields: failure.fields, toolCallIds: new Set(c.forwardedToolCallIds) };
+		}
+		return;
+	}
+	if (!c.turnOutput) return;
+	// Reported on this stream: no later callback may report a failure this
+	// query held while no stream was live (it would repeat it).
+	c.undeliveredFailure = null;
 	const reply = aborted ? undefined : completedReplyMessage(c);
 	c.completedReply = null;
 	if (reply) {

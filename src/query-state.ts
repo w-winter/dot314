@@ -601,6 +601,16 @@ export class QueryContext {
 	 * a continuation, and cleared with the message it describes.
 	 */
 	completedReply: { output: AssistantMessage; blocks: object[]; stopReason: AssistantMessage["stopReason"] } | null = null;
+	/**
+	 * A terminal failure that ended this query after its last Pi turn (a tool
+	 * call) was already delivered. That turn must not change, so the
+	 * tool-result callback that directly follows reports the failure as its
+	 * own error message. `toolCallIds` are the calls this query handed to Pi:
+	 * only a callback answering one of them reports it. Survives
+	 * resetTurnState and teardown; cleared at fresh-query setup and by the
+	 * next orphaned tool-result callback.
+	 */
+	undeliveredFailure: { errorMessage: string; fields?: Record<string, unknown>; toolCallIds: Set<string> } | null = null;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
