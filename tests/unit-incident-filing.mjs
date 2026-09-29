@@ -42,11 +42,24 @@ const model = {
 let agentDir;
 let ghDir;
 let savedPath;
-let clock;
+let clockFile;
 
-/** A fake `gh`: logs {argv, stdin}, answers `issue list` from its state file,
- *  and numbers the issues it creates. `mode: "auth"` fails like a logged-out
- *  gh does. */
+// The filer's clock lives in a file, so the fake gh can move it while it
+// "searches": that is how GitHub's latency looks to the filer.
+const readClock = () => Number(readFileSync(clockFile, "utf8"));
+const advance = (ms) => writeFileSync(clockFile, String(readClock() + ms));
+const setClock = (ms) => writeFileSync(clockFile, String(ms));
+
+/** The most gh writes (creates and comments) in any rolling hour. */
+function mostWritesInAnHour() {
+	const at = ghCalls().filter((call) => call.argv[1] !== "list").map((call) => call.at);
+	return Math.max(0, ...at.map((end) => at.filter((t) => t > end - HOUR && t <= end).length));
+}
+
+/** A fake `gh`: logs {argv, stdin, at}, answers `issue list` from its state
+ *  file, and numbers the issues it creates. `mode: "auth"` fails like a
+ *  logged-out gh does; `searchDelayMs` is how long the first `issue list`
+ *  takes on the filer's clock. */
 function installFakeGh(state = {}) {
 	ghDir = mkdtempSync(join(agentDir, "gh-"));
 	writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 7, ...state }));
@@ -58,8 +71,14 @@ let stdin = "";
 process.stdin.on("data", (chunk) => { stdin += chunk; });
 process.stdin.on("end", () => {
 	const argv = process.argv.slice(2);
-	fs.appendFileSync(path.join(dir, "log.jsonl"), JSON.stringify({ argv, stdin }) + "\\n");
 	const state = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
+	const clockFile = ${JSON.stringify(clockFile)};
+	if (argv[1] === "list" && state.searchDelayMs) {
+		fs.writeFileSync(clockFile, String(Number(fs.readFileSync(clockFile, "utf8")) + state.searchDelayMs));
+		state.searchDelayMs = 0;
+		fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state));
+	}
+	fs.appendFileSync(path.join(dir, "log.jsonl"), JSON.stringify({ argv, stdin, at: Number(fs.readFileSync(clockFile, "utf8")) }) + "\\n");
 	if (state.mode === "auth") {
 		process.stderr.write("To get started with GitHub CLI, please run:  gh auth login\\n");
 		process.exit(4);
@@ -136,10 +155,11 @@ beforeEach(() => {
 	process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "0";
 	process.env.CLAUDE_CODE_OAUTH_TOKEN = "test-token";
 	process.env.CLAUDE_BRIDGE_DIAG_PATH = join(agentDir, "diag.log");
-	clock = Date.parse("2026-09-28T12:00:00Z");
+	clockFile = join(agentDir, "clock");
+	writeFileSync(clockFile, String(Date.parse("2026-09-28T12:00:00Z")));
 	resetStack();
 	__testResetIncidents();
-	__testSetFilerClock(() => clock);
+	__testSetFilerClock(readClock);
 	__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: () => {} } });
 	setExtensionApi({ events: { emit: () => {} }, appendEntry: () => {} });
 });
@@ -237,13 +257,13 @@ describe("incident filing", () => {
 		assert.equal(creates().length, 5, "the hourly limit holds");
 		assert.deepEqual(listIncidents().map((entry) => entry.issue ?? null), [7, 8, 9, 10, 11, null, null]);
 
-		clock += 10 * 60 * 1000;
+		advance(10 * 60 * 1000);
 		recordIncident("label_0@site", "silent", {});
 		await __testFlushIncidents();
 		assert.equal(comments().length, 0, "no comment within the hour of filing");
 		assert.equal(listIncidents()[0].count, 2, "counted locally");
 
-		clock += HOUR;
+		advance(HOUR);
 		recordIncident("label_0@site", "silent", {});
 		recordIncident("label_0@site", "silent", {});
 		recordIncident("label_5@site", "silent", {});
@@ -253,6 +273,66 @@ describe("incident filing", () => {
 		assert.match(comments()[0].stdin, /\| Count \| 4 \|/, "the comment carries the count when it is filed");
 		assert.equal(creates().length, 6, "the limit frees up after an hour");
 		assert.equal(listIncidents()[5].issue, 12);
+	});
+
+	it("holds the hourly limit when GitHub is slow to search", async () => {
+		installFakeGh({ searchDelayMs: 20_000 });
+		enableFiling();
+		const start = readClock();
+		recordIncident("label_0@site", "silent", {});
+		await __testFlushIncidents();
+		for (let i = 1; i < 5; i++) recordIncident(["label_" + i, "site"].join("@"), "silent", {});
+		await __testFlushIncidents();
+		assert.deepEqual(creates().map((call) => call.at - start), [20_000, 20_000, 20_000, 20_000, 20_000], "the writes happen after the slow search");
+
+		setClock(start + HOUR + 1);
+		recordIncident("label_5@site", "silent", {});
+		await __testFlushIncidents();
+		assert.equal(creates().length, 5, "an hour from the check before the search is not an hour from the writes");
+		assert.equal(mostWritesInAnHour(), 5);
+
+		setClock(start + 20_000 + HOUR);
+		recordIncident("label_5@site", "silent", {});
+		await __testFlushIncidents();
+		assert.equal(creates().length, 6, "free an hour after the writes");
+		assert.equal(mostWritesInAnHour(), 5);
+	});
+
+	it("comments on a signature at most once an hour when GitHub is slow to search", async () => {
+		installFakeGh({ searchDelayMs: 20_000, issues: [{ number: 12, body: marker("api_error@consumeQuery") }] });
+		enableFiling();
+		const start = readClock();
+		recordIncident("api_error@consumeQuery", "external", {});
+		await __testFlushIncidents();
+		assert.deepEqual(comments().map((call) => call.at - start), [20_000]);
+
+		setClock(start + HOUR + 1);
+		recordIncident("api_error@consumeQuery", "external", {});
+		await __testFlushIncidents();
+		assert.equal(comments().length, 1, "not within an hour of the comment");
+
+		setClock(start + 20_000 + HOUR);
+		recordIncident("api_error@consumeQuery", "external", {});
+		await __testFlushIncidents();
+		assert.deepEqual(comments().map((call) => call.at - start), [20_000, 20_000 + HOUR]);
+	});
+
+	it("keeps long base64 tokens out of the issue and the comment it files", async () => {
+		// Synthetic: valid standard base64 of fixed text, never a credential.
+		const token = "T0k/".repeat(16);
+		installFakeGh();
+		enableFiling();
+		recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", { toolName: token });
+		await __testFlushIncidents();
+		advance(HOUR + 1);
+		recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", {}, { recorder: { snapshot: () => [{ t: 0, kind: "tools_call", id: token }] } });
+		await __testFlushIncidents();
+		const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
+		assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
+		for (const write of writes) {
+			assert.ok(!write.stdin.includes(token), `no token in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("[redacted]"));
+		}
 	});
 
 	it("records a failed gh on the incident and does not retry it hot", async () => {
@@ -269,7 +349,7 @@ describe("incident filing", () => {
 		await __testFlushIncidents();
 		assert.equal(ghCalls().length, spawned, "no gh while the failure is recent");
 
-		clock += HOUR + 1;
+		advance(HOUR + 1);
 		writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 20 }));
 		recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
 		await __testFlushIncidents();

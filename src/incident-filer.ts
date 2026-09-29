@@ -371,12 +371,15 @@ async function fileOccurrence(incident: Incident, target: string): Promise<void>
 				incident.filing = "filed";
 			}
 		}
-		filedAt.push(at);
-		lastWriteAt.set(incident.signature, at);
+		// Both limits count from when GitHub took the write: the search before
+		// it can take seconds, and `at` would expire the hour that much early.
+		const wroteAt = now();
+		filedAt.push(wroteAt);
+		lastWriteAt.set(incident.signature, wroteAt);
 	} catch (error) {
 		const reason = error instanceof GhFailure ? error.reason : "error";
 		failure = reason;
-		failedUntil = at + HOUR_MS;
+		failedUntil = now() + HOUR_MS;
 		incident.filing = `failed ${reason}`;
 		debug(`incidents: gh failed for ${incident.signature}: ${reason}`);
 	}
