@@ -54,6 +54,7 @@ const INCIDENT_CLASSES = {
 	deferred_user_replay_skipped: "silent",
 	user_message_identity_unresolved: "silent",
 	empty_prompt: "silent",
+	unreplayable_turn_imported_as_note: "silent",
 	// Claude Code abandoned a stalled response and asked again, and the retry
 	// is the answer. The abandoned attempt's blocks are dropped, except a
 	// completed tool call whose handler is waiting (its cancel decides);

@@ -140,29 +140,86 @@ function claudeThinkingToAnthropic(block: { thinking?: string; thinkingSignature
 }
 
 // The API rejects a request whose latest assistant message carries thinking
-// blocks that differ from its original response, so a REBUILD imports that
-// message whole or not at all. Older ones may lose blocks: the API strips
-// their thinking.
+// blocks that differ from its original response, so a REBUILD cannot import
+// that message with a block removed. Older ones may lose blocks: the API
+// strips their thinking.
 function hasUnreplayableThinking(msg: PiMessage): boolean {
 	if (!isClaudeAssistant(msg) || !Array.isArray(msg.content)) return false;
 	return msg.content.some((block) => block.type === "thinking" && !claudeThinkingToAnthropic(block));
 }
 
-/** Convert pi message array to Anthropic API format. `dropUnreplayableLatest`
- *  is for writing a Claude session only; history digests must not pass it. */
+/** Indexes of the trailing Claude turns a rebuild cannot replay exactly: from
+ *  the latest assistant back, each one with unreplayable thinking, so that the
+ *  latest assistant left in the import replays as returned. Error and aborted
+ *  turns are never imported and are passed over. */
+function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
+	const turns = new Set<number>();
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role !== "assistant" || isSkippedAssistant(msg)) continue;
+		if (!hasUnreplayableThinking(msg)) break;
+		turns.add(i);
+	}
+	return turns;
+}
+
+export const UNREPLAYED_TURN_NOTE_HEADER = "[Claude bridge: one of your earlier replies could not be replayed as-is, because part of its thinking was cut off. This note records what that reply said and did, in order.]";
+
+/** A tool result's text as a note carries it: its text blocks, and a marker
+ *  for anything else (an image is named, never carried). */
+function toolResultNoteText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.map((block: { type?: string; text?: string; mimeType?: string }) => {
+		if (block.type === "text") return block.text ?? "";
+		if (block.type === "image") return `[${block.mimeType ?? "unknown"} image, not carried in this note]`;
+		return `[${block.type}]`;
+	}).filter((part) => part.length > 0).join("\n");
+}
+
+/** The user-side note a rebuild imports in place of a Claude turn it cannot
+ *  replay exactly and that turn's tool results: its text, each tool call's Pi
+ *  name and arguments, and each result's text and error flag. Not its
+ *  thinking. Nothing is cut, so it carries what the normal import would. */
+function unreplayedTurnNote(msg: AssistantMessage, results: Map<string, PiMessage>): string {
+	const parts = [UNREPLAYED_TURN_NOTE_HEADER];
+	for (const block of msg.content) {
+		if (block.type === "text" && block.text) {
+			parts.push(`You wrote:\n${block.text}`);
+		} else if (block.type === "toolCall") {
+			parts.push(`You called ${block.name} with arguments ${JSON.stringify(block.arguments ?? {})}.`);
+			const result = results.get(block.id);
+			if (result?.role !== "toolResult") {
+				parts.push("No result was recorded for this call.");
+				continue;
+			}
+			const text = toolResultNoteText(result.content);
+			parts.push(`${result.isError ? "It returned an error:" : "It returned:"}\n${text || "(no text)"}`);
+		}
+	}
+	return parts.join("\n\n");
+}
+
+/** Convert pi message array to Anthropic API format. `noteUnreplayableTurns`
+ *  is for writing a Claude session only; history digests must not pass it.
+ *  `notedTurns` lists the tool calls of each turn it replaced with a note. */
 export function convertPiMessages(
 	messages: PiMessage[],
 	customToolNameToSdk?: Map<string, string>,
-	opts: { dropUnreplayableLatest?: boolean } = {},
-): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string> } {
+	opts: { noteUnreplayableTurns?: boolean } = {},
+): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string>; notedTurns: Array<{ calls: Array<{ id: string; name: string }> }> } {
 	const anthropicMessages = [];
 	const sanitizedIds = new Map();
 	const skippedToolCallIds = new Set<string>();
 	const isSkippedToolResult = (message: PiMessage): boolean =>
 		message.role === "toolResult" && skippedToolCallIds.has(message.toolCallId);
-	let latestAssistant = -1;
-	if (opts.dropUnreplayableLatest) for (let i = 0; i < messages.length; i++) {
-		if (messages[i].role === "assistant" && !isSkippedAssistant(messages[i])) latestAssistant = i;
+	const unreplayable = opts.noteUnreplayableTurns ? unreplayableTrailingTurns(messages) : new Set<number>();
+	const notedTurns: Array<{ calls: Array<{ id: string; name: string }> }> = [];
+	// A steer can split one turn's results across later messages, so a note
+	// finds its results by id anywhere after the turn.
+	const resultsById = new Map<string, PiMessage>();
+	if (unreplayable.size > 0) for (const message of messages) {
+		if (message.role === "toolResult" && !resultsById.has(message.toolCallId)) resultsById.set(message.toolCallId, message);
 	}
 
 	const pushToolResultGroup = (toolMessages: PiMessage[]): void => {
@@ -188,9 +245,14 @@ export function convertPiMessages(
 			// snapshots, not model-authored history. Pi's agent loop returns before
 			// dispatching their tool calls, so any associated results are orphaned
 			// history and must not be imported either.
-			if (isSkippedAssistant(msg) || (i === latestAssistant && hasUnreplayableThinking(msg))) {
+			if (isSkippedAssistant(msg) || unreplayable.has(i)) {
 				for (const block of content) {
 					if (block.type === "toolCall") skippedToolCallIds.add(block.id);
+				}
+				if (unreplayable.has(i)) {
+					// Its results are imported in the note, not as tool_result blocks.
+					anthropicMessages.push({ role: "user", content: unreplayedTurnNote(msg as AssistantMessage, resultsById) });
+					notedTurns.push({ calls: content.filter((block) => block.type === "toolCall").map((block) => ({ id: block.id, name: block.name })) });
 				}
 				continue;
 			}
@@ -245,5 +307,5 @@ export function convertPiMessages(
 		}
 	}
 
-	return { anthropicMessages, sanitizedIds };
+	return { anthropicMessages, sanitizedIds, notedTurns };
 }

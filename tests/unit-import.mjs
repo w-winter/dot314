@@ -191,10 +191,10 @@ describe("thinking block filtering", () => {
 	});
 });
 
-// A rebuild's import (dropUnreplayableLatest). The drop itself is owned by the
-// REBUILD test in unit-sync-shared-session.mjs.
+// A rebuild's import (noteUnreplayableTurns). The note in the written session
+// is owned by the REBUILD tests in unit-sync-shared-session.mjs.
 describe("latest assistant thinking replay", () => {
-	const rebuildConvert = (messages) => convertPiMessages(messages, undefined, { dropUnreplayableLatest: true }).anthropicMessages;
+	const rebuildConvert = (messages) => convertPiMessages(messages, undefined, { noteUnreplayableTurns: true }).anthropicMessages;
 	const history = [
 		{ role: "user", content: "start" },
 		{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
@@ -239,6 +239,41 @@ describe("latest assistant thinking replay", () => {
 		assert.deepEqual(result[3].content.map((block) => block.type), ["text", "text", "tool_use"]);
 		assert.equal(result[3].content[1].text, "reading b");
 		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+	});
+
+	it("notes a text-only latest turn with its text", () => {
+		const textOnly = { role: "assistant", provider: "pi-claude", stopReason: "stop", content: [
+			{ type: "thinking", thinking: "cut off mid-thought" },
+			{ type: "text", text: "The file has two sections." },
+		] };
+		const result = rebuildConvert([...history, textOnly]);
+		assert.equal(result.length, 4);
+		assert.equal(result[3].role, "user");
+		assert.match(result[3].content, /could not be replayed as-is/);
+		assert.ok(result[3].content.includes("The file has two sections."), result[3].content);
+	});
+
+	it("notes a tool result's image and its error flag", () => {
+		const failed = { role: "toolResult", toolCallId: "t2", toolName: "read", isError: true, content: [
+			{ type: "text", text: "partial read" },
+			{ type: "image", data: "aGk=", mimeType: "image/png" },
+		] };
+		const result = rebuildConvert([...history, cutTail(), failed]);
+		const note = result.at(-1).content;
+		assert.ok(note.includes("It returned an error:\npartial read\n[image/png image, not carried in this note]"), note);
+		assert.ok(!note.includes("aGk="), "the image data is not carried");
+	});
+
+	it("notes each trailing turn until the latest assistant replays exactly", () => {
+		const earlierCut = cutTail();
+		const laterCut = { role: "assistant", provider: "pi-claude", stopReason: "stop", content: [
+			{ type: "thinking", thinking: "also cut" },
+			{ type: "text", text: "b is empty" },
+		] };
+		const result = rebuildConvert([...history, earlierCut, tailResult, laterCut]);
+		assert.deepEqual(result.map((message) => message.role), ["user", "assistant", "user", "user", "user"]);
+		assert.deepEqual(result[1].content[0], { type: "thinking", thinking: "step one", signature: "sig1" });
+		assert.ok(result[3].content.includes("b body") && result[4].content.includes("b is empty"));
 	});
 });
 

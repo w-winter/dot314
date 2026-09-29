@@ -176,7 +176,7 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 
 **Keeping Claude's session in sync with Pi**
 - Before reusing Claude's session, the bridge checks with a digest that it still matches Pi's history, and rebuilds it when Pi rewrote history Claude already holds.
-- A rebuild replays redacted thinking correctly and drops a latest Claude turn whose thinking cannot be replayed.
+- A rebuild replays redacted thinking correctly, and imports a latest Claude turn whose thinking cannot be replayed as a note of what it said and did.
 - Claude Code never resumes a rebuilt session as an interrupted turn, so no "Continue from where you left off." prompt is injected.
 
 **System prompt**

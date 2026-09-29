@@ -329,15 +329,21 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 // Lossy: non-Anthropic thinking blocks are dropped (no valid signature). User and
 // tool-result image blocks are preserved when possible. If assistant blocks are
 // otherwise incompatible, convertPiMessages emits a text placeholder so the record
-// sequence stays valid before repairToolPairing runs. A latest Claude assistant
-// turn whose thinking cannot be replayed exactly is dropped whole, like a failed turn.
+// sequence stays valid before repairToolPairing runs. A trailing Claude turn
+// whose thinking cannot be replayed exactly is imported as a user-side note of
+// what it said and did, with its tool results (convert.ts, unreplayedTurnNote).
 function convertAndImportMessages(
 	session: ReturnType<typeof createSession>,
 	messages: Context["messages"],
 	customToolNameToSdk?: Map<string, string>,
 	cwd?: string,
 ): void {
-	const { anthropicMessages, sanitizedIds } = convertPiMessages(messages, customToolNameToSdk, { dropUnreplayableLatest: true });
+	const { anthropicMessages, sanitizedIds, notedTurns } = convertPiMessages(messages, customToolNameToSdk, { noteUnreplayableTurns: true });
+	if (notedTurns.length > 0) {
+		const calls = notedTurns.flatMap((turn) => turn.calls);
+		debug(`convertAndImportMessages: ${notedTurns.length} trailing Claude turn(s) with unsigned thinking imported as a note, carrying ${calls.length} tool call(s):`, calls.map((call) => `${call.name} [${call.id}]`).join(", "));
+		reportDiag("unreplayable_turn_imported_as_note", "convertAndImportMessages", { count: notedTurns.length, calls: calls.slice(0, 50) }, ctx());
+	}
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
 	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {
