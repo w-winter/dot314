@@ -192,6 +192,7 @@ function loadExtension() {
 		on: () => {},
 		registerCommand: () => {},
 		registerProvider: () => {},
+		registerTool: () => {},
 		events: { emit: () => {} },
 		appendEntry: () => {},
 	});

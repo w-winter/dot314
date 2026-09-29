@@ -413,6 +413,24 @@ function newIncidentId(): string {
 	}
 }
 
+let occurrenceListener: ((incident: Incident) => void) | undefined;
+
+/** Calls `listener` (the agent notice, incident-notice.ts) for every
+ *  non-expected occurrence, right after it is recorded and queued for filing,
+ *  in the request lane it happened in. */
+export function setIncidentListener(listener: ((incident: Incident) => void) | undefined): void {
+	occurrenceListener = listener;
+}
+
+function notifyListener(incident: Incident): void {
+	if (!occurrenceListener || incident.class === "expected") return;
+	try {
+		occurrenceListener(incident);
+	} catch (error) {
+		debug("incidents: occurrence listener failed:", error);
+	}
+}
+
 /** Records one occurrence of `signature` and returns its incident. */
 export function recordIncident(signature: string, klass: IncidentClass, data: Record<string, unknown> = {}, source?: IncidentSource): Incident {
 	const now = new Date().toISOString();
@@ -435,6 +453,7 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 		}
 		queueStoreWrite(existing, false);
 		noteIncidentForFiling(existing);
+		notifyListener(existing);
 		return existing;
 	}
 	const model = projectModel(preQuery ? preQueryModel : source?.turnOutput?.responseModel ?? source?.turnOutput?.model);
@@ -456,6 +475,7 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 	incidentsById.set(incident.id, incident);
 	queueStoreWrite(incident, true);
 	noteIncidentForFiling(incident);
+	notifyListener(incident);
 	return incident;
 }
 
@@ -739,5 +759,6 @@ export function __testResetIncidents(): void {
 	versionCheck = Promise.resolve();
 	claudeCodeVersion = undefined;
 	registeredToolNames.clear();
+	occurrenceListener = undefined;
 	__testResetFiler();
 }

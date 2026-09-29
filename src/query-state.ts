@@ -1216,6 +1216,13 @@ export function requestLaneFor(
 	return forkId;
 }
 
+/** The Pi session request lane `laneId` serves: a fork lane's base, else
+ *  the lane itself. */
+export function piSessionOfLane(laneId: string | undefined): string | undefined {
+	const fork = laneId === undefined ? undefined : forkLaneStore().get(laneId);
+	return fork ? fork.base : laneId;
+}
+
 export function isForkLane(laneId: string | undefined): boolean {
 	return laneId !== undefined && forkLaneStore().has(laneId);
 }

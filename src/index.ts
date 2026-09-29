@@ -27,7 +27,8 @@ import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } fro
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import type { RecorderKind } from "./flight-recorder.js";
-import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, withIncident } from "./incidents.js";
+import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, setIncidentListener, withIncident } from "./incidents.js";
+import { claimIncidentNotes, incidentNoteTool, noticeIncident, registerNoticeTarget, releaseIncidentNotes, releaseNoticeTarget } from "./incident-notice.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -557,6 +558,7 @@ function releaseProviderTokens(event: string): void {
 	if (g[CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL] === BRIDGE_ACCOUNT_HOST) {
 		g[CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL] = undefined;
 	}
+	releaseIncidentNotes();
 	if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
 		debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
 		g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
@@ -1889,6 +1891,8 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	configureIncidents(config.incidents);
+	// Notices and the note tool need the same user-scoped incidents.repo.
+	setIncidentListener(config.incidents ? noticeIncident : undefined);
 	// Registered before the disabled early return: a bridge switched off by
 	// claude-bridge.json is exactly when the settings editor has to show where
 	// that value came from.
@@ -1903,7 +1907,11 @@ export default function (pi: ExtensionAPI) {
 	if (claimPrimaryInstance()) {
 		const host = globalThis as Record<symbol, any>;
 		host[CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL] = BRIDGE_ACCOUNT_HOST;
+		// This copy serves every session's requests, so it holds their incidents.
+		if (config.incidents) claimIncidentNotes();
 	}
+	// Registered once, at load: the tool list stays the same for the process.
+	if (config.incidents) pi.registerTool(incidentNoteTool());
 
 	// Reset shared (Claude) conversation state on pi session lifecycle events.
 	// Registration tokens are managed separately by applyProviderRegistration
@@ -1917,6 +1925,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		recordStartedLane(ctx.sessionManager, ctx.sessionManager.getSessionId());
+		if (config.incidents) registerNoticeTarget(ctx.sessionManager.getSessionId(), (message, options) => pi.sendMessage(message, options));
 		recordProjectTrust(ctx);
 		setPiUI(ctx.ui);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
@@ -1940,6 +1949,7 @@ export default function (pi: ExtensionAPI) {
 		});
 		deleteSharedSessionLane(sessionId);
 		deleteQueryLane(sessionId);
+		releaseNoticeTarget(sessionId);
 	});
 	pi.on("message_end", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		const message = (event as { message?: AssistantMessage }).message;
