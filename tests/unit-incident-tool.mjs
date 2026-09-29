@@ -73,6 +73,7 @@ describe("the claude_bridge_incident tool", () => {
 		assert.equal(a.promptSnippet, undefined);
 		assert.equal(a.promptGuidelines, undefined);
 		assert.deepEqual(a.parameters.properties.action.enum, ["list", "show", "file"]);
+		assert.deepEqual(Object.keys(a.parameters.properties), ["action", "incident"], "file takes no text of the agent's");
 		assert.deepEqual(a.parameters.required, ["action"]);
 		assert.match(a.description, /bridge incidents only/i);
 		assert.match(a.description, /tell the user/i);
@@ -127,7 +128,7 @@ describe("the claude_bridge_incident tool", () => {
 		await assert.rejects(runTool(tool, { action: "show", incident: "bi-zzzz" }), /^Error: Unknown incident bi-zzzz: no incident with that id in this Pi process\./);
 		await assert.rejects(runTool(tool, { action: "show", incident: expected.id }), new RegExp(`Unknown incident ${expected.id}`));
 		await assert.rejects(runTool(tool, { action: "show" }), /An incident id is required/);
-		await assert.rejects(runTool(tool, { action: "file", summary: "x" }), /An incident id is required/);
+		await assert.rejects(runTool(tool, { action: "file" }), /An incident id is required/);
 	});
 
 	it("lists and shows incidents another copy of the bridge recorded", async () => {

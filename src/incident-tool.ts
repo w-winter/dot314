@@ -10,7 +10,7 @@
 
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { MAX_SUMMARY_LENGTH, fileIncident, incidentDetails, incidentListLine } from "./incident-filer.js";
+import { fileIncident, incidentDetails, incidentListLine } from "./incident-filer.js";
 import { findIncident, listIncidents, type Incident } from "./incidents.js";
 
 export const INCIDENT_TOOL = "claude_bridge_incident";
@@ -18,10 +18,9 @@ const LIST_LIMIT = 20;
 
 const PARAMETERS = Type.Object({
 	action: StringEnum(["list", "show", "file"] as const, {
-		description: "list: the incidents recorded in this Pi process. show: one incident's evidence. file: file one as a GitHub issue, with your summary.",
+		description: "list: the incidents recorded in this Pi process. show: one incident's evidence. file: file one as a GitHub issue that carries only the evidence the bridge recorded; then tell the user the issue number and your own analysis in chat.",
 	}),
 	incident: Type.Optional(Type.String({ description: "The incident id, such as bi-7f3a, from a bridge error or notice, or from list. Required for show and file." })),
-	summary: Type.Optional(Type.String({ description: `For file: what the bridge did and your analysis of it, at most ${MAX_SUMMARY_LENGTH} characters. Never prompts, file contents, user data or secrets.` })),
 });
 
 /** Incidents the agent may see: every one but expected cleanup. */
@@ -48,11 +47,11 @@ function listText(): string {
 	].join("\n");
 }
 
-async function run(params: { action: string; incident?: string; summary?: string }): Promise<string> {
+async function run(params: { action: string; incident?: string }): Promise<string> {
 	switch (params.action) {
 		case "list": return listText();
 		case "show": return incidentDetails(lookUp(params.incident));
-		case "file": return fileIncident(lookUp(params.incident), params.summary);
+		case "file": return fileIncident(lookUp(params.incident));
 		default: throw new Error(`Unknown action ${String(params.action).slice(0, 20)}: use list, show or file.`);
 	}
 }
@@ -63,9 +62,9 @@ export function incidentTool(): ToolDefinition<typeof PARAMETERS> {
 		label: "Claude bridge incident",
 		description: "Inspect and file Claude bridge incidents only: anomalies the Pi Claude bridge recorded, each with an id such as bi-7f3a that appears in bridge error messages and notices. " +
 			"list shows this process's incidents; show gives one incident's evidence. " +
-			"File an incident (file, with a summary) when it looks like a bridge bug worth fixing; skip one-offs you can explain, such as a cancelled request. " +
-			"The summary describes the bridge's behavior and your analysis of it, and never contains prompts, file contents, user data or secrets. " +
-			"After filing, tell the user which issue you filed or commented on.",
+			"File an incident (file) when it looks like a bridge bug worth fixing; skip one-offs you can explain, such as a cancelled request. " +
+			"The issue carries only the evidence the bridge recorded, never text of yours. " +
+			"After filing, tell the user the number of the issue you filed or commented on, and give them your own analysis in chat.",
 		parameters: PARAMETERS,
 		async execute(_toolCallId, params) {
 			return { content: [{ type: "text", text: await run(params) }], details: undefined };

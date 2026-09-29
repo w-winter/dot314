@@ -2,8 +2,9 @@
 // one with `claude_bridge_incident` (action "file"), which needs a
 // user-scoped `incidents.repo`: it becomes an issue in that repo through
 // `gh`, or a comment on the open issue that already carries its marker, with
-// the agent's summary quoted in it. Every string it publishes passes the
-// sanitizer. `gh` here is a fake on PATH that records its argv and stdin.
+// only the evidence the bridge recorded in it; no text of the agent's is
+// published. Every string it publishes passes the sanitizer. `gh` here is a
+// fake on PATH that records its argv and stdin.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
@@ -24,7 +25,8 @@ const REPO = "nicobailon/bridge-incidents";
 const TOOL = "claude_bridge_incident";
 const PROMPT_SENTINEL = "PROMPT-SENTINEL-do-not-file";
 const API_SENTINEL = "API-SENTINEL-do-not-file";
-const SUMMARY = "The bridge answered one tool call twice; the second answer looks like a bridge bug.";
+const AGENT_SENTINEL = "AGENT-SENTINEL-never-published";
+const TELL_USER = "The issue carries only the evidence the bridge recorded: tell the user its number and give them your own analysis here in chat.";
 // Built at run time: the sanitizer keeps these out of what is filed.
 const mention = (name) => `@${name}`;
 const otherRef = ["someone-else", "their-repo"].join("/") + "#12";
@@ -124,7 +126,7 @@ async function runTool(tool, params) {
 	return result.content.map((block) => block.text).join("");
 }
 
-const file = (tool, incident, summary = SUMMARY) => runTool(tool, { action: "file", incident: incident.id, summary });
+const file = (tool, incident) => runTool(tool, { action: "file", incident: incident.id });
 
 async function collect(stream) {
 	const events = [];
@@ -235,14 +237,14 @@ describe("incident filing", () => {
 		assert.deepEqual(ghCalls(), []);
 	});
 
-	it("files an incident the agent asks for as an issue in the configured repo, with metadata only and its summary", async () => {
+	it("files an incident the agent names by id alone as an issue in the configured repo, with the bridge's evidence only", async () => {
 		installFakeGh();
 		const tool = loadExtension();
 		await runApiError();
 		await runApiError();
 		const incident = find("api_error@consumeQuery");
 		const reply = await file(tool, incident);
-		assert.equal(reply, `Filed ${REPO}#7 (https://github.com/${REPO}/issues/7). Tell the user you filed it.`);
+		assert.equal(reply, `Filed ${REPO}#7 (https://github.com/${REPO}/issues/7). ${TELL_USER}`);
 
 		const calls = ghCalls();
 		assert.deepEqual(calls.map((call) => call.argv.slice(0, 2).join(" ")), ["issue list", "issue create"], "one search, one issue");
@@ -254,9 +256,10 @@ describe("incident filing", () => {
 		const body = create.stdin;
 		assert.ok(body.startsWith(marker("api_error@consumeQuery")), "the dedupe marker opens the body");
 		assert.equal(incident.issue, 7);
-		for (const expected of ["## What happened", "## Agent's analysis", `> ${SUMMARY}`, incident.id, "| Class | external |", "| Count | 2 |", "| Model | claude-haiku-4-5 |", "```json", "## How to reproduce", "tests/"]) {
+		for (const expected of ["## What happened", incident.id, "| Class | external |", "| Count | 2 |", "| Model | claude-haiku-4-5 |", "## Flight recorder", "## Diag metadata", "```json", "## How to reproduce", "tests/"]) {
 			assert.ok(body.includes(expected), `body has ${expected}`);
 		}
+		assert.ok(!body.includes("analysis"), "no analysis section");
 		for (const secret of [PROMPT_SENTINEL, API_SENTINEL, "test system prompt"]) assert.ok(!body.includes(secret), `no content in the issue: ${secret}`);
 		assert.ok(Buffer.byteLength(body) < 64 * 1024);
 		await __testFlushIncidents();
@@ -268,9 +271,9 @@ describe("incident filing", () => {
 		installFakeGh();
 		const tool = loadExtension();
 		const incident = recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
-		const [first, second] = await Promise.all([file(tool, incident), file(tool, incident, "Another look at it.")]);
+		const [first, second] = await Promise.all([file(tool, incident), file(tool, incident)]);
 		assert.match(first, /^Filed nicobailon\/bridge-incidents#7 /);
-		const again = `Incident ${incident.id} was already filed in this Pi process as ${REPO}#7 (https://github.com/${REPO}/issues/7). Tell the user it is filed there.`;
+		const again = `Incident ${incident.id} was already filed in this Pi process as ${REPO}#7 (https://github.com/${REPO}/issues/7). ${TELL_USER}`;
 		assert.equal(second, again, "a call while the first is running waits for it");
 		const spawned = ghCalls().length;
 		assert.equal(await file(tool, incident), again);
@@ -287,15 +290,16 @@ describe("incident filing", () => {
 		installFakeGh({ issues: [{ number: 12, body: `${marker("api_error@consumeQuery")}\nearlier` }, { number: 3, body: marker("api_error@elsewhere") }] });
 		const tool = loadExtension();
 		await runApiError();
-		const reply = await file(tool, find("api_error@consumeQuery"));
-		assert.equal(reply, `Commented on ${REPO}#12 (https://github.com/${REPO}/issues/12), the open issue already filed for this incident's signature. Tell the user you commented on it.`);
+		// Text the agent sends beyond the schema is never published.
+		const reply = await runTool(tool, { action: "file", incident: find("api_error@consumeQuery").id, summary: AGENT_SENTINEL });
+		assert.equal(reply, `Commented on ${REPO}#12 (https://github.com/${REPO}/issues/12), the open issue already filed for this incident's signature. ${TELL_USER}`);
 
 		assert.equal(creates().length, 0);
 		assert.equal(comments().length, 1);
 		assert.deepEqual(comments()[0].argv, ["issue", "comment", "12", "--repo", REPO, "--body-file", "-"]);
 		const text = comments()[0].stdin;
-		for (const expected of ["## Agent's analysis", `> ${SUMMARY}`, "| Class | external |", "### Diag metadata"]) assert.ok(text.includes(expected), `comment has ${expected}`);
-		assert.ok(!text.includes(API_SENTINEL));
+		for (const expected of ["## New occurrence", "| Class | external |", "### Diag metadata"]) assert.ok(text.includes(expected), `comment has ${expected}`);
+		for (const absent of [API_SENTINEL, AGENT_SENTINEL, "analysis"]) assert.ok(!text.includes(absent), `comment has no ${absent}`);
 		assert.equal(find("api_error@consumeQuery").issue, 12);
 	});
 
@@ -313,32 +317,15 @@ describe("incident filing", () => {
 		assert.equal(incident.issue, undefined);
 	});
 
-	it("refuses a summary over 4,000 characters, a missing one, and an incident the bridge does not file, without gh", async () => {
+	it("refuses an incident the bridge does not file, without gh", async () => {
 		installFakeGh();
 		const tool = loadExtension();
-		const incident = recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
 		const expected = recordIncident("partial_tool_calls_pruned@abort", "expected", {});
 		const unknown = recordIncident("made_up_label@streamRequestInLane", "silent", {});
-		await assert.rejects(file(tool, incident, "x".repeat(4001)), /The summary is 4001 characters; the limit is 4000\./);
-		await assert.rejects(file(tool, incident, "   "), /A summary is required/);
-		await assert.rejects(runTool(tool, { action: "file", incident: incident.id }), /A summary is required/);
 		await assert.rejects(file(tool, expected), new RegExp(`Unknown incident ${expected.id}`));
 		await assert.rejects(file(tool, unknown), new RegExp(`Incident ${unknown.id} is not one the bridge files`));
-		await assert.rejects(runTool(tool, { action: "file", incident: "bi-zzzz", summary: SUMMARY }), /Unknown incident bi-zzzz/);
+		await assert.rejects(runTool(tool, { action: "file", incident: "bi-zzzz" }), /Unknown incident bi-zzzz/);
 		assert.deepEqual(ghCalls(), []);
-		assert.match(await file(tool, incident, "y".repeat(4000)), /^Filed /, "4,000 characters is within the limit");
-	});
-
-	it("keeps secrets and what the no-tagging rule removes out of the summary it files", async () => {
-		installFakeGh();
-		const tool = loadExtension();
-		const incident = recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
-		const summary = `The read tool returned twice for one call.\n## heading ${mention("someone")} ${otherRef} ${otherLink} ${SYNTHETIC_KEY} ${"a".repeat(40)}`;
-		await file(tool, incident, summary);
-		const body = creates()[0].stdin;
-		assert.ok(body.includes("> The read tool returned twice for one call."));
-		assert.ok(body.includes("> ## heading"), "the summary is quoted, never markup of the issue");
-		for (const removed of [mention("someone"), otherRef, otherLink, SYNTHETIC_KEY, "a".repeat(40)]) assert.ok(!body.includes(removed), removed.slice(0, 16));
 	});
 
 	it("returns a tool error with gh's short failure reason", async () => {

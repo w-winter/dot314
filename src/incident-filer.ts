@@ -12,15 +12,15 @@
 // Only signatures of the code's class and site tables are filed
 // (isKnownSignature). The body is built from evidence validated by kind where
 // it was recorded (incidents.ts, projectDiagMetadata) and fixed bridge prose.
-// The agent's summary is free text: it passes sanitizeFreeText, the secret
-// scan and the no-tagging rule, and is quoted line by line. Every title, body
-// and comment passes sanitizeForIssue at the boundary.
+// No text the agent writes is published: the agent gives its analysis to the
+// user in chat. Every title, body and comment passes sanitizeForIssue at the
+// boundary.
 
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { displayPath, piUserDir } from "./config.js";
 import { debug } from "./debug.js";
-import { sanitizeForIssue, sanitizeFreeText } from "./incident-sanitizer.js";
+import { sanitizeForIssue } from "./incident-sanitizer.js";
 import { isKnownSignature, type Incident, type IncidentLabel } from "./incidents.js";
 
 const GH_TIMEOUT_MS = 30_000;
@@ -28,7 +28,6 @@ const MAX_BODY_BYTES = 60 * 1024;
 const MAX_SHOW_BYTES = 24 * 1024;
 const MAX_GH_OUTPUT = 1024 * 1024;
 const SEARCH_LIMIT = "30";
-export const MAX_SUMMARY_LENGTH = 4000;
 
 /** What happened, per label, in plain words. Opens every issue. */
 const DESCRIPTIONS: Record<IncidentLabel, string> = {
@@ -182,20 +181,6 @@ export function describeIncident(incident: Incident): string {
 	return DESCRIPTIONS[labelOf(incident.signature) as IncidentLabel] ?? "The bridge recorded an anomaly.";
 }
 
-/** The agent's summary, already sanitized, quoted line by line so it can
- *  never be markup of the issue or comment. */
-function analysisSection(heading: string, analysis: string | undefined): string[] {
-	if (analysis === undefined) return [];
-	return [
-		`${heading} Agent's analysis`,
-		"",
-		"The agent working in the session where this happened wrote:",
-		"",
-		...analysis.split(/\r?\n/).map((line) => `> ${line}`.trimEnd()),
-		"",
-	];
-}
-
 function howToReproduce(incident: Incident): string {
 	const test = REPRO_TESTS[labelOf(incident.signature) as IncidentLabel];
 	const pointer = test
@@ -204,11 +189,10 @@ function howToReproduce(incident: Incident): string {
 	return `The flight-recorder snapshot is the event order a fake-SDK unit test would script: each record is an SDK message or stream event, a tools/call, a claim, a result or a cursor move, in the order the bridge saw them. ${pointer}`;
 }
 
-/** The issue body: the problem, the agent's analysis (sanitized), the
- *  evidence, the recorder snapshots, the diag metadata and how to reproduce.
- *  Metadata and the analysis only, under 60 KB: the latest snapshot, then the
- *  oldest records, give way first. */
-export function issueBody(incident: Incident, analysis?: string): string {
+/** The issue body: the problem, the evidence, the recorder snapshots, the
+ *  diag metadata and how to reproduce. Metadata only, under 60 KB: the latest
+ *  snapshot, then the oldest records, give way first. */
+export function issueBody(incident: Incident): string {
 	let first = incident.snapshot;
 	let latest = incident.latestSnapshot;
 	let diag: unknown = { first: incident.diag, ...(incident.latestDiag ? { latest: incident.latestDiag } : {}) };
@@ -219,7 +203,6 @@ export function issueBody(incident: Incident, analysis?: string): string {
 			"",
 			whatHappened(incident),
 			"",
-			...analysisSection("##", analysis),
 			"## Evidence",
 			"",
 			evidenceTable(incident),
@@ -249,10 +232,9 @@ export function issueBody(incident: Incident, analysis?: string): string {
 }
 
 /** A comment on the issue another process filed for the signature: the
- *  agent's analysis (sanitized), the evidence, the latest snapshot and the
- *  latest diag metadata. Under 60 KB like the body: the oldest records, then
- *  the diag, give way first. */
-export function occurrenceComment(incident: Incident, analysis?: string): string {
+ *  evidence, the latest snapshot and the latest diag metadata. Under 60 KB
+ *  like the body: the oldest records, then the diag, give way first. */
+export function occurrenceComment(incident: Incident): string {
 	let snapshot = incident.latestSnapshot ?? incident.snapshot;
 	let diag: unknown = incident.latestDiag ?? incident.diag;
 	for (;;) {
@@ -261,7 +243,6 @@ export function occurrenceComment(incident: Incident, analysis?: string): string
 			"",
 			SEEN[incident.class](incident),
 			"",
-			...analysisSection("###", analysis),
 			evidenceTable(incident),
 			"",
 			...snapshotSection("Latest occurrence", snapshot),
@@ -390,8 +371,8 @@ async function searchIssue(target: string, signature: string): Promise<number | 
 	return found?.number;
 }
 
-async function createIssue(target: string, incident: Incident, analysis: string): Promise<number> {
-	const out = await runGh(["issue", "create", "--repo", target, "--title", sanitizeForIssue(issueTitle(incident), target), "--body-file", "-"], sanitizeForIssue(issueBody(incident, analysis), target));
+async function createIssue(target: string, incident: Incident): Promise<number> {
+	const out = await runGh(["issue", "create", "--repo", target, "--title", sanitizeForIssue(issueTitle(incident), target), "--body-file", "-"], sanitizeForIssue(issueBody(incident), target));
 	const number = Number(out.match(/\/issues\/(\d+)/)?.[1]);
 	if (!Number.isInteger(number)) throw new GhFailure("gh-output");
 	return number;
@@ -429,26 +410,25 @@ function filingOffText(): string {
 	return `Incident filing is off. The user can turn it on by adding "incidents": { "repo": "<owner>/<name>" } to ${displayPath(join(piUserDir(), "claude-bridge.json"))}, the user config; a project's config cannot set it. Filing uses the gh CLI, installed and logged in.`;
 }
 
-/** Files `incident` with the agent's `summary` (free text, at most
- *  MAX_SUMMARY_LENGTH characters): a comment on the open issue carrying its
- *  marker, or a new issue. Resolves the tool's reply; a filing already made
- *  in this process (or running) is returned without `gh`. Throws
- *  FilingRefused, or an Error naming gh's short failure reason. */
-export async function fileIncident(incident: Incident, summary: string | undefined): Promise<string> {
+/** Ends every reply to `file`: the issue carries no text of the agent's. */
+const TELL_USER = "The issue carries only the evidence the bridge recorded: tell the user its number and give them your own analysis here in chat.";
+
+/** Files `incident`, the bridge's evidence only: a comment on the open issue
+ *  carrying its marker, or a new issue. Resolves the tool's reply; a filing
+ *  already made in this process (or running) is returned without `gh`.
+ *  Throws FilingRefused, or an Error naming gh's short failure reason. */
+export async function fileIncident(incident: Incident): Promise<string> {
 	const target = repo;
 	if (!target) throw new FilingRefused(filingOffText());
 	if (incident.class === "expected") throw new FilingRefused(`Incident ${incident.id} is expected cleanup, which is never filed.`);
 	if (!isKnownSignature(incident.signature)) throw new FilingRefused(`Incident ${incident.id} is not one the bridge files.`);
-	const text = summary ?? "";
-	if (text.trim().length === 0) throw new FilingRefused("A summary is required to file an incident: describe what the bridge did and your analysis of it.");
-	if (text.length > MAX_SUMMARY_LENGTH) throw new FilingRefused(`The summary is ${text.length} characters; the limit is ${MAX_SUMMARY_LENGTH}. Shorten it and file again.`);
 	const store = filings();
 	const earlier = store.get(incident.id);
 	if (earlier) {
 		const filed = await earlier;
-		return `Incident ${incident.id} was already filed in this Pi process as ${filed.repo}#${filed.issue} (${issueUrl(filed.repo, filed.issue)}). Tell the user it is filed there.`;
+		return `Incident ${incident.id} was already filed in this Pi process as ${filed.repo}#${filed.issue} (${issueUrl(filed.repo, filed.issue)}). ${TELL_USER}`;
 	}
-	const filing: Promise<Filing> = fileWithGh(target, incident, sanitizeFreeText(text, target)).catch((error: unknown) => {
+	const filing: Promise<Filing> = fileWithGh(target, incident).catch((error: unknown) => {
 		// A failed gh is not a filing: the agent may file it again.
 		if (store.get(incident.id) === filing) store.delete(incident.id);
 		const reason = error instanceof GhFailure ? error.reason : "error";
@@ -459,18 +439,18 @@ export async function fileIncident(incident: Incident, summary: string | undefin
 	const filed = await filing;
 	const where = `${filed.repo}#${filed.issue} (${issueUrl(filed.repo, filed.issue)})`;
 	return filed.action === "filed"
-		? `Filed ${where}. Tell the user you filed it.`
-		: `Commented on ${where}, the open issue already filed for this incident's signature. Tell the user you commented on it.`;
+		? `Filed ${where}. ${TELL_USER}`
+		: `Commented on ${where}, the open issue already filed for this incident's signature. ${TELL_USER}`;
 }
 
-async function fileWithGh(target: string, incident: Incident, analysis: string): Promise<Filing> {
+async function fileWithGh(target: string, incident: Incident): Promise<Filing> {
 	const existing = await searchIssue(target, incident.signature);
 	let filed: Filing;
 	if (existing !== undefined) {
-		await comment(target, existing, occurrenceComment(incident, analysis));
+		await comment(target, existing, occurrenceComment(incident));
 		filed = { action: "commented", repo: target, issue: existing };
 	} else {
-		filed = { action: "filed", repo: target, issue: await createIssue(target, incident, analysis) };
+		filed = { action: "filed", repo: target, issue: await createIssue(target, incident) };
 	}
 	incident.issue = filed.issue;
 	persist(incident);
