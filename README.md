@@ -4,7 +4,7 @@ A Pi provider that uses a logged-in Claude Code account through the Claude Agent
 
 Requires Pi 0.86.0 or later.
 
-This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [vanillagreen's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), itself a fork of [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). It adds the fixes from [w-winter/dot314#20](https://github.com/w-winter/dot314/pull/20), which keep the Claude session the bridge rebuilds in sync with Pi's history.
+This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [vanillagreen's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), itself a fork of [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). See [Differences from upstream](#differences-from-upstream) for what it adds.
 
 ![Response from Claude through the bridge](assets/bridge-demo.png)
 
@@ -147,10 +147,35 @@ Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Differences from upstream
 
-- Sends Pi's system prompt, including project instructions, skills and extension context, on every request. With a `systemPrompt.replacement`, Pi's opening sentence, tool list and documentation section are swapped for the replacement. A system prompt that contains both of Pi's `docs/custom-provider.md` and `docs/packages.md` paths is refused, not sent (see Settings). Claude Code applies changes to the prompt on resumed turns.
-- Reads the fork's `systemPrompt` settings from `claude-bridge.json`. A trusted project's settings override user settings and can replace the base prompt or add an active-model line.
-- Registers Claude Opus 5.5 and Claude Sonnet 5.5 in Pi's model menu.
-- Uses strict MCP configuration on every query. Connector sessions load the user's Claude Code settings by default; `provider.settingSources` overrides the setting sources.
+Upstream here is the bridge in dot314, whose changes this fork merges. Everything below is what this fork does and dot314's bridge does not.
+
+**Tool calls**
+- Each MCP tool call is claimed by the tool_use id Claude Code tags it with, so a call can never receive another call's result, including across Claude Code's stream retries.
+- A tool call cut off mid-stream no longer ends Pi's turn with nothing to run: Claude Code's re-issued call runs in the same turn. A call whose arguments never finished is never executed.
+- A stalled stream attempt is replaced by Claude Code's retry instead of mixing into it.
+- Every Pi tool is served under a name Claude can call, with its real JSON Schema, and tools an extension activates mid-turn are served too.
+- Claude Code does not background or give up on a slow Pi tool call.
+
+**Keeping Claude's session in sync with Pi**
+- Before reusing Claude's session, the bridge checks with a digest that it still matches Pi's history, and rebuilds it when Pi rewrote history Claude already holds.
+- A rebuild replays redacted thinking correctly and drops a latest Claude turn whose thinking cannot be replayed.
+- Claude Code never resumes a rebuilt session as an interrupted turn, so no "Continue from where you left off." prompt is injected.
+
+**System prompt**
+- A system prompt that Anthropic would bill as a third-party app (one naming both `docs/custom-provider.md` and `docs/packages.md`) is refused before any request is sent (see Settings).
+- Under a `systemPrompt.replacement`, Pi's rules and guidelines are kept, and so is a session's own base prompt (`SYSTEM.md`, `--system-prompt`, a pi-subagents agent in replace mode).
+
+**Models**
+- Pi's thinking level "off" sends Claude Code disabled thinking; for models that reject it, the option is hidden.
+- Opus 5.5 falls back to Opus 4.8 when its safety classifier declines, and every model switch Claude Code makes for safety reasons is announced.
+
+**Incidents**
+- Every anomaly the bridge detects becomes an incident with an id. The agent is told about new ones with your next prompt, and can inspect or file them with the `claude_bridge_incident` tool (see Settings).
+
+**Operation**
+- Pi loads the TypeScript source directly; there is no bundle to rebuild, and `/reload` picks up edits. CI runs the typecheck and unit tests on every push.
+- Claude Code children do not inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` unless `provider.inheritAnthropicEnv` is set.
+- The debug log rotates, and old Claude Code CLI logs are pruned.
 
 Claude Code built-in tools are disabled by default, and Pi exposes its tools through MCP. The SDK may prepend its own identity text to the custom prompt.
 
