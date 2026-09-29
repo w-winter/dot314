@@ -13,7 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { isContextOverflow, isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
 
-import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
+import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk, wrapClaudeSpawnErrorForSdk } from "../src/index.ts";
 import { CLAUDE_ACCOUNT_ROUTER_SYMBOL } from "../src/account-router.ts";
 import { registerBridgeCommands } from "../src/bridge-commands.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
@@ -522,6 +522,101 @@ describe("bridge incidents", () => {
 			assert.equal(incident.phase, "before-query");
 			assert.equal(incident.snapshot, null, "no earlier query's timeline");
 		});
+	});
+
+	// A bridge-authored spawn diagnostic: an executable whose interpreter does
+	// not exist. The executable preflight passes, Node's spawn fails with
+	// ENOENT and the bridge's spawn callback rewrites the error. Nothing can run.
+	function unlaunchableClaude() {
+		const executable = join(agentDir, "PATH-SENTINEL-claude");
+		writeFileSync(executable, `#!${join(agentDir, "missing-interpreter")}\n`, { mode: 0o755 });
+		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ provider: { pathToClaudeCodeExecutable: executable } }));
+		return executable;
+	}
+
+	/** Asserts the Pi error event names exactly one bridge incident whose
+	 *  metadata holds none of the error's text. */
+	async function assertNamedSpawnFailure(events, expectedPrefix) {
+		const last = events.at(-1);
+		assert.equal(last.type, "error");
+		assert.equal(last.error.stopReason, "error");
+		assert.equal(last.error.model, model.id, "the message keeps its fields");
+		const text = last.error.errorMessage;
+		assert.ok(text.startsWith(expectedPrefix), text);
+		assert.match(text, INCIDENT_SUFFIX);
+		assert.equal(text.match(/ \(incident /g).length, 1, "one incident suffix");
+		const incident = await incidentDetail(text.match(INCIDENT_SUFFIX)[1]);
+		assert.equal(incident.signature, "bridge_error@error-event");
+		assert.equal(incident.class, "user-visible");
+		const metadata = JSON.stringify(incident);
+		for (const fragment of ["PATH-SENTINEL", "spawn failed", "ENOENT", agentDir]) assert.ok(!metadata.includes(fragment), `no error text in the incident: ${fragment}`);
+		await assertClassificationKept(last.error);
+	}
+
+	it("names an incident in a bridge spawn diagnostic the SDK iterator throws as is", async () => {
+		const executable = unlaunchableClaude();
+		let diagnostic;
+		__testSetSdkQueryFactory(({ options }) => ({
+			async *[Symbol.asyncIterator]() {
+				const child = options.spawnClaudeCodeProcess({ command: executable, args: [], cwd: agentDir, env: {}, signal: new AbortController().signal });
+				diagnostic = await new Promise((resolve) => child.once("error", resolve));
+				throw diagnostic;
+			},
+			close() {},
+			async interrupt() {},
+		}));
+		const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-spawn-direct" }));
+		assert.equal(diagnostic.name, "ClaudeSpawnDiagnosticError");
+		await assertNamedSpawnFailure(events, "Claude Code spawn failed: ");
+		assert.equal(diagnostic.originalCode, "ENOENT", "the thrown error keeps its fields");
+		assert.equal(diagnostic.path, executable);
+		assert.ok(!diagnostic.message.includes("(incident "), "the error object itself is not rewritten");
+	});
+
+	it("names an incident in a bridge spawn diagnostic the real SDK rewraps as its spawn failure", async () => {
+		unlaunchableClaude();
+		const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+		process.env.CLAUDE_CONFIG_DIR = agentDir;
+		try {
+			__testSetSdkQueryFactory(); // the installed Claude Agent SDK; its spawn fails before anything runs
+			const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-spawn-sdk" }));
+			await assertNamedSpawnFailure(events, "Failed to spawn Claude Code process: Claude Code spawn failed: ");
+		} finally {
+			if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+			else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+		}
+	});
+
+	it("names an incident in a bridge spawn diagnostic the SDK rewraps for a write after exit", async () => {
+		const executable = unlaunchableClaude();
+		const spawnError = Object.assign(new Error(`spawn ${executable} ENOENT`), { code: "ENOENT", errno: -2, syscall: `spawn ${executable}`, path: executable });
+		const diagnostic = wrapClaudeSpawnErrorForSdk(spawnError, { command: executable, args: [], cwd: agentDir, env: {}, signal: new AbortController().signal });
+		// The SDK's form (sdk.mjs ProcessTransport.write): its token redaction
+		// leaves this text as it is, since it holds no credential.
+		const rewrapped = new Error(`Cannot write to process that exited with error: Failed to spawn Claude Code process: ${diagnostic.message}`);
+		__testSetSdkQueryFactory(() => ({
+			async *[Symbol.asyncIterator]() { throw rewrapped; },
+			close() {},
+			async interrupt() {},
+		}));
+		const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-spawn-write" }));
+		await assertNamedSpawnFailure(events, "Cannot write to process that exited with error: Failed to spawn Claude Code process: Claude Code spawn failed: ");
+	});
+
+	it("gives an init version-change incident its query's model and timeline", async () => {
+		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ incidents: { repo: "owner/bridge-incidents" } }));
+		writeFileSync(join(agentDir, "claude-bridge-incidents.jsonl"), `${JSON.stringify({ type: "claude_code_version", version: "9.9.8" })}\n`, { mode: 0o600 });
+		loadExtension();
+		installFakeClaudeCode(async function* () { yield* FINAL_REPLY; });
+		await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-version-evidence" }));
+		await __testFlushIncidents();
+		const line = (await piClaude("incidents")).split("\n").find((entry) => entry.includes("claude_code_version_changed@init"));
+		assert.ok(line, "the version change is an incident");
+		const incident = await incidentDetail(line.split(/\s+/)[0]);
+		assert.equal(incident.model, model.id);
+		assert.ok(Array.isArray(incident.snapshot), "the init query's timeline");
+		assert.ok(incident.snapshot.some((record) => record.kind === "system_init"), "the timeline reaches the init message");
+		assert.equal(incident.phase, undefined);
 	});
 
 	it("still delivers an error, unnamed, when naming its incident fails", () => {

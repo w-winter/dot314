@@ -61,6 +61,25 @@ function displayValue(value: unknown): string {
 	return value === undefined || value === null || value === "" ? "<none>" : String(value);
 }
 
+// The bridge's own Claude Code error classes (by name: they are plain Errors).
+export const CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME = "ClaudeExecutablePreflightError";
+export const CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME = "ClaudeSpawnDiagnosticError";
+/** How every ClaudeSpawnDiagnosticError message begins. The SDK does not
+ *  throw that error itself: it throws "Failed to spawn Claude Code process: "
+ *  plus the message (or "Cannot write to process that exited with error: "
+ *  plus that), after a redaction that rewrites only credential tokens. So the
+ *  wording, not the class, is what reaches the query's catch. */
+export const CLAUDE_SPAWN_FAILED_WORDING = "Claude Code spawn failed: ";
+
+/** Whether `error` is one the bridge wrote about Claude Code's executable or
+ *  spawn, as thrown or as the SDK rewrapped it. */
+export function isBridgeClaudeError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return error.name === CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME
+		|| error.name === CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME
+		|| (typeof error.message === "string" && error.message.includes(CLAUDE_SPAWN_FAILED_WORDING));
+}
+
 function makeClaudePreflightError(
 	summary: string,
 	details: { code: string; errno?: string | number; syscall?: string; path: string; cwd: string; fileType?: ClaudeExecutableFileType; realPath?: string; cause?: unknown },
@@ -75,7 +94,7 @@ function makeClaudePreflightError(
 		...(details.realPath ? [`realPath=${details.realPath}`] : []),
 	].join(" ");
 	const error = new Error(`${summary} (${detail})`) as Error & NodeJS.ErrnoException & { cwd: string; fileType?: ClaudeExecutableFileType; realPath?: string };
-	error.name = "ClaudeExecutablePreflightError";
+	error.name = CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME;
 	error.code = details.code;
 	if (details.errno !== undefined) error.errno = typeof details.errno === "number" ? details.errno : Number(details.errno);
 	if (details.syscall) error.syscall = details.syscall;
@@ -121,7 +140,7 @@ export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExec
 		accessSync(cwd, fsConstants.X_OK);
 		realCwd = realpathSync(cwd);
 	} catch (err) {
-		if ((err as Error).name === "ClaudeExecutablePreflightError") throw err;
+		if ((err as Error).name === CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME) throw err;
 		throw makeClaudePreflightError("Claude Code spawn cwd preflight failed: cwd is not reachable before spawning Claude Code.", {
 			code: codeValue(err, "EACCES"),
 			errno: errnoValue(err),
@@ -146,7 +165,7 @@ export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExec
 		accessSync(path, fsConstants.X_OK);
 		realPath = realpathSync(path);
 	} catch (err) {
-		if ((err as Error).name === "ClaudeExecutablePreflightError") throw err;
+		if ((err as Error).name === CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME) throw err;
 		throw makeClaudePreflightError("Claude Code executable preflight failed: cannot access resolved executable before spawning Claude Code.", {
 			code: codeValue(err, "ENOENT"),
 			errno: errnoValue(err),
@@ -203,8 +222,8 @@ export function wrapClaudeSpawnErrorForSdk(err: Error, options: SpawnOptions): E
 		`cwd=${cwd}`,
 		`command=${options.command}`,
 	].join(" ");
-	const wrapped = new Error(`Claude Code spawn failed: ${originalMessage} (${detail})`) as Error & NodeJS.ErrnoException & { cwd: string; originalCode?: string; originalMessage?: string };
-	wrapped.name = "ClaudeSpawnDiagnosticError";
+	const wrapped = new Error(`${CLAUDE_SPAWN_FAILED_WORDING}${originalMessage} (${detail})`) as Error & NodeJS.ErrnoException & { cwd: string; originalCode?: string; originalMessage?: string };
+	wrapped.name = CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME;
 	// The SDK special-cases code === ENOENT and replaces the message with its
 	// generic "native binary not found" text. Preserve the original code in the
 	// message/originalCode while using a bridge code so the SDK surfaces context.

@@ -304,7 +304,7 @@ export async function consumeQuery(
 				}
 				break;
 			case "system":
-				if ((message as any).subtype === "init") noteClaudeCodeVersion((message as any).claude_code_version);
+				if ((message as any).subtype === "init") noteClaudeCodeVersion((message as any).claude_code_version, queryCtx);
 				if (!streamLive) break;
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;

@@ -117,7 +117,7 @@ export interface Incident {
  *  output then still belong to an earlier query, so an incident takes only
  *  that requested model and no snapshot. */
 export interface IncidentSource {
-	recorder?: FlightRecorder;
+	recorder?: Pick<FlightRecorder, "snapshot">;
 	turnOutput?: { model?: string; responseModel?: string } | null;
 	preQueryModel?: string | null;
 }
@@ -451,19 +451,33 @@ async function readStoredClaudeCodeVersion(path: string): Promise<string | undef
 }
 
 /** The Claude Code version of the SDK's init message. With the store on, a
- *  version other than the last one stored is an external incident. */
-export function noteClaudeCodeVersion(version: unknown): void {
+ *  version other than the last one stored is an external incident, with the
+ *  model and timeline of the query that reported it (`source`), taken now:
+ *  the check against the store finishes later. */
+export function noteClaudeCodeVersion(version: unknown, source?: IncidentSource): void {
 	if (typeof version !== "string" || version.length === 0 || version.length > 64 || version === claudeCodeVersion) return;
 	claudeCodeVersion = version;
-	if (storePath) versionCheck = checkClaudeCodeVersion(version);
+	if (storePath) versionCheck = checkClaudeCodeVersion(version, frozenSource(source));
 }
 
-async function checkClaudeCodeVersion(version: string): Promise<void> {
+/** `source` as it is now: its snapshot and model, not whatever its query
+ *  records by the time an asynchronous check reports. */
+function frozenSource(source: IncidentSource | undefined): IncidentSource | undefined {
+	if (!source) return undefined;
+	const snapshot = source.recorder?.snapshot();
+	return {
+		...(snapshot ? { recorder: { snapshot: () => snapshot } } : {}),
+		turnOutput: source.turnOutput ? { model: source.turnOutput.model, responseModel: source.turnOutput.responseModel } : null,
+		preQueryModel: source.preQueryModel ?? null,
+	};
+}
+
+async function checkClaudeCodeVersion(version: string, source: IncidentSource | undefined): Promise<void> {
 	const previous = storedClaudeCodeVersion;
 	storedClaudeCodeVersion = Promise.resolve(version);
 	const stored = await previous;
 	if (stored === version || !storePath) return;
-	if (stored !== undefined) reportIncident("claude_code_version_changed", "init", { previousVersion: stored, version });
+	if (stored !== undefined) reportIncident("claude_code_version_changed", "init", { previousVersion: stored, version }, source);
 	pendingLines.push({ type: "claude_code_version", version, at: new Date().toISOString() });
 	scheduleFlush();
 }

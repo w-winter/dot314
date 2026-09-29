@@ -26,7 +26,7 @@ import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativ
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
-import { configureIncidents, markExternalError, nameBridgeErrorEvents, nameThrownBridgeError, reportDiag, reportIncident, withIncident } from "./incidents.js";
+import { configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, reportDiag, reportIncident, withIncident } from "./incidents.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -54,7 +54,7 @@ import { BRIDGE_ACCOUNT_HOST } from "./account-host.js";
 import { registerBridgeCommands } from "./bridge-commands.js";
 import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.js";
 import { buildClaudeQueryOptions, outboundSystemPrompt, thirdPartyAppRefusal } from "./query-options.js";
-import { sdkQuery as startSdkQuery } from "./sdk-query.js";
+import { sdkErrorText, sdkQuery as startSdkQuery } from "./sdk-query.js";
 import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.js";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
 
@@ -1726,7 +1726,7 @@ function streamRequestInLane(
 						debug(`provider: continuation query error:`, contError);
 						const continuationFailure: ClaudeAttemptFailure = {
 							kind: classifyClaudeFailure(contError),
-							message: markExternalError(contError instanceof Error ? contError.message : String(contError)),
+							message: sdkErrorText(contError),
 						};
 						recordAttemptFailure(continuationFailure);
 						if (!abortCtx.handledTerminalError) surfaceFailure(continuationFailure);
@@ -1778,7 +1778,7 @@ function streamRequestInLane(
 				? attemptFailure.failure
 				: {
 					kind: classifyClaudeFailure(error),
-					message: markExternalError(error instanceof Error ? error.message : String(error)),
+					message: sdkErrorText(error),
 				};
 			if (requestRotation(failure)) return;
 			if (!wasAborted && !options?.signal?.aborted) persistSession(null);
