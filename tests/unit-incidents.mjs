@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { isContextOverflow, isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
+import { tsImport } from "tsx/esm/api";
 
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk, wrapClaudeSpawnErrorForSdk } from "../src/index.ts";
 import { CLAUDE_ACCOUNT_ROUTER_SYMBOL } from "../src/account-router.ts";
@@ -287,6 +288,29 @@ describe("bridge incidents", () => {
 		assert.ok(line, list);
 		assert.match(line, /\bexpected\b/);
 		assert.match(line, /×1\b/);
+	});
+
+	it("lists and shows the incidents another copy of the bridge recorded", async () => {
+		// Pi loads a fresh copy of the extension, every module of it, for each
+		// session it starts with its own loader (an in-process subagent) and on
+		// /reload; the copy that serves the requests records their incidents.
+		const incident = recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
+		const copy = await tsImport("../src/index.ts", import.meta.url);
+		let handler;
+		copy.default({
+			on: () => {},
+			registerCommand: (name, command) => { if (name === "pi-claude") handler = command.handler; },
+			registerProvider: () => {},
+			registerTool: () => {},
+			events: { emit: () => {} },
+			appendEntry: () => {},
+		});
+		const notices = [];
+		const ctx = { ui: { notify: (message) => notices.push(message) }, cwd: process.cwd() };
+		await handler("incidents", ctx);
+		await handler(`incidents ${incident.id}`, ctx);
+		assert.match(notices[0], new RegExp(`${incident.id}\\s+silent\\s+×1\\s.*session_verify_fail@verifyWrittenSession`));
+		assert.equal(JSON.parse(notices[1].slice(notices[1].indexOf("{"))).signature, "session_verify_fail@verifyWrittenSession");
 	});
 
 	it("writes nothing to disk without incidents.repo", async () => {

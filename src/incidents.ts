@@ -398,8 +398,28 @@ function projectModel(model: string | undefined): string | undefined {
 
 // --- Registry ---
 
-const incidents = new Map<string, Incident>();
-const incidentsById = new Map<string, Incident>();
+// Process-global: Pi loads a fresh copy of every module of the bridge for
+// each session it starts with its own loader (an in-process subagent) and on
+// /reload, while the copy serving the requests records their incidents. Every
+// copy reads the same registry.
+interface IncidentRegistryV1 {
+	bySignature: Map<string, Incident>;
+	byId: Map<string, Incident>;
+}
+
+const REGISTRY_SYMBOL = Symbol.for("kendex.pi.claude-bridge.incidents.v1");
+
+function incidentRegistry(): IncidentRegistryV1 {
+	const host = globalThis as Record<symbol, unknown>;
+	let registry = host[REGISTRY_SYMBOL] as IncidentRegistryV1 | undefined;
+	if (!registry) {
+		registry = { bySignature: new Map(), byId: new Map() };
+		host[REGISTRY_SYMBOL] = registry;
+	}
+	return registry;
+}
+
+const { bySignature: incidents, byId: incidentsById } = incidentRegistry();
 
 /** `bi-` plus 4 to 6 base36 characters, never with three digits in a row: Pi's
  *  retry matcher looks for status codes such as 429 or 503 anywhere in an
