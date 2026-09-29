@@ -1,42 +1,34 @@
-// Incident filing (enabled by a user-scoped `incidents.repo` only).
+// Incident filing, which only the agent starts (the claude_bridge_incident
+// tool) and only a user-scoped `incidents.repo` enables.
 //
-// A new user-visible, silent or external incident becomes an issue in that
-// repo, through `gh` with an explicit `--repo`. The issue body carries a
-// marker with the signature; before creating, the filer searches the repo's
-// open issues for it and comments on the one it finds instead, so other
-// processes (this state is per process) file each signature once.
-//
-// Filing never runs in the stream loop: an occurrence only queues a task,
-// which starts on a later turn of the event loop and spawns `gh`
-// asynchronously. At most FILINGS_PER_HOUR creates and comments go out per
-// process per hour, at most one comment per signature per hour; past that
-// the incident is only counted. A failed `gh` (missing, logged out, erroring)
-// is recorded on the incident and not tried again for an hour.
+// An incident becomes an issue in that repo, through `gh` with an explicit
+// `--repo`. The issue body carries a marker with the signature; before
+// creating, the filer searches the repo's open issues for it and comments on
+// the one it finds instead, so separate processes file each signature once.
+// Within a process an incident is filed at most once: the filings are kept by
+// incident id in process-global state, which every copy of the bridge shares.
+// A failed `gh` (missing, logged out, erroring) is not a filing.
 //
 // Only signatures of the code's class and site tables are filed
-// (isKnownSignature); any other is marked `skipped unknown-signature` and no
-// `gh` runs for it. The body is built from evidence validated by kind where
+// (isKnownSignature). The body is built from evidence validated by kind where
 // it was recorded (incidents.ts, projectDiagMetadata) and fixed bridge prose.
-// Every title, body and comment passes sanitizeForIssue at the boundary.
-//
-// An agent's note on an incident (claude_bridge_incident_note) is free text:
-// it passes sanitizeFreeText, the secret scan and the no-tagging rule, before
-// it is quoted into a comment. A note for an incident with no issue yet is
-// kept here, in memory only, and posted after the next write that files it.
+// The agent's summary is free text: it passes sanitizeFreeText, the secret
+// scan and the no-tagging rule, and is quoted line by line. Every title, body
+// and comment passes sanitizeForIssue at the boundary.
 
 import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { displayPath, piUserDir } from "./config.js";
 import { debug } from "./debug.js";
 import { sanitizeForIssue, sanitizeFreeText } from "./incident-sanitizer.js";
 import { isKnownSignature, type Incident, type IncidentLabel } from "./incidents.js";
 
-const FILINGS_PER_HOUR = 5;
-const HOUR_MS = 60 * 60 * 1000;
 const GH_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 60 * 1024;
+const MAX_SHOW_BYTES = 24 * 1024;
 const MAX_GH_OUTPUT = 1024 * 1024;
 const SEARCH_LIMIT = "30";
-const MAX_NOTES_PER_INCIDENT = 3;
-export const MAX_NOTE_LENGTH = 2000;
+export const MAX_SUMMARY_LENGTH = 4000;
 
 /** What happened, per label, in plain words. Opens every issue. */
 const DESCRIPTIONS: Record<IncidentLabel, string> = {
@@ -115,18 +107,9 @@ export const REPRO_TEST_FILES: readonly string[] = [...new Set(Object.values(REP
 
 let repo: string | undefined;
 let persist: (incident: Incident) => void = () => {};
-let now = (): number => Date.now();
-const filedAt: number[] = [];
-const lastWriteAt = new Map<string, number>();
-const queued = new Set<string>();
-let failedUntil = 0;
-let failure = "";
-let chain: Promise<void> = Promise.resolve();
-const pendingNotes = new Map<string, string[]>();
-const noteCounts = new Map<string, number>();
 
 /** Enables filing into `target` (a validated `owner/name`), or disables it.
- *  `onChange` persists an incident whose issue or filing state changed. */
+ *  `onChange` persists an incident whose issue changed. */
 export function configureFiler(target: string | undefined, onChange: (incident: Incident) => void): void {
 	repo = target;
 	persist = onChange;
@@ -135,11 +118,6 @@ export function configureFiler(target: string | undefined, onChange: (incident: 
 /** The configured `incidents.repo`, or undefined when filing is off. */
 export function filingRepo(): string | undefined {
 	return repo;
-}
-
-/** Settles once every filing queued so far has finished. */
-export function whenFilingSettles(): Promise<void> {
-	return chain;
 }
 
 function labelOf(signature: string): string {
@@ -192,8 +170,25 @@ function snapshotSection(title: string, snapshot: Incident["snapshot"]): string[
 }
 
 function whatHappened(incident: Incident): string {
-	const description = DESCRIPTIONS[labelOf(incident.signature) as IncidentLabel] ?? "The bridge recorded an anomaly.";
-	return `${description} ${SEEN[incident.class](incident)}`;
+	return `${describe(incident)} ${SEEN[incident.class](incident)}`;
+}
+
+function describe(incident: Incident): string {
+	return DESCRIPTIONS[labelOf(incident.signature) as IncidentLabel] ?? "The bridge recorded an anomaly.";
+}
+
+/** The agent's summary, already sanitized, quoted line by line so it can
+ *  never be markup of the issue or comment. */
+function analysisSection(heading: string, analysis: string | undefined): string[] {
+	if (analysis === undefined) return [];
+	return [
+		`${heading} Agent's analysis`,
+		"",
+		"The agent working in the session where this happened wrote:",
+		"",
+		...analysis.split(/\r?\n/).map((line) => `> ${line}`.trimEnd()),
+		"",
+	];
 }
 
 function howToReproduce(incident: Incident): string {
@@ -204,10 +199,11 @@ function howToReproduce(incident: Incident): string {
 	return `The flight-recorder snapshot is the event order a fake-SDK unit test would script: each record is an SDK message or stream event, a tools/call, a claim, a result or a cursor move, in the order the bridge saw them. ${pointer}`;
 }
 
-/** The issue body: the problem, the evidence, the recorder snapshots, the
- *  diag metadata and how to reproduce. Metadata only, under 60 KB: the
- *  latest snapshot, then the oldest records, give way first. */
-export function issueBody(incident: Incident): string {
+/** The issue body: the problem, the agent's analysis (sanitized), the
+ *  evidence, the recorder snapshots, the diag metadata and how to reproduce.
+ *  Metadata and the analysis only, under 60 KB: the latest snapshot, then the
+ *  oldest records, give way first. */
+export function issueBody(incident: Incident, analysis?: string): string {
 	let first = incident.snapshot;
 	let latest = incident.latestSnapshot;
 	let diag: unknown = { first: incident.diag, ...(incident.latestDiag ? { latest: incident.latestDiag } : {}) };
@@ -218,6 +214,7 @@ export function issueBody(incident: Incident): string {
 			"",
 			whatHappened(incident),
 			"",
+			...analysisSection("##", analysis),
 			"## Evidence",
 			"",
 			evidenceTable(incident),
@@ -246,11 +243,11 @@ export function issueBody(incident: Incident): string {
 	}
 }
 
-/** A comment for a later occurrence (or a first one in this process, on an
- *  issue another process filed): the evidence, the latest snapshot and the
+/** A comment on the issue another process filed for the signature: the
+ *  agent's analysis (sanitized), the evidence, the latest snapshot and the
  *  latest diag metadata. Under 60 KB like the body: the oldest records, then
  *  the diag, give way first. */
-export function occurrenceComment(incident: Incident): string {
+export function occurrenceComment(incident: Incident, analysis?: string): string {
 	let snapshot = incident.latestSnapshot ?? incident.snapshot;
 	let diag: unknown = incident.latestDiag ?? incident.diag;
 	for (;;) {
@@ -259,6 +256,7 @@ export function occurrenceComment(incident: Incident): string {
 			"",
 			SEEN[incident.class](incident),
 			"",
+			...analysisSection("###", analysis),
 			evidenceTable(incident),
 			"",
 			...snapshotSection("Latest occurrence", snapshot),
@@ -275,17 +273,55 @@ export function occurrenceComment(incident: Incident): string {
 	}
 }
 
-/** The comment an agent's note becomes: fixed prose, then the note quoted
- *  line by line, so it can never be markup of the comment itself. */
-function noteComment(incident: Incident, note: string): string {
-	return [
-		"## Note from an agent",
-		"",
-		`An agent using the bridge added this about incident ${incident.id}:`,
-		"",
-		...note.split(/\r?\n/).map((line) => `> ${line}`.trimEnd()),
-		"",
-	].join("\n");
+// --- What the agent is shown ---
+
+const USER_SAW: Record<Incident["class"], string> = {
+	"user-visible": "an error was shown, naming this incident.",
+	silent: "nothing; the bridge recovered silently.",
+	external: "Claude Code or the Anthropic API reported this, and the bridge passed it on.",
+	expected: "nothing; this is normal cleanup, counted only.",
+};
+
+/** One line for `list`: the id, what happened, and where and how often. */
+export function incidentListLine(incident: Incident): string {
+	const times = incident.count === 1 ? "1 time" : `${incident.count} times`;
+	const filed = incident.issue !== undefined && repo ? `, filed as ${repo}#${incident.issue}` : "";
+	return `- ${incident.id}: ${describe(incident)} (${labelOf(incident.signature)} at ${siteOf(incident.signature)}, ${incident.class}, seen ${times}, first ${incident.firstSeen}, last ${incident.lastSeen}${filed})`;
+}
+
+/** What `show` returns: the description, what the user saw, and the same
+ *  validated evidence an issue carries, with the latest recorder snapshot.
+ *  Under 24 KB: the oldest records, then the diag, give way first. */
+export function incidentDetails(incident: Incident): string {
+	let snapshot = incident.latestSnapshot !== undefined ? incident.latestSnapshot : incident.snapshot;
+	let diag: unknown = { first: incident.diag, ...(incident.latestDiag ? { latest: incident.latestDiag } : {}) };
+	for (;;) {
+		const text = [
+			`Incident ${incident.id}: ${labelOf(incident.signature)} at ${siteOf(incident.signature)} (${incident.class})`,
+			"",
+			describe(incident),
+			`What the user saw: ${USER_SAW[incident.class]}`,
+			...(incident.issue !== undefined && repo ? [`Filed as ${repo}#${incident.issue} (${issueUrl(repo, incident.issue)}).`] : []),
+			"",
+			"## Evidence",
+			"",
+			evidenceTable(incident),
+			"",
+			"## Diag metadata",
+			"",
+			jsonBlock(diag),
+			"",
+			...(snapshot !== undefined ? ["## Latest recorder snapshot", "", "Recent events of the query, oldest first; `t` is milliseconds since the query started.", "", snapshot === null ? "None: this happened before the request's query started." : jsonBlock(snapshot)] : []),
+		].join("\n");
+		if (Buffer.byteLength(text) < MAX_SHOW_BYTES) return text;
+		if (Array.isArray(snapshot) && snapshot.length > 1) snapshot = snapshot.slice(Math.floor(snapshot.length / 2));
+		else if (diag !== "(too large)") diag = "(too large)";
+		else return text.slice(0, MAX_SHOW_BYTES / 2);
+	}
+}
+
+function issueUrl(target: string, issue: number): string {
+	return `https://github.com/${target}/issues/${issue}`;
 }
 
 // --- gh ---
@@ -349,8 +385,8 @@ async function searchIssue(target: string, signature: string): Promise<number | 
 	return found?.number;
 }
 
-async function createIssue(target: string, incident: Incident): Promise<number> {
-	const out = await runGh(["issue", "create", "--repo", target, "--title", sanitizeForIssue(issueTitle(incident), target), "--body-file", "-"], sanitizeForIssue(issueBody(incident), target));
+async function createIssue(target: string, incident: Incident, analysis: string): Promise<number> {
+	const out = await runGh(["issue", "create", "--repo", target, "--title", sanitizeForIssue(issueTitle(incident), target), "--body-file", "-"], sanitizeForIssue(issueBody(incident, analysis), target));
 	const number = Number(out.match(/\/issues\/(\d+)/)?.[1]);
 	if (!Number.isInteger(number)) throw new GhFailure("gh-output");
 	return number;
@@ -360,181 +396,86 @@ async function comment(target: string, issue: number, text: string): Promise<voi
 	await runGh(["issue", "comment", String(issue), "--repo", target, "--body-file", "-"], sanitizeForIssue(text, target));
 }
 
-// --- Scheduling ---
+// --- Filing ---
 
-function slotFree(at: number): boolean {
-	while (filedAt.length > 0 && at - filedAt[0] >= HOUR_MS) filedAt.shift();
-	return filedAt.length < FILINGS_PER_HOUR;
+/** Why an incident was not filed; its message is the tool's error text. */
+class FilingRefused extends Error {}
+
+interface Filing {
+	action: "filed" | "commented";
+	repo: string;
+	issue: number;
 }
 
-function recentlyWritten(signature: string, at: number): boolean {
-	const last = lastWriteAt.get(signature);
-	return last !== undefined && at - last < HOUR_MS;
-}
+const FILINGS_SYMBOL = Symbol.for("kendex.pi.claude-bridge.incident-filings.v1");
 
-const UNKNOWN_SIGNATURE = "skipped unknown-signature";
-
-/** Called for every occurrence. Cheap: at most a queued task, which runs on
- *  a later turn of the event loop. */
-export function noteIncidentForFiling(incident: Incident): void {
-	if (!repo || incident.class === "expected" || queued.has(incident.signature)) return;
-	if (!isKnownSignature(incident.signature)) {
-		if (incident.filing !== UNKNOWN_SIGNATURE) {
-			incident.filing = UNKNOWN_SIGNATURE;
-			persist(incident);
-		}
-		return;
+/** Every filing of this process by incident id, finished or running. */
+function filings(): Map<string, Promise<Filing>> {
+	const host = globalThis as Record<symbol, unknown>;
+	let store = host[FILINGS_SYMBOL] as Map<string, Promise<Filing>> | undefined;
+	if (!store) {
+		store = new Map();
+		host[FILINGS_SYMBOL] = store;
 	}
-	const at = now();
-	if (incident.issue !== undefined && recentlyWritten(incident.signature, at)) return;
-	queued.add(incident.signature);
+	return store;
+}
+
+function filingOffText(): string {
+	return `Incident filing is off. The user can turn it on by adding "incidents": { "repo": "<owner>/<name>" } to ${displayPath(join(piUserDir(), "claude-bridge.json"))}, the user config; a project's config cannot set it. Filing uses the gh CLI, installed and logged in.`;
+}
+
+/** Files `incident` with the agent's `summary` (free text, at most
+ *  MAX_SUMMARY_LENGTH characters): a comment on the open issue carrying its
+ *  marker, or a new issue. Resolves the tool's reply; a filing already made
+ *  in this process (or running) is returned without `gh`. Throws
+ *  FilingRefused, or an Error naming gh's short failure reason. */
+export async function fileIncident(incident: Incident, summary: string | undefined): Promise<string> {
 	const target = repo;
-	chain = chain
-		.then(() => new Promise<void>((resolve) => setImmediate(resolve)))
-		.then(() => {
-			queued.delete(incident.signature);
-			return fileOccurrence(incident, target);
-		})
-		.catch((error) => debug("incidents: filing failed:", error));
-}
-
-async function fileOccurrence(incident: Incident, target: string): Promise<void> {
-	if (repo !== target) return;
-	const at = now();
-	if (at < failedUntil) {
-		if (incident.issue === undefined && incident.filing !== `failed ${failure}`) {
-			incident.filing = `failed ${failure}`;
-			persist(incident);
-		}
-		return;
+	if (!target) throw new FilingRefused(filingOffText());
+	if (incident.class === "expected") throw new FilingRefused(`Incident ${incident.id} is expected cleanup, which is never filed.`);
+	if (!isKnownSignature(incident.signature)) throw new FilingRefused(`Incident ${incident.id} is not one the bridge files.`);
+	const text = summary ?? "";
+	if (text.trim().length === 0) throw new FilingRefused("A summary is required to file an incident: describe what the bridge did and your analysis of it.");
+	if (text.length > MAX_SUMMARY_LENGTH) throw new FilingRefused(`The summary is ${text.length} characters; the limit is ${MAX_SUMMARY_LENGTH}. Shorten it and file again.`);
+	const store = filings();
+	const earlier = store.get(incident.id);
+	if (earlier) {
+		const filed = await earlier;
+		return `Incident ${incident.id} was already filed in this Pi process as ${filed.repo}#${filed.issue} (${issueUrl(filed.repo, filed.issue)}). Tell the user it is filed there.`;
 	}
-	if (recentlyWritten(incident.signature, at)) return;
-	if (!slotFree(at)) {
-		if (incident.issue === undefined && incident.filing !== "deferred rate-limit") {
-			incident.filing = "deferred rate-limit";
-			persist(incident);
-		}
-		return;
-	}
-	try {
-		if (incident.issue !== undefined) {
-			await comment(target, incident.issue, occurrenceComment(incident));
-		} else {
-			const existing = await searchIssue(target, incident.signature);
-			if (existing !== undefined) {
-				incident.issue = existing;
-				await comment(target, existing, occurrenceComment(incident));
-				incident.filing = "commented";
-			} else {
-				incident.issue = await createIssue(target, incident);
-				incident.filing = "filed";
-			}
-		}
-		// Both limits count from when GitHub took the write: the search before
-		// it can take seconds, and `at` would expire the hour that much early.
-		const wroteAt = now();
-		filedAt.push(wroteAt);
-		lastWriteAt.set(incident.signature, wroteAt);
-	} catch (error) {
-		recordGhFailure(error);
-		incident.filing = `failed ${failure}`;
-		debug(`incidents: gh failed for ${incident.signature}: ${failure}`);
-		persist(incident);
-		return;
-	}
-	try {
-		await postPendingNotes(target, incident);
-	} catch (error) {
-		recordGhFailure(error);
-		debug(`incidents: gh failed for a note on ${incident.signature}: ${failure}`);
-	}
-	persist(incident);
-}
-
-// --- Agent notes ---
-
-/** Why a note was refused; its message is the tool's error text. */
-export class NoteRefused extends Error {}
-
-export type NoteOutcome = { status: "added"; repo: string; issue: number } | { status: "kept"; reason: string };
-
-/** Adds `note` (free text, at most MAX_NOTE_LENGTH characters) to the issue
- *  of `incident`, after the filings queued before it; keeps it for the issue
- *  when the incident is not filed yet or gh is failing. */
-export function fileIncidentNote(incident: Incident, note: string): Promise<NoteOutcome> {
-	const target = repo;
-	if (!target) throw new NoteRefused("Incident filing is not enabled.");
-	if (incident.class === "expected") throw new NoteRefused(`Incident ${incident.id} is expected cleanup, which is never filed.`);
-	if (!isKnownSignature(incident.signature)) throw new NoteRefused(`Incident ${incident.id} is not one the bridge files.`);
-	if (note.trim().length === 0) throw new NoteRefused("The note is empty.");
-	if (note.length > MAX_NOTE_LENGTH) throw new NoteRefused(`The note is ${note.length} characters; the limit is ${MAX_NOTE_LENGTH}.`);
-	const count = noteCounts.get(incident.signature) ?? 0;
-	if (count >= MAX_NOTES_PER_INCIDENT) throw new NoteRefused(`Incident ${incident.id} already has ${MAX_NOTES_PER_INCIDENT} notes from this Pi process.`);
-	noteCounts.set(incident.signature, count + 1);
-	const body = noteComment(incident, sanitizeFreeText(note, target));
-	return new Promise<NoteOutcome>((resolve) => {
-		const keep = (reason: string): void => {
-			pendingNotes.set(incident.signature, [...pendingNotes.get(incident.signature) ?? [], body]);
-			resolve({ status: "kept", reason });
-		};
-		chain = chain
-			.then(async () => {
-				if (repo !== target || incident.issue === undefined) return keep(incident.filing ?? "filing in progress");
-				if (now() < failedUntil) return keep(`failed ${failure}`);
-				try {
-					await comment(target, incident.issue, body);
-					resolve({ status: "added", repo: target, issue: incident.issue });
-				} catch (error) {
-					recordGhFailure(error);
-					keep(`failed ${failure}`);
-				}
-			})
-			.catch((error) => {
-				debug("incidents: note failed:", error);
-				keep("error");
-			});
+	const filing: Promise<Filing> = fileWithGh(target, incident, sanitizeFreeText(text, target)).catch((error: unknown) => {
+		// A failed gh is not a filing: the agent may file it again.
+		if (store.get(incident.id) === filing) store.delete(incident.id);
+		const reason = error instanceof GhFailure ? error.reason : "error";
+		debug(`incidents: gh failed filing ${incident.signature}: ${reason}`);
+		throw new Error(`Could not file incident ${incident.id}: ${reason}.`);
 	});
+	store.set(incident.id, filing);
+	const filed = await filing;
+	const where = `${filed.repo}#${filed.issue} (${issueUrl(filed.repo, filed.issue)})`;
+	return filed.action === "filed"
+		? `Filed ${where}. Tell the user you filed it.`
+		: `Commented on ${where}, the open issue already filed for this incident's signature. Tell the user you commented on it.`;
 }
 
-/** Posts the notes kept for `incident` now that it has an issue. */
-async function postPendingNotes(target: string, incident: Incident): Promise<void> {
-	const notes = pendingNotes.get(incident.signature);
-	if (!notes || incident.issue === undefined) return;
-	while (notes.length > 0) {
-		await comment(target, incident.issue, notes[0]);
-		notes.shift();
+async function fileWithGh(target: string, incident: Incident, analysis: string): Promise<Filing> {
+	const existing = await searchIssue(target, incident.signature);
+	let filed: Filing;
+	if (existing !== undefined) {
+		await comment(target, existing, occurrenceComment(incident, analysis));
+		filed = { action: "commented", repo: target, issue: existing };
+	} else {
+		filed = { action: "filed", repo: target, issue: await createIssue(target, incident, analysis) };
 	}
-	pendingNotes.delete(incident.signature);
-}
-
-function recordGhFailure(error: unknown): void {
-	failure = error instanceof GhFailure ? error.reason : "error";
-	failedUntil = now() + HOUR_MS;
+	incident.issue = filed.issue;
+	persist(incident);
+	return filed;
 }
 
 // --- Test seams ---
 
-export function __testSetFilerClock(clock?: () => number): void {
-	now = clock ?? (() => Date.now());
-}
-
-export async function __testFlushFilings(): Promise<void> {
-	let seen: Promise<void> | undefined;
-	while (seen !== chain) {
-		seen = chain;
-		await chain;
-	}
-}
-
 export function __testResetFiler(): void {
 	repo = undefined;
 	persist = () => {};
-	filedAt.length = 0;
-	lastWriteAt.clear();
-	queued.clear();
-	pendingNotes.clear();
-	noteCounts.clear();
-	failedUntil = 0;
-	failure = "";
-	chain = Promise.resolve();
+	filings().clear();
 }

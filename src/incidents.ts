@@ -6,9 +6,10 @@
 // versions, site names), never prompt, tool-argument, tool-result or user text;
 // diag payloads pass through projectDiagMetadata for that reason.
 //
-// Recording is always on and in memory. Disk writes and filing (incident-
-// filer.ts) need a USER-scoped `incidents.repo` (configureIncidents); without
-// it nothing leaves the process.
+// Recording is always on and in memory. Disk writes need a USER-scoped
+// `incidents.repo` (configureIncidents), and so does filing, which only the
+// agent starts (incident-filer.ts, incident-tool.ts); without it nothing
+// leaves the process.
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, stat } from "node:fs/promises";
@@ -16,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { piUserDir } from "./config.js";
 import { DEBUG_LOG_MAX_BYTES, DEBUG_LOG_ROTATED_FILES, debug, diagDump } from "./debug.js";
-import { __testFlushFilings, __testResetFiler, configureFiler, noteIncidentForFiling } from "./incident-filer.js";
+import { __testResetFiler, configureFiler } from "./incident-filer.js";
 import { CLAUDE_ACCOUNT_FAILURE_KINDS } from "./account-router.js";
 import { RECORDER_KINDS, type FlightRecord, type FlightRecorder } from "./flight-recorder.js";
 import { SDK_RESULT_SUBTYPES, SDK_SYSTEM_SUBTYPES, STREAM_ABANDON_REASONS, TURN_BLOCK_TYPES } from "./incident-labels.js";
@@ -144,11 +145,9 @@ export interface Incident {
 	phase?: "before-query";
 	diag: Record<string, unknown>;
 	latestDiag?: Record<string, unknown>;
-	/** The issue in `incidents.repo` this signature is filed as. */
+	/** The issue in `incidents.repo` the agent filed this incident as, or
+	 *  commented on. */
 	issue?: number;
-	/** How filing went: "filed", "commented", "deferred rate-limit",
-	 *  "skipped unknown-signature" or "failed <reason>" (incident-filer.ts). */
-	filing?: string;
 }
 
 /** What an incident takes from the query it happened in (a QueryContext).
@@ -436,8 +435,8 @@ function newIncidentId(): string {
 let occurrenceListener: ((incident: Incident) => void) | undefined;
 
 /** Calls `listener` (the agent notice, incident-notice.ts) for every
- *  non-expected occurrence, right after it is recorded and queued for filing,
- *  in the request lane it happened in. */
+ *  non-expected occurrence, right after it is recorded, in the request lane
+ *  it happened in. */
 export function setIncidentListener(listener: ((incident: Incident) => void) | undefined): void {
 	occurrenceListener = listener;
 }
@@ -472,7 +471,6 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 			existing.latestDiag = projectDiagMetadata(data);
 		}
 		queueStoreWrite(existing, false);
-		noteIncidentForFiling(existing);
 		notifyListener(existing);
 		return existing;
 	}
@@ -494,7 +492,6 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 	incidents.set(signature, incident);
 	incidentsById.set(incident.id, incident);
 	queueStoreWrite(incident, true);
-	noteIncidentForFiling(incident);
 	notifyListener(incident);
 	return incident;
 }
@@ -707,7 +704,6 @@ function storeLine(incident: Incident, full: boolean): Record<string, unknown> {
 		return {
 			type: "count", id: incident.id, signature: incident.signature, class: incident.class, count: incident.count, lastSeen: incident.lastSeen,
 			...(incident.issue !== undefined ? { issue: incident.issue } : {}),
-			...(incident.filing !== undefined ? { filing: incident.filing } : {}),
 		};
 	}
 	return { type: "incident", ...incident };
@@ -762,7 +758,6 @@ export async function __testFlushIncidents(): Promise<void> {
 		flushTimer = undefined;
 	}
 	await versionCheck;
-	await __testFlushFilings();
 	flushChain = flushChain.then(flushStore);
 	await flushChain;
 }

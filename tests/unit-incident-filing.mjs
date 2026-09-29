@@ -1,13 +1,14 @@
-// Incident filing: with a user-scoped `incidents.repo`, a new non-expected
-// incident becomes an issue in that repo through `gh`, or a comment on the
-// open issue that already carries its marker. Filing is rate limited, never
-// blocks the stream, and every string it publishes passes the sanitizer.
-// `gh` here is a fake on PATH that records its argv and stdin.
+// Incident filing: nothing is filed when an incident happens. The agent files
+// one with `claude_bridge_incident` (action "file"), which needs a
+// user-scoped `incidents.repo`: it becomes an issue in that repo through
+// `gh`, or a comment on the open issue that already carries its marker, with
+// the agent's summary quoted in it. Every string it publishes passes the
+// sanitizer. `gh` here is a fake on PATH that records its argv and stdin.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -15,28 +16,19 @@ import { Type } from "@earendil-works/pi-ai";
 
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
-import { REPRO_TEST_FILES, __testSetFilerClock } from "../src/incident-filer.ts";
+import { REPRO_TEST_FILES } from "../src/incident-filer.ts";
 import { __testFlushIncidents, __testResetIncidents, listIncidents, recordIncident } from "../src/incidents.ts";
 import { resetStack } from "../src/query-state.ts";
 
 const REPO = "nicobailon/bridge-incidents";
-const HOUR = 60 * 60 * 1000;
+const TOOL = "claude_bridge_incident";
 const PROMPT_SENTINEL = "PROMPT-SENTINEL-do-not-file";
 const API_SENTINEL = "API-SENTINEL-do-not-file";
+const SUMMARY = "The bridge answered one tool call twice; the second answer looks like a bridge bug.";
 // Built at run time: the sanitizer keeps these out of what is filed.
 const mention = (name) => `@${name}`;
 const otherRef = ["someone-else", "their-repo"].join("/") + "#12";
 const otherLink = ["https://github.com", "someone-else", "their-repo", "issues", "3"].join("/");
-// Signatures the bridge's code reports: only those are filed.
-const SILENT = [
-	"tool_result_delivery_mismatch@query-teardown",
-	"session_verify_fail@verifyWrittenSession",
-	"persist_shared_session_failed@schedulePersistSharedSession",
-	"stale_queued_tool_results_parked@reapStaleQueuedResults",
-	"tool_call_abandoned_by_claude_code@noteAbandonedToolCalls",
-	"empty_prompt@streamRequestInLane",
-	"steering_write_in_flight@streamRequestInLane",
-];
 // Synthetic: 30 bytes of a hash of fixed text, valid base64 and base64url.
 const SYNTHETIC_KEY = createHash("sha256").update("synthetic-review-token-34135").digest().subarray(0, 30).toString("base64");
 const LONG_MCP_TOOL = "mcp__git__get_pr_by_id_from_repo_with_org_name";
@@ -59,24 +51,10 @@ const model = {
 let agentDir;
 let ghDir;
 let savedPath;
-let clockFile;
 
-// The filer's clock lives in a file, so the fake gh can move it while it
-// "searches": that is how GitHub's latency looks to the filer.
-const readClock = () => Number(readFileSync(clockFile, "utf8"));
-const advance = (ms) => writeFileSync(clockFile, String(readClock() + ms));
-const setClock = (ms) => writeFileSync(clockFile, String(ms));
-
-/** The most gh writes (creates and comments) in any rolling hour. */
-function mostWritesInAnHour() {
-	const at = ghCalls().filter((call) => call.argv[1] !== "list").map((call) => call.at);
-	return Math.max(0, ...at.map((end) => at.filter((t) => t > end - HOUR && t <= end).length));
-}
-
-/** A fake `gh`: logs {argv, stdin, at}, answers `issue list` from its state
- *  file, and numbers the issues it creates. `mode: "auth"` fails like a
- *  logged-out gh does; `searchDelayMs` is how long the first `issue list`
- *  takes on the filer's clock. */
+/** A fake `gh`: logs {argv, stdin}, answers `issue list` from its state file,
+ *  and numbers the issues it creates. `mode: "auth"` fails like a logged-out
+ *  gh does. */
 function installFakeGh(state = {}) {
 	ghDir = mkdtempSync(join(agentDir, "gh-"));
 	writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 7, ...state }));
@@ -89,13 +67,7 @@ process.stdin.on("data", (chunk) => { stdin += chunk; });
 process.stdin.on("end", () => {
 	const argv = process.argv.slice(2);
 	const state = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
-	const clockFile = ${JSON.stringify(clockFile)};
-	if (argv[1] === "list" && state.searchDelayMs) {
-		fs.writeFileSync(clockFile, String(Number(fs.readFileSync(clockFile, "utf8")) + state.searchDelayMs));
-		state.searchDelayMs = 0;
-		fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state));
-	}
-	fs.appendFileSync(path.join(dir, "log.jsonl"), JSON.stringify({ argv, stdin, at: Number(fs.readFileSync(clockFile, "utf8")) }) + "\\n");
+	fs.appendFileSync(path.join(dir, "log.jsonl"), JSON.stringify({ argv, stdin }) + "\\n");
 	if (state.mode === "auth") {
 		process.stderr.write("To get started with GitHub CLI, please run:  gh auth login\\n");
 		process.exit(4);
@@ -126,22 +98,33 @@ function ghCalls() {
 
 const creates = () => ghCalls().filter((call) => call.argv[1] === "create");
 const comments = () => ghCalls().filter((call) => call.argv[1] === "comment");
+const writes = () => ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
 
-function enableFiling() {
-	writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ incidents: { repo: REPO } }));
-	loadExtension();
-}
-
-function loadExtension() {
+/** Loads the extension into a fake Pi, with `incidents.repo` in the user
+ *  config unless `repo` is false; returns the incident tool it registered. */
+function loadExtension({ repo = true } = {}) {
+	if (repo) writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ incidents: { repo: REPO } }));
+	const tools = new Map();
 	claudeBridge({
 		on: () => {},
 		registerCommand: () => {},
 		registerProvider: () => {},
-		registerTool: () => {},
+		registerTool: (tool) => tools.set(tool.name, tool),
 		events: { emit: () => {} },
 		appendEntry: () => {},
 	});
+	return tools.get(TOOL);
 }
+
+/** Runs the tool as Pi's agent loop does; resolves its text, rejects with the
+ *  error Pi turns into the tool's error result. */
+async function runTool(tool, params) {
+	assert.ok(tool, "the incident tool is registered");
+	const result = await tool.execute("call-1", params, undefined, undefined, {});
+	return result.content.map((block) => block.text).join("");
+}
+
+const file = (tool, incident, summary = SUMMARY) => runTool(tool, { action: "file", incident: incident.id, summary });
 
 async function collect(stream) {
 	const events = [];
@@ -164,18 +147,22 @@ async function offerPiTools(names) {
 	await collect(streamClaudeAgentSdk(model, { messages: [{ role: "system", content: "test system prompt", toolsAdded: tools, timestamp: 0 }, { role: "user", content: "hello", timestamp: 1 }] }, { sessionId: "filing-tools" }));
 }
 
-/** Files `data` (and a recorder id) twice, an hour apart: an issue, then a
- *  comment. Returns both writes. */
-async function fileTwice(data, recordId) {
-	recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", data);
-	await __testFlushIncidents();
-	advance(HOUR + 1);
-	recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", data, { recorder: { snapshot: () => [{ t: 0, kind: "tools_call", id: recordId }] } });
-	await __testFlushIncidents();
-	const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
-	assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
-	return writes;
+/** Files incident `record()` returns in this process (an issue), then, as
+ *  another Pi process would, files it again (a comment on that issue).
+ *  `setup` runs in each process before its incident is recorded. Returns
+ *  both writes. */
+async function fileInTwoProcesses(record, setup = async () => {}) {
+	let tool = loadExtension();
+	await setup();
+	await file(tool, record(undefined));
+	__testResetIncidents();
+	tool = loadExtension();
+	await setup();
+	await file(tool, record({ recorder: { snapshot: () => [{ t: 0, kind: "tools_call", id: RECORD_ID.current }] } }));
+	assert.deepEqual(writes().map((call) => call.argv[1]), ["create", "comment"]);
+	return writes();
 }
+const RECORD_ID = { current: undefined };
 
 /** One query whose Claude Code yields `messages`, from a fresh session. */
 async function runQuery(messages) {
@@ -205,6 +192,7 @@ async function runApiError() {
 }
 
 const marker = (signature) => `<!-- claude-bridge-incident: ${signature} -->`;
+const find = (signature) => listIncidents().find((entry) => entry.signature === signature);
 
 beforeEach(() => {
 	agentDir = mkdtempSync(join(tmpdir(), "bridge-filing-"));
@@ -213,11 +201,9 @@ beforeEach(() => {
 	process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "0";
 	process.env.CLAUDE_CODE_OAUTH_TOKEN = "test-token";
 	process.env.CLAUDE_BRIDGE_DIAG_PATH = join(agentDir, "diag.log");
-	clockFile = join(agentDir, "clock");
-	writeFileSync(clockFile, String(Date.parse("2026-09-28T12:00:00Z")));
+	RECORD_ID.current = undefined;
 	resetStack();
 	__testResetIncidents();
-	__testSetFilerClock(readClock);
 	__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: () => {} } });
 	setExtensionApi({ events: { emit: () => {} }, appendEntry: () => {} });
 });
@@ -228,7 +214,6 @@ afterEach(() => {
 	delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 	delete process.env.CLAUDE_BRIDGE_DIAG_PATH;
 	__testSetSdkQueryFactory();
-	__testSetFilerClock();
 	setExtensionApi(undefined);
 	resetStack();
 	__testResetIncidents();
@@ -237,15 +222,30 @@ afterEach(() => {
 });
 
 describe("incident filing", () => {
-	it("files a new incident once, as an issue in the configured repo, with metadata only", async () => {
+	it("files nothing when incidents happen, even with incidents.repo set", async () => {
 		installFakeGh();
-		enableFiling();
+		loadExtension();
 		await runApiError();
-		await runApiError();
+		recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
+		recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", {});
+		recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", {});
 		await __testFlushIncidents();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(listIncidents().length, 3);
+		assert.deepEqual(ghCalls(), []);
+	});
+
+	it("files an incident the agent asks for as an issue in the configured repo, with metadata only and its summary", async () => {
+		installFakeGh();
+		const tool = loadExtension();
+		await runApiError();
+		await runApiError();
+		const incident = find("api_error@consumeQuery");
+		const reply = await file(tool, incident);
+		assert.equal(reply, `Filed ${REPO}#7 (https://github.com/${REPO}/issues/7). Tell the user you filed it.`);
 
 		const calls = ghCalls();
-		assert.deepEqual(calls.map((call) => call.argv.slice(0, 2).join(" ")), ["issue list", "issue create"], "one search, one issue, none for the repeat");
+		assert.deepEqual(calls.map((call) => call.argv.slice(0, 2).join(" ")), ["issue list", "issue create"], "one search, one issue");
 		const [search, create] = calls;
 		assert.deepEqual(search.argv.slice(2, 6), ["--repo", REPO, "--state", "open"]);
 		assert.ok(search.argv.includes("--json"));
@@ -253,15 +253,29 @@ describe("incident filing", () => {
 
 		const body = create.stdin;
 		assert.ok(body.startsWith(marker("api_error@consumeQuery")), "the dedupe marker opens the body");
-		const incident = listIncidents().find((entry) => entry.signature === "api_error@consumeQuery");
 		assert.equal(incident.issue, 7);
-		for (const expected of ["## What happened", incident.id, "| Class | external |", "| Count |", "| Model | claude-haiku-4-5 |", "```json", "## How to reproduce", "tests/"]) {
+		for (const expected of ["## What happened", "## Agent's analysis", `> ${SUMMARY}`, incident.id, "| Class | external |", "| Count | 2 |", "| Model | claude-haiku-4-5 |", "```json", "## How to reproduce", "tests/"]) {
 			assert.ok(body.includes(expected), `body has ${expected}`);
 		}
 		for (const secret of [PROMPT_SENTINEL, API_SENTINEL, "test system prompt"]) assert.ok(!body.includes(secret), `no content in the issue: ${secret}`);
-		assert.ok(Buffer.byteLength(body) < 60 * 1024);
+		assert.ok(Buffer.byteLength(body) < 64 * 1024);
+		await __testFlushIncidents();
 		const stored = readFileSync(join(agentDir, "claude-bridge-incidents.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-		assert.ok(stored.some((line) => line.signature === "api_error@consumeQuery" && line.issue === 7 && line.filing === "filed"), "the store records the issue");
+		assert.ok(stored.some((line) => line.signature === "api_error@consumeQuery" && line.issue === 7), "the store records the issue");
+	});
+
+	it("files an incident once per process: filing it again returns its issue without gh", async () => {
+		installFakeGh();
+		const tool = loadExtension();
+		const incident = recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
+		const [first, second] = await Promise.all([file(tool, incident), file(tool, incident, "Another look at it.")]);
+		assert.match(first, /^Filed nicobailon\/bridge-incidents#7 /);
+		const again = `Incident ${incident.id} was already filed in this Pi process as ${REPO}#7 (https://github.com/${REPO}/issues/7). Tell the user it is filed there.`;
+		assert.equal(second, again, "a call while the first is running waits for it");
+		const spawned = ghCalls().length;
+		assert.equal(await file(tool, incident), again);
+		assert.equal(ghCalls().length, spawned, "no gh for a filed incident");
+		assert.equal(creates().length, 1);
 	});
 
 	it("points every issue at a test file that exists", () => {
@@ -271,165 +285,137 @@ describe("incident filing", () => {
 
 	it("comments on the open issue that carries the marker instead of creating one", async () => {
 		installFakeGh({ issues: [{ number: 12, body: `${marker("api_error@consumeQuery")}\nearlier` }, { number: 3, body: marker("api_error@elsewhere") }] });
-		enableFiling();
+		const tool = loadExtension();
 		await runApiError();
-		await __testFlushIncidents();
+		const reply = await file(tool, find("api_error@consumeQuery"));
+		assert.equal(reply, `Commented on ${REPO}#12 (https://github.com/${REPO}/issues/12), the open issue already filed for this incident's signature. Tell the user you commented on it.`);
 
 		assert.equal(creates().length, 0);
 		assert.equal(comments().length, 1);
 		assert.deepEqual(comments()[0].argv, ["issue", "comment", "12", "--repo", REPO, "--body-file", "-"]);
-		assert.ok(!comments()[0].stdin.includes(API_SENTINEL));
-		assert.equal(listIncidents().find((entry) => entry.signature === "api_error@consumeQuery").issue, 12);
+		const text = comments()[0].stdin;
+		for (const expected of ["## Agent's analysis", `> ${SUMMARY}`, "| Class | external |", "### Diag metadata"]) assert.ok(text.includes(expected), `comment has ${expected}`);
+		assert.ok(!text.includes(API_SENTINEL));
+		assert.equal(find("api_error@consumeQuery").issue, 12);
 	});
 
-	it("never files an expected incident", async () => {
+	it("refuses to file without incidents.repo, saying how to enable it, and runs no gh", async () => {
 		installFakeGh();
-		enableFiling();
-		recordIncident("partial_tool_calls_pruned@abort", "expected", {});
-		recordIncident("partial_tool_calls_pruned@stream-end", "silent", {});
-		await __testFlushIncidents();
-		assert.deepEqual(creates().map((call) => call.argv[5]), ["[incident] partial_tool_calls_pruned at stream-end (silent)"]);
-		assert.equal(listIncidents()[0].issue, undefined);
-	});
-
-	it("files nothing without incidents.repo", async () => {
-		installFakeGh();
-		loadExtension();
-		recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
-		await __testFlushIncidents();
+		const tool = loadExtension({ repo: false });
+		const incident = recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
+		await assert.rejects(file(tool, incident), (error) => {
+			assert.match(error.message, /^Incident filing is off\./);
+			assert.ok(error.message.includes(join(agentDir, "claude-bridge.json")), error.message);
+			assert.match(error.message, /"incidents": \{ "repo": "<owner>\/<name>" \}/);
+			return true;
+		});
 		assert.deepEqual(ghCalls(), []);
-		assert.equal(listIncidents()[0].issue, undefined);
-
-		// The same process files once the user config names a repo.
-		enableFiling();
-		recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
-		await __testFlushIncidents();
-		assert.equal(creates().length, 1);
+		assert.equal(incident.issue, undefined);
 	});
 
-	it("files at most 5 times an hour, and comments at most once an hour per signature", async () => {
+	it("refuses a summary over 4,000 characters, a missing one, and an incident the bridge does not file, without gh", async () => {
 		installFakeGh();
-		enableFiling();
-		for (const signature of SILENT) recordIncident(signature, "silent", {});
-		await __testFlushIncidents();
-		assert.equal(creates().length, 5, "the hourly limit holds");
-		assert.deepEqual(listIncidents().map((entry) => entry.issue ?? null), [7, 8, 9, 10, 11, null, null]);
-
-		advance(10 * 60 * 1000);
-		recordIncident(SILENT[0], "silent", {});
-		await __testFlushIncidents();
-		assert.equal(comments().length, 0, "no comment within the hour of filing");
-		assert.equal(listIncidents()[0].count, 2, "counted locally");
-
-		advance(HOUR);
-		recordIncident(SILENT[0], "silent", {});
-		recordIncident(SILENT[0], "silent", {});
-		recordIncident(SILENT[5], "silent", {});
-		await __testFlushIncidents();
-		assert.equal(comments().length, 1, "one comment for the signature in the new hour");
-		assert.equal(comments()[0].argv[2], "7");
-		assert.match(comments()[0].stdin, /\| Count \| 4 \|/, "the comment carries the count when it is filed");
-		assert.equal(creates().length, 6, "the limit frees up after an hour");
-		assert.equal(listIncidents()[5].issue, 12);
+		const tool = loadExtension();
+		const incident = recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
+		const expected = recordIncident("partial_tool_calls_pruned@abort", "expected", {});
+		const unknown = recordIncident("made_up_label@streamRequestInLane", "silent", {});
+		await assert.rejects(file(tool, incident, "x".repeat(4001)), /The summary is 4001 characters; the limit is 4000\./);
+		await assert.rejects(file(tool, incident, "   "), /A summary is required/);
+		await assert.rejects(runTool(tool, { action: "file", incident: incident.id }), /A summary is required/);
+		await assert.rejects(file(tool, expected), new RegExp(`Unknown incident ${expected.id}`));
+		await assert.rejects(file(tool, unknown), new RegExp(`Incident ${unknown.id} is not one the bridge files`));
+		await assert.rejects(runTool(tool, { action: "file", incident: "bi-zzzz", summary: SUMMARY }), /Unknown incident bi-zzzz/);
+		assert.deepEqual(ghCalls(), []);
+		assert.match(await file(tool, incident, "y".repeat(4000)), /^Filed /, "4,000 characters is within the limit");
 	});
 
-	it("holds the hourly limit when GitHub is slow to search", async () => {
-		installFakeGh({ searchDelayMs: 20_000 });
-		enableFiling();
-		const start = readClock();
-		recordIncident(SILENT[0], "silent", {});
-		await __testFlushIncidents();
-		for (const signature of SILENT.slice(1, 5)) recordIncident(signature, "silent", {});
-		await __testFlushIncidents();
-		assert.deepEqual(creates().map((call) => call.at - start), [20_000, 20_000, 20_000, 20_000, 20_000], "the writes happen after the slow search");
-
-		setClock(start + HOUR + 1);
-		recordIncident(SILENT[5], "silent", {});
-		await __testFlushIncidents();
-		assert.equal(creates().length, 5, "an hour from the check before the search is not an hour from the writes");
-		assert.equal(mostWritesInAnHour(), 5);
-
-		setClock(start + 20_000 + HOUR);
-		recordIncident(SILENT[5], "silent", {});
-		await __testFlushIncidents();
-		assert.equal(creates().length, 6, "free an hour after the writes");
-		assert.equal(mostWritesInAnHour(), 5);
+	it("keeps secrets and what the no-tagging rule removes out of the summary it files", async () => {
+		installFakeGh();
+		const tool = loadExtension();
+		const incident = recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
+		const summary = `The read tool returned twice for one call.\n## heading ${mention("someone")} ${otherRef} ${otherLink} ${SYNTHETIC_KEY} ${"a".repeat(40)}`;
+		await file(tool, incident, summary);
+		const body = creates()[0].stdin;
+		assert.ok(body.includes("> The read tool returned twice for one call."));
+		assert.ok(body.includes("> ## heading"), "the summary is quoted, never markup of the issue");
+		for (const removed of [mention("someone"), otherRef, otherLink, SYNTHETIC_KEY, "a".repeat(40)]) assert.ok(!body.includes(removed), removed.slice(0, 16));
 	});
 
-	it("comments on a signature at most once an hour when GitHub is slow to search", async () => {
-		installFakeGh({ searchDelayMs: 20_000, issues: [{ number: 12, body: marker("api_error@consumeQuery") }] });
-		enableFiling();
-		const start = readClock();
-		recordIncident("api_error@consumeQuery", "external", {});
-		await __testFlushIncidents();
-		assert.deepEqual(comments().map((call) => call.at - start), [20_000]);
+	it("returns a tool error with gh's short failure reason", async () => {
+		installFakeGh({ mode: "auth" });
+		const tool = loadExtension();
+		const incident = recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
+		await assert.rejects(file(tool, incident), new RegExp(`^Error: Could not file incident ${incident.id}: gh-auth\\.$`));
+		assert.equal(incident.issue, undefined);
 
-		setClock(start + HOUR + 1);
-		recordIncident("api_error@consumeQuery", "external", {});
-		await __testFlushIncidents();
-		assert.equal(comments().length, 1, "not within an hour of the comment");
+		// Not a filing: once gh works, the agent can file it.
+		writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 20 }));
+		assert.match(await file(tool, incident), /#20 /);
 
-		setClock(start + 20_000 + HOUR);
-		recordIncident("api_error@consumeQuery", "external", {});
-		await __testFlushIncidents();
-		assert.deepEqual(comments().map((call) => call.at - start), [20_000, 20_000 + HOUR]);
+		process.env.PATH = mkdtempSync(join(agentDir, "no-gh-"));
+		const other = recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
+		await assert.rejects(file(tool, other), new RegExp(`Could not file incident ${other.id}: gh-missing\\.`));
 	});
 
-	it("keeps long base64 tokens out of the issue and the comment it files", async () => {
+	it("keeps what the sanitizer removes out of the evidence it files", async () => {
+		installFakeGh();
+		const tool = loadExtension();
+		const incident = recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", { toolName: `${mention("someone")} ${otherRef} ${otherLink}` });
+		await file(tool, incident);
+		const body = creates()[0].stdin;
+		for (const removed of [mention("someone"), otherRef, otherLink]) assert.ok(!body.includes(removed), removed);
+	});
+});
+
+describe("the evidence an issue and a comment carry", () => {
+	const recordOtherTool = (data) => (source) => recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", data, source);
+
+	it("keeps long base64 tokens out of the issue and the comment", async () => {
 		// Synthetic: valid standard base64 of fixed text, never a credential.
 		const token = "T0k/".repeat(16);
+		RECORD_ID.current = token;
 		installFakeGh();
-		enableFiling();
-		const writes = await fileTwice({ toolName: token }, token);
-		for (const write of writes) {
+		const filed = await fileInTwoProcesses(recordOtherTool({ toolName: token }));
+		for (const write of filed) {
 			assert.ok(!write.stdin.includes(token), `no token in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("[unregistered tool name]"), `placeholder in the ${write.argv[1]}`);
 		}
-		assert.ok(writes[1].stdin.includes("[invalid tool_use id]"));
+		assert.ok(filed[1].stdin.includes("[invalid tool_use id]"));
 	});
 
 	it("keeps a synthetic key out of the issue and the comment, as a tool name and as a recorder id", async () => {
 		assert.equal(SYNTHETIC_KEY.length, 40);
+		RECORD_ID.current = SYNTHETIC_KEY;
 		installFakeGh();
-		enableFiling();
-		const writes = await fileTwice({ toolName: SYNTHETIC_KEY }, SYNTHETIC_KEY);
-		for (const write of writes) assert.ok(!write.stdin.includes(SYNTHETIC_KEY), `no key in the ${write.argv[1]}`);
-		for (const write of writes) assert.ok(write.stdin.includes("[unregistered tool name]"), `placeholder in the ${write.argv[1]}`);
-		assert.ok(writes[1].stdin.includes("[invalid tool_use id]"));
+		const filed = await fileInTwoProcesses(recordOtherTool({ toolName: SYNTHETIC_KEY }));
+		for (const write of filed) assert.ok(!write.stdin.includes(SYNTHETIC_KEY), `no key in the ${write.argv[1]}`);
+		for (const write of filed) assert.ok(write.stdin.includes("[unregistered tool name]"), `placeholder in the ${write.argv[1]}`);
+		assert.ok(filed[1].stdin.includes("[invalid tool_use id]"));
 	});
 
 	it("files a long tool name Pi registered, in the issue and the comment", async () => {
+		RECORD_ID.current = "toolu_01D7FLrfh4GYq7yT1ULFeyMV";
 		installFakeGh();
-		enableFiling();
-		await offerPiTools([LONG_MCP_TOOL]);
-		const writes = await fileTwice({ toolName: LONG_MCP_TOOL }, "toolu_01D7FLrfh4GYq7yT1ULFeyMV");
-		for (const write of writes) assert.ok(write.stdin.includes(LONG_MCP_TOOL), `tool name in the ${write.argv[1]}`);
-		assert.ok(writes[1].stdin.includes("toolu_01D7FLrfh4GYq7yT1ULFeyMV"), "a tool_use id of Claude's shape stays");
+		const filed = await fileInTwoProcesses(recordOtherTool({ toolName: LONG_MCP_TOOL }), () => offerPiTools([LONG_MCP_TOOL]));
+		for (const write of filed) assert.ok(write.stdin.includes(LONG_MCP_TOOL), `tool name in the ${write.argv[1]}`);
+		assert.ok(filed[1].stdin.includes("toolu_01D7FLrfh4GYq7yT1ULFeyMV"), "a tool_use id of Claude's shape stays");
 	});
 
 	it("does not keep a registered tool name where a tool_use id belongs", async () => {
+		RECORD_ID.current = LONG_MCP_TOOL;
 		installFakeGh();
-		enableFiling();
-		await offerPiTools([LONG_MCP_TOOL]);
-		const writes = await fileTwice({}, LONG_MCP_TOOL);
-		assert.ok(!writes[1].stdin.includes(LONG_MCP_TOOL));
-		assert.ok(writes[1].stdin.includes("[invalid tool_use id]"));
+		const filed = await fileInTwoProcesses(recordOtherTool({}), () => offerPiTools([LONG_MCP_TOOL]));
+		assert.ok(!filed[1].stdin.includes(LONG_MCP_TOOL));
+		assert.ok(filed[1].stdin.includes("[invalid tool_use id]"));
 	});
 
 	it("keeps label fields and recorder kinds outside the code's own sets out of the issue and the comment", async () => {
 		assert.equal(Buffer.from(LABEL_TOKEN, "base64").toString("base64"), LABEL_TOKEN);
 		installFakeGh();
-		enableFiling();
 		const data = { kind: LABEL_TOKEN, subtype: LABEL_TOKEN, type: LABEL_TOKEN, source: LABEL_TOKEN, why: LABEL_TOKEN };
 		const source = { recorder: { snapshot: () => [{ t: 0, kind: LABEL_TOKEN }] } };
-		recordIncident("api_error@consumeQuery", "external", data, source);
-		await __testFlushIncidents();
-		advance(HOUR + 1);
-		recordIncident("api_error@consumeQuery", "external", data, source);
-		await __testFlushIncidents();
-		const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
-		assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
-		for (const write of writes) {
+		const filed = await fileInTwoProcesses(() => recordIncident("api_error@consumeQuery", "external", data, source));
+		for (const write of filed) {
 			assert.ok(!write.stdin.includes(LABEL_TOKEN), `no unknown label in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("[unknown subtype]"), `placeholder in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("[unknown kind]"), `recorder placeholder in the ${write.argv[1]}`);
@@ -438,76 +424,26 @@ describe("incident filing", () => {
 
 	it("files an SDK message type or subtype the bridge does not handle only as a placeholder", async () => {
 		installFakeGh();
-		enableFiling();
 		const session = "8b2c4d6e-1f3a-4b5c-9d7e-0a1b2c3d4e5f";
 		const messages = [
 			{ type: "system", subtype: "init", session_id: session, claude_code_version: "9.9.9" },
 			{ type: "stream_event", event: { type: LABEL_TOKEN } },
 			{ type: "result", subtype: LABEL_TOKEN, is_error: true, errors: ["synthetic failure"], session_id: session },
 		];
+		let tool = loadExtension();
 		assert.ok((await runQuery(messages)).some((event) => event.type === "error"));
-		await __testFlushIncidents();
-		advance(HOUR + 1);
+		const [incident] = listIncidents();
+		await file(tool, incident);
+		__testResetIncidents();
+		tool = loadExtension();
 		await runQuery(messages);
-		await __testFlushIncidents();
-		const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
-		assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
-		for (const write of writes) {
+		await file(tool, find(incident.signature));
+		assert.deepEqual(writes().map((call) => call.argv[1]), ["create", "comment"]);
+		for (const write of writes()) {
 			assert.ok(!write.stdin.includes(LABEL_TOKEN), `no SDK string in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("[unknown subtype]"), `diag placeholder in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("result_[unknown]"), `recorder placeholder in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("stream_event_[unknown]"), `stream event placeholder in the ${write.argv[1]}`);
 		}
-	});
-
-	it("files only signatures the bridge's code reports", async () => {
-		installFakeGh();
-		enableFiling();
-		recordIncident("made_up_label@streamRequestInLane", "silent", {});
-		recordIncident("tool_call_dead@someFunctionNobodyWrote", "user-visible", {});
-		recordIncident(`tool_call_dead@${SYNTHETIC_KEY}`, "user-visible", {});
-		await __testFlushIncidents();
-		assert.deepEqual(ghCalls(), []);
-		for (const incident of listIncidents()) assert.equal(incident.filing, "skipped unknown-signature");
-	});
-
-	it("records a failed gh on the incident and does not retry it hot", async () => {
-		installFakeGh({ mode: "auth" });
-		enableFiling();
-		recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
-		await __testFlushIncidents();
-		const spawned = ghCalls().length;
-		assert.equal(spawned, 1);
-		assert.equal(listIncidents()[0].filing, "failed gh-auth");
-
-		recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
-		recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
-		await __testFlushIncidents();
-		assert.equal(ghCalls().length, spawned, "no gh while the failure is recent");
-
-		advance(HOUR + 1);
-		writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 20 }));
-		recordIncident("session_verify_fail@verifyWrittenSession", "silent", {});
-		await __testFlushIncidents();
-		assert.equal(listIncidents()[1].issue, 20, "filed once the hour passed");
-	});
-
-	it("records a missing gh on the incident", async () => {
-		const empty = mkdtempSync(join(agentDir, "no-gh-"));
-		mkdirSync(empty, { recursive: true });
-		process.env.PATH = empty;
-		enableFiling();
-		recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {});
-		await __testFlushIncidents();
-		assert.equal(listIncidents()[0].filing, "failed gh-missing");
-	});
-
-	it("keeps what the sanitizer removes out of the issue it files", async () => {
-		installFakeGh();
-		enableFiling();
-		recordIncident("tool_call_id_other_tool@answerUnclaimedToolUse", "user-visible", { toolName: `${mention("someone")} ${otherRef} ${otherLink}` });
-		await __testFlushIncidents();
-		const body = creates()[0].stdin;
-		for (const removed of [mention("someone"), otherRef, otherLink]) assert.ok(!body.includes(removed), removed);
 	});
 });

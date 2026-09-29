@@ -1,13 +1,10 @@
-// Agent notices and the incident note tool. With a user-scoped
-// `incidents.repo`, the first occurrence of a non-expected signature in a Pi
-// session sends that session one `claude-bridge-incident` message for its next
-// turn, naming the incident and its issue, and the agent can add what it saw
-// with `claude_bridge_incident_note`, which comments on that issue through
-// `gh`. `gh` here is a fake on PATH that records its argv and stdin.
+// Agent notices. With a user-scoped `incidents.repo`, the first occurrence of
+// a non-expected signature in a Pi session sends that session one
+// `claude-bridge-incident` message for its next turn, naming the incident and
+// pointing the agent at `claude_bridge_incident` to inspect it and file it.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +16,6 @@ import { convertToLlm as bundledConvertToLlm } from "@earendil-works/pi-coding-a
 
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
-import { __testSetFilerClock } from "../src/incident-filer.ts";
 import { NOTICE_SESSIONS_KEPT, __testFlushNotices, __testResetNotices } from "../src/incident-notice.ts";
 import { __testFlushIncidents, __testResetIncidents, listIncidents, recordIncident } from "../src/incidents.ts";
 import { resetStack } from "../src/query-state.ts";
@@ -31,13 +27,8 @@ const INSTALLED_PI_MESSAGES = "/opt/homebrew/lib/node_modules/@earendil-works/pi
 const convertToLlm = existsSync(INSTALLED_PI_MESSAGES) ? (await import(INSTALLED_PI_MESSAGES)).convertToLlm : bundledConvertToLlm;
 
 const REPO = "nicobailon/bridge-incidents";
-const HOUR = 60 * 60 * 1000;
-const NOTE_TOOL = "claude_bridge_incident_note";
-// Built at run time: the sanitizer keeps these out of what is filed.
-const mention = (name) => `@${name}`;
-const otherLink = ["https://github.com", "someone-else", "their-repo", "issues", "3"].join("/");
-// Synthetic: 30 bytes of a hash of fixed text, valid base64.
-const SYNTHETIC_KEY = createHash("sha256").update("synthetic-note-token-5521").digest().subarray(0, 30).toString("base64");
+const TOOL = "claude_bridge_incident";
+const noticeText = (incident, label, site) => `Pi Claude bridge incident ${incident.id} (${incident.class}: ${label} at ${site}). Use ${TOOL} show ${incident.id} to inspect it. If it looks like a bridge bug, file it with ${TOOL} file and tell the user.`;
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -54,59 +45,8 @@ const model = {
 const ECHO = { name: "echo", description: "Echo", parameters: Type.Object({ text: Type.String() }) };
 
 let agentDir;
-let ghDir;
-let savedPath;
-let clockFile;
 let clock = Date.now();
 const stamp = () => clock++;
-
-const readClock = () => Number(readFileSync(clockFile, "utf8"));
-const advance = (ms) => writeFileSync(clockFile, String(readClock() + ms));
-
-/** A fake `gh`: logs {argv, stdin}, answers `issue list` from its state file
- *  and numbers the issues it creates. `mode: "auth"` fails like a logged-out
- *  gh. */
-function installFakeGh(state = {}) {
-	ghDir = mkdtempSync(join(agentDir, "gh-"));
-	writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 7, ...state }));
-	writeFileSync(join(ghDir, "gh"), `#!${process.execPath}
-const fs = require("fs");
-const path = require("path");
-const dir = ${JSON.stringify(ghDir)};
-let stdin = "";
-process.stdin.on("data", (chunk) => { stdin += chunk; });
-process.stdin.on("end", () => {
-	const argv = process.argv.slice(2);
-	const state = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
-	fs.appendFileSync(path.join(dir, "log.jsonl"), JSON.stringify({ argv, stdin }) + "\\n");
-	if (state.mode === "auth") {
-		process.stderr.write("To get started with GitHub CLI, please run:  gh auth login\\n");
-		process.exit(4);
-	}
-	const repo = argv[argv.indexOf("--repo") + 1];
-	if (argv[0] === "issue" && argv[1] === "list") {
-		process.stdout.write(JSON.stringify(state.issues));
-	} else if (argv[0] === "issue" && argv[1] === "create") {
-		const number = state.next++;
-		state.issues.push({ number, body: stdin });
-		fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify(state));
-		process.stdout.write("https://github.com/" + repo + "/issues/" + number + "\\n");
-	} else if (argv[0] === "issue" && argv[1] === "comment") {
-		process.stdout.write("https://github.com/" + repo + "/issues/" + argv[2] + "#issuecomment-1\\n");
-	} else {
-		process.exit(1);
-	}
-});
-`, { mode: 0o755 });
-	process.env.PATH = `${ghDir}:${savedPath}`;
-}
-
-function ghCalls() {
-	const log = join(ghDir, "log.jsonl");
-	if (!existsSync(log)) return [];
-	return readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-}
-const comments = () => ghCalls().filter((call) => call.argv[1] === "comment");
 
 /** A fake Pi: the handlers, tools and messages the extension registers or
  *  sends through it. */
@@ -151,38 +91,25 @@ async function collect(stream) {
 	return events;
 }
 
-async function runTool(pi, params) {
-	const tool = pi.tools.get(NOTE_TOOL);
-	assert.ok(tool, "the note tool is registered");
-	const result = await tool.execute("call-1", params, undefined, undefined, {});
-	return result.content.map((block) => block.text).join("");
-}
-
 beforeEach(() => {
 	agentDir = mkdtempSync(join(tmpdir(), "bridge-notice-"));
-	savedPath = process.env.PATH;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "0";
 	process.env.CLAUDE_CODE_OAUTH_TOKEN = "test-token";
 	process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(agentDir, "claude-"));
-	clockFile = join(agentDir, "clock");
-	writeFileSync(clockFile, String(Date.parse("2026-09-28T12:00:00Z")));
 	resetStack();
 	__testResetIncidents();
 	__testResetNotices();
-	__testSetFilerClock(readClock);
 	__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: () => {} } });
 	setExtensionApi({ events: { emit: () => {} }, appendEntry: () => {} });
 });
 
 afterEach(async () => {
 	await settle();
-	process.env.PATH = savedPath;
 	delete process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT;
 	delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 	delete process.env.CLAUDE_CONFIG_DIR;
 	__testSetSdkQueryFactory();
-	__testSetFilerClock();
 	setExtensionApi(undefined);
 	resetStack();
 	__testResetIncidents();
@@ -192,8 +119,7 @@ afterEach(async () => {
 });
 
 describe("incident notices", () => {
-	it("tells the session once per signature, at most three times, naming the filed issue", async () => {
-		installFakeGh();
+	it("tells the session once per signature, at most three times, pointing at the incident tool", async () => {
 		const pi = loadExtension();
 		startSession(pi, "notice-a");
 		startSession(pi, "notice-b");
@@ -214,7 +140,7 @@ describe("incident notices", () => {
 		}
 		const [first] = pi.sent;
 		const mismatch = listIncidents().find((incident) => incident.signature === "tool_result_delivery_mismatch@query-teardown");
-		assert.equal(first.message.content, `Pi Claude bridge incident ${mismatch.id} (silent: tool_result_delivery_mismatch at query-teardown). Filed as ${REPO}#7. If you saw related behavior in this session, add it with ${NOTE_TOOL}.`);
+		assert.equal(first.message.content, noticeText(mismatch, "tool_result_delivery_mismatch", "query-teardown"));
 
 		// Another session gets its own notice for the same signature.
 		runInRequestLane("notice-b", () => recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {}));
@@ -224,7 +150,6 @@ describe("incident notices", () => {
 	});
 
 	it("keeps what a session was told, and its budget, across a Pi reload of that session", async () => {
-		installFakeGh();
 		const pi = loadExtension();
 		const signatures = ["session_verify_fail@verifyWrittenSession", "empty_prompt@streamRequestInLane", "steering_write_in_flight@streamRequestInLane"];
 		const sessionManager = { getSessionId: () => "notice-reload", getEntries: () => [], getBranch: () => [] };
@@ -254,12 +179,11 @@ describe("incident notices", () => {
 	});
 
 	it("sends a notice through the session's current copy, never the unloaded one", async () => {
-		installFakeGh({ mode: "auth" });
 		const pi = loadExtension();
 		const sessionManager = { getSessionId: () => "notice-swap", getEntries: () => [], getBranch: () => [] };
 		const ctx = { sessionManager, ui: { notify: () => {} }, cwd: process.cwd(), hasUI: false };
 		pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
-		// The occurrence is recorded; the reload lands while its filing runs.
+		// The occurrence is recorded; the reload lands before its notice is sent.
 		runInRequestLane("notice-swap", () => recordIncident("session_verify_fail@verifyWrittenSession", "silent", {}));
 		pi.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
 		const reloaded = loadExtension();
@@ -270,7 +194,6 @@ describe("incident notices", () => {
 	});
 
 	it("keeps what the most recently started sessions were told, and no more", async () => {
-		installFakeGh();
 		const pi = loadExtension();
 		const shutdown = (sessionId) => pi.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { sessionManager: { getSessionId: () => sessionId }, ui: { notify: () => {} }, cwd: process.cwd() });
 		startSession(pi, "notice-kept-0");
@@ -295,18 +218,7 @@ describe("incident notices", () => {
 		assert.equal(pi.sent.length, 2);
 	});
 
-	it("says when the incident is not filed", async () => {
-		installFakeGh({ mode: "auth" });
-		const pi = loadExtension();
-		startSession(pi, "notice-unfiled");
-		const incident = runInRequestLane("notice-unfiled", () => recordIncident("session_verify_fail@verifyWrittenSession", "silent", {}));
-		await settle();
-		assert.equal(pi.sent.length, 1);
-		assert.equal(pi.sent[0].message.content, `Pi Claude bridge incident ${incident.id} (silent: session_verify_fail at verifyWrittenSession). Not filed yet (failed gh-auth). If you saw related behavior in this session, add it with ${NOTE_TOOL}.`);
-	});
-
 	it("tells the Pi session whose request hit the incident, through that session's own extension instance", async () => {
-		installFakeGh();
 		const parent = loadExtension();
 		// An in-process subagent loads its own copy of the extension; the
 		// parent's copy serves its requests.
@@ -320,15 +232,12 @@ describe("incident notices", () => {
 		assert.match(child.sent[0].message.content, /empty_prompt at streamRequestInLane/);
 	});
 
-	it("sends no notice and registers no note tool without incidents.repo", async () => {
-		installFakeGh();
+	it("sends no notice without incidents.repo", async () => {
 		const pi = loadExtension({ enabled: false });
 		startSession(pi, "notice-off");
 		runInRequestLane("notice-off", () => recordIncident("session_verify_fail@verifyWrittenSession", "silent", {}));
 		await settle();
 		assert.deepEqual(pi.sent, []);
-		assert.equal(pi.tools.has(NOTE_TOOL), false);
-		assert.deepEqual(ghCalls(), []);
 	});
 });
 
@@ -337,11 +246,10 @@ describe("the turn after a notice", () => {
 		// The stored version differs from the one the fake Claude Code reports:
 		// turn 1 records an external incident, and its notice goes to turn 2.
 		writeFileSync(join(agentDir, "claude-bridge-incidents.jsonl"), `${JSON.stringify({ type: "claude_code_version", version: "9.9.8" })}\n`, { mode: 0o600 });
-		installFakeGh();
 		const pi = loadExtension();
 		startSession(pi, "notice-reuse");
-		const noteTool = pi.tools.get(NOTE_TOOL);
-		const system = { role: "system", content: "test system prompt", toolsAdded: [ECHO, { name: noteTool.name, description: noteTool.description, parameters: noteTool.parameters }], timestamp: 0 };
+		const incidentTool = pi.tools.get(TOOL);
+		const system = { role: "system", content: "test system prompt", toolsAdded: [ECHO, { name: incidentTool.name, description: incidentTool.description, parameters: incidentTool.parameters }], timestamp: 0 };
 
 		const observed = [];
 		__testSetSdkQueryFactory(({ prompt, options }) => ({
@@ -398,59 +306,6 @@ describe("the turn after a notice", () => {
 		assert.ok(!observed[2].promptText.includes("Pi Claude bridge incident"), "turn 3 does not resend it");
 		assert.equal(new Set(observed.map((entry) => entry.systemPrompt)).size, 1, "the system prompt is unchanged");
 		assert.equal(new Set(observed.map((entry) => entry.tools.join(","))).size, 1, "the tool list is unchanged");
-		assert.ok(observed[0].tools.some((name) => name.endsWith(NOTE_TOOL)), "the note tool is served from the first turn");
-	});
-});
-
-describe("the incident note tool", () => {
-	it("comments the sanitized note on the incident's issue", async () => {
-		installFakeGh();
-		const pi = loadExtension();
-		startSession(pi, "note-filed");
-		const incident = runInRequestLane("note-filed", () => recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {}));
-		await settle();
-		const note = `The read tool returned twice for one call.\n## heading ${mention("someone")} ${otherLink} ${SYNTHETIC_KEY} ${"a".repeat(40)}`;
-		const reply = await runTool(pi, { incident: incident.id, note });
-		assert.equal(reply, `Added your note to ${REPO}#7 (incident ${incident.id}).`);
-		assert.equal(comments().length, 1);
-		const [call] = comments();
-		assert.deepEqual(call.argv.slice(0, 5), ["issue", "comment", "7", "--repo", REPO]);
-		assert.ok(call.stdin.includes("The read tool returned twice for one call."));
-		assert.ok(call.stdin.includes("> ## heading"), "the note is quoted, never markup of the comment");
-		for (const removed of [mention("someone"), otherLink, SYNTHETIC_KEY, "a".repeat(40)]) assert.ok(!call.stdin.includes(removed), removed.slice(0, 16));
-	});
-
-	it("keeps a note on an incident that is not filed yet and adds it once it is", async () => {
-		installFakeGh({ mode: "auth" });
-		const pi = loadExtension();
-		startSession(pi, "note-queued");
-		const incident = runInRequestLane("note-queued", () => recordIncident("session_verify_fail@verifyWrittenSession", "silent", {}));
-		await settle();
-		const reply = await runTool(pi, { incident: incident.id, note: "Saw the session reload right after." });
-		assert.equal(reply, `Kept your note on incident ${incident.id}: it is not filed yet (failed gh-auth). The note is added to its issue when it is filed.`);
-		assert.deepEqual(comments(), []);
-
-		advance(HOUR + 1);
-		writeFileSync(join(ghDir, "state.json"), JSON.stringify({ mode: "ok", issues: [], next: 20 }));
-		runInRequestLane("note-queued", () => recordIncident("session_verify_fail@verifyWrittenSession", "silent", {}));
-		await settle();
-		assert.deepEqual(ghCalls().filter((call) => call.argv[1] !== "list").map((call) => call.argv[1]).slice(-2), ["create", "comment"]);
-		assert.equal(comments()[0].argv[2], "20");
-		assert.ok(comments()[0].stdin.includes("Saw the session reload right after."));
-	});
-
-	it("refuses an unknown or expected incident and a note over 2,000 characters", async () => {
-		installFakeGh();
-		const pi = loadExtension();
-		startSession(pi, "note-refused");
-		const filed = runInRequestLane("note-refused", () => recordIncident("empty_prompt@streamRequestInLane", "silent", {}));
-		const expected = runInRequestLane("note-refused", () => recordIncident("partial_tool_calls_pruned@abort", "expected", {}));
-		await settle();
-		const before = ghCalls().length;
-		await assert.rejects(runTool(pi, { incident: "bi-zzzz", note: "x" }), /Unknown incident bi-zzzz/);
-		await assert.rejects(runTool(pi, { incident: expected.id, note: "x" }), /expected cleanup, which is never filed/);
-		await assert.rejects(runTool(pi, { incident: filed.id, note: "x".repeat(2001) }), /2001 characters; the limit is 2000/);
-		await assert.rejects(runTool(pi, { incident: filed.id, note: "   " }), /empty/);
-		assert.equal(ghCalls().length, before, "no gh for a refused note");
+		assert.ok(observed[0].tools.some((name) => name.endsWith(TOOL)), "the incident tool is served from the first turn");
 	});
 });

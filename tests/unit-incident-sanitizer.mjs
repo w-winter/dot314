@@ -1,7 +1,7 @@
 // The issue sanitizer. Every title, body and comment the incident filer
 // publishes passes sanitizeForIssue, the repository's no-tagging rule at
 // runtime: no handles, no references or links to other repositories, no
-// co-author lines. Free text (a note an agent writes) also passes the secret
+// co-author lines. Free text (an agent's summary) also passes the secret
 // scan, sanitizeFreeText. Structured evidence is not scanned: it is validated
 // by kind where it is recorded (unit-incident-evidence.mjs).
 import assert from "node:assert/strict";

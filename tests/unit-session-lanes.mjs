@@ -120,6 +120,7 @@ function makeFakePi(handlers) {
 		on: (event, handler) => { handlers.set(event, handler); },
 		registerCommand: () => {},
 		registerProvider: () => {},
+		registerTool: () => {},
 		events: { emit: () => {} },
 		appendEntry: () => {},
 	};

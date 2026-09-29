@@ -11,7 +11,7 @@ const MENTION = /(?<![\w.+-])@[A-Za-z0-9][A-Za-z0-9-]*(?![\w/@-]|\.\w)/g;
 const CROSS_REFERENCE = /\b([\w.-]+)\/([\w.-]+)#\d+/g;
 const GITHUB_LINK = /(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull|commit|discussions)\/[^\s)\]>"'`]*/g;
 const CO_AUTHOR_LINE = /^co-authored-by:.*(?:\r?\n|$)/gim;
-// The secret scan, for free text only (a note an agent writes): tokens with a
+// The secret scan, for free text only (an agent's summary): tokens with a
 // known prefix, hex runs of 32 or more, and every run of 40 or more base64 or
 // base64url characters (A-Z a-z 0-9 + / - _, with its = padding), digits or
 // not, words or not, whatever precedes or follows the run. 40 is where key material starts: 30 random bytes encode
