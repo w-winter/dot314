@@ -96,6 +96,8 @@ export const INCIDENT_SITES = [
 	"error-event", "provider-throw",
 	// where a terminal message pruned partial tool calls (terminalMessage)
 	"abort", "length", "stream-end", "failure", "tool-use-end", "unknown",
+	// a message ended with every tool call of the turn cut off (dropUnclosedBlocks)
+	"message-stop",
 	// why deferred user messages were dropped (dropDeferredUserMessages)
 	"abort-completion", "continuation-error", "continuation-failure", "continuation-no-resume-id", "query-error",
 	"stream-idle-timeout", "stream-idle-timeout-completion", "terminal-failure",

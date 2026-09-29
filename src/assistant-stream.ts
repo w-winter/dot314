@@ -329,6 +329,45 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded }, c);
 }
 
+/** A message ended (message_stop) while a tool call of this turn never got its
+ *  content_block_stop and no call of the turn closed: the stream was cut off
+ *  mid-block. Claude Code drops a half-built block and issues the call again
+ *  under a new id in a new message, so ending the Pi turn here would hand Pi a
+ *  tool-use turn with no call, Pi's agent loop would stop the run, and the
+ *  re-issued call's handler would find no Pi turn to join. Drop every block
+ *  that never closed, as discardAbandonedAttempt does, and keep the turn open
+ *  for the next message; the turn's other end paths (result, stream end, idle
+ *  watchdog) still end it when no call comes. Returns whether it dropped any. */
+function dropUnclosedBlocksAtMessageStop(c: QueryContext): boolean {
+	const live = c.turnBlocks.filter((b: any) => isLiveBlock(b));
+	const partialCalls = live.filter((b: any) => b.type === "toolCall" && "partialJson" in b);
+	if (partialCalls.length === 0) return false;
+	if (live.some((b: any) => b.type === "toolCall" && !("partialJson" in b))) return false;
+	// A streamed block still carrying its stream index never got its
+	// content_block_stop: an unfinished call, or text or unsigned thinking.
+	const unclosed = live.filter((b: any) => "index" in b || (b.type === "toolCall" && "partialJson" in b));
+	for (const block of unclosed) {
+		discardedBlocks.add(block);
+		// The next message reuses the same stream indexes.
+		delete block.index;
+	}
+	const calls = partialCalls.map((b: any) => ({ id: b.id, name: b.name }));
+	const ids = calls.map((call) => call.id).filter((id): id is string => typeof id === "string");
+	c.forgetToolCalls(ids);
+	// Never forwardable later, like an abandoned attempt's calls.
+	for (const id of ids) c.deadToolCallIds.add(id);
+	c.turnSawToolCall = false;
+	// An armed grace timer stays: only a handler can have armed it here (a
+	// closed call would have ended the turn), and that handler's call is the
+	// re-issued one, which the timer ends the turn with if its stream stalls.
+	// The cut message's message_delta set a tool-use stop reason.
+	if (c.turnOutput!.stopReason === "toolUse") c.turnOutput!.stopReason = "stop";
+	debug(`dropUnclosedBlocksAtMessageStop: every tool call of the turn was cut off; dropped ${unclosed.length} block(s) and kept the turn open:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
+	reportDiag("partial_tool_calls_pruned", "message-stop", { count: calls.length, calls }, c);
+	appendIntegrityEntry("partial_tool_calls_pruned", { count: calls.length, calls });
+	return true;
+}
+
 /** The message Pi keeps for this turn: the live content without discarded
  *  blocks and, unless `prunePartialCalls` is false, without tool calls whose
  *  arguments never completed (Pi executes the tool calls of any terminal
@@ -865,6 +904,9 @@ export function processStreamEvent(
 	}
 
 	if (event?.type === "message_stop" && c.turnSawToolCall) {
+		// Every call of the turn was cut off: Claude Code issues it again in the
+		// next message, which belongs to this Pi turn.
+		if (dropUnclosedBlocksAtMessageStop(c)) return;
 		// Tool call complete — end this pi stream, disarming any grace timer the
 		// MCP-invocation or assistant-boundary path armed. This is the NORMAL end
 		// for a tool-use turn: message_delta already delivered the message's real
