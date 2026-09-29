@@ -16,7 +16,7 @@ export const FLIGHT_RECORDER_SIZE = 256;
 const BRIDGE_KINDS = [
 	"query_start", "abort", "idle_timeout", "lane_quarantine", "continuation_start", "teardown", "handlers_drained",
 	"turn_done", "turn_aborted", "turn_error", "turn_end_tool_use", "failure_held", "grace_elapsed",
-	"tools_call", "tools_answer", "claim", "claim_unmatched", "claim_waiting", "claim_dead", "claim_answered",
+	"tools_call", "tools_cancel", "tools_answer", "claim", "claim_unmatched", "claim_waiting", "claim_dead", "claim_answered",
 	"claim_withdrawn", "claim_other_tool", "callback", "cursor", "steer_live",
 	"result_taken_early", "result_queued", "result_delivered", "result_unmatched", "results_parked",
 ] as const;

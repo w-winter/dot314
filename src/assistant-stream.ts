@@ -329,6 +329,46 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded }, c);
 }
 
+/** Claude Code cancelled the tagged tools/call for `id`: its bundled MCP
+ *  client sends notifications/cancelled when the tool's abort signal fires,
+ *  which is how a discarded attempt's executing tools are aborted. A call Pi
+ *  has not been given never reaches it: the id is dead, its block leaves the
+ *  live turn the way an abandoned attempt's blocks do, and its handler is
+ *  answered (the MCP server sends no response for a cancelled request). A
+ *  call Pi has been given is left alone: Pi's result answers its own handler,
+ *  never another call's. Returns whether the call was withdrawn. */
+export function withdrawCancelledToolCall(c: QueryContext, id: string): boolean {
+	c.recorder.record("tools_cancel", id);
+	if (c.forwardedToolCallIds.has(id)) {
+		debug(`mcp handler: [${id}] cancelled by Claude Code after Pi was given it; its result answers it`);
+		return false;
+	}
+	const pending = c.pendingToolCalls.get(id);
+	if (!pending) return false;
+	c.pendingToolCalls.delete(id);
+	c.earlyToolCallIds.delete(id);
+	c.deadToolCallIds.add(id);
+	c.forgetToolCalls([id]);
+	let droppedBlock = false;
+	if (c.currentPiStream && c.turnOutput) {
+		for (const block of c.turnBlocks) {
+			if (block?.type !== "toolCall" || block.id !== id || !isLiveBlock(block)) continue;
+			discardedBlocks.add(block);
+			// A block still streaming must not take its remaining deltas and stop.
+			if (typeof block.index === "number") {
+				c.suppressedStreamIndexes.add(block.index);
+				delete block.index;
+			}
+			droppedBlock = true;
+		}
+		if (droppedBlock) c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));
+	}
+	debug(`mcp handler: ${pending.toolName} [${id}] cancelled by Claude Code before Pi was given it; dropped${droppedBlock ? " its block and" : ""} the call`);
+	reportDiag("tool_call_cancelled_by_claude_code", "withdrawCancelledToolCall", { toolCallId: id, toolName: pending.toolName, droppedBlock }, c);
+	pending.resolve({ content: [{ type: "text", text: "Claude bridge: Claude Code cancelled this tool call before Pi ran it; it did not execute." }], isError: true });
+	return true;
+}
+
 /** A message ended (message_stop) while a tool call of this turn never got its
  *  content_block_stop and no call of the turn closed: the stream was cut off
  *  mid-block. Claude Code drops a half-built block and issues the call again

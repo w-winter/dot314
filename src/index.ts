@@ -39,7 +39,7 @@ import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, h
 import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
 import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
 import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
-import { ABORTED_MESSAGE, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, markContinuationStart, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel } from "./assistant-stream.js";
+import { ABORTED_MESSAGE, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, markContinuationStart, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel, withdrawCancelledToolCall } from "./assistant-stream.js";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -450,16 +450,23 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			() => finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, tool.name, mappedArgs),
 			`mcp-invocation:${tool.name}`,
 		);
+		// Only a tagged call is withdrawn on cancel: an untagged claim may hold
+		// another call's id.
+		const signal = typeof toolUseId === "string" ? extra?.signal : undefined;
+		const onCancel = (): void => { withdrawCancelledToolCall(queryCtx, toolCallId); };
 		return queryCtx.trackAnswer(toolCallId, new Promise<McpResult>((resolve) => {
 			queryCtx.pendingToolCalls.set(toolCallId, {
 				toolName: tool.name,
 				args: mappedArgs,
 				generation: queryCtx.callbackGeneration,
 				resolve: (result) => {
+					signal?.removeEventListener("abort", onCancel);
 					queryCtx.markToolResultResolved(toolCallId);
 					resolve(result);
 				},
 			});
+			if (signal?.aborted) onCancel();
+			else signal?.addEventListener("abort", onCancel, { once: true });
 		}));
 	};
 }

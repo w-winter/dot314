@@ -58,6 +58,9 @@ const INCIDENT_CLASSES = {
 	// abandoned attempt's partial blocks are dropped (completed tool calls are
 	// kept), and the retry is the answer.
 	stream_attempt_abandoned: "expected",
+	// Claude Code cancelled a tools/call Pi had not been given; the bridge
+	// drops it (withdrawCancelledToolCall returns first for a call Pi has).
+	tool_call_cancelled_by_claude_code: "expected",
 	// A cancelled request or a max-tokens stop leaves a call whose arguments
 	// never finished; it was never issued. Anywhere else a prune cut off a call
 	// Claude Code may have dispatched.
@@ -92,6 +95,7 @@ export const INCIDENT_SITES = [
 	"discardAbandonedAttempt", "endStreamForFailure", "failSteeringDelivery", "finalize-no-stream", "init",
 	"mcpToolHandler", "noteAbandonedToolCalls", "reapStaleQueuedResults", "resolveToolResults",
 	"schedulePersistSharedSession", "streamIdleWatchdog", "streamRequestInLane", "verifyWrittenSession",
+	"withdrawCancelledToolCall",
 	// the two exits a bridge-authored error reaches Pi through
 	"error-event", "provider-throw",
 	// where a terminal message pruned partial tool calls (terminalMessage)

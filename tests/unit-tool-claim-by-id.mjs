@@ -424,3 +424,157 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		});
 	}
 });
+
+// When Claude Code discards a response attempt it aborts the attempt's
+// executing tools, and its MCP client cancels their tools/call; the retry
+// issues fresh tool_use ids. A cancelled call Pi was not given must never
+// reach Pi.
+describe("a tool call Claude Code cancelled", () => {
+	/** A tagged tools/call Claude Code can cancel. */
+	function cancellableCall(client, id) {
+		const controller = new AbortController();
+		const call = client.callTool({ name: "echo", arguments: ARGS, ...tagged(id) }, undefined, { signal: controller.signal })
+			.then((result) => ({ result }), (error) => ({ error: error.message }));
+		return { call, cancel: () => controller.abort("discarded") };
+	}
+
+	/** Pi gets only `toolu_new`, and its result answers that call. */
+	async function assertOnlyReplacementReachesPi(observed, sessionId) {
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId }));
+		const done = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(done), ["toolu_new"], "Pi gets only the replacement's call");
+		const second = collect(streamClaudeAgentSdk(model, {
+			messages: [...initial.messages, done.message, resultMessage("toolu_new", "RESULT NEW")],
+		}, { sessionId }));
+		assert.deepEqual((await observed.fresh).content, [{ type: "text", text: "RESULT NEW" }]);
+		await observed.old;
+		await second;
+	}
+
+	async function* answerFresh(observed) {
+		const result = await observed.fresh;
+		yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_new", content: result.content }] } };
+		yield* FINAL_REPLY;
+	}
+
+	it("drops a call whose handler ran before its attempt streamed a block for it", { timeout: 8000 }, async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			const old = cancellableCall(client, "toolu_old");
+			observed.old = old.call;
+			await settle(20);
+			yield messageStart("m1");
+			old.cancel(); // Claude Code discards the attempt, then retries it
+			await settle(20);
+			yield messageStart("m2");
+			yield toolUseStart("toolu_new", 0);
+			yield* toolUseRest(0);
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			await settle(1700); // no terminal events: the grace timer ends the turn
+			yield* answerFresh(observed);
+		});
+		await assertOnlyReplacementReachesPi(observed, "cancel-before-block");
+	});
+
+	it("drops a call whose block the attempt streamed and closed", { timeout: 8000 }, async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			const old = cancellableCall(client, "toolu_old");
+			observed.old = old.call;
+			await settle(20);
+			yield messageStart("m1");
+			yield toolUseStart("toolu_old", 0);
+			yield* toolUseRest(0);
+			old.cancel();
+			await settle(20);
+			yield messageStart("m2");
+			yield toolUseStart("toolu_new", 0);
+			yield* toolUseRest(0);
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			await settle(1700);
+			yield* answerFresh(observed);
+		});
+		await assertOnlyReplacementReachesPi(observed, "cancel-closed-block");
+	});
+
+	it("drops a call cancelled before any stream event", { timeout: 8000 }, async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			const old = cancellableCall(client, "toolu_old");
+			observed.old = old.call;
+			await settle(20);
+			old.cancel();
+			await settle(20);
+			yield messageStart("m1");
+			yield toolUseStart("toolu_new", 0);
+			yield* toolUseRest(0);
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			await settle(1700);
+			yield* answerFresh(observed);
+		});
+		await assertOnlyReplacementReachesPi(observed, "cancel-before-stream");
+	});
+
+	it("still delivers a replacement call whose handler runs before the replacement message", { timeout: 8000 }, async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			const old = cancellableCall(client, "toolu_old");
+			observed.old = old.call;
+			await settle(20);
+			yield messageStart("m1");
+			yield toolUseStart("toolu_old", 0); // the stream dies mid-block
+			old.cancel();
+			await settle(20);
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			await settle(20); // the handler runs while the non-streamed retry waits in the queue
+			yield { type: "assistant", message: { id: "m2", model: model.id, content: [{ type: "tool_use", id: "toolu_new", name: "mcp__custom-tools__echo", input: ARGS }] } };
+			await settle(1700);
+			yield* answerFresh(observed);
+		});
+		await assertOnlyReplacementReachesPi(observed, "cancel-replacement-early");
+	});
+
+	it("leaves a call Pi was given to Pi's result, which never answers another call", { timeout: 8000 }, async () => {
+		let cancelOld, retry;
+		const observed = {
+			cancelGate: new Promise((resolve) => { cancelOld = resolve; }),
+			retryGate: new Promise((resolve) => { retry = resolve; }),
+		};
+		const warnings = [];
+		__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: (message) => warnings.push(message) } });
+		installFakeClaudeCode(observed, async function* (client) {
+			const old = cancellableCall(client, "toolu_old");
+			observed.old = old.call;
+			await settle(20);
+			yield* toolUseMessage("m1", ["toolu_old"]);
+			await observed.cancelGate;
+			old.cancel();
+			await observed.retryGate;
+			yield* toolUseMessage("m2", ["toolu_new"]);
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			yield* answerFresh(observed);
+		});
+		const initial = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId: "cancel-after-forward" }));
+		const firstDone = first.find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(firstDone), ["toolu_old"]);
+		cancelOld(); // while Pi runs the call
+		await settle(30);
+
+		const afterOld = [...initial.messages, firstDone.message, resultMessage("toolu_old", "RESULT OLD")];
+		const second = collect(streamClaudeAgentSdk(model, { messages: afterOld }, { sessionId: "cancel-after-forward" }));
+		await settle(30);
+		retry();
+		const secondDone = (await second).find((event) => event.type === "done");
+		assert.deepEqual(toolCallIds(secondDone), ["toolu_new"]);
+
+		const third = collect(streamClaudeAgentSdk(model, {
+			messages: [...afterOld, secondDone.message, resultMessage("toolu_new", "RESULT NEW")],
+		}, { sessionId: "cancel-after-forward" }));
+		assert.deepEqual((await observed.fresh).content, [{ type: "text", text: "RESULT NEW" }], "Pi's result for the cancelled call is not the replacement's");
+		await observed.old;
+		await third;
+		assert.deepEqual(warnings, [], "the result answered its own waiting call: nothing was queued or parked");
+	});
+});
