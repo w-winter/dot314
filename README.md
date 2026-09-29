@@ -4,9 +4,7 @@ A Pi provider that uses a logged-in Claude Code account through the Claude Agent
 
 Requires Pi 0.86.0 or later.
 
-This is a private copy of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [vanillagreen's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), itself a fork of [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). See [Differences from upstream](#differences-from-upstream) for what it adds.
-
-![Response from Claude through the bridge](assets/bridge-demo.png)
+This is a fork of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [vanillagreen's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), itself a fork of [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). See [Differences from upstream](#differences-from-upstream) for what it adds.
 
 ## How it works
 
@@ -56,6 +54,26 @@ Pi keeps the terminal, the tools and the conversation history. Claude Code does 
 
 One Claude Code query spans the whole turn. While Pi runs a tool, Claude Code is waiting on that MCP call, so nothing restarts between tool calls. A steering message you send meanwhile goes into the same query just before the tool result, and Claude's very next response sees both.
 
+### How Pi's tools reach Claude
+
+Claude Code's own tools (its Bash, Read, Edit, web tools and so on) are turned off. Claude sees only the tools active in Pi, which the bridge serves from an MCP server named `custom-tools` inside the Pi process. Pi runs every call, so Claude Code never reads or writes your files itself.
+
+```
+ Pi tool             served to Claude as                              back in Pi
+ ─────────────────   ──────────────────────────────────────────────   ──────────────
+ read                mcp__custom-tools__read                          read
+ my_tool             mcp__custom-tools__my_tool                       my_tool
+ web/fetch page      mcp__custom-tools__web_fetch_page_1a2b3c4d       web/fetch page
+                                         └─ unsafe characters → "_", plus a hash
+```
+
+- **Names.** A tool whose name uses only letters, digits, `_` and `-`, and fits the API's 128-character limit for the full name, keeps its name. Any other name is served as a cleaned-up, shortened spelling plus an 8-character hash of the original, because Claude Code would rewrite it and the call could never be traced back. Each call maps back to the exact Pi name. A tool keeps its served name for the whole query.
+- **Arguments.** Claude sees each tool's own JSON Schema, not a simplified copy. Pi checks the arguments, and a check failure goes back to Claude as the tool result. Argument names Claude Code habitually uses are mapped to Pi's (`file_path` becomes `path`, `old_string`/`new_string` become `oldText`/`newText`), and `bash` gets a 120-second timeout when Claude gives none.
+- **Results.** Claude Code tags every call with its tool_use id, and the bridge answers each call with that call's result only. A call whose arguments were cut off mid-stream is never run.
+- **Tools that change mid-turn.** When an extension turns tools on or off during a tool call, the served list changes with it. The tool result is held until Claude Code has re-read the list (at most 2 seconds), so Claude's next request already sees the new tools. A tool that is turned off disappears from the list but still answers a call Claude made before.
+- **Slow tools.** Claude Code's per-call timeout and its moving of long calls to the background are both off for Pi's tools. A Pi tool runs until it finishes, you abort it, or its own timeout fires.
+- **Tools Claude Code runs itself.** With connectors on, claude.ai connector tools (`mcp__claude_ai_*`) run inside Claude Code. They are not shown as Pi tool calls and are never offered twice under the `custom-tools` prefix. Each connector call is recorded in the Pi session as an audit entry.
+
 ### The next turn: resume or rebuild
 
 ```
@@ -84,7 +102,7 @@ The bridge saves which Claude Code session belongs to the Pi session in the Pi s
 Let Pi clone the repository and install its dependencies:
 
 ```bash
-pi install git:git@github.com:nicobailon/pi-claude-bridge
+pi install git:github.com/nicobailon/pi-claude-bridge
 ```
 
 To work on the bridge, clone it, run `npm install`, and add the folder's path to `packages` in `~/.pi/agent/settings.json`. Pi loads `src/index.ts` directly, so `/reload` picks up edits. To load it for one run, use `pi -e ./src/index.ts`.
@@ -177,7 +195,7 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 - Claude Code children do not inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` unless `provider.inheritAnthropicEnv` is set.
 - The debug log rotates, and old Claude Code CLI logs are pruned.
 
-Claude Code built-in tools are disabled by default, and Pi exposes its tools through MCP. The SDK may prepend its own identity text to the custom prompt.
+The Claude Agent SDK may prepend its own identity text to the system prompt.
 
 ## Connectors
 
