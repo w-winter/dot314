@@ -20,7 +20,7 @@ import { convertToLlm as bundledConvertToLlm } from "@earendil-works/pi-coding-a
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { __testSetFilerClock } from "../src/incident-filer.ts";
-import { __testFlushNotices, __testResetNotices } from "../src/incident-notice.ts";
+import { NOTICE_SESSIONS_KEPT, __testFlushNotices, __testResetNotices } from "../src/incident-notice.ts";
 import { __testFlushIncidents, __testResetIncidents, listIncidents, recordIncident } from "../src/incidents.ts";
 import { resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
@@ -221,6 +221,78 @@ describe("incident notices", () => {
 		await settle();
 		assert.equal(pi.sent.length, 4);
 		assert.equal(pi.sent[3].message.content, first.message.content);
+	});
+
+	it("keeps what a session was told, and its budget, across a Pi reload of that session", async () => {
+		installFakeGh();
+		const pi = loadExtension();
+		const signatures = ["session_verify_fail@verifyWrittenSession", "empty_prompt@streamRequestInLane", "steering_write_in_flight@streamRequestInLane"];
+		const sessionManager = { getSessionId: () => "notice-reload", getEntries: () => [], getBranch: () => [] };
+		const ctx = { sessionManager, ui: { notify: () => {} }, cwd: process.cwd(), hasUI: false };
+		pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+		for (const signature of signatures) runInRequestLane("notice-reload", () => recordIncident(signature, "silent", {}));
+		await settle();
+		assert.equal(pi.sent.length, 3);
+
+		// Pi 0.87.1 reloads a session in place: session_shutdown and then
+		// session_start, both with reason "reload", reach a freshly loaded copy.
+		pi.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
+		const reloaded = loadExtension();
+		reloaded.handlers.get("session_start")({ type: "session_start", reason: "reload" }, ctx);
+		for (const signature of signatures) runInRequestLane("notice-reload", () => recordIncident(signature, "silent", {}));
+		runInRequestLane("notice-reload", () => recordIncident("tool_result_delivery_mismatch@query-teardown", "silent", {}));
+		await settle();
+		assert.equal(reloaded.sent.length, 0, "no repeat of a signature, and the three-notice budget is spent");
+		assert.equal(pi.sent.length, 3, "the unloaded copy's sendMessage is never used again");
+
+		// A different session id still gets its own notices, through the new copy.
+		startSession(reloaded, "notice-other");
+		runInRequestLane("notice-other", () => recordIncident(signatures[0], "silent", {}));
+		await settle();
+		assert.equal(reloaded.sent.length, 1);
+		assert.match(reloaded.sent[0].message.content, /session_verify_fail at verifyWrittenSession/);
+	});
+
+	it("sends a notice through the session's current copy, never the unloaded one", async () => {
+		installFakeGh({ mode: "auth" });
+		const pi = loadExtension();
+		const sessionManager = { getSessionId: () => "notice-swap", getEntries: () => [], getBranch: () => [] };
+		const ctx = { sessionManager, ui: { notify: () => {} }, cwd: process.cwd(), hasUI: false };
+		pi.handlers.get("session_start")({ type: "session_start", reason: "startup" }, ctx);
+		// The occurrence is recorded; the reload lands while its filing runs.
+		runInRequestLane("notice-swap", () => recordIncident("session_verify_fail@verifyWrittenSession", "silent", {}));
+		pi.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, ctx);
+		const reloaded = loadExtension();
+		reloaded.handlers.get("session_start")({ type: "session_start", reason: "reload" }, ctx);
+		await settle();
+		assert.equal(pi.sent.length, 0, "the unloaded copy is not used");
+		assert.equal(reloaded.sent.length, 1, "the reloaded copy delivers it");
+	});
+
+	it("keeps what the most recently started sessions were told, and no more", async () => {
+		installFakeGh();
+		const pi = loadExtension();
+		const shutdown = (sessionId) => pi.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, { sessionManager: { getSessionId: () => sessionId }, ui: { notify: () => {} }, cwd: process.cwd() });
+		startSession(pi, "notice-kept-0");
+		runInRequestLane("notice-kept-0", () => recordIncident("empty_prompt@streamRequestInLane", "silent", {}));
+		await settle();
+		assert.equal(pi.sent.length, 1);
+		shutdown("notice-kept-0");
+		// Restarted before NOTICE_SESSIONS_KEPT other sessions start: still known.
+		startSession(pi, "notice-kept-0");
+		runInRequestLane("notice-kept-0", () => recordIncident("empty_prompt@streamRequestInLane", "silent", {}));
+		await settle();
+		assert.equal(pi.sent.length, 1);
+		shutdown("notice-kept-0");
+		for (let i = 1; i <= NOTICE_SESSIONS_KEPT; i++) {
+			startSession(pi, `notice-kept-${i}`);
+			shutdown(`notice-kept-${i}`);
+		}
+		// The oldest state went: the session counts as new again.
+		startSession(pi, "notice-kept-0");
+		runInRequestLane("notice-kept-0", () => recordIncident("empty_prompt@streamRequestInLane", "silent", {}));
+		await settle();
+		assert.equal(pi.sent.length, 2);
 	});
 
 	it("says when the incident is not filed", async () => {

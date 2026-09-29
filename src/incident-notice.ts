@@ -12,8 +12,18 @@
 // A notice goes to the Pi session whose request hit the incident, through the
 // sendMessage of the extension instance that session loaded: an in-process
 // subagent loads its own copy of the bridge, while the primary copy serves
-// every session's requests and records their incidents. Notice targets and
-// the primary copy's note handler are therefore process-global.
+// every session's requests and records their incidents. The senders, what
+// each session was told, and the primary copy's note handler are therefore
+// process-global.
+//
+// What a session was told (its signatures, and so its budget) is kept by Pi
+// session id apart from its sender. Pi reloads a session in place
+// (session_shutdown, then session_start, both with reason "reload", into a
+// freshly loaded copy): the shutdown drops only the sender, since the
+// unloaded copy's sendMessage must never be used again, and the next
+// session_start attaches the new copy's sender to the state the session
+// already has. The state of the NOTICE_SESSIONS_KEPT most recently started
+// sessions is kept.
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -26,29 +36,27 @@ import { currentRequestLaneId } from "./request-lane.js";
 export const INCIDENT_NOTICE_TYPE = "claude-bridge-incident";
 export const INCIDENT_NOTE_TOOL = "claude_bridge_incident_note";
 const NOTICES_PER_SESSION = 3;
+export const NOTICE_SESSIONS_KEPT = 64;
 
 type SendMessage = ExtensionAPI["sendMessage"];
 type NoteHandler = (incidentId: string, note: string) => Promise<string>;
 
-interface NoticeTarget {
-	send: SendMessage;
-	/** Signatures this session was told about. */
-	noticed: Set<string>;
-}
-
-interface IncidentNoticeStoreV1 {
-	targets: Map<string, NoticeTarget>;
+interface IncidentNoticeStoreV2 {
+	/** The live sendMessage of each started session's copy. */
+	senders: Map<string, SendMessage>;
+	/** Signatures each session was told about, oldest started session first. */
+	noticed: Map<string, Set<string>>;
 	/** The note handler of the copy that records incidents (the primary). */
 	note: NoteHandler | undefined;
 }
 
-const NOTICE_STORE_SYMBOL = Symbol.for("kendex.pi.claude-bridge.incident-notices.v1");
+const NOTICE_STORE_SYMBOL = Symbol.for("kendex.pi.claude-bridge.incident-notices.v2");
 
-function noticeStore(): IncidentNoticeStoreV1 {
+function noticeStore(): IncidentNoticeStoreV2 {
 	const host = globalThis as Record<symbol, unknown>;
-	let store = host[NOTICE_STORE_SYMBOL] as IncidentNoticeStoreV1 | undefined;
+	let store = host[NOTICE_STORE_SYMBOL] as IncidentNoticeStoreV2 | undefined;
 	if (!store) {
-		store = { targets: new Map(), note: undefined };
+		store = { senders: new Map(), noticed: new Map(), note: undefined };
 		host[NOTICE_STORE_SYMBOL] = store;
 	}
 	return store;
@@ -57,17 +65,25 @@ function noticeStore(): IncidentNoticeStoreV1 {
 const deliveries = new Set<Promise<void>>();
 
 /** Pi session `sessionId` started in the extension instance whose
- *  sendMessage is `send`. A restart of the same session keeps what it was
- *  told. */
+ *  sendMessage is `send`. A session started before (a reload) keeps what it
+ *  was told. */
 export function registerNoticeTarget(sessionId: string, send: SendMessage): void {
-	const targets = noticeStore().targets;
-	const existing = targets.get(sessionId);
-	if (existing) existing.send = send;
-	else targets.set(sessionId, { send, noticed: new Set() });
+	const store = noticeStore();
+	store.senders.set(sessionId, send);
+	// Most recently started last, so the oldest state goes first.
+	const noticed = store.noticed.get(sessionId) ?? new Set<string>();
+	store.noticed.delete(sessionId);
+	store.noticed.set(sessionId, noticed);
+	for (const id of store.noticed.keys()) {
+		if (store.noticed.size <= NOTICE_SESSIONS_KEPT) break;
+		if (!store.senders.has(id)) store.noticed.delete(id);
+	}
 }
 
+/** Session `sessionId` shut down (or reloads): its copy's sender is gone. What
+ *  it was told stays for its next session_start. */
 export function releaseNoticeTarget(sessionId: string): void {
-	noticeStore().targets.delete(sessionId);
+	noticeStore().senders.delete(sessionId);
 }
 
 function label(signature: string): { label: string; site: string } {
@@ -89,15 +105,22 @@ export function noticeIncident(incident: Incident): void {
 	if (incident.class === "expected") return;
 	const sessionId = piSessionOfLane(currentRequestLaneId());
 	if (sessionId === undefined) return;
-	const target = noticeStore().targets.get(sessionId);
-	if (!target || target.noticed.has(incident.signature) || target.noticed.size >= NOTICES_PER_SESSION) return;
-	target.noticed.add(incident.signature);
+	const store = noticeStore();
+	const noticed = store.noticed.get(sessionId);
+	if (!noticed || !store.senders.has(sessionId) || noticed.has(incident.signature) || noticed.size >= NOTICES_PER_SESSION) return;
+	noticed.add(incident.signature);
 	const delivery = whenFilingSettles()
 		.then(() => {
 			const repo = filingRepo();
-			// The session may have ended, or filing been switched off, meanwhile.
-			if (!repo || noticeStore().targets.get(sessionId) !== target) return;
-			target.send({ customType: INCIDENT_NOTICE_TYPE, content: noticeText(incident, repo), display: true, details: { incident: incident.id } }, { deliverAs: "nextTurn" });
+			// The sender now: a reload meanwhile replaced the copy that was live
+			// when the incident happened.
+			const send = noticeStore().senders.get(sessionId);
+			if (!repo || !send) {
+				// Not told after all (the session ended, or filing was switched off).
+				noticed.delete(incident.signature);
+				return;
+			}
+			send({ customType: INCIDENT_NOTICE_TYPE, content: noticeText(incident, repo), display: true, details: { incident: incident.id } }, { deliverAs: "nextTurn" });
 		})
 		.catch((error) => debug("incidents: notice failed:", error))
 		.finally(() => deliveries.delete(delivery));
@@ -162,7 +185,8 @@ export async function __testFlushNotices(): Promise<void> {
 
 export function __testResetNotices(): void {
 	const store = noticeStore();
-	store.targets.clear();
+	store.senders.clear();
+	store.noticed.clear();
 	store.note = undefined;
 	deliveries.clear();
 }
