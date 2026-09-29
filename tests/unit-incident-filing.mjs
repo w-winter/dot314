@@ -380,12 +380,21 @@ describe("the evidence an issue and a comment carry", () => {
 		assert.ok(filed[1].stdin.includes("[invalid tool_use id]"));
 	});
 
-	it("files a long tool name Pi registered, in the issue and the comment", async () => {
+	it("publishes an extension's tool name as its stable hash in the issue and the comment, while show keeps it", async () => {
 		RECORD_ID.current = "toolu_01D7FLrfh4GYq7yT1ULFeyMV";
 		installFakeGh();
-		const filed = await fileInTwoProcesses(recordOtherTool({ toolName: LONG_MCP_TOOL }), () => offerPiTools([LONG_MCP_TOOL]));
-		for (const write of filed) assert.ok(write.stdin.includes(LONG_MCP_TOOL), `tool name in the ${write.argv[1]}`);
+		const hashed = `tool-${createHash("sha256").update(LONG_MCP_TOOL).digest("hex").slice(0, 8)}`;
+		const data = { toolName: LONG_MCP_TOOL, recordedName: "read", name: "mcp__custom-tools__bash" };
+		const filed = await fileInTwoProcesses(recordOtherTool(data), () => offerPiTools([LONG_MCP_TOOL, "read", "bash"]));
+		for (const write of filed) {
+			assert.ok(!write.stdin.includes(LONG_MCP_TOOL), `no extension tool name in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes(`"toolName": "${hashed}"`), `its hash in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes(`"recordedName": "read"`), `a Pi built-in keeps its name in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes(`"name": "mcp__custom-tools__bash"`), `a built-in's served name stays in the ${write.argv[1]}`);
+		}
 		assert.ok(filed[1].stdin.includes("toolu_01D7FLrfh4GYq7yT1ULFeyMV"), "a tool_use id of Claude's shape stays");
+		const shown = await runTool(loadExtension(), { action: "show", incident: find("tool_call_id_other_tool@answerUnclaimedToolUse").id });
+		assert.ok(shown.includes(LONG_MCP_TOOL) && !shown.includes(hashed), "show gives the agent the real name");
 	});
 
 	it("does not keep a registered tool name where a tool_use id belongs", async () => {

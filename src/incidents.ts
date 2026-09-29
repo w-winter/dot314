@@ -11,6 +11,7 @@
 // agent starts (incident-filer.ts, incident-tool.ts); without it nothing
 // leaves the process.
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -21,6 +22,7 @@ import { __testResetFiler, configureFiler } from "./incident-filer.js";
 import { CLAUDE_ACCOUNT_FAILURE_KINDS } from "./account-router.js";
 import { RECORDER_KINDS, type FlightRecord, type FlightRecorder } from "./flight-recorder.js";
 import { SDK_RESULT_SUBTYPES, SDK_SYSTEM_SUBTYPES, STREAM_ABANDON_REASONS, TURN_BLOCK_TYPES } from "./incident-labels.js";
+import { MCP_TOOL_PREFIX } from "./skills.js";
 
 /** user-visible: Claude or Pi got a bridge-authored error. silent: integrity
  *  mismatch, forced rebuild, dropped deferred message. expected: normal
@@ -298,6 +300,7 @@ const MAX_DEPTH = 5;
 const REGISTERED_TOOL_NAMES_MAX = 4096;
 
 const registeredToolNames = new Set<string>();
+const UNREGISTERED_TOOL_NAME = "[unregistered tool name]";
 
 /** Records the tools Pi offers in a request (Pi's names and the names they
  *  are served to Claude under): the tool names an incident may keep. */
@@ -327,7 +330,7 @@ function roleList(value: string): string | undefined {
 function evidence(kind: EvidenceKind, key: string, value: string): string {
 	const invalid = `[invalid ${key}]`;
 	switch (kind) {
-		case "toolName": return registeredToolNames.has(value) ? value : "[unregistered tool name]";
+		case "toolName": return registeredToolNames.has(value) ? value : UNREGISTERED_TOOL_NAME;
 		case "toolUseId": return TOOL_USE_ID.test(value) ? value : invalid;
 		case "messageId": return MESSAGE_ID.test(value) ? value : invalid;
 		case "sessionId": return SESSION_ID.test(value) ? value : invalid;
@@ -385,6 +388,30 @@ export function projectDiagMetadata(data: Record<string, unknown>): Record<strin
 	const out = project(data, "", "", 0) as Record<string, unknown>;
 	if (dropped.length > 0) out.droppedFields = [...new Set(dropped)];
 	return out;
+}
+
+// Tools whose names say nothing about what a user runs: Pi's built-ins, the
+// bridge's own (incident-tool.ts), and the names the bridge serves them to
+// Claude under.
+const PUBLIC_TOOL_NAMES: ReadonlySet<string> = new Set(
+	["read", "bash", "edit", "write", "grep", "find", "ls", "claude_bridge_incident"].flatMap((name) => [name, `${MCP_TOOL_PREFIX}${name}`]),
+);
+
+/** `name` as published: a public tool keeps it, any other tool (an
+ *  extension's, an MCP server's) becomes `tool-` plus 8 hex characters of its
+ *  SHA-256, the same in every process. */
+export function publicToolName(name: string): string {
+	return PUBLIC_TOOL_NAMES.has(name) ? name : `tool-${createHash("sha256").update(name).digest("hex").slice(0, 8)}`;
+}
+
+/** Diag metadata as an issue or comment publishes it: every tool name that
+ *  projectDiagMetadata kept goes through publicToolName; its placeholder
+ *  stays. `list` and `show` never pass through here. */
+export function publishedDiag(value: unknown, key = ""): unknown {
+	if (typeof value === "string") return kindOf(key) === "toolName" && value !== UNREGISTERED_TOOL_NAME ? publicToolName(value) : value;
+	if (Array.isArray(value)) return value.map((item) => publishedDiag(item, key));
+	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, publishedDiag(child, childKey)]));
+	return value;
 }
 
 /** A recorder snapshot with every id and kind validated. */

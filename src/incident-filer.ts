@@ -11,7 +11,9 @@
 //
 // Only signatures of the code's class and site tables are filed
 // (isKnownSignature). The body is built from evidence validated by kind where
-// it was recorded (incidents.ts, projectDiagMetadata) and fixed bridge prose.
+// it was recorded (incidents.ts, projectDiagMetadata) and fixed bridge prose;
+// a tool name in it that is not Pi's or the bridge's own is published as its
+// hash (publishedDiag).
 // No text the agent writes is published: the agent gives its analysis to the
 // user in chat. Every title, body and comment passes sanitizeForIssue at the
 // boundary.
@@ -21,7 +23,7 @@ import { join } from "node:path";
 import { displayPath, piUserDir } from "./config.js";
 import { debug } from "./debug.js";
 import { sanitizeForIssue } from "./incident-sanitizer.js";
-import { isKnownSignature, type Incident, type IncidentLabel } from "./incidents.js";
+import { isKnownSignature, publishedDiag, type Incident, type IncidentLabel } from "./incidents.js";
 
 const GH_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 60 * 1024;
@@ -195,7 +197,7 @@ function howToReproduce(incident: Incident): string {
 export function issueBody(incident: Incident): string {
 	let first = incident.snapshot;
 	let latest = incident.latestSnapshot;
-	let diag: unknown = { first: incident.diag, ...(incident.latestDiag ? { latest: incident.latestDiag } : {}) };
+	let diag: unknown = publishedDiag({ first: incident.diag, ...(incident.latestDiag ? { latest: incident.latestDiag } : {}) });
 	for (;;) {
 		const body = [
 			incidentMarker(incident.signature),
@@ -236,7 +238,7 @@ export function issueBody(incident: Incident): string {
  *  like the body: the oldest records, then the diag, give way first. */
 export function occurrenceComment(incident: Incident): string {
 	let snapshot = incident.latestSnapshot ?? incident.snapshot;
-	let diag: unknown = incident.latestDiag ?? incident.diag;
+	let diag: unknown = publishedDiag(incident.latestDiag ?? incident.diag);
 	for (;;) {
 		const text = [
 			"## New occurrence",
