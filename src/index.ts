@@ -28,7 +28,7 @@ import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import type { RecorderKind } from "./flight-recorder.js";
 import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, setIncidentListener, withIncident } from "./incidents.js";
-import { noticeIncident, registerNoticeTarget, releaseNoticeTarget } from "./incident-notice.js";
+import { noticeIncident, takeIncidentNotice } from "./incident-notice.js";
 import { incidentTool } from "./incident-tool.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
@@ -1891,8 +1891,8 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	configureIncidents(config.incidents);
-	// Notices need the same user-scoped incidents.repo.
-	setIncidentListener(config.incidents ? noticeIncident : undefined);
+	// Notices are always on; only filing needs incidents.repo.
+	setIncidentListener(noticeIncident);
 	// Registered before the disabled early return: a bridge switched off by
 	// claude-bridge.json is exactly when the settings editor has to show where
 	// that value came from.
@@ -1924,7 +1924,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		recordStartedLane(ctx.sessionManager, ctx.sessionManager.getSessionId());
-		if (config.incidents) registerNoticeTarget(ctx.sessionManager.getSessionId(), (message, options) => pi.sendMessage(message, options));
 		recordProjectTrust(ctx);
 		setPiUI(ctx.ui);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
@@ -1948,8 +1947,10 @@ export default function (pi: ExtensionAPI) {
 		});
 		deleteSharedSessionLane(sessionId);
 		deleteQueryLane(sessionId);
-		releaseNoticeTarget(sessionId);
 	});
+	// The incidents this session's requests hit since its last prompt, as one
+	// message after the user's prompt (incident-notice.ts).
+	pi.on("before_agent_start", (_event, ctx) => takeIncidentNotice(ctx.sessionManager.getSessionId()));
 	pi.on("message_end", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		const message = (event as { message?: AssistantMessage }).message;
 		if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx);

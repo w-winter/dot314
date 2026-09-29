@@ -170,10 +170,11 @@ function snapshotSection(title: string, snapshot: Incident["snapshot"]): string[
 }
 
 function whatHappened(incident: Incident): string {
-	return `${describe(incident)} ${SEEN[incident.class](incident)}`;
+	return `${describeIncident(incident)} ${SEEN[incident.class](incident)}`;
 }
 
-function describe(incident: Incident): string {
+/** What happened, in plain words (the issue's "What happened"). */
+export function describeIncident(incident: Incident): string {
 	return DESCRIPTIONS[labelOf(incident.signature) as IncidentLabel] ?? "The bridge recorded an anomaly.";
 }
 
@@ -286,7 +287,7 @@ const USER_SAW: Record<Incident["class"], string> = {
 export function incidentListLine(incident: Incident): string {
 	const times = incident.count === 1 ? "1 time" : `${incident.count} times`;
 	const filed = incident.issue !== undefined && repo ? `, filed as ${repo}#${incident.issue}` : "";
-	return `- ${incident.id}: ${describe(incident)} (${labelOf(incident.signature)} at ${siteOf(incident.signature)}, ${incident.class}, seen ${times}, first ${incident.firstSeen}, last ${incident.lastSeen}${filed})`;
+	return `- ${incident.id}: ${describeIncident(incident)} (${labelOf(incident.signature)} at ${siteOf(incident.signature)}, ${incident.class}, seen ${times}, first ${incident.firstSeen}, last ${incident.lastSeen}${filed})`;
 }
 
 /** What `show` returns: the description, what the user saw, and the same
@@ -299,7 +300,7 @@ export function incidentDetails(incident: Incident): string {
 		const text = [
 			`Incident ${incident.id}: ${labelOf(incident.signature)} at ${siteOf(incident.signature)} (${incident.class})`,
 			"",
-			describe(incident),
+			describeIncident(incident),
 			`What the user saw: ${USER_SAW[incident.class]}`,
 			...(incident.issue !== undefined && repo ? [`Filed as ${repo}#${incident.issue} (${issueUrl(repo, incident.issue)}).`] : []),
 			"",
