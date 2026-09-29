@@ -302,10 +302,9 @@ describe("Claude Code finalizing a partial response", () => {
 });
 
 describe("discarding an abandoned attempt", () => {
-	it("keeps a tool call the abandoned attempt completed, and only that", async () => {
-		// Claude Code finalizes a partial response instead of retrying once a
-		// block has completed, so this is a guard: a completed call may already
-		// be dispatched, and withdrawing it would strand its handler.
+	it("drops a tool call the abandoned attempt completed when its handler never ran", async () => {
+		// Claude Code retries after a tool call completed too, and never starts
+		// a queued call of the attempt it discards.
 		const { processAssistantMessage, processStreamEvent } = await import("../src/index.ts");
 		const { ctx } = await import("../src/query-state.ts");
 		const toolMap = new Map([["mcp__custom-tools__bash", "bash"]]);
@@ -327,16 +326,15 @@ describe("discarding an abandoned attempt", () => {
 		endToolUseTurn(c);
 		const done = events.find((event) => event.type === "done");
 		assert.deepEqual(summarize(done.message.content), [
-			["toolCall", "toolu_done", { command: "pwd", timeout: 120 }],
 			["thinking", "Let me look at both."],
 			["text", "Reading the log."],
 			["toolCall", "toolu_b", { command: "ls", timeout: 120 }],
 		]);
 		assert.ok(c.deadToolCallIds.has("toolu_cut"), "the partial call can never be forwarded later");
-		assert.ok(!c.deadToolCallIds.has("toolu_done"));
+		assert.ok(c.deadToolCallIds.has("toolu_done"), "nor the completed one");
 		assert.ok(!c.forwardedToolCallIds.has("toolu_cut"), "and is never forwarded");
-		assert.ok(c.forwardedToolCallIds.has("toolu_done") && c.forwardedToolCallIds.has("toolu_b"));
-		assert.deepEqual(c.turnToolCallIds, ["toolu_done", "toolu_b"], "the partial call is not expected to produce a result");
+		assert.ok(!c.forwardedToolCallIds.has("toolu_done") && c.forwardedToolCallIds.has("toolu_b"));
+		assert.deepEqual(c.turnToolCallIds, ["toolu_b"], "no dropped call is expected to produce a result");
 		assert.deepEqual(integrity, []);
 		const { snapshot } = encodeLikePi(events.filter((event) => event.type !== "stream_end"));
 		assert.deepEqual(snapshot.content.map((block) => block.id ?? block.type), ["toolu_done", "toolu_cut", "thinking", "text", "toolu_b"], "Pi's frames stay append-only");

@@ -260,7 +260,10 @@ export const ABORTED_MESSAGE = "Operation aborted";
 // By then the abandoned attempt may have streamed partial thinking, text or
 // tool-call JSON into the Pi message. None of it is part of the answer: the
 // thinking is unsigned, the text stops mid-word, and Claude Code never
-// dispatches the partial call.
+// dispatches the partial call. Claude Code retries even after a tool call
+// completed, and discards that attempt's calls too: it never starts one that
+// was still queued, and aborts one that was executing, whose tools/call it
+// then cancels (withdrawCancelledToolCall).
 //
 // Pi's stream contract is APPEND-ONLY. Its frame encoder (pi-ai
 // AssistantMessageFrameEncoder, run by coding-agent on every event) rejects a
@@ -291,13 +294,14 @@ export function addTurnBlock(c: QueryContext, block: any): number {
 	return idx;
 }
 
-/** Mark the open attempt's blocks discarded and forget its partial tool
- *  calls. Nothing is emitted for them and the live content is not touched
- *  (see the section note). A COMPLETED tool call is kept: its handler may
- *  already have been invoked, and withdrawing a call Claude Code dispatched
- *  would strand it. (Claude Code finalizes a partial response instead of
- *  retrying once a block has completed, so this is a guard, not an expected
- *  path.) `replacementId` is the message that replaced it. */
+/** Mark the open attempt's blocks discarded and forget their tool calls.
+ *  Nothing is emitted for them and the live content is not touched (see the
+ *  section note). A completed tool call whose handler is waiting is kept:
+ *  Claude Code started it, and its cancel decides whether Pi gets it. Any
+ *  other call of the attempt never runs. A call whose handler ran with no
+ *  block in the attempt is left alone: it may belong to the replacement,
+ *  whose handlers can arrive before its message does.
+ *  `replacementId` is the message that replaced it. */
 function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, replacementId: string | undefined): void {
 	const attempt = c.streamAttempt;
 	if (!attempt?.open) return;
@@ -305,22 +309,22 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	// A turn that already ended holds a message Pi owns; leave it untouched.
 	if (!c.currentPiStream || !c.turnOutput) return;
 	const discarded: Array<{ index: number; type: TurnBlockType; id?: string }> = [];
-	const partialCallIds: string[] = [];
+	const droppedCallIds: string[] = [];
 	for (const idx of attempt.slots) {
 		const block = c.turnBlocks[idx];
 		if (!block || !isLiveBlock(block)) continue;
-		if (block.type === "toolCall" && !("partialJson" in block)) continue;
-		if (block.type === "toolCall" && typeof block.id === "string") partialCallIds.push(block.id);
+		if (block.type === "toolCall" && !("partialJson" in block) && (c.pendingToolCalls.has(block.id) || c.answeringToolCalls.has(block.id))) continue;
+		if (block.type === "toolCall" && typeof block.id === "string") droppedCallIds.push(block.id);
 		discarded.push({ index: idx, type: block.type, ...(block.type === "toolCall" ? { id: block.id } : {}) });
 		discardedBlocks.add(block);
 		// The retry reuses the same Anthropic stream indexes: this block must no
 		// longer match their deltas and stops.
 		delete block.index;
 	}
-	c.forgetToolCalls(partialCallIds);
+	c.forgetToolCalls(droppedCallIds);
 	// Never forwardable later: should a lagging replay of one of these ids
 	// arrive, every forward path skips dead ids.
-	for (const id of partialCallIds) c.deadToolCallIds.add(id);
+	for (const id of droppedCallIds) c.deadToolCallIds.add(id);
 	c.childExecutedStreamIndexes.clear();
 	c.suppressedStreamIndexes.clear();
 	c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));

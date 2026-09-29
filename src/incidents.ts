@@ -54,9 +54,10 @@ const INCIDENT_CLASSES = {
 	deferred_user_replay_skipped: "silent",
 	user_message_identity_unresolved: "silent",
 	empty_prompt: "silent",
-	// Claude Code abandoned a stalled response and asked again; only the
-	// abandoned attempt's partial blocks are dropped (completed tool calls are
-	// kept), and the retry is the answer.
+	// Claude Code abandoned a stalled response and asked again, and the retry
+	// is the answer. The abandoned attempt's blocks are dropped, except a
+	// completed tool call whose handler is waiting (its cancel decides);
+	// Claude Code never starts a queued call of a discarded attempt.
 	stream_attempt_abandoned: "expected",
 	// Claude Code cancelled a tools/call Pi had not been given; the bridge
 	// drops it (withdrawCancelledToolCall returns first for a call Pi has).
