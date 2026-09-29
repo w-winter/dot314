@@ -85,7 +85,7 @@ The incidents repo may be public, so everything filed is treated as public. A pu
 - `errorName`: the JavaScript built-in error names, `AbortError`, `TimeoutError`, `SystemError`, the bridge's own error names and the names the Agent SDK gives its errors. Anything else becomes `[unknown error name]`.
 - `code`: an errno name of the running Node (`os.constants.errno`), a Node `ERR_` code, or a code the bridge's spawn errors set. Anything else becomes `[unknown code]`.
 - `syscall`: Node's and libuv's syscall names, and the bridge's preflight `chdir` and `exec`. Anything else becomes `[unknown syscall]`.
-- Claude Code and Pi versions, in the evidence table and in the diag: the numeric `major.minor.patch` only. A prerelease or build suffix becomes `-[suffix]`.
+- Claude Code and Pi versions, in the evidence table and in the diag: the numeric `major.minor.patch` only. A prerelease suffix becomes `-[suffix]`; a version with build metadata (`+…`) is rejected at recording and publishes as `[invalid version]`.
 - Model: a model the bridge registers (`MODEL_IDS_IN_ORDER`, `src/models.ts`). Anything else becomes `[unregistered model]`.
 - Everything else is published as recorded, and each value is code-owned, random or numeric:
   - the title, signature, marker, class and site (the class and site tables), the description and the fixed prose;
