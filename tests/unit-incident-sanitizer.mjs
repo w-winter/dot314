@@ -55,6 +55,54 @@ describe("issue sanitizer", () => {
 		for (const id of kept) assert.ok(out.includes(id), `kept: ${id}`);
 	});
 
+	// Synthetic tokens, built at run time: base64 of fixed text, never a credential.
+	const standardBase64 = "T0k/".repeat(16);
+	const alphabeticBase64 = Buffer.from("ABC".repeat(16)).toString("base64");
+	const urlBytes = [0xfb, 0xef, 0xbe, 0xfb, 0xff, 0x7f, 0x69, 0xb7, 0x1d].flatMap((byte) => [byte, 0x3e, 0xd1]);
+	const base64url = Buffer.from([...urlBytes, ...urlBytes]).toString("base64url");
+	const padded = Buffer.from("x".repeat(40)).toString("base64");
+
+	it("redacts long standard base64 and base64url tokens, with or without digits", () => {
+		assert.equal(Buffer.from(standardBase64, "base64").toString("base64"), standardBase64, "valid standard base64");
+		assert.ok(!/[0-9]/.test(alphabeticBase64) && alphabeticBase64.length >= 40, "a long token without a digit");
+		assert.ok(/[_-]/.test(base64url) && base64url.length >= 40, `base64url: ${base64url}`);
+		assert.match(padded, /=$/, "padded");
+		const withSeparators = `${"AbCdEfGhIj".repeat(2)}_${"KlMnOpQrSt".repeat(2)}-uV`;
+		for (const token of [standardBase64, alphabeticBase64, base64url, padded, withSeparators, "+/".repeat(20), `${standardBase64.slice(0, 40)}==`]) {
+			for (const text of [token, `id ${token} end`, JSON.stringify({ toolName: token }), `| Value | ${token} |`]) {
+				const out = sanitizeForIssue(text, REPO);
+				assert.ok(!out.includes(token), `redacted: ${token.slice(0, 16)} in ${text.slice(0, 24)}`);
+				assert.ok(out.includes("[redacted]"));
+			}
+		}
+	});
+
+	it("keeps the evidence identifiers an issue carries", () => {
+		const kept = {
+			"a Claude tool_use id": "toolu_01D7FLrfh4GYq7yT1ULFeyMV",
+			"a server tool_use id": "srvtoolu_01ABCDEFghijklmnopqrstuv",
+			"an incident id": "bi-7f3a",
+			"a longer incident id": "bi-x9k2qz",
+			"a session UUID": "8b2c4d6e-1f3a-4b5c-9d7e-0a1b2c3d4e5f",
+			"the 12-character bridge commit": "723861528f44",
+			"a signature": "tool_handler_unmatched@mcpToolHandler",
+			"the longest signature": "repair_tool_pairing_synthetic_results@convertAndImportMessages",
+			"a short tool name": "echo",
+			"a Pi tool name": "claude_bridge_incident_note",
+			"an MCP tool name over 40 characters": "mcp__claude_ai_Google_Drive__search_files",
+			"a 64-character MCP tool name": "mcp__github_enterprise_server__list_pull_request_review_comments",
+			"a camel-case MCP tool name": "mcp__workspace__getRepositoryContentsForHTTPRequest",
+			"a Claude model id": "claude-sonnet-4-5-20250929",
+			"a test file": "tests/unit-served-tools-stream.mjs",
+			"the configured repo's issue link": `https://github.com/${REPO}/issues/1234`,
+		};
+		for (const [what, id] of Object.entries(kept)) {
+			for (const text of [id, `| Value | ${id} |`, JSON.stringify({ id, toolName: id }), `\`${id}\``]) {
+				assert.equal(sanitizeForIssue(text, REPO), text, `${what} stays: ${id}`);
+			}
+		}
+	});
+
 	it("leaves nothing the repository's no-tagging rules block", () => {
 		// The rules of the repository's commit-msg hook, for the configured owner.
 		const rules = [
