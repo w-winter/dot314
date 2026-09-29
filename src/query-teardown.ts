@@ -74,6 +74,7 @@ export function teardownQuery(
 	cwd: string,
 ): boolean {
 	if (queryCtx.activeQuery !== sdkQuery) return false;
+	queryCtx.recorder.record("teardown");
 	reportToolResultMismatch(queryCtx, "query teardown", cwd, { forceRotate: cause !== "query-end" });
 	// Drain pending handlers for this query as errors naming the cause —
 	// their results are never coming.

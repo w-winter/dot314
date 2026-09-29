@@ -51,6 +51,19 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 - Pi's TypeScript loader does not keep a reassigned `export let` in sync for importers, and on `/new`, fork, or resume it reuses the loaded modules while passing the extension a new API object. Shared module state is therefore read through functions such as `getExtensionApi()`. `npm run check:exports` rejects `export let` and `export var` in `src/`, and `tests/int-session-new.mjs` checks that the provider survives `/new`. Unit tests run under tsx, which keeps real ESM bindings and cannot catch this.
 - Startup preflight (`src/claude-executable.ts::preflightClaudeExecutable`) preserves `code`, `errno`, `syscall`, `path`, `cwd` and the detected executable file type on the error it hands the SDK.
 
+## Incidents
+
+`src/incidents.ts` turns every anomaly into an incident keyed by `label@site`: a short id (`bi-` plus base36, never three digits in a row, because Pi's retry matcher looks for status codes such as 503 anywhere in an error text), a count, first and last seen, versions (bridge commit, Claude Code, Pi), the model, the flight-recorder snapshot and the diag entry reduced to metadata by `projectDiagMetadata`. `reportDiag` writes the diag entry exactly as `diagDump` always has, so every diag label goes through the class table `INCIDENT_CLASSES`:
+
+- `user-visible`: Claude or Pi got a bridge-authored error; that text ends with ` (incident <id>)`.
+- `silent`: an integrity mismatch, a forced rebuild or a dropped deferred message.
+- `expected`: normal cleanup, counted only and never named in a text. Each entry needs code evidence at its site, which is why `partial_tool_calls_pruned`, `deferred_user_messages_dropped` and `tool_calls_interrupted` are split by site.
+- `external`: Claude Code API errors other than account limits, and a Claude Code version change.
+
+The flight recorder (`src/flight-recorder.ts`) keeps the last 256 events of each query: SDK message and stream event types, tools/call arrivals, claims and answers, results queued, parked and delivered, cursor moves, aborts and timeouts. It is always on because the evidence is needed the first time a race happens, not after someone turns debugging on; so it does no I/O and no formatting, and consecutive deltas of one block share a record.
+
+Only a user-scoped `incidents.repo` enables the store, `<piUserDir>/claude-bridge-incidents.jsonl`: one line per new signature and per count update, batched on a timer, written asynchronously with mode 0600 and rotated like the debug log. It also remembers the last Claude Code version seen.
+
 ## Rate limits
 
 `src/rate-limit.ts::normalizeRateLimitUtilization` reads a value in `(0, 1]` as a fraction and `(1, 100]` as a percent; exactly `1` is ambiguous and resolves to full, the fail-closed direction. `formatAllowedRateLimitWarning` emits a neutral toast from `ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD` up and never quotes a `% used` figure. Rate-limit errors are deduplicated before notification and emitted as `pi-claude:rate-limit`.

@@ -12,6 +12,8 @@ import type { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { isConnectorTool } from "./connectors.js";
 import type { McpResult } from "./extract-tool-results.js";
+import { FlightRecorder } from "./flight-recorder.js";
+import { reportDiag, reportIncident, withIncident, type Incident } from "./incidents.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { debug } from "./debug.js";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
@@ -75,9 +77,9 @@ const DRAIN_CAUSE_TEXT: Record<ToolCallDrainCause, string> = {
 	"query-end": "the query ended",
 };
 
-export function interruptedToolCallResult(cause: ToolCallDrainCause): McpResult {
+export function interruptedToolCallResult(cause: ToolCallDrainCause, incident?: Incident): McpResult {
 	return {
-		content: [{ type: "text", text: `Claude bridge: ${DRAIN_CAUSE_TEXT[cause]} before this tool call's result was delivered. The call did not complete and produced no output.` }],
+		content: [{ type: "text", text: withIncident(`Claude bridge: ${DRAIN_CAUSE_TEXT[cause]} before this tool call's result was delivered. The call did not complete and produced no output.`, incident) }],
 		isError: true,
 	};
 }
@@ -97,7 +99,9 @@ export function toolCallDrainCause(flags: { wasAborted?: boolean; signalAborted?
 export function drainPendingToolCalls(queryCtx: QueryContext, cause: ToolCallDrainCause): number {
 	const drained = queryCtx.pendingToolCalls.size;
 	if (drained === 0) return 0;
-	const result = interruptedToolCallResult(cause);
+	queryCtx.recorder.record("handlers_drained", undefined, undefined, drained);
+	const incident = reportIncident("tool_calls_interrupted", cause, { count: drained, cause, toolCallIds: [...queryCtx.pendingToolCalls.keys()] }, queryCtx);
+	const result = interruptedToolCallResult(cause, incident);
 	for (const pending of queryCtx.pendingToolCalls.values()) pending.resolve(result);
 	queryCtx.pendingToolCalls.clear();
 	return drained;
@@ -106,9 +110,9 @@ export function drainPendingToolCalls(queryCtx: QueryContext, cause: ToolCallDra
 /** The error a stranded handler resolves with: its call never reached Pi and
  *  the forward paths have marked it dead, so no result can ever arrive and the
  *  call is guaranteed not to have executed on the Pi side. */
-export function strandedToolCallResult(): McpResult {
+export function strandedToolCallResult(incident?: Incident): McpResult {
 	return {
-		content: [{ type: "text", text: "Claude bridge: this tool call was never forwarded to Pi before its turn ended, so it did not execute and no result can arrive. Re-run the tool." }],
+		content: [{ type: "text", text: withIncident("Claude bridge: this tool call was never forwarded to Pi before its turn ended, so it did not execute and no result can arrive. Re-run the tool.", incident) }],
 		isError: true,
 	};
 }
@@ -125,7 +129,8 @@ export function failStrandedToolCall(queryCtx: QueryContext, id: string): boolea
 	if (!pending) return false;
 	queryCtx.pendingToolCalls.delete(id);
 	queryCtx.deadToolCallIds.add(id);
-	pending.resolve(strandedToolCallResult());
+	const incident = reportDiag("tool_handler_stranded", "finalize-no-stream", { toolCallId: id, toolName: pending.toolName, site: "finalize-no-stream" }, queryCtx);
+	pending.resolve(strandedToolCallResult(incident));
 	return true;
 }
 
@@ -144,11 +149,13 @@ export function drainStrandedToolCalls(queryCtx: QueryContext): Array<{ id: stri
 		if (queryCtx.forwardedToolCallIds.has(id)) continue;
 		stranded.push({ id, toolName: pending.toolName });
 	}
+	if (stranded.length === 0) return stranded;
+	const incident = reportDiag("tool_handlers_stranded", "resolveToolResults", { count: stranded.length, stranded }, queryCtx);
 	for (const { id } of stranded) {
 		const pending = queryCtx.pendingToolCalls.get(id)!;
 		queryCtx.pendingToolCalls.delete(id);
 		queryCtx.deadToolCallIds.add(id);
-		pending.resolve(strandedToolCallResult());
+		pending.resolve(strandedToolCallResult(incident));
 	}
 	return stranded;
 }
@@ -278,6 +285,8 @@ function unique(values: Iterable<string | undefined>): string[] {
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: ReturnType<typeof query> | null = null;
+	/** The query's recent events, for incidents (flight-recorder.ts). */
+	readonly recorder = new FlightRecorder();
 	currentPiStream: AssistantMessageEventStream | null = null;
 	/** Pi replaced the history while this query was active. Its next callback
 	 *  must use the new context instead of resuming the stale Claude session. */
@@ -920,10 +929,14 @@ export class QueryContext {
 	/** Records `answer` as what `id`'s handler returns until it settles. */
 	trackAnswer(id: string, answer: Promise<McpResult>): Promise<McpResult> {
 		this.answeringToolCalls.set(id, answer);
+		const generation = this.queryGeneration;
 		const returned = (): void => {
 			if (this.answeringToolCalls.get(id) === answer) this.answeringToolCalls.delete(id);
 		};
-		answer.then(returned, returned);
+		answer.then(() => {
+			if (this.queryGeneration === generation) this.recorder.record("tools_answer", id);
+			returned();
+		}, returned);
 		return answer;
 	}
 

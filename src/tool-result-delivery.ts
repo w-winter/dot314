@@ -10,9 +10,10 @@ import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { endStreamForFailure } from "./assistant-stream.js";
 import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
-import { debug, diagDump } from "./debug.js";
+import { debug } from "./debug.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
+import { reportDiag, reportIncident, withIncident } from "./incidents.js";
 import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.js";
 import { abortSdkQuery } from "./query-teardown.js";
 
@@ -37,6 +38,7 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 		const id = result.toolCallId;
 		if (id && !answersKnownCall(queryCtx, id)) {
 			queryCtx.markToolResultUnmatched(id);
+			queryCtx.recorder.record("result_unmatched", id);
 			unmatchedResultIds.push(id);
 			debug(`ERROR: tool result [${id}] has no registered tool_call id; refusing to queue or deliver`);
 			continue;
@@ -53,10 +55,12 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 				appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id, toolName: pending.toolName });
 			}
 			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
+			queryCtx.recorder.record("result_delivered", id);
 			if (toolsSettling) void toolsSettling.then(() => pending.resolve(result));
 			else pending.resolve(result);
 		} else if (id) {
 			queryCtx.pendingResults.set(id, result);
+			queryCtx.recorder.record("result_queued", id);
 			debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
 		} else {
 			debug(`WARNING: tool result without toolCallId, cannot match`);
@@ -68,8 +72,9 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 		}
 	}
 	if (unmatchedResultIds.length > 0) {
+		const incident = reportIncident("tool_results_unmatched", "resolveToolResults", { count: unmatchedResultIds.length, unmatchedResultIds }, queryCtx);
 		const errorResult: McpResult = {
-			content: [{ type: "text", text: `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}` }],
+			content: [{ type: "text", text: withIncident(`Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}`, incident) }],
 			isError: true,
 		};
 		for (const [pendingId, pending] of queryCtx.pendingToolCalls) {
@@ -91,7 +96,6 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 		if (stranded.length > 0) {
 			const names = stranded.map((entry) => entry.toolName).join(", ");
 			debug(`provider: failed ${stranded.length} stranded MCP handler(s) never forwarded to Pi: ${names}`);
-			diagDump("tool_handlers_stranded", { count: stranded.length, stranded });
 			appendIntegrityEntry("tool_handlers_stranded", { count: stranded.length, stranded });
 			safeNotify(`Claude bridge: failed ${stranded.length} tool call(s) that never reached Pi before their turn ended (${names}). The model saw a retryable error.`, "warning");
 		}
@@ -155,7 +159,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 		}
 		if (queryCtx.activeQuery !== sdkQuery) {
 			debug("provider: query ended while steering was written; releasing no tool results");
-			diagDump("steering_query_ended_during_write", { resultCount: live.resultCount, detached: queryCtx.detachedFromSharedSession });
+			reportDiag("steering_query_ended_during_write", "deliverSteerBeforeResults", { resultCount: live.resultCount, detached: queryCtx.detachedFromSharedSession }, queryCtx);
 			// Only the record this write belongs to, never a replacement's: a
 			// newer query in this context (a rebuild may keep the session id),
 			// a rotated session, a quarantined context or a released lane is
@@ -214,9 +218,9 @@ function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<Quer
 	queryCtx.latestCursorDigest = UNVERIFIED_HISTORY_DIGEST;
 	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
 	const detail = { resultCount: live.resultCount, userMessageCount: live.userMessageCount, detached: queryCtx.detachedFromSharedSession };
-	diagDump("steering_delivery_failed", { ...detail, error: error instanceof Error ? error.message : String(error) });
+	const incident = reportDiag("steering_delivery_failed", "failSteeringDelivery", { ...detail, error: error instanceof Error ? error.message : String(error) }, queryCtx);
 	appendIntegrityEntry("steering_delivery_failed", detail);
-	endStreamForFailure(queryCtx, { errorMessage: STEERING_DELIVERY_FAILED_MESSAGE });
+	endStreamForFailure(queryCtx, { errorMessage: withIncident(STEERING_DELIVERY_FAILED_MESSAGE, incident) });
 	// The query's own abort path drains the held handlers, drops deferred
 	// input, kills the child and takes this context out of its lane. It runs
 	// after the stream ended, so the request is not reported as cancelled.

@@ -142,8 +142,9 @@ export const LOST_TOOL_RESULT_TEXT =
 export function insertLostToolResultPlaceholders(
 	messages: Array<{ role?: string; content?: unknown }>,
 	missing: MissingToolResult[],
+	text: string = LOST_TOOL_RESULT_TEXT,
 ): void {
-	const block = (id: string) => ({ type: "tool_result", tool_use_id: id, content: LOST_TOOL_RESULT_TEXT, is_error: true });
+	const block = (id: string) => ({ type: "tool_result", tool_use_id: id, content: text, is_error: true });
 	const byAssistant = new Map<number, MissingToolResult[]>();
 	for (const item of missing) {
 		const group = byAssistant.get(item.assistantIndex) ?? [];

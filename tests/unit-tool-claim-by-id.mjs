@@ -316,7 +316,8 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		openGate();
 		await observed.issued;
 		const fresh = await observed.fresh;
-		assert.deepEqual(fresh.content, [{ type: "text", text: "Tool echo is no longer active in Pi." }]);
+		assert.equal(fresh.content.length, 1);
+		assert.match(fresh.content[0].text, /^Tool echo is no longer active in Pi\. \(incident bi-[0-9a-z]{4,6}\)$/);
 		assert.equal(fresh.isError, true);
 		assert.deepEqual((await observed.old).content, [{ type: "text", text: "RESULT OLD" }], "the executed call's late invocation still gets its result");
 		await second;

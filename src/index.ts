@@ -25,7 +25,8 @@ import { hasClaudeCredentials } from "./auth-presence.js";
 import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.js";
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
-import { debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import { configureIncidents, reportDiag, reportIncident, withIncident } from "./incidents.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -369,6 +370,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	return async (args, extra) => {
 		const mappedArgs = mapToolArgs(tool.name, args);
 		const toolUseId = extra?._meta?.[CLAUDE_CODE_TOOL_USE_ID];
+		queryCtx.recorder.record("tools_call", typeof toolUseId === "string" ? toolUseId : undefined);
 		let claim: ClaimedToolCall;
 		if (typeof toolUseId === "string") {
 			const tagged = queryCtx.claimToolUseId(toolUseId, tool.name, mappedArgs);
@@ -378,6 +380,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			claim = queryCtx.claimToolCall(tool.name, mappedArgs);
 		}
 		const toolCallId = claim.toolCallId;
+		queryCtx.recorder.record(toolCallId ? "claim" : "claim_unmatched", toolCallId);
 		if (toolCallId) {
 			// This invocation may have been the last one a postponed schema change
 			// was waiting for (it was validated against the old schema already);
@@ -388,34 +391,35 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			if (queryCtx.servedTools && !queryCtx.servedTools.serves(tool.name)) {
 				// A new call under a tool Pi has since deactivated (see served-tools.ts).
 				debug(`mcp handler: ${tool.name} is no longer active in Pi; rejecting unclaimed call`);
-				return { content: [{ type: "text", text: `Tool ${tool.name} is no longer active in Pi.` }], isError: true } satisfies McpResult;
+				const incident = reportIncident("tool_no_longer_active", "mcpToolHandler", { toolName: tool.name }, queryCtx);
+				return { content: [{ type: "text", text: withIncident(`Tool ${tool.name} is no longer active in Pi.`, incident) }], isError: true } satisfies McpResult;
 			}
 			debug(`WARNING: mcp handler ${tool.name} has no toolCallId (available=${claim.available})`);
-			diagDump("tool_handler_unmatched", {
+			const incident = reportDiag("tool_handler_unmatched", "mcpToolHandler", {
 				toolName: tool.name,
 				argKeys: argKeys(mappedArgs),
 				available: claim.available,
 				turnToolCallIds: queryCtx.turnToolCallIds,
 				turnToolCalls: safeToolCallSummary(queryCtx.turnToolCalls),
-			});
+			}, queryCtx);
 			appendIntegrityEntry("tool_handler_unmatched", {
 				toolName: tool.name,
 				argKeys: argKeys(mappedArgs),
 				available: claim.available,
 				turnToolCallIds: queryCtx.turnToolCallIds,
 			});
-			return { content: [{ type: "text", text: `Claude bridge internal error: no matching tool_call id for ${tool.name}` }], isError: true } satisfies McpResult;
+			return { content: [{ type: "text", text: withIncident(`Claude bridge internal error: no matching tool_call id for ${tool.name}`, incident) }], isError: true } satisfies McpResult;
 		}
 		if (claim.argsMismatch) {
 			// Claimed anyway (sole same-name candidate) — record the divergence so
 			// a schema/validator drift stays visible without stranding the call.
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed sole same-name call despite args mismatch`);
-			diagDump("tool_claim_args_mismatch", {
+			reportDiag("tool_claim_args_mismatch", "mcpToolHandler", {
 				toolName: tool.name,
 				toolCallId,
 				handlerArgKeys: argKeys(mappedArgs),
 				recordedArgKeys: argKeys(queryCtx.turnToolCalls.find((call) => call.id === toolCallId)?.arguments),
-			});
+			}, queryCtx);
 		} else if (claim.recordedAhead) {
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed by tool_use id before the stream recorded it`);
 		} else if ((claim.match !== "tool-args" && claim.match !== "tool-use-id") || claim.ambiguous) {
@@ -424,6 +428,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 		const earlyResult = toolCallId ? takeQueuedOrParkedResult(queryCtx, toolCallId) : undefined;
 		if (earlyResult !== undefined) {
 			queryCtx.markToolResultResolved(toolCallId);
+			queryCtx.recorder.record("result_taken_early", toolCallId);
 			debug(`mcp handler: ${tool.name} [${toolCallId}] → resolved from queue/parked (${queryCtx.pendingResults.size} queued, ${queryCtx.reapedResults.size} parked remaining)`);
 			const settling = queryCtx.servedToolsSettling;
 			if (!settling) return earlyResult;
@@ -452,9 +457,18 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	};
 }
 
+const UNCLAIMED_KINDS: Record<Exclude<ToolUseIdClaim, { outcome: "claimed" }>["outcome"], string> = {
+	waiting: "claim_waiting",
+	dead: "claim_dead",
+	answered: "claim_answered",
+	withdrawn: "claim_withdrawn",
+	"other-tool": "claim_other_tool",
+};
+
 /** Answers a tagged tools/call whose own id it cannot claim, touching no
  *  other id. */
 function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUseId: string, tagged: Exclude<ToolUseIdClaim, { outcome: "claimed" }>): McpResult | Promise<McpResult> {
+	queryCtx.recorder.record(UNCLAIMED_KINDS[tagged.outcome], toolUseId);
 	switch (tagged.outcome) {
 		case "waiting":
 			debug(`mcp handler: ${toolName} [${toolUseId}] invoked again while its first invocation waits; both get Pi's result`);
@@ -462,19 +476,17 @@ function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUs
 		case "dead":
 			// A dead id was never forwarded to Pi and never will be.
 			debug(`mcp handler: ${toolName} [${toolUseId}] is dead (never forwarded to Pi); answering as stranded`);
-			return strandedToolCallResult();
+			return strandedToolCallResult(reportIncident("tool_call_dead", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId }, queryCtx));
 		case "answered":
 			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] invoked again after it was answered`);
-			diagDump("tool_call_already_answered", { toolName, toolCallId: toolUseId });
-			return { content: [{ type: "text", text: `Claude bridge: tool call ${toolUseId} (${toolName}) was already answered and its result already returned. This repeated invocation did not run the tool.` }], isError: true };
+			return { content: [{ type: "text", text: withIncident(`Claude bridge: tool call ${toolUseId} (${toolName}) was already answered and its result already returned. This repeated invocation did not run the tool.`, reportDiag("tool_call_already_answered", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId }, queryCtx)) }], isError: true };
 		case "withdrawn":
 			// A new call under a tool Pi has since deactivated (see served-tools.ts).
 			debug(`mcp handler: ${toolName} is no longer active in Pi; rejecting new call [${toolUseId}]`);
-			return { content: [{ type: "text", text: `Tool ${toolName} is no longer active in Pi.` }], isError: true };
+			return { content: [{ type: "text", text: withIncident(`Tool ${toolName} is no longer active in Pi.`, reportIncident("tool_no_longer_active", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId }, queryCtx)) }], isError: true };
 		case "other-tool":
 			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] names a call recorded for ${tagged.recordedName}`);
-			diagDump("tool_call_id_other_tool", { toolName, toolCallId: toolUseId, recordedName: tagged.recordedName });
-			return { content: [{ type: "text", text: `Claude bridge internal error: tool call ${toolUseId} was issued for ${tagged.recordedName}, not ${toolName}` }], isError: true };
+			return { content: [{ type: "text", text: withIncident(`Claude bridge internal error: tool call ${toolUseId} was issued for ${tagged.recordedName}, not ${toolName}`, reportDiag("tool_call_id_other_tool", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId, recordedName: tagged.recordedName }, queryCtx)) }], isError: true };
 	}
 }
 
@@ -784,6 +796,7 @@ function streamRequestInLane(
 		queryCtx.callbackGeneration += 1;
 		activeStreamIdleWatchdogs.get(queryCtx)?.refresh();
 		const allResults = extractAllToolResults(context);
+		queryCtx.recorder.record("callback", undefined, undefined, allResults.length);
 		debug(`provider: tool results, ${allResults.length} results, ${queryCtx.pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`);
 		syncServedTools(queryCtx, context);
 		const toolsSettling = queryCtx.servedToolsSettling;
@@ -856,7 +869,7 @@ function streamRequestInLane(
 			// are released, so this should not happen; never write concurrently.
 			deliverLive = false;
 			debug("provider: a steering write is still in flight; deferring this steer to a continuation");
-			diagDump("steering_write_in_flight", { contextLength: context.messages.length, userMessageCount: replay.userMessageCount, resultCount: deliveredResultIds.length });
+			reportDiag("steering_write_in_flight", "streamRequestInLane", { contextLength: context.messages.length, userMessageCount: replay.userMessageCount, resultCount: deliveredResultIds.length }, queryCtx);
 		}
 		if (!deliverLive) releaseResults();
 		// The users this callback accepts for delivery to Claude, live or as a
@@ -873,12 +886,12 @@ function streamRequestInLane(
 				// Not owned: a later callback plans these again together with
 				// whatever arrives behind them.
 				capturedThrough = replay.runStart;
-				diagDump("deferred_user_replay_skipped", {
+				reportDiag("deferred_user_replay_skipped", "streamRequestInLane", {
 					contextLength: context.messages.length,
 					runStart: replay.runStart,
 					userMessageCount: replay.userMessageCount,
 					messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-				});
+				}, queryCtx);
 			}
 		}
 		if (replay.unresolvedIndexes.length > 0) {
@@ -893,14 +906,14 @@ function streamRequestInLane(
 			for (const index of replay.unresolvedIndexes) ledger.own(context.messages[index]);
 			queryCtx.userInputNeedsRebuild = true;
 			debug(`provider: ${replay.unresolvedIndexes.length} mid-query user message(s) could not be identified${replay.anchorIndex < 0 ? " (no known message left in the context)" : ` (anchor ${replay.anchorIndex}, ${replay.missingOwned} owned message(s) missing)`}; the next turn rebuilds from Pi history`);
-			diagDump("user_message_identity_unresolved", {
+			reportDiag("user_message_identity_unresolved", "streamRequestInLane", {
 				contextLength: context.messages.length,
 				indexes: replay.unresolvedIndexes,
 				anchor: replay.anchorIndex,
 				missingOwned: replay.missingOwned,
 				beforeAnchor: replay.unresolvedIndexes.filter((index) => index < replay.anchorIndex).length,
 				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-			});
+			}, queryCtx);
 			if (!queryCtx.detachedFromSharedSession) markSessionForRebuild();
 		}
 
@@ -948,6 +961,7 @@ function streamRequestInLane(
 		}
 		if (capturedThrough >= queryCtx.latestCursor) {
 			queryCtx.latestCursor = capturedThrough;
+			queryCtx.recorder.record("cursor", undefined, undefined, capturedThrough);
 			queryCtx.latestCursorDigest = capturedDigest;
 			if (heldResults) {
 				queryCtx.claimedAssistants = queryCtx.deliveredAssistants.length;
@@ -955,6 +969,7 @@ function streamRequestInLane(
 			}
 		}
 		if (deliverLive) {
+			queryCtx.recorder.record("steer_live", undefined, undefined, replay.userMessageCount);
 			deliverSteerBeforeResults(queryCtx, runningQuery, {
 				steer: steer!,
 				userMessageCount: replay.userMessageCount,
@@ -1084,6 +1099,8 @@ function streamRequestInLane(
 	ctx().deferredUserMessages = [];
 	ctx().steeringWriteQuery = null;
 	ctx().queryGeneration += 1;
+	ctx().recorder.reset();
+	ctx().recorder.record("query_start", undefined, undefined, context.messages.length);
 	ctx().stopListeningForAbort();
 	ctx().onRequestAbort = null;
 	ctx().abortRequested = false;
@@ -1227,13 +1244,14 @@ function streamRequestInLane(
 	const refusal = thirdPartyAppRefusal(outboundSystemPrompt({ queryModel, bridgeConfig, systemPrompt, systemPromptOrigin }), bridgeConfig);
 	if (refusal) {
 		debug(`provider: refusing a third-party-app system prompt: ${refusal}`);
+		const incident = reportIncident("third_party_app_refused", "streamRequestInLane", { configuredReplacement: Boolean(bridgeConfig.systemPrompt?.replacement) }, ctx());
 		const errorOutput: AssistantMessage = {
 			role: "assistant", content: [],
 			api: model.api, provider: model.provider, model: model.id,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 			stopReason: "error", timestamp: Date.now(),
-			errorMessage: refusal,
+			errorMessage: withIncident(refusal, incident),
 		};
 		queueMicrotask(() => {
 			stream.push({ type: "error", reason: "error", error: errorOutput });
@@ -1270,7 +1288,7 @@ function streamRequestInLane(
 	// into "\n\n", so test the trimmed text, not truthiness). Should never
 	// happen — dump diagnostics if it does.
 	if (!promptText.trim() && !promptBlocks) {
-		diagDump("empty_prompt", {
+		reportDiag("empty_prompt", "streamRequestInLane", {
 			contextLength: context.messages.length,
 			lastMsgRole: lastMsg?.role,
 			activeQueryExists: ctx().activeQuery !== null,
@@ -1282,7 +1300,7 @@ function streamRequestInLane(
 				return activeSession ? { sessionId: activeSession.sessionId.slice(0, 8), cursor: activeSession.cursor } : null;
 			})(),
 			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-		});
+		}, ctx());
 		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
 		promptText = "[continue]";
 	}
@@ -1397,6 +1415,7 @@ function streamRequestInLane(
 	// session synchronously; after the hand-off this query's late teardown must
 	// not touch the record the replacement owns.
 	const quarantine = (): void => {
+		abortCtx.recorder.record("lane_quarantine");
 		markRebuildForThisQuery({ forceRotate: true });
 		detachContext(abortCtx);
 		abortCtx.detachedFromSharedSession = true;
@@ -1409,7 +1428,7 @@ function streamRequestInLane(
 		const dropped = [...(undelivered !== undefined ? [undelivered] : []), ...abortCtx.deferredUserMessages];
 		abortCtx.deferredUserMessages = [];
 		if (dropped.length > 0) {
-			diagDump("deferred_user_messages_dropped", summarizeDroppedUserMessages(site, dropped));
+			reportDiag("deferred_user_messages_dropped", site, summarizeDroppedUserMessages(site, dropped), abortCtx);
 		}
 		return dropped;
 	};
@@ -1471,6 +1490,7 @@ function streamRequestInLane(
 			onTimeout: ({ idleMs, timeoutMs }) => {
 				if (streamIdleTimedOut || wasAborted || options?.signal?.aborted || !abortCtx.activeQuery) return;
 				streamIdleTimedOut = true;
+				abortCtx.recorder.record("idle_timeout", undefined, undefined, idleMs);
 				dropDeferredUserMessages("stream-idle-timeout");
 				quarantine();
 				const errorMessage = buildStreamIdleTimeoutErrorMessage(timeoutMs);
@@ -1498,8 +1518,9 @@ function streamRequestInLane(
 					timeoutMs,
 				});
 				const idle = `stream idle timeout after ${formatDurationShort(timeoutMs)}`;
+				const incident = reportIncident("stream_idle_timeout", "streamIdleWatchdog", { timeoutMs, idleMs }, abortCtx);
 				const ending = endStreamForFailure(abortCtx, {
-					errorMessage,
+					errorMessage: withIncident(errorMessage, incident),
 					notice: idle,
 					fields: { rateLimitType: "stream_idle", retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS, streamIdleTimeoutMs: timeoutMs },
 				});
@@ -1528,6 +1549,7 @@ function streamRequestInLane(
 		if (wasAborted) return;
 		wasAborted = true;
 		abortCtx.abortRequested = true;
+		abortCtx.recorder.record("abort");
 		// An aborted query must not replay its deferred messages later.
 		dropDeferredUserMessages("abort");
 		reportToolResultMismatch(abortCtx, "abort", cwd, {
@@ -1640,6 +1662,7 @@ function streamRequestInLane(
 					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
 					debug(`provider: replaying deferred user message: ${steerPreview}`);
 					abortCtx.prepareContinuation();
+					abortCtx.recorder.record("continuation_start");
 					// What Claude has completed so far outlives a failure of this
 					// continuation (endStreamForFailure), and the continuation may
 					// repeat it (queryBlocks).
@@ -1847,6 +1870,7 @@ export default function (pi: ExtensionAPI) {
 
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
+	configureIncidents(config.incidents);
 	// Registered before the disabled early return: a bridge switched off by
 	// claude-bridge.json is exactly when the settings editor has to show where
 	// that value came from.

@@ -6,12 +6,15 @@ import { resolve as pathResolve } from "path";
 import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
-import { DEBUG, DEBUG_LOG_PATH, debug, diagDump } from "./debug.js";
+import { DEBUG, DEBUG_LOG_PATH, debug } from "./debug.js";
 import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
+import { reportDiag, withIncident } from "./incidents.js";
+import { ctx } from "./query-state.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import {
 	findUnpairedToolUses,
 	insertLostToolResultPlaceholders,
+	LOST_TOOL_RESULT_TEXT,
 	recoverLaterToolResults,
 } from "./tool-pairing-audit.js";
 import { claudeDirForProfile, resolveClaudeAccountRouter, type AccountSessionScope } from "./account-router.js";
@@ -311,7 +314,7 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 			// bridge marker and silently rebuilds — worth a diagnostic entry.
 			// Like all diagDump output this lands only under CLAUDE_BRIDGE_DEBUG=1
 			// and the failure itself stays non-fatal either way.
-			diagDump("persist_shared_session_failed", {
+			reportDiag("persist_shared_session_failed", "schedulePersistSharedSession", {
 				sessionId: snapshot.sessionId.slice(0, 8),
 				cursor: snapshot.cursor,
 				error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -363,17 +366,17 @@ function convertAndImportMessages(
 	// reads as tool output and silently reasons on. Ours is is_error and says
 	// what to do. repairToolPairing still runs after (idempotent; finds nothing left).
 	const missingToolResults = findUnpairedToolUses(anthropicMessages);
-	if (missingToolResults.length > 0) insertLostToolResultPlaceholders(anthropicMessages, missingToolResults);
-	const repaired = repairToolPairing(anthropicMessages);
 	if (missingToolResults.length > 0) {
-		reportSyntheticToolResultRepair(missingToolResults, {
+		const incident = reportSyntheticToolResultRepair(missingToolResults, {
 			cwd,
 			messageCount: messages.length,
 			anthropicMessageCount: anthropicMessages.length,
 			sessionId: session.sessionId,
 			jsonlPath: session.jsonlPath,
-		});
+		}, ctx());
+		insertLostToolResultPlaceholders(anthropicMessages, missingToolResults, withIncident(LOST_TOOL_RESULT_TEXT, incident));
 	}
+	const repaired = repairToolPairing(anthropicMessages);
 	if (repaired.length !== anthropicMessages.length) {
 		debug(`convertAndImportMessages: repairToolPairing ${anthropicMessages.length} → ${repaired.length} msgs`);
 	}
@@ -466,7 +469,7 @@ function verifyWrittenSession(
 			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
 			"warning",
 		);
-		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? null });
+		reportDiag("session_verify_fail", "verifyWrittenSession", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? null }, ctx());
 	}
 }
 
