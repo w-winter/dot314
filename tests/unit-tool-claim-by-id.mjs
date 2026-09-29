@@ -438,10 +438,19 @@ describe("a tool call Claude Code cancelled", () => {
 		return { call, cancel: () => controller.abort("discarded") };
 	}
 
-	/** Pi gets only `toolu_new`, and its result answers that call. */
+	/** Pi gets only `toolu_new`, and its result answers that call. A first
+	 *  turn still open after 4 s has lost its grace backstop: it is aborted
+	 *  and fails, instead of hanging the file. */
 	async function assertOnlyReplacementReachesPi(observed, sessionId) {
 		const initial = initialContext();
-		const first = await collect(streamClaudeAgentSdk(model, initial, { sessionId }));
+		const abort = new AbortController();
+		const firstRun = collect(streamClaudeAgentSdk(model, initial, { sessionId, signal: abort.signal }));
+		const first = await Promise.race([firstRun, settle(4000).then(() => null)]);
+		if (!first) {
+			abort.abort();
+			await firstRun;
+			assert.fail("the replacement's turn never ended: its grace backstop was lost");
+		}
 		const done = first.find((event) => event.type === "done");
 		assert.deepEqual(toolCallIds(done), ["toolu_new"], "Pi gets only the replacement's call");
 		const second = collect(streamClaudeAgentSdk(model, {
@@ -533,6 +542,28 @@ describe("a tool call Claude Code cancelled", () => {
 			yield* answerFresh(observed);
 		});
 		await assertOnlyReplacementReachesPi(observed, "cancel-replacement-early");
+	});
+
+	it("still delivers a replacement call whose handler runs before the retry's streamed message_start", { timeout: 8000 }, async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			const old = cancellableCall(client, "toolu_old");
+			observed.old = old.call;
+			await settle(20);
+			yield messageStart("m1");
+			yield toolUseStart("toolu_old", 0);
+			yield* toolUseRest(0);
+			old.cancel();
+			await settle(20);
+			observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+			await settle(20); // the handler runs while the retried stream waits in the queue
+			yield messageStart("m2");
+			yield toolUseStart("toolu_new", 0);
+			yield* toolUseRest(0);
+			await settle(1700); // no terminal events: only the grace timer can end the turn
+			yield* answerFresh(observed);
+		});
+		await assertOnlyReplacementReachesPi(observed, "cancel-replacement-early-streamed");
 	});
 
 	it("leaves a call Pi was given to Pi's result, which never answers another call", { timeout: 8000 }, async () => {

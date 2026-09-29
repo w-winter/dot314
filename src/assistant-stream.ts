@@ -328,9 +328,21 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	c.childExecutedStreamIndexes.clear();
 	c.suppressedStreamIndexes.clear();
 	c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));
-	if (!c.turnSawToolCall) cancelScheduledToolUseEnd(c);
+	// An early call still waiting (the replacement's handler can run before its
+	// message_start) armed the grace timer, and nothing re-arms it once its
+	// block streams: disarmed, a stream with no terminal events never ends.
+	if (!c.turnSawToolCall && !hasWaitingEarlyCall(c)) cancelScheduledToolUseEnd(c);
 	debug(`discardAbandonedAttempt: ${why} as ${replacementId ?? "an unidentified message"}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}`).join(", "));
 	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded }, c);
+}
+
+/** Whether a tagged call whose handler ran before the stream recorded it is
+ *  still waiting for Pi: neither given to Pi nor dead. */
+function hasWaitingEarlyCall(c: QueryContext): boolean {
+	for (const id of c.earlyToolCallIds) {
+		if (c.pendingToolCalls.has(id) && !c.forwardedToolCallIds.has(id) && !c.deadToolCallIds.has(id)) return true;
+	}
+	return false;
 }
 
 /** Claude Code cancelled the tagged tools/call for `id`: its bundled MCP
