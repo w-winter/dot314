@@ -17,7 +17,9 @@ import { fileURLToPath } from "node:url";
 import { piUserDir } from "./config.js";
 import { DEBUG_LOG_MAX_BYTES, DEBUG_LOG_ROTATED_FILES, debug, diagDump } from "./debug.js";
 import { __testFlushFilings, __testResetFiler, configureFiler, noteIncidentForFiling } from "./incident-filer.js";
-import type { FlightRecord, FlightRecorder } from "./flight-recorder.js";
+import { CLAUDE_ACCOUNT_FAILURE_KINDS } from "./account-router.js";
+import { RECORDER_KINDS, type FlightRecord, type FlightRecorder } from "./flight-recorder.js";
+import { SDK_RESULT_SUBTYPES, SDK_SYSTEM_SUBTYPES, STREAM_ABANDON_REASONS, TURN_BLOCK_TYPES } from "./incident-labels.js";
 
 /** user-visible: Claude or Pi got a bridge-authored error. silent: integrity
  *  mismatch, forced rebuild, dropped deferred message. expected: normal
@@ -222,7 +224,10 @@ let claudeCodeVersion: string | undefined;
 //
 // Every string an incident keeps is evidence of one kind, validated where it
 // is recorded: it has the exact shape of its kind, or it is replaced by a
-// placeholder naming the field. Nothing is scanned for secrets, because no
+// placeholder naming the field. A label (a diag `kind`, `subtype`, `type` or
+// `why`, a recorder kind) must be a member of its finite code-owned set
+// (incident-labels.ts, RECORDER_KINDS), not merely label-shaped: an unknown
+// one becomes `[unknown <field>]`. Nothing is scanned for secrets, because no
 // text rule tells a long identifier from a key; a kind's shape leaves no room
 // for one. A tool name is kept only when Pi registered that tool in this
 // process (noteRegisteredToolNames): configuration, not a secret, however
@@ -231,15 +236,28 @@ let claudeCodeVersion: string | undefined;
 // (`argKeys`, `handlerArgKeys`, ...) come from the caller's tool arguments, and
 // a tool may take free text as property names: only their count is kept.
 
-type EvidenceKind = "toolName" | "toolUseId" | "messageId" | "sessionId" | "site" | "label" | "role" | "roles" | "version" | "errorName" | "errorCode" | "syscall";
+type LabelField = "kind" | "subtype" | "type" | "why";
+type EvidenceKind = "toolName" | "toolUseId" | "messageId" | "sessionId" | "site" | LabelField | "role" | "roles" | "version" | "errorName" | "errorCode" | "syscall";
+
+// The set each label field is checked against: the failure kinds the
+// classifier gives an api_error (or "unclassified"), the SDK subtypes the
+// bridge handles, the block types of a discarded attempt, and why an attempt
+// was discarded. No code writes a diag `source`: it is not kept.
+const LABEL_SETS: Record<LabelField, ReadonlySet<string>> = {
+	kind: new Set([...CLAUDE_ACCOUNT_FAILURE_KINDS, "unclassified"]),
+	subtype: new Set([...SDK_RESULT_SUBTYPES, ...SDK_SYSTEM_SUBTYPES]),
+	type: new Set(TURN_BLOCK_TYPES),
+	why: new Set(STREAM_ABANDON_REASONS),
+};
+const RECORDER_KIND_SET: ReadonlySet<string> = new Set(RECORDER_KINDS);
 
 const FIELD_KINDS: Record<string, EvidenceKind> = {
 	toolName: "toolName", name: "toolName", recordedName: "toolName",
 	id: "toolUseId", toolCallId: "toolUseId",
-	messageId: "messageId",
+	messageId: "messageId", replacementMessageId: "messageId",
 	sessionId: "sessionId",
 	site: "site", cause: "site",
-	why: "label", kind: "label", subtype: "label", type: "label", source: "label",
+	why: "why", kind: "kind", subtype: "subtype", type: "type",
 	lastMsgRole: "role", promptRoles: "roles", messageRoles: "roles",
 	version: "version", previousVersion: "version",
 	errorName: "errorName", code: "errorCode", syscall: "syscall",
@@ -256,8 +274,6 @@ const TOOL_USE_ID = /^(?:srv)?toolu_01[A-Za-z0-9]{22}$/;
 const MESSAGE_ID = /^msg_01[A-Za-z0-9]{22}$/;
 // A Claude Code session UUID, or the 8-character prefix the bridge logs.
 const SESSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8})$/;
-// SDK subtypes, block and event types, classifier kinds, recorder kinds.
-const LABEL = /^[a-z][a-z_-]{0,63}$/;
 const SEMVER = /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z]{1,20}(?:\.[0-9A-Za-z]{1,20}){0,3})?$/;
 const ERROR_NAME = /^(?:[A-Z][A-Za-z]{0,47})?Error$/;
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
@@ -309,7 +325,7 @@ function evidence(kind: EvidenceKind, key: string, value: string): string {
 		case "messageId": return MESSAGE_ID.test(value) ? value : invalid;
 		case "sessionId": return SESSION_ID.test(value) ? value : invalid;
 		case "site": return SITE_SET.has(value) ? value : invalid;
-		case "label": return LABEL.test(value) ? value : invalid;
+		case "kind": case "subtype": case "type": case "why": return LABEL_SETS[kind].has(value) ? value : `[unknown ${key}]`;
 		case "role": return ROLES.has(value) ? value : invalid;
 		case "roles": return roleList(value) ?? invalid;
 		case "version": return SEMVER.test(value) ? value : invalid;
@@ -367,7 +383,7 @@ export function projectDiagMetadata(data: Record<string, unknown>): Record<strin
 /** A recorder snapshot with every id and kind validated. */
 function projectSnapshot(snapshot: FlightRecord[]): FlightRecord[] {
 	return snapshot.map((record) => {
-		const out: FlightRecord = { t: record.t, kind: LABEL.test(record.kind) ? record.kind : "[invalid kind]" };
+		const out: FlightRecord = { t: record.t, kind: RECORDER_KIND_SET.has(record.kind) ? record.kind : "[unknown kind]" };
 		if (record.id !== undefined) out.id = TOOL_USE_ID.test(record.id) ? record.id : "[invalid tool_use id]";
 		if (record.index !== undefined) out.index = record.index;
 		if (record.n !== undefined) out.n = record.n;

@@ -26,7 +26,8 @@ export interface ClaudeAccountRoute {
 	fallbackReason?: "fable-quota";
 }
 
-export type ClaudeAccountFailureKind = "auth" | "billing" | "rate-limit" | "overloaded" | "server" | "network";
+export const CLAUDE_ACCOUNT_FAILURE_KINDS = ["auth", "billing", "rate-limit", "overloaded", "server", "network"] as const;
+export type ClaudeAccountFailureKind = typeof CLAUDE_ACCOUNT_FAILURE_KINDS[number];
 
 export interface ClaudeAccountRouterV1 {
 	version: 1;

@@ -18,7 +18,7 @@ import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, p
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug } from "./debug.js";
-import { prefixedKind } from "./flight-recorder.js";
+import { sdkRecorderKind } from "./flight-recorder.js";
 import { markExternalError, noteClaudeCodeVersion, reportDiag, reportIncident } from "./incidents.js";
 import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
@@ -91,17 +91,16 @@ export interface ConsumeQueryResult {
 
 /** One flight-recorder record per SDK message: the stream event type (with
  *  its block index, and a tool_use block's id), `system_<subtype>` or
- *  `result_<subtype>`, else the message type. Runs per streamed token. */
+ *  `result_<subtype>`, else the message type; `<type>_[unknown]` for one the
+ *  bridge does not handle (sdkRecorderKind). Runs per streamed token. */
 function recordSdkMessage(queryCtx: QueryContext, message: SDKMessage): void {
 	const raw = message as { type: string; subtype?: unknown; event?: { type?: unknown; index?: unknown; content_block?: { id?: unknown } } };
 	if (raw.type === "stream_event") {
 		const event = raw.event;
 		const id = event?.type === "content_block_start" && typeof event.content_block?.id === "string" ? event.content_block.id : undefined;
-		queryCtx.recorder.record(typeof event?.type === "string" ? event.type : "stream_event", id, typeof event?.index === "number" ? event.index : undefined);
-	} else if (raw.type === "system" || raw.type === "result") {
-		queryCtx.recorder.record(prefixedKind(raw.type, raw.subtype));
+		queryCtx.recorder.record(sdkRecorderKind(raw), id, typeof event?.index === "number" ? event.index : undefined);
 	} else {
-		queryCtx.recorder.record(raw.type);
+		queryCtx.recorder.record(sdkRecorderKind(raw));
 	}
 }
 

@@ -14,7 +14,7 @@ import { Type } from "@earendil-works/pi-ai";
 
 import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
-import { __testResetIncidents, recordIncident } from "../src/incidents.ts";
+import { __testResetIncidents, listIncidents, recordIncident } from "../src/incidents.ts";
 import { resetStack } from "../src/query-state.ts";
 
 const model = {
@@ -38,6 +38,8 @@ const SESSION_UUID = "8b2c4d6e-1f3a-4b5c-9d7e-0a1b2c3d4e5f";
 const MCP_TOOL = "mcp__git__get_pr_by_id_from_repo_with_org_name";
 // Synthetic: 30 bytes of a hash of fixed text, valid base64 and base64url.
 const TOKEN = createHash("sha256").update("synthetic-review-token-34135").digest().subarray(0, 30).toString("base64");
+// Synthetic, lowercase and label-shaped: a valid base64 encoding of 30 bytes.
+const LABEL_TOKEN = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn";
 
 let agentDir;
 
@@ -121,7 +123,7 @@ describe("incident evidence", () => {
 		assert.equal(recordIncident("tool_call_dead@answerUnclaimedToolUse", "user-visible", { messageId: TOKEN }).diag.messageId, "[invalid messageId]");
 	});
 
-	it("keeps recorder ids and kinds of the right shape only", () => {
+	it("keeps recorder kinds from the recorder's kind list and ids of the right shape only", () => {
 		const incident = record({}, {
 			recorder: {
 				snapshot: () => [
@@ -131,6 +133,10 @@ describe("incident evidence", () => {
 					{ t: 3, kind: "tools_call", id: TOKEN },
 					{ t: 4, kind: "tools_call", id: MCP_TOOL },
 					{ t: 5, kind: TOKEN },
+					{ t: 6, kind: LABEL_TOKEN },
+					{ t: 7, kind: "system_api_retry" },
+					{ t: 8, kind: "system_[unknown]" },
+					{ t: 9, kind: "rate_limit_event" },
 				],
 			},
 			turnOutput: { model: "claude-sonnet-4-6" },
@@ -141,7 +147,11 @@ describe("incident evidence", () => {
 			{ t: 2, kind: "result_error_during_execution" },
 			{ t: 3, kind: "tools_call", id: "[invalid tool_use id]" },
 			{ t: 4, kind: "tools_call", id: "[invalid tool_use id]" },
-			{ t: 5, kind: "[invalid kind]" },
+			{ t: 5, kind: "[unknown kind]" },
+			{ t: 6, kind: "[unknown kind]" },
+			{ t: 7, kind: "system_api_retry" },
+			{ t: 8, kind: "system_[unknown]" },
+			{ t: 9, kind: "rate_limit_event" },
 		]);
 		assert.equal(incident.model, "claude-sonnet-4-6");
 		assert.equal(recordIncident("tool_call_dead@answerUnclaimedToolUse", "user-visible", {}, { turnOutput: { model: TOKEN } }).model, "[invalid model]");
@@ -198,28 +208,71 @@ describe("incident evidence", () => {
 		});
 	});
 
-	it("keeps sites from the code's site table and labels of label shape", () => {
+	it("keeps sites from the code's site table and labels from the code's own sets", () => {
 		const incident = record({
 			site: "finalize-no-stream",
 			cause: "stream-idle-timeout",
 			subtype: "error_during_execution",
 			kind: "rate-limit",
-			discarded: [{ type: "tool_use", index: 1, id: TOOL_USE_ID }],
+			why: "restreamed",
+			replacementMessageId: MESSAGE_ID,
+			discarded: [{ type: "toolCall", index: 1, id: TOOL_USE_ID }, { type: "thinking", index: 0 }],
 		});
 		assert.deepEqual(incident.diag, {
 			site: "finalize-no-stream",
 			cause: "stream-idle-timeout",
 			subtype: "error_during_execution",
 			kind: "rate-limit",
-			discarded: [{ type: "tool_use", index: 1, id: TOOL_USE_ID }],
+			why: "restreamed",
+			replacementMessageId: MESSAGE_ID,
+			discarded: [{ type: "toolCall", index: 1, id: TOOL_USE_ID }, { type: "thinking", index: 0 }],
 		});
+		assert.equal(record({ kind: "unclassified" }).latestDiag.kind, "unclassified");
+		assert.equal(record({ why: "non-streaming-fallback" }).latestDiag.why, "non-streaming-fallback");
 		const bad = recordIncident("tool_call_dead@answerUnclaimedToolUse", "user-visible", { site: "someFunctionNobodyWrote", cause: TOKEN, subtype: TOKEN.toLowerCase(), kind: "Rate Limit", why: `restreamed as ${MESSAGE_ID}` });
 		assert.deepEqual(bad.diag, {
 			site: "[invalid site]",
 			cause: "[invalid cause]",
-			subtype: "[invalid subtype]",
-			kind: "[invalid kind]",
-			why: "[invalid why]",
+			subtype: "[unknown subtype]",
+			kind: "[unknown kind]",
+			why: "[unknown why]",
 		});
+	});
+
+	it("replaces a label-shaped string that is in none of the code's sets", () => {
+		const incident = record({ kind: LABEL_TOKEN, subtype: LABEL_TOKEN, type: LABEL_TOKEN, why: LABEL_TOKEN, source: LABEL_TOKEN, discarded: [{ type: "tool_use", index: 0 }] });
+		assert.deepEqual(incident.diag, {
+			kind: "[unknown kind]",
+			subtype: "[unknown subtype]",
+			type: "[unknown type]",
+			why: "[unknown why]",
+			discarded: [{ type: "[unknown type]", index: 0 }],
+			droppedFields: ["source"],
+		});
+	});
+
+	it("records an SDK message type, subtype or stream event the bridge does not handle as <type>_[unknown]", async () => {
+		__testSetSdkQueryFactory(() => ({
+			async *[Symbol.asyncIterator]() {
+				yield { type: "system", subtype: "init", session_id: SESSION_UUID, claude_code_version: "9.9.9" };
+				yield { type: "system", subtype: LABEL_TOKEN, session_id: SESSION_UUID };
+				yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 0, session_id: SESSION_UUID };
+				yield { type: LABEL_TOKEN, session_id: SESSION_UUID };
+				yield { type: "stream_event", event: { type: LABEL_TOKEN } };
+				yield { type: "result", subtype: LABEL_TOKEN, is_error: true, errors: ["synthetic failure"], session_id: SESSION_UUID };
+			},
+			close() {},
+			async interrupt() {},
+		}));
+		await collect(streamClaudeAgentSdk(model, { messages: [{ role: "user", content: "hello", timestamp: 1 }] }, { sessionId: "evidence-sdk" }));
+		const incident = listIncidents().find((entry) => entry.signature === "api_error@consumeQuery");
+		assert.ok(incident, "the error result is an incident");
+		assert.equal(incident.diag.subtype, "[unknown subtype]");
+		assert.equal(incident.diag.kind, "unclassified");
+		const kinds = incident.snapshot.map((entry) => entry.kind);
+		for (const kind of ["system_init", "system_[unknown]", "system_api_retry", "message_[unknown]", "stream_event_[unknown]", "result_[unknown]"]) {
+			assert.ok(kinds.includes(kind), `${kind} in ${kinds.join(" ")}`);
+		}
+		assert.ok(!JSON.stringify(incident).includes(LABEL_TOKEN));
 	});
 });

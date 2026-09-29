@@ -13,8 +13,8 @@ const GITHUB_LINK = /(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)
 const CO_AUTHOR_LINE = /^co-authored-by:.*(?:\r?\n|$)/gim;
 // The secret scan, for free text only (a note an agent writes): tokens with a
 // known prefix, hex runs of 32 or more, and every run of 40 or more base64 or
-// base64url characters (A-Z a-z 0-9 + / - _, optional = padding), digits or
-// not, words or not. 40 is where key material starts: 30 random bytes encode
+// base64url characters (A-Z a-z 0-9 + / - _, with its = padding), digits or
+// not, words or not, whatever precedes or follows the run. 40 is where key material starts: 30 random bytes encode
 // to 40 characters, a 32-byte key to 43 or 44, an AWS secret key is 40. No
 // text rule tells a long identifier from a key, so free text keeps neither;
 // structured evidence is never scanned, it is validated by kind where it is
@@ -25,8 +25,8 @@ const SECRETS: RegExp[] = [
 	/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}/g,
 	/\bgithub_pat_[A-Za-z0-9_]{20,}/g,
 	/\bxox[a-z]-[A-Za-z0-9-]{8,}/gi,
-	/\b[0-9a-fA-F]{32,}\b/g,
-	/(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/_=-])/g,
+	/[0-9a-fA-F]{32,}/g,
+	/[A-Za-z0-9+/_-]{40,}={0,2}/g,
 ];
 
 function sameRepo(owner: string, name: string, repo: string): boolean {

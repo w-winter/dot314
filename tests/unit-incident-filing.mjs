@@ -40,6 +40,8 @@ const SILENT = [
 // Synthetic: 30 bytes of a hash of fixed text, valid base64 and base64url.
 const SYNTHETIC_KEY = createHash("sha256").update("synthetic-review-token-34135").digest().subarray(0, 30).toString("base64");
 const LONG_MCP_TOOL = "mcp__git__get_pr_by_id_from_repo_with_org_name";
+// Synthetic, lowercase and label-shaped: a valid base64 encoding of 30 bytes.
+const LABEL_TOKEN = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -173,6 +175,19 @@ async function fileTwice(data, recordId) {
 	const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
 	assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
 	return writes;
+}
+
+/** One query whose Claude Code yields `messages`, from a fresh session. */
+async function runQuery(messages) {
+	resetStack();
+	__testSetSdkQueryFactory(() => ({
+		async *[Symbol.asyncIterator]() {
+			yield* messages;
+		},
+		close() {},
+		async interrupt() {},
+	}));
+	return collect(streamClaudeAgentSdk(model, { messages: [{ role: "user", content: "hello", timestamp: 1 }] }, { sessionId: "filing-labels" }));
 }
 
 /** One query whose Claude Code reports an API error: an external incident. */
@@ -399,6 +414,50 @@ describe("incident filing", () => {
 		const writes = await fileTwice({}, LONG_MCP_TOOL);
 		assert.ok(!writes[1].stdin.includes(LONG_MCP_TOOL));
 		assert.ok(writes[1].stdin.includes("[invalid tool_use id]"));
+	});
+
+	it("keeps label fields and recorder kinds outside the code's own sets out of the issue and the comment", async () => {
+		assert.equal(Buffer.from(LABEL_TOKEN, "base64").toString("base64"), LABEL_TOKEN);
+		installFakeGh();
+		enableFiling();
+		const data = { kind: LABEL_TOKEN, subtype: LABEL_TOKEN, type: LABEL_TOKEN, source: LABEL_TOKEN, why: LABEL_TOKEN };
+		const source = { recorder: { snapshot: () => [{ t: 0, kind: LABEL_TOKEN }] } };
+		recordIncident("api_error@consumeQuery", "external", data, source);
+		await __testFlushIncidents();
+		advance(HOUR + 1);
+		recordIncident("api_error@consumeQuery", "external", data, source);
+		await __testFlushIncidents();
+		const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
+		assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
+		for (const write of writes) {
+			assert.ok(!write.stdin.includes(LABEL_TOKEN), `no unknown label in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("[unknown subtype]"), `placeholder in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("[unknown kind]"), `recorder placeholder in the ${write.argv[1]}`);
+		}
+	});
+
+	it("files an SDK message type or subtype the bridge does not handle only as a placeholder", async () => {
+		installFakeGh();
+		enableFiling();
+		const session = "8b2c4d6e-1f3a-4b5c-9d7e-0a1b2c3d4e5f";
+		const messages = [
+			{ type: "system", subtype: "init", session_id: session, claude_code_version: "9.9.9" },
+			{ type: "stream_event", event: { type: LABEL_TOKEN } },
+			{ type: "result", subtype: LABEL_TOKEN, is_error: true, errors: ["synthetic failure"], session_id: session },
+		];
+		assert.ok((await runQuery(messages)).some((event) => event.type === "error"));
+		await __testFlushIncidents();
+		advance(HOUR + 1);
+		await runQuery(messages);
+		await __testFlushIncidents();
+		const writes = ghCalls().filter((call) => call.argv[1] === "create" || call.argv[1] === "comment");
+		assert.deepEqual(writes.map((call) => call.argv[1]), ["create", "comment"]);
+		for (const write of writes) {
+			assert.ok(!write.stdin.includes(LABEL_TOKEN), `no SDK string in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("[unknown subtype]"), `diag placeholder in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("result_[unknown]"), `recorder placeholder in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("stream_event_[unknown]"), `stream event placeholder in the ${write.argv[1]}`);
+		}
 	});
 
 	it("files only signatures the bridge's code reports", async () => {

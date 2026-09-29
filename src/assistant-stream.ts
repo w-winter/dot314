@@ -5,6 +5,7 @@ import { connectorResultByteSize, recordConnectorCallResult } from "./connector-
 import { isChildExecutedTool } from "./connectors.js";
 import { debug } from "./debug.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
+import type { StreamAbandonReason, TurnBlockType } from "./incident-labels.js";
 import { reportDiag, type IncidentSite } from "./incidents.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
@@ -296,14 +297,14 @@ export function addTurnBlock(c: QueryContext, block: any): number {
  *  already have been invoked, and withdrawing a call Claude Code dispatched
  *  would strand it. (Claude Code finalizes a partial response instead of
  *  retrying once a block has completed, so this is a guard, not an expected
- *  path.) */
-function discardAbandonedAttempt(c: QueryContext, why: string): void {
+ *  path.) `replacementId` is the message that replaced it. */
+function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, replacementId: string | undefined): void {
 	const attempt = c.streamAttempt;
 	if (!attempt?.open) return;
 	attempt.open = false;
 	// A turn that already ended holds a message Pi owns; leave it untouched.
 	if (!c.currentPiStream || !c.turnOutput) return;
-	const discarded: Array<{ index: number; type: string; id?: string }> = [];
+	const discarded: Array<{ index: number; type: TurnBlockType; id?: string }> = [];
 	const partialCallIds: string[] = [];
 	for (const idx of attempt.slots) {
 		const block = c.turnBlocks[idx];
@@ -324,8 +325,8 @@ function discardAbandonedAttempt(c: QueryContext, why: string): void {
 	c.suppressedStreamIndexes.clear();
 	c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));
 	if (!c.turnSawToolCall) cancelScheduledToolUseEnd(c);
-	debug(`discardAbandonedAttempt: ${why}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}`).join(", "));
-	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, discarded }, c);
+	debug(`discardAbandonedAttempt: ${why} as ${replacementId ?? "an unidentified message"}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}`).join(", "));
+	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded }, c);
 }
 
 /** The message Pi keeps for this turn: the live content without discarded
@@ -706,7 +707,7 @@ export function processStreamEvent(
 		// is retrying the same request as a new one. Its blocks are not part of
 		// the answer.
 		const retry = Boolean(c.streamAttempt?.open);
-		if (retry) discardAbandonedAttempt(c, `restreamed as ${event.message?.id ?? "an unidentified message"}`);
+		if (retry) discardAbandonedAttempt(c, "restreamed", event.message?.id);
 		// The child moving on to another message is where a still-queued result
 		// would start poisoning mismatch reports: park it, consumable by a late
 		// handler (see reapStaleQueuedResults).
@@ -1093,7 +1094,7 @@ function renderNonStreamingReplacement(assistantMsg: any, model: Model<any>, cus
 	const id: string = assistantMsg.id;
 	const reyield = id === c.fallbackMessageId;
 	if (!reyield) {
-		discardAbandonedAttempt(c, `non-streaming fallback ${id}`);
+		discardAbandonedAttempt(c, "non-streaming-fallback", id);
 		c.replaceChildMessage(id);
 		c.fallbackMessageId = id;
 		c.streamAttempt = null;

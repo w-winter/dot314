@@ -90,6 +90,26 @@ describe("issue sanitizer", () => {
 		}
 	});
 
+	it("redacts a 40-character run in free text whatever follows it", () => {
+		// Synthetic: a valid base64 encoding of 30 bytes.
+		const run = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn";
+		assert.equal(Buffer.from(run, "base64").toString("base64"), run);
+		for (const text of [`${run}=trace`, `${run}===`, `${run}==suffix`, `key=${run}=`, `${run}=${run}`]) {
+			const out = sanitizeFreeText(text, REPO);
+			assert.ok(!out.includes(run), `redacted in ${JSON.stringify(text)}: ${out}`);
+			assert.ok(out.includes("[redacted]"));
+		}
+		assert.equal(sanitizeFreeText(`${run}== then`, REPO), "[redacted] then", "the padding goes with the run");
+	});
+
+	it("redacts a 32-character hex run in free text whatever surrounds it", () => {
+		const hex = "0123456789abcdef".repeat(2);
+		for (const text of [`${hex}xyz`, `x${hex}`, `v${hex}z`]) {
+			const out = sanitizeFreeText(text, REPO);
+			assert.ok(!out.includes(hex), `redacted in ${text}: ${out}`);
+		}
+	});
+
 	it("keeps ids under 40 characters in free text", () => {
 		const kept = [
 			"toolu_01D7FLrfh4GYq7yT1ULFeyMV",

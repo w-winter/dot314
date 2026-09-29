@@ -26,6 +26,7 @@ import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativ
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import type { RecorderKind } from "./flight-recorder.js";
 import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, withIncident } from "./incidents.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
@@ -461,7 +462,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	};
 }
 
-const UNCLAIMED_KINDS: Record<Exclude<ToolUseIdClaim, { outcome: "claimed" }>["outcome"], string> = {
+const UNCLAIMED_KINDS: Record<Exclude<ToolUseIdClaim, { outcome: "claimed" }>["outcome"], RecorderKind> = {
 	waiting: "claim_waiting",
 	dead: "claim_dead",
 	answered: "claim_answered",
