@@ -6,8 +6,9 @@
 // versions, site names), never prompt, tool-argument, tool-result or user text;
 // diag payloads pass through projectDiagMetadata for that reason.
 //
-// Recording is always on and in memory. Disk writes need a USER-scoped
-// `incidents.repo` (configureIncidents); without it nothing leaves the process.
+// Recording is always on and in memory. Disk writes and filing (incident-
+// filer.ts) need a USER-scoped `incidents.repo` (configureIncidents); without
+// it nothing leaves the process.
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, stat } from "node:fs/promises";
@@ -15,6 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { piUserDir } from "./config.js";
 import { DEBUG_LOG_MAX_BYTES, DEBUG_LOG_ROTATED_FILES, debug, diagDump } from "./debug.js";
+import { __testFlushFilings, __testResetFiler, configureFiler, noteIncidentForFiling } from "./incident-filer.js";
 import type { FlightRecord, FlightRecorder } from "./flight-recorder.js";
 
 /** user-visible: Claude or Pi got a bridge-authored error. silent: integrity
@@ -108,7 +110,11 @@ export interface Incident {
 	phase?: "before-query";
 	diag: Record<string, unknown>;
 	latestDiag?: Record<string, unknown>;
+	/** The issue in `incidents.repo` this signature is filed as. */
 	issue?: number;
+	/** How filing went: "filed", "commented", "deferred rate-limit" or
+	 *  "failed <reason>" (incident-filer.ts). */
+	filing?: string;
 }
 
 /** What an incident takes from the query it happened in (a QueryContext).
@@ -273,6 +279,7 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 			existing.latestDiag = projectDiagMetadata(data);
 		}
 		queueStoreWrite(existing, false);
+		noteIncidentForFiling(existing);
 		return existing;
 	}
 	const model = preQuery ? preQueryModel : source?.turnOutput?.responseModel ?? source?.turnOutput?.model;
@@ -293,6 +300,7 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 	incidents.set(signature, incident);
 	incidentsById.set(incident.id, incident);
 	queueStoreWrite(incident, true);
+	noteIncidentForFiling(incident);
 	return incident;
 }
 
@@ -430,9 +438,11 @@ export function configureIncidents(config: { repo: string } | undefined): void {
 		storePath = undefined;
 		pendingSignatures.clear();
 		pendingLines.length = 0;
+		configureFiler(undefined, () => {});
 		return;
 	}
 	storePath = join(piUserDir(), INCIDENTS_FILE_NAME);
+	configureFiler(config.repo, (incident) => queueStoreWrite(incident, false));
 	storedClaudeCodeVersion = readStoredClaudeCodeVersion(storePath);
 }
 
@@ -498,7 +508,13 @@ function scheduleFlush(): void {
 }
 
 function storeLine(incident: Incident, full: boolean): Record<string, unknown> {
-	if (!full) return { type: "count", id: incident.id, signature: incident.signature, class: incident.class, count: incident.count, lastSeen: incident.lastSeen };
+	if (!full) {
+		return {
+			type: "count", id: incident.id, signature: incident.signature, class: incident.class, count: incident.count, lastSeen: incident.lastSeen,
+			...(incident.issue !== undefined ? { issue: incident.issue } : {}),
+			...(incident.filing !== undefined ? { filing: incident.filing } : {}),
+		};
+	}
 	return { type: "incident", ...incident };
 }
 
@@ -551,6 +567,7 @@ export async function __testFlushIncidents(): Promise<void> {
 		flushTimer = undefined;
 	}
 	await versionCheck;
+	await __testFlushFilings();
 	flushChain = flushChain.then(flushStore);
 	await flushChain;
 }
@@ -566,4 +583,5 @@ export function __testResetIncidents(): void {
 	storedClaudeCodeVersion = Promise.resolve(undefined);
 	versionCheck = Promise.resolve();
 	claudeCodeVersion = undefined;
+	__testResetFiler();
 }
