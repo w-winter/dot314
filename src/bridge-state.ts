@@ -1,7 +1,7 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { debug, diagGuidance } from "./debug.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
-import { reportDiag, type Incident, type IncidentSource } from "./incidents.js";
+import { reportDiag, type Incident, type IncidentSite, type IncidentSource } from "./incidents.js";
 import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
 import { type QueryContext } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
@@ -255,9 +255,20 @@ export function reportSyntheticToolResultRepair(missing: MissingToolResult[], co
 	}
 }
 
+/** Why a tool-result delivery mismatch is reported, and its incident site. */
+const TOOL_RESULT_MISMATCH_SITES = {
+	session_compact: "session_compact",
+	session_tree: "session_tree",
+	abort: "abort",
+	"query teardown": "query-teardown",
+	"unmatched tool result": "unmatched-tool-result",
+} as const satisfies Record<string, IncidentSite>;
+
+export type ToolResultMismatchReason = keyof typeof TOOL_RESULT_MISMATCH_SITES;
+
 export function reportToolResultMismatch(
 	queryCtx: QueryContext,
-	reason: string,
+	reason: ToolResultMismatchReason,
 	cwd: string | undefined,
 	opts: { expectedInterruption?: boolean; forceRotate?: boolean } = {},
 ): boolean {
@@ -290,7 +301,7 @@ export function reportToolResultMismatch(
 		}
 		const toolNameSummary = compactToolNameSummary(progress.toolNames);
 		const sharedSession = getSharedSession();
-		reportDiag("tool_result_delivery_mismatch", reason.replace(/\s+/g, "-"), {
+		reportDiag("tool_result_delivery_mismatch", TOOL_RESULT_MISMATCH_SITES[reason], {
 			reason,
 			cwd,
 			progress,

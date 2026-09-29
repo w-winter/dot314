@@ -5,7 +5,7 @@ import { connectorResultByteSize, recordConnectorCallResult } from "./connector-
 import { isChildExecutedTool } from "./connectors.js";
 import { debug } from "./debug.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
-import { reportDiag } from "./incidents.js";
+import { reportDiag, type IncidentSite } from "./incidents.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
 import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
@@ -336,7 +336,7 @@ function discardAbandonedAttempt(c: QueryContext, why: string): void {
  *  anything is left out the terminal message is a copy. Returns the ids of the
  *  pruned still-partial calls. `site` names the caller for the prune's
  *  incident; a cancelled request's prune is reported at "abort". */
-export function terminalMessage(c: QueryContext, { prunePartialCalls = true, site = "unknown" }: { prunePartialCalls?: boolean; site?: string } = {}): { message: AssistantMessage; prunedIds: string[] } {
+export function terminalMessage(c: QueryContext, { prunePartialCalls = true, site = "unknown" }: { prunePartialCalls?: boolean; site?: IncidentSite } = {}): { message: AssistantMessage; prunedIds: string[] } {
 	const output = c.turnOutput!;
 	const content = output.content as Array<any>;
 	const isPartialCall = (b: any): boolean => prunePartialCalls && b?.type === "toolCall" && "partialJson" in b;

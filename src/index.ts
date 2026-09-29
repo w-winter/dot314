@@ -26,7 +26,7 @@ import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativ
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
-import { configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, reportDiag, reportIncident, withIncident } from "./incidents.js";
+import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, withIncident } from "./incidents.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -304,7 +304,10 @@ export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolN
 	customToolNameToPi: Map<string, string>;
 } {
 	const mcpTools: Tool[] = [];
-	for (const tool of getCurrentTools(context.messages)) {
+	const piTools = getCurrentTools(context.messages);
+	// The tools Pi registered: the only tool names an incident keeps.
+	noteRegisteredToolNames(piTools.map((tool) => tool.name));
+	for (const tool of piTools) {
 		if (tool.name === excludeToolName) continue;
 		// Never re-offer a tool the child owns natively. The claude.ai connector
 		// namespace belongs to the child's own MCP servers, so a Pi tool sitting
@@ -324,6 +327,7 @@ export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolN
 	// Served under an alias Claude Code keeps verbatim (see mcpToolAliases);
 	// a new ServedToolServer derives the same aliases from the same names.
 	const { customToolNameToSdk, customToolNameToPi } = toolNameManifest(mcpToolAliases(mcpTools.map((tool) => tool.name)));
+	noteRegisteredToolNames(customToolNameToSdk.values());
 	return { mcpTools, customToolNameToSdk, customToolNameToPi };
 }
 
@@ -645,7 +649,7 @@ function restartContext(request: QueryRestartRequest): Context {
 /** Pi's compaction or tree navigation invalidates the running Claude query's
  *  history. A restart rotates the session id because the killed child may
  *  still be writing its previous transcript. */
-export function onPiHistoryReplaced(event: string): void {
+export function onPiHistoryReplaced(event: "session_compact" | "session_tree"): void {
 	const queryCtx = ctx();
 	const running = queryCtx.activeQuery !== null;
 	const restarts = running && !queryCtx.detachedFromSharedSession;
@@ -1437,7 +1441,7 @@ function streamRequestInLane(
 	// LOUDLY — the cursor already advanced over it on the promise of replay.
 	// Callers that keep a session record after a non-empty drop must persist it
 	// with needsRebuild so the next turn re-imports the steers from Pi history.
-	const dropDeferredUserMessages = (site: string, undelivered?: DeferredUserMessage): DeferredUserMessage[] => {
+	const dropDeferredUserMessages = (site: IncidentSite, undelivered?: DeferredUserMessage): DeferredUserMessage[] => {
 		const dropped = [...(undelivered !== undefined ? [undelivered] : []), ...abortCtx.deferredUserMessages];
 		abortCtx.deferredUserMessages = [];
 		if (dropped.length > 0) {

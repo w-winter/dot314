@@ -80,6 +80,38 @@ const INCIDENT_CLASSES = {
 
 export type IncidentLabel = keyof typeof INCIDENT_CLASSES;
 
+// The one site table: every site an incident is reported at. reportIncident
+// takes only these, and only `label@site` signatures made of this table and
+// INCIDENT_CLASSES are filed (incident-filer.ts).
+export const INCIDENT_SITES = [
+	// named call sites
+	"answerUnclaimedToolUse", "consumeQuery", "convertAndImportMessages", "deliverSteerBeforeResults",
+	"discardAbandonedAttempt", "endStreamForFailure", "failSteeringDelivery", "finalize-no-stream", "init",
+	"mcpToolHandler", "noteAbandonedToolCalls", "reapStaleQueuedResults", "resolveToolResults",
+	"schedulePersistSharedSession", "streamIdleWatchdog", "streamRequestInLane", "verifyWrittenSession",
+	// the two exits a bridge-authored error reaches Pi through
+	"error-event", "provider-throw",
+	// where a terminal message pruned partial tool calls (terminalMessage)
+	"abort", "length", "stream-end", "failure", "tool-use-end", "unknown",
+	// why deferred user messages were dropped (dropDeferredUserMessages)
+	"abort-completion", "continuation-error", "continuation-failure", "continuation-no-resume-id", "query-error",
+	"stream-idle-timeout", "stream-idle-timeout-completion", "terminal-failure",
+	// why waiting tool calls were drained (ToolCallDrainCause)
+	"query-end",
+	// why a tool-result delivery mismatch was reported (reportToolResultMismatch)
+	"query-teardown", "unmatched-tool-result", "session_compact", "session_tree",
+] as const;
+
+export type IncidentSite = typeof INCIDENT_SITES[number];
+
+const SITE_SET: ReadonlySet<string> = new Set(INCIDENT_SITES);
+
+/** Whether `signature` is a `label@site` of the class and site tables. */
+export function isKnownSignature(signature: string): boolean {
+	const at = signature.indexOf("@");
+	return at > 0 && Object.hasOwn(INCIDENT_CLASSES, signature.slice(0, at)) && SITE_SET.has(signature.slice(at + 1));
+}
+
 export function incidentClass(label: IncidentLabel, site: string): IncidentClass {
 	const entry: IncidentClass | SiteClasses = INCIDENT_CLASSES[label];
 	if (typeof entry === "string") return entry;
@@ -112,8 +144,8 @@ export interface Incident {
 	latestDiag?: Record<string, unknown>;
 	/** The issue in `incidents.repo` this signature is filed as. */
 	issue?: number;
-	/** How filing went: "filed", "commented", "deferred rate-limit" or
-	 *  "failed <reason>" (incident-filer.ts). */
+	/** How filing went: "filed", "commented", "deferred rate-limit",
+	 *  "skipped unknown-signature" or "failed <reason>" (incident-filer.ts). */
 	filing?: string;
 }
 
@@ -186,35 +218,117 @@ const BRIDGE_COMMIT = readBridgeCommit(PACKAGE_ROOT);
 const PI_VERSION = readPiVersion();
 let claudeCodeVersion: string | undefined;
 
-// --- Metadata projection ---
-
-// String values kept verbatim: ids, tool names, labels, sites and role lists.
-// Everything else that is a string (error text, a reason Claude Code wrote,
-// paths) is left out and listed in `droppedFields`. Argument property names
+// --- Evidence projection ---
+//
+// Every string an incident keeps is evidence of one kind, validated where it
+// is recorded: it has the exact shape of its kind, or it is replaced by a
+// placeholder naming the field. Nothing is scanned for secrets, because no
+// text rule tells a long identifier from a key; a kind's shape leaves no room
+// for one. A tool name is kept only when Pi registered that tool in this
+// process (noteRegisteredToolNames): configuration, not a secret, however
+// long. Strings of no known kind (error text, a reason Claude Code wrote,
+// paths) are left out and listed in `droppedFields`. Argument property names
 // (`argKeys`, `handlerArgKeys`, ...) come from the caller's tool arguments, and
 // a tool may take free text as property names: only their count is kept.
-const STRING_FIELDS = new Set([
-	"id", "toolCallId", "toolName", "name", "recordedName", "site", "why", "messageId", "type",
-	"sessionId", "lastMsgRole", "promptRoles", "messageRoles", "kind", "subtype", "cause",
-	"version", "previousVersion", "source",
-	"errorName", "code", "syscall",
-]);
-const MAX_STRING_LENGTH = 200;
-const MAX_ARRAY_LENGTH = 50;
-const MAX_DEPTH = 5;
 
-function keepsStrings(key: string): boolean {
-	return STRING_FIELDS.has(key) || key.endsWith("Id") || key.endsWith("Ids");
+type EvidenceKind = "toolName" | "toolUseId" | "messageId" | "sessionId" | "site" | "label" | "role" | "roles" | "version" | "errorName" | "errorCode" | "syscall";
+
+const FIELD_KINDS: Record<string, EvidenceKind> = {
+	toolName: "toolName", name: "toolName", recordedName: "toolName",
+	id: "toolUseId", toolCallId: "toolUseId",
+	messageId: "messageId",
+	sessionId: "sessionId",
+	site: "site", cause: "site",
+	why: "label", kind: "label", subtype: "label", type: "label", source: "label",
+	lastMsgRole: "role", promptRoles: "roles", messageRoles: "roles",
+	version: "version", previousVersion: "version",
+	errorName: "errorName", code: "errorCode", syscall: "syscall",
+};
+
+function kindOf(key: string): EvidenceKind | undefined {
+	return Object.hasOwn(FIELD_KINDS, key) ? FIELD_KINDS[key] : key.endsWith("Id") || key.endsWith("Ids") ? "toolUseId" : undefined;
 }
 
-/** `data` reduced to metadata: numbers, booleans and null, strings only under
- *  id/name/label fields, and a `<name>KeyCount` for each `<name>Keys` list. */
+// Claude's tool_use ids: `toolu_01` and 22 base62 characters (all 2,094
+// distinct ids in the bridge's own logs, and the ids in this repo's tests);
+// server tools use `srvtoolu_` with the same body. Message ids likewise.
+const TOOL_USE_ID = /^(?:srv)?toolu_01[A-Za-z0-9]{22}$/;
+const MESSAGE_ID = /^msg_01[A-Za-z0-9]{22}$/;
+// A Claude Code session UUID, or the 8-character prefix the bridge logs.
+const SESSION_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8})$/;
+// SDK subtypes, block and event types, classifier kinds, recorder kinds.
+const LABEL = /^[a-z][a-z_-]{0,63}$/;
+const SEMVER = /^\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z]{1,20}(?:\.[0-9A-Za-z]{1,20}){0,3})?$/;
+const ERROR_NAME = /^(?:[A-Z][A-Za-z]{0,47})?Error$/;
+const ERROR_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
+const SYSCALL = /^[a-z][a-z_]{0,15}$/;
+const MODEL = /^claude-[a-z0-9-]{1,48}$/;
+const COMMIT = /^[0-9a-f]{12}$/;
+// Pi's message roles, and the bridge's own system message.
+const ROLES: ReadonlySet<string> = new Set(["user", "assistant", "toolResult", "system", "custom", "bashExecution", "branchSummary", "compactionSummary"]);
+const ROLE_TOKEN = /^(?:\[\d{1,6}\])?([A-Za-z]{1,24})$/;
+// A key the bridge's code wrote into a diag object.
+const FIELD_NAME = /^[A-Za-z][A-Za-z0-9]{0,29}$/;
+const MAX_ROLES_LENGTH = 200;
+const MAX_ARRAY_LENGTH = 50;
+const MAX_DEPTH = 5;
+const REGISTERED_TOOL_NAMES_MAX = 4096;
+
+const registeredToolNames = new Set<string>();
+
+/** Records the tools Pi offers in a request (Pi's names and the names they
+ *  are served to Claude under): the tool names an incident may keep. */
+export function noteRegisteredToolNames(names: Iterable<string>): void {
+	for (const name of names) {
+		if (registeredToolNames.size >= REGISTERED_TOOL_NAMES_MAX) return;
+		if (typeof name === "string" && name.length > 0) registeredToolNames.add(name);
+	}
+}
+
+/** A role list (`user user`, `[0]system [1]user`) of Pi's roles only, cut to
+ *  whole entries. */
+function roleList(value: string): string | undefined {
+	const tokens = value.split(" ");
+	if (!tokens.every((token) => ROLES.has(ROLE_TOKEN.exec(token)?.[1] ?? ""))) return undefined;
+	if (value.length <= MAX_ROLES_LENGTH) return value;
+	let kept = "";
+	let count = 0;
+	for (const token of tokens) {
+		if (kept.length + token.length + 1 > MAX_ROLES_LENGTH - 12) break;
+		kept += (count++ ? " " : "") + token;
+	}
+	return `${kept} +${tokens.length - count} more`;
+}
+
+/** `value` if it has the shape of `kind`, else a placeholder naming `key`. */
+function evidence(kind: EvidenceKind, key: string, value: string): string {
+	const invalid = `[invalid ${key}]`;
+	switch (kind) {
+		case "toolName": return registeredToolNames.has(value) ? value : "[unregistered tool name]";
+		case "toolUseId": return TOOL_USE_ID.test(value) ? value : invalid;
+		case "messageId": return MESSAGE_ID.test(value) ? value : invalid;
+		case "sessionId": return SESSION_ID.test(value) ? value : invalid;
+		case "site": return SITE_SET.has(value) ? value : invalid;
+		case "label": return LABEL.test(value) ? value : invalid;
+		case "role": return ROLES.has(value) ? value : invalid;
+		case "roles": return roleList(value) ?? invalid;
+		case "version": return SEMVER.test(value) ? value : invalid;
+		case "errorName": return ERROR_NAME.test(value) ? value : invalid;
+		case "errorCode": return ERROR_CODE.test(value) ? value : invalid;
+		case "syscall": return SYSCALL.test(value) ? value : invalid;
+	}
+}
+
+/** `data` reduced to validated metadata: numbers, booleans and null, strings
+ *  of a known kind (validated, see above), and a `<name>KeyCount` for each
+ *  `<name>Keys` list. */
 export function projectDiagMetadata(data: Record<string, unknown>): Record<string, unknown> {
 	const dropped: string[] = [];
 	const project = (value: unknown, key: string, path: string, depth: number): unknown => {
 		if (value === null || typeof value === "number" || typeof value === "boolean") return value;
 		if (typeof value === "string") {
-			if (keepsStrings(key)) return value.length > MAX_STRING_LENGTH ? value.slice(0, MAX_STRING_LENGTH) : value;
+			const kind = kindOf(key);
+			if (kind) return evidence(kind, key, value);
 			dropped.push(path);
 			return undefined;
 		}
@@ -228,6 +342,11 @@ export function projectDiagMetadata(data: Record<string, unknown>): Record<strin
 		if (typeof value === "object") {
 			const out: Record<string, unknown> = {};
 			for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
+				if (!FIELD_NAME.test(childKey)) {
+					// A key that is data (an id or a name), not a field the code wrote.
+					dropped.push(path ? `${path}.[invalid key]` : "[invalid key]");
+					continue;
+				}
 				if (childKey.endsWith("Keys")) {
 					if (Array.isArray(child)) out[`${childKey.slice(0, -"Keys".length)}KeyCount`] = child.length;
 					else dropped.push(path ? `${path}.${childKey}` : childKey);
@@ -243,6 +362,22 @@ export function projectDiagMetadata(data: Record<string, unknown>): Record<strin
 	const out = project(data, "", "", 0) as Record<string, unknown>;
 	if (dropped.length > 0) out.droppedFields = [...new Set(dropped)];
 	return out;
+}
+
+/** A recorder snapshot with every id and kind validated. */
+function projectSnapshot(snapshot: FlightRecord[]): FlightRecord[] {
+	return snapshot.map((record) => {
+		const out: FlightRecord = { t: record.t, kind: LABEL.test(record.kind) ? record.kind : "[invalid kind]" };
+		if (record.id !== undefined) out.id = TOOL_USE_ID.test(record.id) ? record.id : "[invalid tool_use id]";
+		if (record.index !== undefined) out.index = record.index;
+		if (record.n !== undefined) out.n = record.n;
+		return out;
+	});
+}
+
+function projectModel(model: string | undefined): string | undefined {
+	if (model === undefined) return undefined;
+	return MODEL.test(model) ? model : "[invalid model]";
 }
 
 // --- Registry ---
@@ -269,7 +404,11 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 	const counted = klass === "expected";
 	const preQueryModel = source?.preQueryModel;
 	const preQuery = typeof preQueryModel === "string";
-	const snapshot = (): FlightRecord[] | null | undefined => preQuery ? null : source?.recorder?.snapshot();
+	const snapshot = (): FlightRecord[] | null | undefined => {
+		if (preQuery) return null;
+		const records = source?.recorder?.snapshot();
+		return records ? projectSnapshot(records) : records;
+	};
 	if (existing) {
 		existing.count += 1;
 		existing.lastSeen = now;
@@ -282,7 +421,7 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 		noteIncidentForFiling(existing);
 		return existing;
 	}
-	const model = preQuery ? preQueryModel : source?.turnOutput?.responseModel ?? source?.turnOutput?.model;
+	const model = projectModel(preQuery ? preQueryModel : source?.turnOutput?.responseModel ?? source?.turnOutput?.model);
 	const firstSnapshot = counted ? undefined : snapshot();
 	const incident: Incident = {
 		id: newIncidentId(),
@@ -305,13 +444,13 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 }
 
 /** Records an incident whose class comes from the class table. */
-export function reportIncident(label: IncidentLabel, site: string, data: Record<string, unknown> = {}, source?: IncidentSource): Incident {
+export function reportIncident(label: IncidentLabel, site: IncidentSite, data: Record<string, unknown> = {}, source?: IncidentSource): Incident {
 	return recordIncident(`${label}@${site}`, incidentClass(label, site), data, source);
 }
 
 /** Writes the diag entry exactly as diagDump always has, and records the
  *  incident for it. */
-export function reportDiag(label: IncidentLabel, site: string, data: Record<string, unknown>, source?: IncidentSource): Incident {
+export function reportDiag(label: IncidentLabel, site: IncidentSite, data: Record<string, unknown>, source?: IncidentSource): Incident {
 	diagDump(label, data);
 	return reportIncident(label, site, data, source);
 }
@@ -403,9 +542,9 @@ function nameThrown(error: unknown, source: IncidentSource | undefined): void {
 
 function currentVersions(): IncidentVersions {
 	return {
-		...(BRIDGE_COMMIT ? { bridge: BRIDGE_COMMIT } : {}),
-		...(claudeCodeVersion ? { claudeCode: claudeCodeVersion } : {}),
-		...(PI_VERSION ? { pi: PI_VERSION } : {}),
+		...(BRIDGE_COMMIT ? { bridge: COMMIT.test(BRIDGE_COMMIT) ? BRIDGE_COMMIT : "[invalid commit]" } : {}),
+		...(claudeCodeVersion ? { claudeCode: SEMVER.test(claudeCodeVersion) ? claudeCodeVersion : "[invalid version]" } : {}),
+		...(PI_VERSION ? { pi: SEMVER.test(PI_VERSION) ? PI_VERSION : "[invalid version]" } : {}),
 	};
 }
 
@@ -583,5 +722,6 @@ export function __testResetIncidents(): void {
 	storedClaudeCodeVersion = Promise.resolve(undefined);
 	versionCheck = Promise.resolve();
 	claudeCodeVersion = undefined;
+	registeredToolNames.clear();
 	__testResetFiler();
 }

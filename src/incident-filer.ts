@@ -13,12 +13,16 @@
 // the incident is only counted. A failed `gh` (missing, logged out, erroring)
 // is recorded on the incident and not tried again for an hour.
 //
+// Only signatures of the code's class and site tables are filed
+// (isKnownSignature); any other is marked `skipped unknown-signature` and no
+// `gh` runs for it. The body is built from evidence validated by kind where
+// it was recorded (incidents.ts, projectDiagMetadata) and fixed bridge prose.
 // Every title, body and comment passes sanitizeForIssue at the boundary.
 
 import { spawn } from "node:child_process";
 import { debug } from "./debug.js";
 import { sanitizeForIssue } from "./incident-sanitizer.js";
-import type { Incident, IncidentLabel } from "./incidents.js";
+import { isKnownSignature, type Incident, type IncidentLabel } from "./incidents.js";
 
 const FILINGS_PER_HOUR = 5;
 const HOUR_MS = 60 * 60 * 1000;
@@ -224,18 +228,32 @@ export function issueBody(incident: Incident): string {
 }
 
 /** A comment for a later occurrence (or a first one in this process, on an
- *  issue another process filed). */
+ *  issue another process filed): the evidence, the latest snapshot and the
+ *  latest diag metadata. Under 60 KB like the body: the oldest records, then
+ *  the diag, give way first. */
 export function occurrenceComment(incident: Incident): string {
-	return [
-		"## New occurrence",
-		"",
-		SEEN[incident.class](incident),
-		"",
-		evidenceTable(incident),
-		"",
-		...snapshotSection("Latest occurrence", incident.latestSnapshot ?? incident.snapshot),
-		"",
-	].join("\n");
+	let snapshot = incident.latestSnapshot ?? incident.snapshot;
+	let diag: unknown = incident.latestDiag ?? incident.diag;
+	for (;;) {
+		const text = [
+			"## New occurrence",
+			"",
+			SEEN[incident.class](incident),
+			"",
+			evidenceTable(incident),
+			"",
+			...snapshotSection("Latest occurrence", snapshot),
+			"",
+			"### Diag metadata",
+			"",
+			jsonBlock(diag),
+			"",
+		].join("\n");
+		if (Buffer.byteLength(text) < MAX_BODY_BYTES) return text;
+		if (Array.isArray(snapshot) && snapshot.length > 1) snapshot = snapshot.slice(Math.floor(snapshot.length / 2));
+		else if (diag !== "(too large)") diag = "(too large)";
+		else return text.slice(0, MAX_BODY_BYTES / 2);
+	}
 }
 
 // --- gh ---
@@ -322,10 +340,19 @@ function recentlyWritten(signature: string, at: number): boolean {
 	return last !== undefined && at - last < HOUR_MS;
 }
 
+const UNKNOWN_SIGNATURE = "skipped unknown-signature";
+
 /** Called for every occurrence. Cheap: at most a queued task, which runs on
  *  a later turn of the event loop. */
 export function noteIncidentForFiling(incident: Incident): void {
 	if (!repo || incident.class === "expected" || queued.has(incident.signature)) return;
+	if (!isKnownSignature(incident.signature)) {
+		if (incident.filing !== UNKNOWN_SIGNATURE) {
+			incident.filing = UNKNOWN_SIGNATURE;
+			persist(incident);
+		}
+		return;
+	}
 	const at = now();
 	if (incident.issue !== undefined && recentlyWritten(incident.signature, at)) return;
 	queued.add(incident.signature);
