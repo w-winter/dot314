@@ -14,11 +14,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { isContextOverflow, isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
 
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
+import { CLAUDE_ACCOUNT_ROUTER_SYMBOL } from "../src/account-router.ts";
 import { registerBridgeCommands } from "../src/bridge-commands.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { loadConfig, recordProjectTrust } from "../src/config.ts";
 import { DEBUG_LOG_MAX_BYTES } from "../src/debug.ts";
-import { __testFlushIncidents, __testResetIncidents, recordIncident, withIncident } from "../src/incidents.ts";
+import { __testFlushIncidents, __testResetIncidents, nameBridgeErrorEvents, nameThrownBridgeError, recordIncident, withIncident } from "../src/incidents.ts";
 import { interruptedToolCallResult, resetStack, strandedToolCallResult } from "../src/query-state.ts";
 import { thirdPartyAppRefusal } from "../src/query-options.ts";
 import { buildStreamIdleTimeoutErrorMessage } from "../src/stream-idle-watchdog.ts";
@@ -27,6 +28,9 @@ import { LOST_TOOL_RESULT_TEXT } from "../src/tool-pairing-audit.ts";
 
 // The classifiers of the Pi the owner runs, when installed here.
 const INSTALLED_PI_AI = "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils";
+// The agent loop of the Pi the owner runs, when installed here.
+const INSTALLED_PI_AGENT = "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/agent.js";
+const CREDENTIAL_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CONFIG_DIR"];
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -51,6 +55,51 @@ const ARGS = { text: ARG_SENTINEL };
 const INCIDENT_SUFFIX = / \(incident (bi-[0-9a-z]{4,6})\)$/;
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tagged = (id) => ({ _meta: { "claudecode/toolUseId": id } });
+
+/** Pi's retry and overflow classifiers: this worktree's pi-ai, and the
+ *  installed Pi 0.87.1's when present. */
+async function piClassifiers() {
+	const classifiers = [{ isRetryableAssistantError, isContextOverflow }];
+	if (existsSync(join(INSTALLED_PI_AI, "retry.js"))) {
+		classifiers.push({
+			isRetryableAssistantError: (await import(join(INSTALLED_PI_AI, "retry.js"))).isRetryableAssistantError,
+			isContextOverflow: (await import(join(INSTALLED_PI_AI, "overflow.js"))).isContextOverflow,
+		});
+	}
+	return classifiers;
+}
+
+/** Asserts `error` (a Pi error message) is classified exactly as it is
+ *  without its incident suffix. */
+async function assertClassificationKept(error) {
+	const unnamed = { ...error, errorMessage: error.errorMessage.replace(INCIDENT_SUFFIX, "") };
+	assert.notEqual(unnamed.errorMessage, error.errorMessage);
+	for (const { isRetryableAssistantError: retry, isContextOverflow: overflow } of await piClassifiers()) {
+		assert.equal(retry(error), retry(unnamed));
+		assert.equal(overflow(error, model.contextWindow), overflow(unnamed, model.contextWindow));
+	}
+}
+
+/** Runs `run` logged out: no credential variables, an empty Claude config
+ *  dir, and a non-darwin platform (the Keychain is not assumed to hold a
+ *  login). */
+async function loggedOut(run) {
+	const saved = new Map(CREDENTIAL_KEYS.map((key) => [key, process.env[key]]));
+	const platform = Object.getOwnPropertyDescriptor(process, "platform");
+	const claudeDir = mkdtempSync(join(agentDir, "claude-logged-out-"));
+	try {
+		for (const key of CREDENTIAL_KEYS) delete process.env[key];
+		process.env.CLAUDE_CONFIG_DIR = claudeDir;
+		Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+		return await run();
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+}
 
 async function collect(stream) {
 	const events = [];
@@ -368,12 +417,124 @@ describe("bridge incidents", () => {
 		});
 		const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-api-error" }));
 		assert.equal(events.at(-1).type, "error");
+		assert.equal(events.at(-1).error.errorMessage, apiText, "an error Claude Code or the API wrote reaches Pi unchanged");
 		const line = (await piClaude("incidents")).split("\n").find((entry) => entry.includes("api_error@consumeQuery"));
 		assert.ok(line, "the API error is an incident");
 		assert.match(line, /\bexternal\b/);
 		const incident = await incidentDetail(line.split(/\s+/)[0]);
 		assert.equal(incident.diag.subtype, "error_during_execution");
 		assert.ok(!JSON.stringify(incident).includes("private-detail"), "no API error text");
+	});
+
+	it("names an incident in a bridge-authored error thrown before the query, keeping its fields", async () => {
+		const missing = join(agentDir, "PATH-SENTINEL-missing-claude");
+		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ provider: { pathToClaudeCodeExecutable: missing } }));
+		__testSetSdkQueryFactory(() => { throw new Error("a failed preflight must not start Claude Code"); });
+		let thrown;
+		try {
+			streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-preflight" });
+		} catch (error) {
+			thrown = error;
+		}
+		assert.ok(thrown, "the preflight throws");
+		assert.match(thrown.message, /^Claude Code executable preflight failed: .* \(incident bi-[0-9a-z]{4,6}\)$/);
+		assert.equal(thrown.name, "ClaudeExecutablePreflightError");
+		assert.equal(thrown.code, "ENOENT");
+		assert.equal(thrown.path, missing);
+		assert.equal(thrown.message.match(/ \(incident /g).length, 1);
+
+		const incident = await incidentDetail(thrown.message.match(INCIDENT_SUFFIX)[1]);
+		assert.equal(incident.signature, "bridge_error@provider-throw");
+		assert.equal(incident.class, "user-visible");
+		assert.equal(incident.model, model.id);
+		assert.equal(incident.phase, "before-query");
+		assert.equal(incident.snapshot, null);
+		assert.equal(incident.diag.code, "ENOENT");
+		assert.ok(!JSON.stringify(incident).includes("PATH-SENTINEL"), "no error text or path in the incident");
+
+		// What Pi's own agent loop makes of it: an error message carrying the id.
+		const failure = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "error", timestamp: 0, errorMessage: thrown.message };
+		if (existsSync(INSTALLED_PI_AGENT)) {
+			const { Agent } = await import(INSTALLED_PI_AGENT);
+			const agent = new Agent({ initialState: { model, systemPrompt: "test system prompt" }, streamFn: streamClaudeAgentSdk, sessionId: "incident-preflight-agent" });
+			await agent.prompt("hello");
+			const last = agent.state.messages.at(-1);
+			assert.equal(last.stopReason, "error");
+			assert.match(last.errorMessage, /^Claude Code executable preflight failed: .* \(incident bi-[0-9a-z]{4,6}\)$/);
+			failure.errorMessage = last.errorMessage;
+		}
+		await assertClassificationKept(failure);
+	});
+
+	it("names an incident in a pre-query error event the bridge ends the request with, keeping its fields", async () => {
+		const resetAtMs = Date.now() + 60_000;
+		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = {
+			version: 1,
+			acquire() { throw Object.assign(new Error("All Claude accounts are cooling down"), { resetAtMs, rateLimitType: "all_accounts" }); },
+			current: () => undefined,
+			recordIdentity() {}, recordUsage() {}, recordRateLimit: () => 0, recordFailure() {}, recordSuccess() {},
+		};
+		try {
+			__testSetSdkQueryFactory(() => { throw new Error("no account, no Claude Code"); });
+			const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-router" }));
+			const error = events.at(-1).error;
+			assert.equal(events.at(-1).type, "error");
+			assert.match(error.errorMessage, /^All Claude accounts are cooling down \(incident bi-[0-9a-z]{4,6}\)$/);
+			assert.equal(error.resetAtMs, resetAtMs, "structured fields stay");
+			assert.equal(error.rateLimitType, "all_accounts");
+			const incident = await incidentDetail(error.errorMessage.match(INCIDENT_SUFFIX)[1]);
+			assert.equal(incident.signature, "bridge_error@error-event");
+			assert.equal(incident.model, model.id);
+			assert.equal(incident.phase, "before-query");
+			assert.equal(incident.snapshot, null);
+			assert.ok(!JSON.stringify(incident).includes("cooling"), "no error text in the incident");
+			await assertClassificationKept(error);
+		} finally {
+			delete globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL];
+		}
+	});
+
+	it("gives a first-request account fast-fail the requested model and no query timeline", async () => {
+		await loggedOut(async () => {
+			__testSetSdkQueryFactory(() => { throw new Error("a disconnected account must not start Claude Code"); });
+			const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-first-disconnected" }));
+			const incident = await incidentDetail(events.at(-1).error.errorMessage.match(INCIDENT_SUFFIX)[1]);
+			assert.equal(incident.signature, "claude_account_not_connected@streamRequestInLane");
+			assert.equal(incident.model, model.id);
+			assert.equal(incident.phase, "before-query");
+			assert.equal(incident.snapshot, null);
+		});
+	});
+
+	it("does not give an account fast-fail the previous query's model or timeline", async () => {
+		installFakeClaudeCode(async function* () { yield* FINAL_REPLY; });
+		const context = initialContext();
+		const first = await collect(streamClaudeAgentSdk(model, context, { sessionId: "incident-stale" }));
+		assert.equal(first.at(-1).type, "done");
+		await settle(20);
+		const sonnet = { ...model, id: "claude-sonnet-4-6" };
+		await loggedOut(async () => {
+			__testSetSdkQueryFactory(() => { throw new Error("a disconnected account must not start Claude Code"); });
+			const next = { messages: [...context.messages, first.at(-1).message, { role: "user", content: "second prompt", timestamp: Date.now() }] };
+			const events = await collect(streamClaudeAgentSdk(sonnet, next, { sessionId: "incident-stale" }));
+			const incident = await incidentDetail(events.at(-1).error.errorMessage.match(INCIDENT_SUFFIX)[1]);
+			assert.equal(incident.model, sonnet.id, "the requested model, not the previous query's");
+			assert.equal(incident.phase, "before-query");
+			assert.equal(incident.snapshot, null, "no earlier query's timeline");
+		});
+	});
+
+	it("still delivers an error, unnamed, when naming its incident fails", () => {
+		const delivered = [];
+		const stream = nameBridgeErrorEvents({ push: (event) => delivered.push(event) }, () => undefined);
+		const frozen = Object.freeze({ role: "assistant", stopReason: "error", errorMessage: "bridge text" });
+		assert.doesNotThrow(() => stream.push({ type: "error", reason: "error", error: frozen }));
+		assert.equal(delivered.length, 1, "the error event still ends the request");
+		assert.equal(delivered[0].error.errorMessage, "bridge text");
+
+		const thrown = new Error("bridge throw");
+		Object.defineProperty(thrown, "name", { get() { throw new Error("hostile name"); } });
+		assert.doesNotThrow(() => nameThrownBridgeError(thrown, undefined));
 	});
 
 	it("keeps Pi's retry and overflow classification of every error text it changes", async () => {

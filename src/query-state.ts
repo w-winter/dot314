@@ -287,6 +287,11 @@ export class QueryContext {
 	activeQuery: ReturnType<typeof query> | null = null;
 	/** The query's recent events, for incidents (flight-recorder.ts). */
 	readonly recorder = new FlightRecorder();
+	/** The model a fresh request asked for, from its entry until its SDK query
+	 *  starts; null otherwise. Until then the recorder and turn output are an
+	 *  earlier query's, so incidents take this model and no snapshot
+	 *  (incidents.ts, IncidentSource). */
+	preQueryModel: string | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	/** Pi replaced the history while this query was active. Its next callback
 	 *  must use the new context instead of resuming the stale Claude session. */

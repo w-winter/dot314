@@ -19,7 +19,7 @@ import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-stat
 import { type Config } from "./config.js";
 import { debug } from "./debug.js";
 import { prefixedKind } from "./flight-recorder.js";
-import { noteClaudeCodeVersion, reportDiag, reportIncident } from "./incidents.js";
+import { markExternalError, noteClaudeCodeVersion, reportDiag, reportIncident } from "./incidents.js";
 import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
@@ -177,6 +177,9 @@ export async function consumeQuery(
 	let failure: ClaudeAttemptFailure | undefined;
 	let accountProbe: Promise<void> | undefined;
 	const holdFailure = (next: ClaudeAttemptFailure | undefined): void => {
+		// Every held failure relays Claude Code or the API: its error text, the
+		// SDK's error copy, or a rejected rate_limit_event.
+		if (next) markExternalError(next.message);
 		failure = next;
 		if (attemptFailureBox) attemptFailureBox.failure = next;
 	};
@@ -276,7 +279,7 @@ export async function consumeQuery(
 					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
 				} else if (message.subtype !== "success") {
 					const errorLines = Array.isArray((message as any).errors) ? uniqueNonEmptyLines((message as any).errors) : [];
-					const errors = errorLines.length > 0 ? errorLines.join("\n") : String((message as any).result || message.subtype || "Claude Code request failed");
+					const errors = markExternalError(errorLines.length > 0 ? errorLines.join("\n") : String((message as any).result || message.subtype || "Claude Code request failed"));
 					const usageLimit = isUsageLimitMessage(message);
 					const kind = usageLimit ? "rate-limit" : classifyClaudeFailure(errors);
 					// An account's own limit is not an API fault; anything else is.

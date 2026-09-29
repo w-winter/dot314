@@ -67,6 +67,9 @@ const INCIDENT_CLASSES = {
 	third_party_app_refused: "user-visible",
 	claude_account_not_connected: "user-visible",
 	stream_idle_timeout: "user-visible",
+	// A bridge-authored error reaching Pi that no site named: the exit it left
+	// through is the site (nameBridgeErrorEvents, nameThrownBridgeError).
+	bridge_error: "user-visible",
 	// Handlers drained by an abort answer calls the user cancelled.
 	tool_calls_interrupted: { default: "user-visible", abort: "expected" },
 	api_error: "external",
@@ -96,18 +99,27 @@ export interface Incident {
 	lastSeen: string;
 	versions: IncidentVersions;
 	model?: string;
-	/** Recorder snapshot at the first occurrence; latestSnapshot at the latest. */
-	snapshot?: FlightRecord[];
-	latestSnapshot?: FlightRecord[];
+	/** Recorder snapshot at the first occurrence; latestSnapshot at the latest.
+	 *  null when the incident happened before its request's query started:
+	 *  there is no timeline of that request, and an earlier query's is not it. */
+	snapshot?: FlightRecord[] | null;
+	latestSnapshot?: FlightRecord[] | null;
+	/** "before-query" when the first occurrence came before the SDK query. */
+	phase?: "before-query";
 	diag: Record<string, unknown>;
 	latestDiag?: Record<string, unknown>;
 	issue?: number;
 }
 
-/** What an incident takes from the query it happened in (a QueryContext). */
+/** What an incident takes from the query it happened in (a QueryContext).
+ *  preQueryModel is set while the request that owns the context has not
+ *  started its SDK query (QueryContext.preQueryModel): its recorder and turn
+ *  output then still belong to an earlier query, so an incident takes only
+ *  that requested model and no snapshot. */
 export interface IncidentSource {
 	recorder?: FlightRecorder;
 	turnOutput?: { model?: string; responseModel?: string } | null;
+	preQueryModel?: string | null;
 }
 
 // --- Versions ---
@@ -179,6 +191,7 @@ const STRING_FIELDS = new Set([
 	"id", "toolCallId", "toolName", "name", "recordedName", "site", "why", "messageId", "type",
 	"sessionId", "lastMsgRole", "promptRoles", "messageRoles", "kind", "subtype", "cause",
 	"version", "previousVersion", "source",
+	"errorName", "code", "syscall",
 ]);
 const MAX_STRING_LENGTH = 200;
 const MAX_ARRAY_LENGTH = 50;
@@ -248,18 +261,22 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 	const now = new Date().toISOString();
 	const existing = incidents.get(signature);
 	const counted = klass === "expected";
+	const preQueryModel = source?.preQueryModel;
+	const preQuery = typeof preQueryModel === "string";
+	const snapshot = (): FlightRecord[] | null | undefined => preQuery ? null : source?.recorder?.snapshot();
 	if (existing) {
 		existing.count += 1;
 		existing.lastSeen = now;
 		existing.versions = currentVersions();
 		if (!counted) {
-			existing.latestSnapshot = source?.recorder?.snapshot();
+			existing.latestSnapshot = snapshot();
 			existing.latestDiag = projectDiagMetadata(data);
 		}
 		queueStoreWrite(existing, false);
 		return existing;
 	}
-	const model = source?.turnOutput?.responseModel ?? source?.turnOutput?.model;
+	const model = preQuery ? preQueryModel : source?.turnOutput?.responseModel ?? source?.turnOutput?.model;
+	const firstSnapshot = counted ? undefined : snapshot();
 	const incident: Incident = {
 		id: newIncidentId(),
 		signature,
@@ -269,7 +286,8 @@ export function recordIncident(signature: string, klass: IncidentClass, data: Re
 		lastSeen: now,
 		versions: currentVersions(),
 		...(model ? { model } : {}),
-		...(!counted && source?.recorder ? { snapshot: source.recorder.snapshot() } : {}),
+		...(preQuery ? { phase: "before-query" as const } : {}),
+		...(firstSnapshot !== undefined ? { snapshot: firstSnapshot } : {}),
 		diag: counted ? {} : projectDiagMetadata(data),
 	};
 	incidents.set(signature, incident);
@@ -295,6 +313,84 @@ export function reportDiag(label: IncidentLabel, site: string, data: Record<stri
 export function withIncident(text: string, incident: Incident | undefined): string {
 	if (!incident || incident.class === "expected") return text;
 	return `${text} (incident ${incident.id})`;
+}
+
+// --- Exits: every bridge-authored error reaching Pi names an incident ---
+//
+// A bridge-authored error reaches Pi one of two ways: as the error event the
+// provider pushes on its Pi stream, or thrown out of the provider call (Pi's
+// agent loop turns the thrown message into an error message). Both exits name
+// an incident for an error that carries none, with the exit as its site.
+// Errors Claude Code or the API wrote are registered with markExternalError
+// where the bridge receives them, and reach Pi unchanged.
+
+const NAMED = / \(incident bi-[0-9a-z]{4,6}\)$/;
+// Recent external texts. A held failure reaches Pi a turn later with the same
+// text, so the set is by text; bounded, since it only needs recent ones.
+const EXTERNAL_TEXTS_MAX = 64;
+const externalErrorTexts = new Set<string>();
+
+/** Registers `text` as written by Claude Code or the API, so the exits leave
+ *  it unchanged. Returns `text`. */
+export function markExternalError(text: string): string {
+	externalErrorTexts.delete(text);
+	externalErrorTexts.add(text);
+	if (externalErrorTexts.size > EXTERNAL_TEXTS_MAX) externalErrorTexts.delete(externalErrorTexts.values().next().value!);
+	return text;
+}
+
+function needsIncident(text: string): boolean {
+	return !NAMED.test(text) && !externalErrorTexts.has(text);
+}
+
+/** Makes every `error` event pushed on `stream` with stopReason "error" name
+ *  an incident (see the section note). The message object keeps every other
+ *  field; its text is not incident metadata. */
+export function nameBridgeErrorEvents<S extends { push(event: any): void }>(stream: S, source: () => IncidentSource | undefined): S {
+	const push = stream.push.bind(stream);
+	stream.push = (event: any): void => {
+		// Naming never stands between Pi and the event that ends its request:
+		// a failure here delivers the error as it was.
+		try {
+			const error = event?.type === "error" ? event.error : undefined;
+			if (error?.stopReason === "error" && typeof error.errorMessage === "string" && needsIncident(error.errorMessage)) {
+				error.errorMessage = withIncident(error.errorMessage, reportIncident("bridge_error", "error-event", {}, source()));
+			}
+		} catch (failure) {
+			debug("incidents: could not name an error event:", failure);
+		}
+		push(event);
+	};
+	return stream;
+}
+
+const ERROR_LABEL = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/** Names an incident in an error thrown out of the provider call, in place:
+ *  the same object keeps its name, code, path and other fields. Only its
+ *  labels (name, code, syscall) and errno go into the incident, never its
+ *  message, which can carry paths. */
+export function nameThrownBridgeError(error: unknown, source: IncidentSource | undefined): void {
+	// Runs in the provider's catch: a failure here must not replace `error`.
+	try {
+		nameThrown(error, source);
+	} catch (failure) {
+		debug("incidents: could not name a thrown error:", failure);
+	}
+}
+
+function nameThrown(error: unknown, source: IncidentSource | undefined): void {
+	if (!(error instanceof Error) || typeof error.message !== "string" || !needsIncident(error.message)) return;
+	const fields = error as Error & { code?: unknown; syscall?: unknown; errno?: unknown };
+	const label = (value: unknown): string | undefined => typeof value === "string" && ERROR_LABEL.test(value) ? value : undefined;
+	const data: Record<string, unknown> = {
+		...(label(error.name) ? { errorName: error.name } : {}),
+		...(label(fields.code) ? { code: fields.code } : {}),
+		...(label(fields.syscall) ? { syscall: fields.syscall } : {}),
+		...(typeof fields.errno === "number" ? { errno: fields.errno } : {}),
+	};
+	const named = withIncident(error.message, reportIncident("bridge_error", "provider-throw", data, source));
+	try { error.message = named; } catch { /* a frozen error keeps its text */ }
 }
 
 function currentVersions(): IncidentVersions {

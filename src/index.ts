@@ -26,7 +26,7 @@ import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativ
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
-import { configureIncidents, reportDiag, reportIncident, withIncident } from "./incidents.js";
+import { configureIncidents, markExternalError, nameBridgeErrorEvents, nameThrownBridgeError, reportDiag, reportIncident, withIncident } from "./incidents.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -749,9 +749,13 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// no .finally will ask. Ask here, under the same rule, and rethrow the
 	// error unchanged: a lane whose query or its replacement still runs, or
 	// that holds a failure for a later callback, is kept.
+	// It is one of the two exits a bridge-authored error reaches Pi through
+	// (the other is the error event, nameBridgeErrorEvents): one that names no
+	// incident is given one here, in place, keeping its fields.
 	try {
 		return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane);
 	} catch (error) {
+		nameThrownBridgeError(error, ctx());
 		releaseEphemeralLane();
 		throw error;
 	}
@@ -764,7 +768,10 @@ function streamRequestInLane(
 	laneId: string | undefined,
 	releaseEphemeralLane: () => void,
 ): AssistantMessageEventStream {
-	const stream = newAssistantMessageEventStream();
+	// Every error event this call hands Pi names an incident (incidents.ts,
+	// "Exits"), with this request's context as the evidence.
+	const requestCtx = ctx();
+	const stream = nameBridgeErrorEvents(newAssistantMessageEventStream(), () => requestCtx);
 
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
@@ -1049,6 +1056,11 @@ function streamRequestInLane(
 	}
 
 	// --- Fresh query ---
+
+	// Until the SDK query starts, the lane's context still holds the previous
+	// query's recorder and model: incidents take the requested model and no
+	// snapshot instead (IncidentSource.preQueryModel).
+	ctx().preQueryModel = model.id;
 
 	// Fail-fast credential re-check (only for a fresh query — NEVER for
 	// tool-result delivery of an in-flight query, handled above, where creds were
@@ -1350,6 +1362,7 @@ function streamRequestInLane(
 	let retryFailure: ClaudeAttemptFailure | undefined;
 	const sdkQuery = startSdkQuery({ prompt, options: queryOptions });
 	ctx().activeQuery = sdkQuery;
+	ctx().preQueryModel = null;
 
 	// 4. Capture context for abort handling
 	const abortCtx = ctx();
@@ -1713,7 +1726,7 @@ function streamRequestInLane(
 						debug(`provider: continuation query error:`, contError);
 						const continuationFailure: ClaudeAttemptFailure = {
 							kind: classifyClaudeFailure(contError),
-							message: contError instanceof Error ? contError.message : String(contError),
+							message: markExternalError(contError instanceof Error ? contError.message : String(contError)),
 						};
 						recordAttemptFailure(continuationFailure);
 						if (!abortCtx.handledTerminalError) surfaceFailure(continuationFailure);
@@ -1765,7 +1778,7 @@ function streamRequestInLane(
 				? attemptFailure.failure
 				: {
 					kind: classifyClaudeFailure(error),
-					message: error instanceof Error ? error.message : String(error),
+					message: markExternalError(error instanceof Error ? error.message : String(error)),
 				};
 			if (requestRotation(failure)) return;
 			if (!wasAborted && !options?.signal?.aborted) persistSession(null);
