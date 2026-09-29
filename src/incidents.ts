@@ -65,6 +65,7 @@ const INCIDENT_CLASSES = {
 	tool_call_dead: "user-visible",
 	tool_results_unmatched: "user-visible",
 	third_party_app_refused: "user-visible",
+	claude_account_not_connected: "user-visible",
 	stream_idle_timeout: "user-visible",
 	// Handlers drained by an abort answer calls the user cancelled.
 	tool_calls_interrupted: { default: "user-visible", abort: "expected" },
@@ -169,9 +170,11 @@ let claudeCodeVersion: string | undefined;
 
 // --- Metadata projection ---
 
-// String values kept verbatim: ids, names, labels, sites and role lists.
+// String values kept verbatim: ids, tool names, labels, sites and role lists.
 // Everything else that is a string (error text, a reason Claude Code wrote,
-// paths) is left out and listed in `droppedFields`.
+// paths) is left out and listed in `droppedFields`. Argument property names
+// (`argKeys`, `handlerArgKeys`, ...) come from the caller's tool arguments, and
+// a tool may take free text as property names: only their count is kept.
 const STRING_FIELDS = new Set([
 	"id", "toolCallId", "toolName", "name", "recordedName", "site", "why", "messageId", "type",
 	"sessionId", "lastMsgRole", "promptRoles", "messageRoles", "kind", "subtype", "cause",
@@ -182,11 +185,11 @@ const MAX_ARRAY_LENGTH = 50;
 const MAX_DEPTH = 5;
 
 function keepsStrings(key: string): boolean {
-	return STRING_FIELDS.has(key) || key.endsWith("Id") || key.endsWith("Ids") || key.endsWith("Keys");
+	return STRING_FIELDS.has(key) || key.endsWith("Id") || key.endsWith("Ids");
 }
 
-/** `data` reduced to metadata: numbers, booleans and null, and strings only
- *  under id/name/label fields. */
+/** `data` reduced to metadata: numbers, booleans and null, strings only under
+ *  id/name/label fields, and a `<name>KeyCount` for each `<name>Keys` list. */
 export function projectDiagMetadata(data: Record<string, unknown>): Record<string, unknown> {
 	const dropped: string[] = [];
 	const project = (value: unknown, key: string, path: string, depth: number): unknown => {
@@ -206,6 +209,11 @@ export function projectDiagMetadata(data: Record<string, unknown>): Record<strin
 		if (typeof value === "object") {
 			const out: Record<string, unknown> = {};
 			for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
+				if (childKey.endsWith("Keys")) {
+					if (Array.isArray(child)) out[`${childKey.slice(0, -"Keys".length)}KeyCount`] = child.length;
+					else dropped.push(path ? `${path}.${childKey}` : childKey);
+					continue;
+				}
 				const projected = project(child, childKey, path ? `${path}.${childKey}` : childKey, depth + 1);
 				if (projected !== undefined) out[childKey] = projected;
 			}
@@ -384,15 +392,19 @@ function storeLine(incident: Incident, full: boolean): Record<string, unknown> {
 	return { type: "incident", ...incident };
 }
 
-/** Rotates like the debug log (rotateDebugLog), without blocking. */
-async function rotateStore(path: string): Promise<void> {
+/** Rotates like the debug log (rotateDebugLog), without blocking. Returns
+ *  whether `path` was moved away. */
+async function rotateStore(path: string): Promise<boolean> {
 	try {
-		if ((await stat(path)).size < DEBUG_LOG_MAX_BYTES) return;
+		if ((await stat(path)).size < DEBUG_LOG_MAX_BYTES) return false;
 		for (let i = DEBUG_LOG_ROTATED_FILES - 1; i >= 1; i--) {
 			try { await rename(`${path}.${i}`, `${path}.${i + 1}`); } catch { /* gap in the sequence */ }
 		}
 		await rename(path, `${path}.1`);
-	} catch { /* missing store, or another process rotated it first */ }
+		return true;
+	} catch {
+		return false; // missing store, or another process rotated it first
+	}
 }
 
 async function flushStore(): Promise<void> {
@@ -406,8 +418,13 @@ async function flushStore(): Promise<void> {
 	pendingSignatures.clear();
 	lines.push(...pendingLines.splice(0));
 	try {
+		// The version check reads only the live file: a fresh one starts with
+		// the version baseline the rotated file held.
+		const baseline = await storedClaudeCodeVersion;
 		await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-		await rotateStore(path);
+		if (await rotateStore(path) && baseline !== undefined && !lines.some((line) => line.type === "claude_code_version")) {
+			lines.unshift({ type: "claude_code_version", version: baseline, at: new Date().toISOString() });
+		}
 		await appendFile(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n", { mode: 0o600 });
 		await chmod(path, 0o600);
 	} catch (error) {

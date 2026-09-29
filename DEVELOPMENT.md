@@ -53,7 +53,7 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 
 ## Incidents
 
-`src/incidents.ts` turns every anomaly into an incident keyed by `label@site`: a short id (`bi-` plus base36, never three digits in a row, because Pi's retry matcher looks for status codes such as 503 anywhere in an error text), a count, first and last seen, versions (bridge commit, Claude Code, Pi), the model, the flight-recorder snapshot and the diag entry reduced to metadata by `projectDiagMetadata`. `reportDiag` writes the diag entry exactly as `diagDump` always has, so every diag label goes through the class table `INCIDENT_CLASSES`:
+`src/incidents.ts` turns every anomaly into an incident keyed by `label@site`: a short id (`bi-` plus base36, never three digits in a row, because Pi's retry matcher looks for status codes such as 503 anywhere in an error text), a count, first and last seen, versions (bridge commit, Claude Code, Pi), the model, the flight-recorder snapshot and the diag entry reduced to metadata by `projectDiagMetadata`: ids, tool names, labels, sites and numbers, with argument property-name lists (`argKeys`) kept only as counts, because a tool may take free text as property names. `reportDiag` writes the diag entry exactly as `diagDump` always has, so every diag label goes through the class table `INCIDENT_CLASSES`:
 
 - `user-visible`: Claude or Pi got a bridge-authored error; that text ends with ` (incident <id>)`.
 - `silent`: an integrity mismatch, a forced rebuild or a dropped deferred message.
@@ -62,7 +62,7 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 
 The flight recorder (`src/flight-recorder.ts`) keeps the last 256 events of each query: SDK message and stream event types, tools/call arrivals, claims and answers, results queued, parked and delivered, cursor moves, aborts and timeouts. It is always on because the evidence is needed the first time a race happens, not after someone turns debugging on; so it does no I/O and no formatting, and consecutive deltas of one block share a record.
 
-Only a user-scoped `incidents.repo` enables the store, `<piUserDir>/claude-bridge-incidents.jsonl`: one line per new signature and per count update, batched on a timer, written asynchronously with mode 0600 and rotated like the debug log. It also remembers the last Claude Code version seen.
+Only a user-scoped `incidents.repo` enables the store, `<piUserDir>/claude-bridge-incidents.jsonl`: one line per new signature and per count update, batched on a timer, written asynchronously with mode 0600 and rotated like the debug log. It also remembers the last Claude Code version seen, and a rotation starts the fresh file with that version so the next process can still compare against it.
 
 ## Rate limits
 

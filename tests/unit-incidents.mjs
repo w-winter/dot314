@@ -17,6 +17,7 @@ import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, 
 import { registerBridgeCommands } from "../src/bridge-commands.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { loadConfig, recordProjectTrust } from "../src/config.ts";
+import { DEBUG_LOG_MAX_BYTES } from "../src/debug.ts";
 import { __testFlushIncidents, __testResetIncidents, recordIncident, withIncident } from "../src/incidents.ts";
 import { interruptedToolCallResult, resetStack, strandedToolCallResult } from "../src/query-state.ts";
 import { thirdPartyAppRefusal } from "../src/query-options.ts";
@@ -41,7 +42,10 @@ const model = {
 };
 
 const ECHO = { name: "echo", description: "Echoes text", parameters: Type.Object({ text: Type.String() }) };
+// A tool whose argument property names are free text supplied by the caller.
+const DICTIONARY = { name: "dictionary", description: "Stores entries", parameters: Type.Record(Type.String(), Type.String()) };
 const ARG_SENTINEL = "ARG-SENTINEL-do-not-record";
+const KEY_SENTINEL = "KEY SENTINEL private text used as a property name";
 const PROMPT_SENTINEL = "PROMPT-SENTINEL-do-not-record";
 const ARGS = { text: ARG_SENTINEL };
 const INCIDENT_SUFFIX = / \(incident (bi-[0-9a-z]{4,6})\)$/;
@@ -75,7 +79,7 @@ const FINAL_REPLY = [
 ];
 
 /** Fake Claude Code with a real MCP client on the bridge's server. */
-function installFakeClaudeCode(script) {
+function installFakeClaudeCode(script, claudeCodeVersion = "9.9.9") {
 	__testSetSdkQueryFactory(({ options }) => {
 		let closed = false;
 		return {
@@ -84,7 +88,7 @@ function installFakeClaudeCode(script) {
 				await options.mcpServers["custom-tools"].instance.connect(serverTransport);
 				const client = new Client({ name: "fake-claude-code", version: "1.0.0" });
 				await client.connect(clientTransport);
-				yield { type: "system", subtype: "init", session_id: "incidents-session", claude_code_version: "9.9.9" };
+				yield { type: "system", subtype: "init", session_id: "incidents-session", claude_code_version: claudeCodeVersion };
 				for await (const message of script(client)) {
 					if (closed) return;
 					yield message;
@@ -96,10 +100,10 @@ function installFakeClaudeCode(script) {
 	});
 }
 
-function initialContext() {
+function initialContext(tool = ECHO) {
 	return {
 		messages: [
-			{ role: "system", content: "test system prompt", toolsAdded: [ECHO], timestamp: 0 },
+			{ role: "system", content: "test system prompt", toolsAdded: [tool], timestamp: 0 },
 			{ role: "user", content: PROMPT_SENTINEL, timestamp: Date.now() },
 		],
 	};
@@ -108,14 +112,14 @@ function initialContext() {
 /** Runs one query whose only tools/call reaches the bridge before the stream
  *  records its tool_use and carries no tool_use id: the bridge cannot match it.
  *  Returns what Claude got for that call. */
-async function runUnmatchedHandlerRace(sessionId) {
+async function runUnmatchedHandlerRace(sessionId, { tool = ECHO, args = ARGS, claudeCodeVersion } = {}) {
 	let call;
 	installFakeClaudeCode(async function* (client) {
-		call = client.callTool({ name: "echo", arguments: ARGS });
+		call = client.callTool({ name: tool.name, arguments: args });
 		await call;
 		yield* FINAL_REPLY;
-	});
-	await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId }));
+	}, claudeCodeVersion);
+	await collect(streamClaudeAgentSdk(model, initialContext(tool), { sessionId }));
 	return call;
 }
 
@@ -192,7 +196,23 @@ describe("bridge incidents", () => {
 		assert.ok(arrival > kinds.indexOf("query_start"), `the query started first: ${kinds.join(",")}`);
 		assert.ok(kinds.indexOf("claim_unmatched") > arrival, `the claim failed after the call arrived: ${kinds.join(",")}`);
 		assert.ok(!kinds.slice(0, arrival).includes("content_block_start"), `no tool_use was streamed before the call: ${kinds.join(",")}`);
-		assert.deepEqual(incident.diag.argKeys, ["text"]);
+		assert.equal(incident.diag.argKeyCount, 1);
+	});
+
+	it("keeps tool-argument property names and values out of the incident and the store", async () => {
+		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ incidents: { repo: "owner/bridge-incidents" } }));
+		loadExtension();
+		const text = (await runUnmatchedHandlerRace("incident-dictionary", { tool: DICTIONARY, args: { [KEY_SENTINEL]: ARG_SENTINEL } })).content[0].text;
+		const incident = await incidentDetail(text.match(INCIDENT_SUFFIX)[1]);
+		assert.equal(incident.signature, "tool_handler_unmatched@mcpToolHandler");
+		assert.equal(incident.diag.toolName, "dictionary");
+		await __testFlushIncidents();
+		const stored = readFileSync(join(agentDir, "claude-bridge-incidents.jsonl"), "utf8");
+		for (const [where, raw] of [["incident", JSON.stringify(incident)], ["store", stored]]) {
+			assert.ok(!raw.includes("KEY SENTINEL"), `no tool-argument property name in the ${where}`);
+			assert.ok(!raw.includes(ARG_SENTINEL), `no tool-argument value in the ${where}`);
+		}
+		assert.equal(incident.diag.argKeyCount, 1, "the argument shape survives as a count");
 	});
 
 	it("counts an expected interruption without naming it to Claude", async () => {
@@ -280,6 +300,67 @@ describe("bridge incidents", () => {
 		assert.equal(stored.at(-1).version, "9.9.9");
 	});
 
+	it("still sees a Claude Code version change after the store rotated", async () => {
+		const path = join(agentDir, "claude-bridge-incidents.jsonl");
+		const filler = `${JSON.stringify({ type: "count", id: "bi-abcd", signature: "stream_idle_timeout@streamIdleWatchdog", class: "user-visible", count: 1 })}\n`;
+		writeFileSync(path, JSON.stringify({ type: "claude_code_version", version: "9.9.8" }) + "\n" + filler.repeat(Math.ceil(DEBUG_LOG_MAX_BYTES / filler.length)), { mode: 0o600 });
+		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ incidents: { repo: "owner/bridge-incidents" } }));
+		loadExtension();
+		await runUnmatchedHandlerRace("incident-rotate-1", { claudeCodeVersion: "9.9.8" });
+		await __testFlushIncidents();
+		assert.ok(existsSync(`${path}.1`), "the store rotated");
+
+		// A later process on the same store sees Claude Code 9.9.9.
+		__testResetIncidents();
+		loadExtension();
+		installFakeClaudeCode(async function* () { yield* FINAL_REPLY; }, "9.9.9");
+		await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-rotate-2" }));
+		await __testFlushIncidents();
+		const line = (await piClaude("incidents")).split("\n").find((entry) => entry.includes("claude_code_version_changed@init"));
+		assert.ok(line, "the version change is an incident after rotation");
+		assert.deepEqual((await incidentDetail(line.split(/\s+/)[0])).diag, { previousVersion: "9.9.8", version: "9.9.9" });
+	});
+
+	it("names an incident in the disconnected-account error without changing how Pi classifies it", async () => {
+		const credentialKeys = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_MANTLE", "CLAUDE_CONFIG_DIR"];
+		const saved = new Map(credentialKeys.map((key) => [key, process.env[key]]));
+		const platform = Object.getOwnPropertyDescriptor(process, "platform");
+		const claudeDir = join(agentDir, "claude-logged-out");
+		mkdirSync(claudeDir);
+		try {
+			for (const key of credentialKeys) delete process.env[key];
+			process.env.CLAUDE_CONFIG_DIR = claudeDir;
+			// Off darwin the Keychain is not assumed to hold a login.
+			Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+			__testSetSdkQueryFactory(() => { throw new Error("a disconnected account must not start Claude Code"); });
+			const events = await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "incident-disconnected" }));
+			const error = events.at(-1).error;
+			assert.match(error.errorMessage, /^Claude account not connected .* and retry\. \(incident bi-[0-9a-z]{4,6}\)$/);
+			const incident = await incidentDetail(error.errorMessage.match(INCIDENT_SUFFIX)[1]);
+			assert.equal(incident.signature, "claude_account_not_connected@streamRequestInLane");
+			assert.equal(incident.class, "user-visible");
+			const classifiers = [{ isRetryableAssistantError, isContextOverflow }];
+			if (existsSync(join(INSTALLED_PI_AI, "retry.js"))) {
+				classifiers.push({
+					isRetryableAssistantError: (await import(join(INSTALLED_PI_AI, "retry.js"))).isRetryableAssistantError,
+					isContextOverflow: (await import(join(INSTALLED_PI_AI, "overflow.js"))).isContextOverflow,
+				});
+			}
+			const unnamed = { ...error, errorMessage: error.errorMessage.replace(INCIDENT_SUFFIX, "") };
+			for (const { isRetryableAssistantError: retry, isContextOverflow: overflow } of classifiers) {
+				assert.equal(retry(error), retry(unnamed));
+				assert.equal(retry(error), false, "a disconnected account is not retried");
+				assert.equal(overflow(error, model.contextWindow), overflow(unnamed, model.contextWindow));
+			}
+		} finally {
+			Object.defineProperty(process, "platform", platform);
+			for (const [key, value] of saved) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+	});
+
 	it("records a Claude Code API error as an external incident without its text", async () => {
 		const apiText = "API Error: 400 private-detail-from-the-api";
 		installFakeClaudeCode(async function* () {
@@ -315,6 +396,7 @@ describe("bridge incidents", () => {
 			STEERING_DELIVERY_FAILED_MESSAGE,
 			LOST_TOOL_RESULT_TEXT,
 			buildStreamIdleTimeoutErrorMessage(90_000),
+			"Claude account not connected — connect an account (or run `claude login`) and retry.",
 			thirdPartyAppRefusal({ prompt: docsPrompt, source: "caller" }, {}),
 			thirdPartyAppRefusal({ prompt: docsPrompt, source: "pi" }, {}),
 			thirdPartyAppRefusal({ prompt: docsPrompt, source: "pi" }, { systemPrompt: { replacement: "x" } }),
@@ -326,7 +408,7 @@ describe("bridge incidents", () => {
 		});
 		// Real incident ids, enough of them that an id able to spell a status
 		// code Pi retries on (429, 500, 503, ...) would show up.
-		const incidents = Array.from({ length: 20_000 }, (_, i) => recordIncident(`classification_probe_${i}@test`, "user-visible", {}));
+		const incidents = Array.from({ length: 20_000 }, (_, i) => recordIncident(`classification_probe@site_${i}`, "user-visible", {}));
 		for (const text of texts) {
 			for (const { isRetryableAssistantError: retry, isContextOverflow: overflow } of classifiers) {
 				const before = [retry(message(text)), overflow(message(text), model.contextWindow)];

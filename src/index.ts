@@ -1061,7 +1061,7 @@ function streamRequestInLane(
 	// check is cheap (existsSync + env reads only, no credential contents).
 	if (!hasClaudeCredentials(unmanagedClaudeEnv()) && !resolveClaudeAccountRouter()) {
 		try { applyProviderRegistration("pre-spawn"); } catch { /* best effort */ }
-		const message = "Claude account not connected — connect an account (or run `claude login`) and retry.";
+		const message = withIncident("Claude account not connected — connect an account (or run `claude login`) and retry.", reportIncident("claude_account_not_connected", "streamRequestInLane", {}, ctx()));
 		debug(`provider: pre-spawn credential check failed; failing fast: ${message}`);
 		const errorOutput: AssistantMessage = {
 			role: "assistant", content: [],
