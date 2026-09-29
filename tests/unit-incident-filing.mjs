@@ -18,7 +18,7 @@ import { Type } from "@earendil-works/pi-ai";
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { REPRO_TEST_FILES } from "../src/incident-filer.ts";
-import { __testFlushIncidents, __testResetIncidents, listIncidents, recordIncident } from "../src/incidents.ts";
+import { __testFlushIncidents, __testResetIncidents, listIncidents, nameThrownBridgeError, noteClaudeCodeVersion, recordIncident } from "../src/incidents.ts";
 import { resetStack } from "../src/query-state.ts";
 
 const REPO = "nicobailon/bridge-incidents";
@@ -441,5 +441,72 @@ describe("the evidence an issue and a comment carry", () => {
 			assert.ok(write.stdin.includes("result_[unknown]"), `recorder placeholder in the ${write.argv[1]}`);
 			assert.ok(write.stdin.includes("stream_event_[unknown]"), `stream event placeholder in the ${write.argv[1]}`);
 		}
+	});
+});
+
+// The incidents repo may be public: an issue and a comment publish a label,
+// version or model only from a set the code or the runtime owns. A value
+// that merely has the right shape can still name a user or a project.
+// Synthetic names throughout. `show` keeps what was recorded.
+describe("the labels, versions and model an issue and a comment publish", () => {
+	const PROVIDER_THROW = "bridge_error@provider-throw";
+	const shownFor = async (signature) => runTool(loadExtension(), { action: "show", incident: find(signature).id });
+
+	it("publishes a thrown error's name, code and syscall only from the code's own sets, while show keeps them", async () => {
+		installFakeGh();
+		const filed = await fileInTwoProcesses(() => {
+			nameThrownBridgeError(Object.assign(new Error("synthetic provider throw"), { name: "ProjectPayrollError", code: "PRIVATEALICE", syscall: "alice_laptop" }), undefined);
+			return find(PROVIDER_THROW);
+		});
+		for (const write of filed) {
+			for (const leaked of ["ProjectPayrollError", "PRIVATEALICE", "alice_laptop"]) assert.ok(!write.stdin.includes(leaked), `${leaked} in the ${write.argv[1]}`);
+			for (const placeholder of ['"errorName": "[unknown error name]"', '"code": "[unknown code]"', '"syscall": "[unknown syscall]"']) {
+				assert.ok(write.stdin.includes(placeholder), `${placeholder} in the ${write.argv[1]}`);
+			}
+		}
+		assert.ok((await shownFor(PROVIDER_THROW)).includes("ProjectPayrollError"), "show keeps the recorded name");
+	});
+
+	it("keeps built-in error names, errno names, Node ERR_ codes, the bridge's own labels and Node's syscalls", async () => {
+		installFakeGh();
+		const data = {
+			errorName: "TypeError", code: "ENOENT", syscall: "open",
+			causes: [
+				{ errorName: "ClaudeSpawnDiagnosticError", code: "CLAUDE_BRIDGE_SPAWN_FAILED", syscall: "uv_os_homedir" },
+				{ errorName: "AbortError", code: "ERR_INVALID_ARG_TYPE", syscall: "scandir" },
+			],
+		};
+		const filed = await fileInTwoProcesses(() => recordIncident(PROVIDER_THROW, "user-visible", data));
+		for (const write of filed) {
+			for (const kept of ["TypeError", "ENOENT", '"open"', "ClaudeSpawnDiagnosticError", "CLAUDE_BRIDGE_SPAWN_FAILED", "uv_os_homedir", "AbortError", "ERR_INVALID_ARG_TYPE", "scandir"]) {
+				assert.ok(write.stdin.includes(kept), `${kept} in the ${write.argv[1]}`);
+			}
+			assert.ok(!write.stdin.includes("[unknown"), `no placeholder in the ${write.argv[1]}`);
+		}
+	});
+
+	it("publishes a version's numeric core only, its suffix as a placeholder, while show keeps it", async () => {
+		installFakeGh();
+		const filed = await fileInTwoProcesses(() => {
+			noteClaudeCodeVersion("2.1.3-PrivateAlice");
+			return recordIncident(PROVIDER_THROW, "user-visible", { version: "2.1.3-PrivateAlice", previousVersion: "2.1.2" });
+		});
+		for (const write of filed) {
+			assert.ok(!write.stdin.includes("PrivateAlice"), `no suffix in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("| Claude Code | 2.1.3-[suffix] |"), `evidence table in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes('"version": "2.1.3-[suffix]"'), `diag in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes('"previousVersion": "2.1.2"'), `a plain version stays in the ${write.argv[1]}`);
+		}
+		assert.ok((await shownFor(PROVIDER_THROW)).includes("2.1.3-PrivateAlice"), "show keeps the recorded version");
+	});
+
+	it("publishes only a model the bridge registers, while show keeps the recorded one", async () => {
+		installFakeGh();
+		const filed = await fileInTwoProcesses(() => recordIncident(PROVIDER_THROW, "user-visible", {}, { preQueryModel: "claude-project-payroll" }));
+		for (const write of filed) {
+			assert.ok(!write.stdin.includes("project-payroll"), `no model name in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes("| Model | [unregistered model] |"), `placeholder in the ${write.argv[1]}`);
+		}
+		assert.ok((await shownFor(PROVIDER_THROW)).includes("claude-project-payroll"), "show keeps the recorded model");
 	});
 });

@@ -64,6 +64,9 @@ function displayValue(value: unknown): string {
 // The bridge's own Claude Code error classes (by name: they are plain Errors).
 export const CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME = "ClaudeExecutablePreflightError";
 export const CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME = "ClaudeSpawnDiagnosticError";
+/** The codes those errors set that are not errno names. */
+export const CLAUDE_SPAWN_FAILED_CODE = "CLAUDE_BRIDGE_SPAWN_FAILED";
+export const CLAUDE_SPAWN_UNKNOWN_CODE = "SPAWN_ERROR";
 /** How every ClaudeSpawnDiagnosticError message begins. The SDK does not
  *  throw that error itself: it throws "Failed to spawn Claude Code process: "
  *  plus the message (or "Cannot write to process that exited with error: "
@@ -210,7 +213,7 @@ function envFlagEnabled(value: string | undefined): boolean {
 }
 
 export function wrapClaudeSpawnErrorForSdk(err: Error, options: SpawnOptions): Error & NodeJS.ErrnoException & { cwd: string; originalCode?: string; originalMessage?: string } {
-	const originalCode = codeValue(err, "SPAWN_ERROR");
+	const originalCode = codeValue(err, CLAUDE_SPAWN_UNKNOWN_CODE);
 	const originalMessage = err.message;
 	const spawnPath = pathValue(err) ?? options.command;
 	const cwd = options.cwd ?? process.cwd();
@@ -227,7 +230,7 @@ export function wrapClaudeSpawnErrorForSdk(err: Error, options: SpawnOptions): E
 	// The SDK special-cases code === ENOENT and replaces the message with its
 	// generic "native binary not found" text. Preserve the original code in the
 	// message/originalCode while using a bridge code so the SDK surfaces context.
-	wrapped.code = originalCode === "ENOENT" ? "CLAUDE_BRIDGE_SPAWN_FAILED" : originalCode;
+	wrapped.code = originalCode === "ENOENT" ? CLAUDE_SPAWN_FAILED_CODE : originalCode;
 	wrapped.originalCode = originalCode;
 	wrapped.originalMessage = originalMessage;
 	const errno = errnoValue(err);

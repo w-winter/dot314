@@ -13,7 +13,9 @@
 // (isKnownSignature). The body is built from evidence validated by kind where
 // it was recorded (incidents.ts, projectDiagMetadata) and fixed bridge prose;
 // a tool name in it that is not Pi's or the bridge's own is published as its
-// hash (publishedDiag).
+// hash, and an error label, version or model outside the sets the code or
+// the runtime owns becomes a placeholder (publishedDiag, publishedVersion,
+// publishedModel).
 // No text the agent writes is published: the agent gives its analysis to the
 // user in chat. Every title, body and comment passes sanitizeForIssue at the
 // boundary.
@@ -23,7 +25,7 @@ import { join } from "node:path";
 import { displayPath, piUserDir } from "./config.js";
 import { debug } from "./debug.js";
 import { sanitizeForIssue } from "./incident-sanitizer.js";
-import { isKnownSignature, publishedDiag, type Incident, type IncidentLabel } from "./incidents.js";
+import { isKnownSignature, publishedDiag, publishedModel, publishedVersion, type Incident, type IncidentLabel } from "./incidents.js";
 
 const GH_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 60 * 1024;
@@ -143,7 +145,10 @@ export function issueTitle(incident: Incident): string {
 	return `[incident] ${labelOf(incident.signature)} at ${siteOf(incident.signature) || "unknown site"} (${incident.class})`;
 }
 
-function evidenceTable(incident: Incident): string {
+/** The evidence table. `published`: as an issue or comment carries it, with
+ *  versions cut to their numeric core and only a registered model named. */
+function evidenceTable(incident: Incident, published: boolean): string {
+	const version = (value: string | undefined): string | undefined => value !== undefined && published ? publishedVersion(value) : value;
 	const rows: Array<[string, unknown]> = [
 		["Incident", incident.id],
 		["Signature", `\`${incident.signature}\``],
@@ -152,9 +157,9 @@ function evidenceTable(incident: Incident): string {
 		["First seen", incident.firstSeen],
 		["Last seen", incident.lastSeen],
 		["Bridge commit", incident.versions.bridge],
-		["Claude Code", incident.versions.claudeCode],
-		["Pi", incident.versions.pi],
-		["Model", incident.model],
+		["Claude Code", version(incident.versions.claudeCode)],
+		["Pi", version(incident.versions.pi)],
+		["Model", incident.model !== undefined && published ? publishedModel(incident.model) : incident.model],
 		["Phase", incident.phase],
 	];
 	return ["| Field | Value |", "|---|---|", ...rows.filter(([, value]) => value !== undefined).map(([name, value]) => `| ${name} | ${String(value).replace(/\|/g, "\\|")} |`)].join("\n");
@@ -207,7 +212,7 @@ export function issueBody(incident: Incident): string {
 			"",
 			"## Evidence",
 			"",
-			evidenceTable(incident),
+			evidenceTable(incident, true),
 			"",
 			"## Flight recorder",
 			"",
@@ -245,7 +250,7 @@ export function occurrenceComment(incident: Incident): string {
 			"",
 			SEEN[incident.class](incident),
 			"",
-			evidenceTable(incident),
+			evidenceTable(incident, true),
 			"",
 			...snapshotSection("Latest occurrence", snapshot),
 			"",
@@ -277,9 +282,11 @@ export function incidentListLine(incident: Incident): string {
 	return `- ${incident.id}: ${describeIncident(incident)} (${labelOf(incident.signature)} at ${siteOf(incident.signature)}, ${incident.class}, seen ${times}, first ${incident.firstSeen}, last ${incident.lastSeen}${filed})`;
 }
 
-/** What `show` returns: the description, what the user saw, and the same
- *  validated evidence an issue carries, with the latest recorder snapshot.
- *  Under 24 KB: the oldest records, then the diag, give way first. */
+/** What `show` returns: the description, what the user saw, and the
+ *  validated evidence as recorded (an issue publishes it through
+ *  publishedDiag, publishedVersion and publishedModel), with the latest
+ *  recorder snapshot. Under 24 KB: the oldest records, then the diag, give
+ *  way first. */
 export function incidentDetails(incident: Incident): string {
 	let snapshot = incident.latestSnapshot !== undefined ? incident.latestSnapshot : incident.snapshot;
 	let diag: unknown = { first: incident.diag, ...(incident.latestDiag ? { latest: incident.latestDiag } : {}) };
@@ -293,7 +300,7 @@ export function incidentDetails(incident: Incident): string {
 			"",
 			"## Evidence",
 			"",
-			evidenceTable(incident),
+			evidenceTable(incident, false),
 			"",
 			"## Diag metadata",
 			"",

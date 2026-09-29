@@ -14,14 +14,17 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, stat } from "node:fs/promises";
+import { constants as osConstants } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME, CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME, CLAUDE_SPAWN_FAILED_CODE, CLAUDE_SPAWN_UNKNOWN_CODE } from "./claude-executable.js";
 import { piUserDir } from "./config.js";
 import { DEBUG_LOG_MAX_BYTES, DEBUG_LOG_ROTATED_FILES, debug, diagDump } from "./debug.js";
 import { __testResetFiler, configureFiler } from "./incident-filer.js";
 import { CLAUDE_ACCOUNT_FAILURE_KINDS } from "./account-router.js";
 import { RECORDER_KINDS, type FlightRecord, type FlightRecorder } from "./flight-recorder.js";
 import { SDK_RESULT_SUBTYPES, SDK_SYSTEM_SUBTYPES, STREAM_ABANDON_REASONS, TURN_BLOCK_TYPES } from "./incident-labels.js";
+import { MODEL_IDS_IN_ORDER } from "./models.js";
 import { MCP_TOOL_PREFIX } from "./skills.js";
 
 /** user-visible: Claude or Pi got a bridge-authored error. silent: integrity
@@ -404,11 +407,69 @@ export function publicToolName(name: string): string {
 	return PUBLIC_TOOL_NAMES.has(name) ? name : `tool-${createHash("sha256").update(name).digest("hex").slice(0, 8)}`;
 }
 
-/** Diag metadata as an issue or comment publishes it: every tool name that
- *  projectDiagMetadata kept goes through publicToolName; its placeholder
- *  stays. `list` and `show` never pass through here. */
+// What an issue or comment may publish of a label: a value of a set the code
+// or the runtime owns. A shape alone is not enough, since a project's own
+// error class, code or version suffix can name the user or the project.
+
+// The JavaScript built-in errors, the DOM and Node ones Node throws, the
+// bridge's own (claude-executable.ts), and every name the Agent SDK's bundle
+// assigns to an error.
+const PUBLIC_ERROR_NAMES: ReadonlySet<string> = new Set([
+	"Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError", "AggregateError", "SuppressedError",
+	"AbortError", "TimeoutError", "SystemError",
+	CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME, CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME,
+	"DirectConnectError", "McpError", "NoProjectDirectoryError", "PublishRefusedError", "TelemetrySafeError", "ZodError", "ZodEncodeError",
+]);
+// Error codes: the runtime's errno names, Node's own `ERR_` namespace, and
+// the codes the bridge's errors set.
+const ERRNO_NAMES: ReadonlySet<string> = new Set(Object.keys(osConstants.errno));
+const NODE_ERROR_CODE = /^ERR_[A-Z0-9_]{1,60}$/;
+const BRIDGE_ERROR_CODES: ReadonlySet<string> = new Set([CLAUDE_SPAWN_FAILED_CODE, CLAUDE_SPAWN_UNKNOWN_CODE]);
+// The `syscall` of Node's and libuv's errors (fs, child_process, net, dns,
+// os, process), and the bridge's own preflight syscalls (`chdir`, `exec`).
+const PUBLIC_SYSCALLS: ReadonlySet<string> = new Set([
+	"open", "close", "read", "write", "stat", "lstat", "fstat", "statfs", "mkdir", "mkdtemp", "rmdir", "rm", "unlink", "rename",
+	"readdir", "scandir", "opendir", "realpath", "readlink", "symlink", "link", "copyfile", "cp", "access", "chmod", "fchmod",
+	"chown", "fchown", "lchown", "utime", "futime", "lutime", "fsync", "fdatasync", "ftruncate", "watch",
+	"spawn", "spawnSync", "kill", "exec", "chdir", "pipe",
+	"connect", "listen", "bind", "accept", "shutdown", "getaddrinfo", "getnameinfo",
+	"uv_cwd", "uv_os_homedir", "uv_os_tmpdir", "uv_os_gethostname", "uv_os_get_passwd", "uv_os_getpriority", "uv_os_setpriority",
+]);
+// The models the bridge registers with Pi (models.ts).
+const REGISTERED_MODELS: ReadonlySet<string> = new Set(MODEL_IDS_IN_ORDER);
+const VERSION_PARTS = /^(\d{1,4}\.\d{1,4}\.\d{1,6})([-+].*)?$/s;
+
+/** A version as published: its numeric core, and `-[suffix]` for any
+ *  prerelease or build suffix. */
+export function publishedVersion(version: string): string {
+	const parts = VERSION_PARTS.exec(version);
+	if (!parts) return "[invalid version]";
+	return parts[2] ? `${parts[1]}-[suffix]` : parts[1];
+}
+
+/** A model as published: one the bridge registers, or a placeholder. */
+export function publishedModel(model: string): string {
+	return REGISTERED_MODELS.has(model) ? model : "[unregistered model]";
+}
+
+const PUBLISHED_EVIDENCE: Partial<Record<EvidenceKind, (value: string) => string>> = {
+	toolName: (value) => value === UNREGISTERED_TOOL_NAME ? value : publicToolName(value),
+	errorName: (value) => PUBLIC_ERROR_NAMES.has(value) ? value : "[unknown error name]",
+	errorCode: (value) => ERRNO_NAMES.has(value) || NODE_ERROR_CODE.test(value) || BRIDGE_ERROR_CODES.has(value) ? value : "[unknown code]",
+	syscall: (value) => PUBLIC_SYSCALLS.has(value) ? value : "[unknown syscall]",
+	version: publishedVersion,
+};
+
+/** Diag metadata as an issue or comment publishes it: a tool name goes
+ *  through publicToolName (its placeholder stays), an error name, code or
+ *  syscall outside the sets above becomes a placeholder, and a version keeps
+ *  its numeric core. `list` and `show` never pass through here. */
 export function publishedDiag(value: unknown, key = ""): unknown {
-	if (typeof value === "string") return kindOf(key) === "toolName" && value !== UNREGISTERED_TOOL_NAME ? publicToolName(value) : value;
+	if (typeof value === "string") {
+		const kind = kindOf(key);
+		const publish = kind ? PUBLISHED_EVIDENCE[kind] : undefined;
+		return publish ? publish(value) : value;
+	}
 	if (Array.isArray(value)) return value.map((item) => publishedDiag(item, key));
 	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, publishedDiag(child, childKey)]));
 	return value;
