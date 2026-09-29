@@ -7,7 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import { buildClaudeQueryOptions } from "../src/query-options.ts";
 
 const ROUTING_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
-const SENTINEL_KEYS = [...ROUTING_KEYS, "ANTHROPIC_MODEL", "DISABLE_AUTO_COMPACT"];
+const SENTINEL_KEYS = [...ROUTING_KEYS, "ANTHROPIC_MODEL", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"];
 const saved = new Map(SENTINEL_KEYS.map((key) => [key, process.env[key]]));
 
 afterEach(() => {
@@ -54,5 +54,12 @@ describe("Claude Code child environment", () => {
 		const inherited = childEnv({ provider: { inheritAnthropicEnv: true } });
 		for (const key of ROUTING_KEYS) assert.equal(inherited[key], `sentinel-${key}`, key);
 		assert.equal(inherited.DISABLE_AUTO_COMPACT, "1");
+	});
+
+	it("makes every imported turn too old for Claude Code to resume as interrupted", () => {
+		// Claude Code reads the value as a max age in ms; "0" or unset would let it
+		// resume the turn and inject its own continuation prompt.
+		process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS = "3600000";
+		assert.equal(childEnv({}).CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "1");
 	});
 });

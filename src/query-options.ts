@@ -193,11 +193,18 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// SDK closes the query on that result, and the call is interrupted; a Pi
 	// tool's real result is orphaned. A bridge query cannot carry a background
 	// task past its turn, so every MCP call stays in the foreground.
+	// CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1: Claude Code resumes a
+	// session whose last turn ended mid-turn (at a tool_result, say) as an
+	// interrupted turn, with its own "Continue from where you left off." prompt
+	// and a filler reply before the real one. Pi supplies every prompt, so the
+	// bridge never wants that; a 1 ms max age makes every stored turn too old.
+	// "0" would not do: Claude Code then falls back to its own limit (hours).
 	const childEnv = {
 		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
 		CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
+		CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 	};
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
