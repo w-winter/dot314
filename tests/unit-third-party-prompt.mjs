@@ -9,7 +9,7 @@
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -143,7 +143,18 @@ describe("a system prompt Anthropic takes for a third-party app", () => {
 	});
 
 	it("ends the turn with Anthropic's rejection and the bridge's hint, which Pi neither retries nor compacts on", { timeout: 10_000 }, async () => {
-		const { queries, message } = await request({}, sessionMessages(), REJECTED);
+		// An agent directory whose name carries text Pi's retry and overflow
+		// matchers look for: the hint must not depend on it.
+		const agentDir = join(root, "agent-500-request_too_large");
+		mkdirSync(agentDir, { recursive: true });
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		let result;
+		try {
+			result = await request({}, sessionMessages(), REJECTED);
+		} finally {
+			process.env.PI_CODING_AGENT_DIR = root;
+		}
+		const { queries, message } = result;
 		assert.equal(queries.length, 1);
 		assert.equal(message.stopReason, "error");
 		assert.ok(message.errorMessage.includes(REJECTION), message.errorMessage);
