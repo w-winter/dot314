@@ -193,14 +193,17 @@ describe("pi-intercom with the Claude bridge (real Pi, isolated broker)", { skip
 		assert.ok(sentAt <= ask.at, "the side message must arrive while the ask is still blocked");
 
 		const lines = debugLines(asker).slice(startLine);
-		const resolved = firstIndex(lines, /provider: resolving intercom .*DELAY-DONE/);
+		// The log carries no tool output or user text, only shapes: the ask is
+		// this window's only intercom call and the side message its only
+		// mid-query user message. Claude's transcript below checks the content.
+		const resolved = firstIndex(lines, /provider: resolving intercom \[/);
 		assert.notEqual(resolved, -1, "the ask result must reach the waiting MCP handler");
 		// Live steering: the side message goes to the running query, written
 		// before the ask result is released; Claude's transcript (below) shows
 		// what Claude saw, in order.
-		assert.equal(count(lines, /provider: sending \d+ user message\(s\) to the running query before its tool results: .*From d2-side-cli/), 1, "sent to the running query exactly once");
-		assert.equal(count(lines, /provider: deferred \d+ user message\(s\) .*From d2-side-cli/), 0, "never also queued for a continuation");
-		assert.equal(count(lines, /provider: replaying deferred user message: .*From d2-side-cli/), 0, "never replayed");
+		assert.equal(count(lines, /provider: sending \d+ user message\(s\) to the running query before its tool results: /), 1, "sent to the running query exactly once");
+		assert.equal(count(lines, /provider: deferred \d+ user message\(s\) /), 0, "never also queued for a continuation");
+		assert.equal(count(lines, /provider: replaying deferred user message: /), 0, "never replayed");
 		assert.equal(count(lines, /deferred_user_messages_dropped|orphaned tool result/), 0);
 
 		const prompts = claudeUserPrompts(asker);

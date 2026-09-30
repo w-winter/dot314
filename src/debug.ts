@@ -76,7 +76,7 @@ export function diagGuidance(): string {
 }
 
 // Ensure log directories exist when debug is enabled. 0o700/0o600 throughout:
-// these logs carry prompt previews and session metadata and belong to the user
+// these logs carry session metadata, ids and paths and belong to the user
 // alone — same discipline as diagDump.
 if (DEBUG) {
 	try {
@@ -96,6 +96,27 @@ if (DEBUG) {
 
 // Unique per module evaluation — confirms whether subagents share module state
 export const moduleInstanceId = Math.random().toString(36).slice(2, 8);
+
+/** The shape of message or tool-result content for a log line: block count,
+ *  block types, text length and whether it holds only images. Never the
+ *  content itself: no log line carries a tool payload or user-authored text. */
+export function contentShape(content: unknown): string {
+	if (typeof content === "string") return `${content.length} chars`;
+	if (!Array.isArray(content)) return content == null ? "no content" : `${typeof content} content`;
+	let chars = 0;
+	let images = 0;
+	let hasText = false;
+	const types = content.map((block) => {
+		const { type, text } = (block ?? {}) as { type?: unknown; text?: unknown };
+		if (typeof text === "string") {
+			chars += text.length;
+			if (text.trim()) hasText = true;
+		}
+		if (type === "image") images += 1;
+		return typeof type === "string" && /^[a-z_]{1,32}$/.test(type) ? type : "?";
+	});
+	return `${content.length} block(s) [${types.join(",")}], ${chars} chars${images > 0 && !hasText ? ", image-only" : ""}`;
+}
 
 let debugBytesSinceCheck = 0;
 

@@ -10,7 +10,7 @@ import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { endStreamForFailure } from "./assistant-stream.js";
 import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
-import { debug } from "./debug.js";
+import { contentShape, debug } from "./debug.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { reportDiag, reportIncident, withIncident } from "./incidents.js";
@@ -54,7 +54,7 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 				debug(`provider: late result for ${pending.toolName} [${id}] after Claude Code gave up on it (${abandoned.reason}); Claude does not receive it`);
 				appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id, toolName: pending.toolName });
 			}
-			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""}`, JSON.stringify(result.content).slice(0, 200));
+			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""} content: ${contentShape(result.content)}`);
 			queryCtx.recorder.record("result_delivered", id);
 			if (toolsSettling) void toolsSettling.then(() => pending.resolve(result));
 			else pending.resolve(result);

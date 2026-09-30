@@ -25,7 +25,7 @@ import { hasClaudeCredentials } from "./auth-presence.js";
 import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.js";
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
-import { debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import { contentShape, debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import type { RecorderKind } from "./flight-recorder.js";
 import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, setIncidentListener, withIncident } from "./incidents.js";
 import { noticeIncident, takeIncidentNotice } from "./incident-notice.js";
@@ -162,7 +162,7 @@ function extractAllToolResults(context: Context): McpResult[] {
 	debug(`extractAllToolResults: ${results.length} results from ${context.messages.length} msgs, stopped at index ${stopIdx}`);
 	debug(`extractAllToolResults: all msg roles:`, context.messages.map((m, i) => `[${i}]${m.role}`).join(" "));
 	for (let r = 0; r < results.length; r++) {
-		debug(`extractAllToolResults: result[${r}] id=${results[r].toolCallId}${results[r].isError ? " ERROR" : ""} preview:`, JSON.stringify(results[r].content).slice(0, 150));
+		debug(`extractAllToolResults: result[${r}] id=${results[r].toolCallId}${results[r].isError ? " ERROR" : ""} content: ${contentShape(results[r].content)}`);
 	}
 	return results;
 }
@@ -902,7 +902,7 @@ function streamRequestInLane(
 				if (!deliverLive) queryCtx.deferredUserMessages.push(steer);
 				for (const index of replay.freshIndexes) ledger.own(context.messages[index]);
 				acceptedUserIndexes = new Set(replay.freshIndexes);
-				debug(`provider: ${deliverLive ? "sending" : "deferred"} ${replay.userMessageCount} user message(s) ${deliverLive ? "to the running query before its tool results" : "for replay after query"}${replay.blocks ? ` (${replay.blocks.length} blocks incl. images)` : ""}: ${(replay.prompt ?? "[image-only]").slice(0, 60)}`);
+				debug(`provider: ${deliverLive ? "sending" : "deferred"} ${replay.userMessageCount} user message(s) ${deliverLive ? "to the running query before its tool results" : "for replay after query"}: ${contentShape(replay.blocks ?? replay.prompt)}`);
 			} else {
 				// Not owned: a later callback plans these again together with
 				// whatever arrives behind them.
@@ -1367,7 +1367,7 @@ function streamRequestInLane(
 		`fallback=${built.fallbackModel ?? "none"}`,
 		`systemPrompt=${built.systemPromptSource} strictMcp=true fastMode=${providerSettings.fastMode === true} connectors=${built.enableCloudMcp}`,
 		`claudeExec=${claudeExecutablePreflight ? `${claudeExecutablePreflight.fileType}:${claudeExecutablePreflight.path}` : "sdk-default"}`,
-		`prompt=${promptText.slice(0, 60)}${promptBlocks ? " [+images]" : ""}`);
+		`prompt=${contentShape(promptBlocks ?? promptText)}`);
 
 	// 3. Start SDK query and claim it for this context
 	let wasAborted = false;
@@ -1686,8 +1686,8 @@ function streamRequestInLane(
 			try {
 				while (abortCtx.deferredUserMessages.length > 0 && !wasAborted && !Boolean(abortCtx.restartRequest)) {
 					const steer = abortCtx.deferredUserMessages.shift()!;
-					const steerPreview = (steer.text || "[image-only]").slice(0, 60);
-					debug(`provider: replaying deferred user message: ${steerPreview}`);
+					const steerShape = contentShape(steer.blocks ?? steer.text);
+					debug(`provider: replaying deferred user message: ${steerShape}`);
 					abortCtx.prepareContinuation();
 					abortCtx.recorder.record("continuation_start");
 					// What Claude has completed so far outlives a failure of this
@@ -1712,7 +1712,7 @@ function streamRequestInLane(
 					const contQuery = startSdkQuery({ prompt: steer.blocks ? wrapPromptStream(steer.blocks) : steer.text, options: contOptions });
 					abortCtx.activeQuery = contQuery;
 
-					debug(`provider: continuation query, model=${queryModel.id}, resume=${resumeId.slice(0, 8)}, account=${account?.label ?? "legacy"}, prompt=${steerPreview}`);
+					debug(`provider: continuation query, model=${queryModel.id}, resume=${resumeId.slice(0, 8)}, account=${account?.label ?? "legacy"}, prompt=${steerShape}`);
 
 					try {
 						const continuation = await consumeQuery(contQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router);

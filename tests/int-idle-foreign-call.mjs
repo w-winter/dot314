@@ -108,7 +108,10 @@ describe("a side call with the main session id while the main session is idle (r
 		assert.ok(!JSON.stringify(messages).includes("PROBE_IDLE"), "the side answer never leaked into the main conversation");
 
 		const log = readFileSync(harness.DEBUG_LOG, "utf8").split("\n");
-		const second = log.findIndex((line) => line.includes("provider: fresh query model") && line.includes("SECOND_OK"));
+		// The log names no prompt text: the second prompt's query is the first
+		// one carrying the main conversation's history (the first prompt and the
+		// side call each start from at most a system and a user message).
+		const second = log.findIndex((line) => Number(/provider: fresh query model=\S+ requested=\S+ msgs=(\d+)/.exec(line)?.[1] ?? 0) >= 3);
 		assert.ok(second > 0, "the second prompt started a query");
 		const sync = log.slice(0, second).reverse().find((line) => line.includes("syncResult: path="));
 		assert.match(sync ?? "", /path=reuse/, "the second prompt resumes the main Claude session");
