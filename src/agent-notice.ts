@@ -1,23 +1,26 @@
-// Debug-mode anomaly notices. With CLAUDE_BRIDGE_DEBUG=1, a bridge anomaly
-// the agent would otherwise never see (an error the bridge wrote, or a
-// problem it recovered from) is told to the Pi session whose request hit it,
-// once per kind per session. Everything pending for a session goes out as one
-// `claude-bridge-notice` message that the session's before_agent_start handler
-// returns with its next prompt. Pi puts that message after the user's prompt
+// Agent notices. With `agentNotices: true` in the user claude-bridge.json, a
+// bridge anomaly the agent would otherwise never see (an error the bridge
+// wrote, or a problem it recovered from) is told to the Pi session whose
+// request hit it, once per kind per session. Everything pending for a session
+// goes out as one `claude-bridge-notice` message that the session's
+// before_agent_start handler returns with its next prompt. Pi puts that
+// message after the user's prompt
 // and convertToLlm makes it a user message, so the bridge sees ordinary
 // appended user input and keeps reusing Claude's session. The bridge never
-// sends a message or starts a turn of its own for an anomaly. Without DEBUG
-// nothing is queued or told.
+// sends a message or starts a turn of its own for an anomaly. Without the
+// switch nothing is queued or told, whatever CLAUDE_BRIDGE_DEBUG says; that
+// variable only decides whether the details are also in the bridge logs.
 //
 // Anomalies are noted by the copy of the bridge that serves the requests,
 // while each session (an in-process subagent too, and every session after a
 // /reload) runs the before_agent_start handler of the copy it loaded. The
 // pending kinds and what each session was told are therefore kept
 // process-global, by Pi session id, for the AGENT_NOTICE_SESSIONS_KEPT
-// sessions most recently noted or prompted.
+// sessions most recently noted or prompted, and every copy reads the switch
+// from the file when it notes or tells.
 
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { displayPath } from "./config.js";
+import { agentNoticesEnabled, displayPath } from "./config.js";
 import { DEBUG, DEBUG_LOG_PATH, debug, diagLogPath } from "./debug.js";
 import { piSessionOfLane } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
@@ -106,11 +109,11 @@ export function currentPiSession(): string | undefined {
 	return piSessionOfLane(currentRequestLaneId());
 }
 
-/** With DEBUG on, queues `kind` for the next prompt of Pi session
+/** With agent notices on, queues `kind` for the next prompt of Pi session
  *  `owner` (by default the current lane's), unless that session was told
  *  about it; a repeat goes to the debug log only. */
 export function noteAnomaly(kind: AnomalyKind, owner?: string): void {
-	if (!DEBUG) return;
+	if (!agentNoticesEnabled()) return;
 	const sessionId = owner ?? currentPiSession();
 	if (sessionId === undefined) {
 		debug(`agent notice: ${kind} outside any Pi session; not told`);
@@ -130,21 +133,23 @@ function noticeText(kinds: AnomalyKind[]): string {
 	const room = MESSAGE_LINES - 2;
 	const shown = kinds.length > room ? kinds.slice(0, room - 1) : kinds;
 	return [
-		`Claude bridge (debug mode): ${kinds.length === 1 ? "1 anomaly" : `${kinds.length} anomalies`} since your last message.`,
+		`Claude bridge: ${kinds.length === 1 ? "1 anomaly" : `${kinds.length} anomalies`} since your last message.`,
 		...shown.map((kind) => `- ${TOLD[kind].sentence.replace(/\.$/, "")} (${kind}; ${TOLD[kind].errorShown ? "an error was shown" : "the bridge recovered"})`),
 		...(kinds.length > shown.length ? [`- … and ${kinds.length - shown.length} more`] : []),
-		`Details are in the bridge debug log (${displayPath(DEBUG_LOG_PATH)}) and diag log (${displayPath(diagLogPath())}). If one looks like a bridge bug, tell the user.`,
+		DEBUG
+			? `Details are in the bridge debug log (${displayPath(DEBUG_LOG_PATH)}) and diag log (${displayPath(diagLogPath())}). If one looks like a bridge bug, tell the user.`
+			: "The bridge did not record details; the user can set CLAUDE_BRIDGE_DEBUG=1 to record them in the bridge logs. If one looks like a bridge bug, tell the user.",
 	].join("\n");
 }
 
 /** The before_agent_start result for session `sessionId`: one message with
- *  every kind pending for it, or nothing. Takes them: each is told once. A
- *  copy loaded without DEBUG tells nothing, even what a DEBUG copy queued in
- *  the shared store. */
+ *  every kind pending for it, or nothing. Takes them: each is told once.
+ *  With agent notices off it tells nothing, even what was queued while they
+ *  were on. */
 export function takeAgentNotice(sessionId: string): BeforeAgentStartEventResult | undefined {
-	if (!DEBUG) return undefined;
 	const notices = store().get(sessionId);
 	if (!notices || notices.pending.length === 0) return undefined;
+	if (!agentNoticesEnabled()) return undefined;
 	const kinds = sessionNotices(sessionId).pending.splice(0);
 	return {
 		message: {

@@ -132,6 +132,7 @@ The bridge reads `claude-bridge.json` from `~/.pi/agent` and from a trusted proj
 The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-compat`, which continues to read `anthropicOAuthCompat` from `settings.json`.
 
 - `enabled`: register the `pi-claude/*` models; reload required.
+- `agentNotices`: `true` tells the agent about each kind of bridge anomaly (an error the bridge wrote, or a problem it recovered from), once per kind per session. The bridge adds the notice to the conversation as a message with your next prompt, and the TUI shows it. Off by default, and only the user `claude-bridge.json` can turn it on; a project's file cannot. The details are in the bridge logs only when `CLAUDE_BRIDGE_DEBUG=1` is set too.
 - `systemPrompt.replacement`: replace Pi's default base instructions in Pi's main agent prompt while retaining Pi's rules and guidelines (Pi's own rules, the selected tools' guidelines and extensions' `promptGuidelines`) and Pi-managed project context and skills. Pi's opening sentence, tool list and documentation pointers are dropped; Claude gets the tools as MCP definitions. When the session supplies its own base (`SYSTEM.md`, `--system-prompt`, an SDK `systemPrompt`, or a pi-subagents agent with `systemPromptMode: replace`), that base is kept: Claude receives the replacement, a blank line, then the complete prompt Pi built. Pi's default base is recognized by its fixed opening sentence ("You are an expert coding assistant operating inside pi, …"); a `before_agent_start` prompt that does not open with it is kept whole the same way. Other system prompts reach Claude unchanged, whatever they contain, including those of Pi's compaction and branch summaries and extensions' own model calls.
 - `systemPrompt.includeModelLine`: prepend `Active model: provider/modelId` to the replacement.
 - `systemPrompt.preservePiContext`: retain Pi-managed context after the replacement; defaults to `true`. `false` sends only the replacement in place of Pi's main agent prompt when that prompt has Pi's default base. A session's own base is never dropped, so with `false` it still arrives after the replacement together with its context.
@@ -158,7 +159,6 @@ Environment variables:
 
 - `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` (default 90s): how long Claude Code may stay silent during a turn, before or after its first output, while no Pi tool call is outstanding; bare numbers are seconds, `ms`, `s` and `m` suffixes are accepted, `0` disables.
 - `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. Without it, the bridge writes no log. It still writes what it needs to run: the Claude Code session files it builds from Pi history, its own entries in the Pi session file, and, with connectors on, the connector inventory cache in the Pi agent directory.
-  - In debug mode, the agent is also told about each kind of bridge anomaly (an error the bridge wrote, or a problem it recovered from) with your next prompt, once per kind per session, and the TUI shows that notice.
 
 Tool-result integrity problems always surface as a Pi error notification plus a metadata-only `claude-bridge-integrity` entry in the Pi session file, so a lost tool result can be analysed from the session alone.
 
@@ -192,7 +192,7 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 - Pi loads the TypeScript source directly; there is no bundle to rebuild, and `/reload` picks up edits. CI runs the typecheck and unit tests on every push.
 - Claude Code children do not inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` unless `provider.inheritAnthropicEnv` is set.
 - The debug log rotates, and old Claude Code CLI logs are pruned.
-- In debug mode, the agent is told about bridge anomalies with the next prompt.
+- With `agentNotices` on, the agent is told about bridge anomalies with the next prompt.
 
 The Claude Agent SDK may prepend its own identity text to the system prompt.
 

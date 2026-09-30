@@ -404,6 +404,14 @@ export function loadConfig(cwd: string): Config {
 	};
 }
 
+/** Whether bridge anomalies are told to the agent: `agentNotices: true` in the
+ *  user claude-bridge.json. A project's file cannot add messages to the
+ *  conversation, so its key is never read. Read at every call, so every loaded
+ *  copy of the bridge agrees and an edit applies without /reload. */
+export function agentNoticesEnabled(): boolean {
+	return asRecord(tryParseJson(join(piUserDir(), "claude-bridge.json")))?.agentNotices === true;
+}
+
 /** Home-relative when possible — for user-facing path mentions (what to edit,
  *  what to paste into an issue) where an absolute path would leak the username. */
 export function displayPath(path: string): string {

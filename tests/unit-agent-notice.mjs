@@ -1,15 +1,17 @@
-// Debug-mode anomaly notices. With CLAUDE_BRIDGE_DEBUG=1, a told anomaly a
-// session's request hits rides with that session's next prompt, as one
-// displayed message its before_agent_start handler returns; a kind is told
-// once per session, and expected cleanup is never told. The notice follows
-// the user's prompt, so Claude's session is reused and the system prompt and
-// tools stay as they were. Without the flag nothing is told, even what a
-// copy loaded with it queued. An anomaly noted after a forked query's lane
-// was released still reaches the Pi session the fork served.
+// Agent notices. With `agentNotices: true` in the user claude-bridge.json, a
+// told anomaly a session's request hits rides with that session's next
+// prompt, as one displayed message its before_agent_start handler returns; a
+// kind is told once per session, and expected cleanup is never told. The
+// notice follows the user's prompt, so Claude's session is reused and the
+// system prompt and tools stay as they were. The switch alone decides:
+// CLAUDE_BRIDGE_DEBUG only decides whether the details are in the logs, and
+// a project's claude-bridge.json cannot turn notices on. An anomaly noted
+// after a forked query's lane was released still reaches the Pi session the
+// fork served.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -21,6 +23,7 @@ import { tsImport } from "tsx/esm/api";
 
 import * as debugBridge from "../src/index.ts";
 import { setSharedSession } from "../src/bridge-state.ts";
+import { loadConfig, recordProjectTrust } from "../src/config.ts";
 import { noteAnomaly } from "../src/agent-notice.ts";
 import { ctx, isForkLane, resetStack } from "../src/query-state.ts";
 import { currentRequestLaneId, runInRequestLane } from "../src/request-lane.ts";
@@ -108,8 +111,8 @@ async function promptThrough(bridge, sessionId) {
 /** Three prompts of one Pi session through `bridge`. Turns 1 and 2 each have
  *  Claude Code call a Pi tool the stream never named (a told anomaly). Turn 1
  *  also ends at a max-tokens stop with an unfinished tool call, which the
- *  bridge prunes as expected cleanup. */
-async function threeTurns(bridge, sessionId) {
+ *  bridge prunes as expected cleanup. Requests run in `cwd` when given. */
+async function threeTurns(bridge, sessionId, { cwd } = {}) {
 	const pi = fakePi();
 	bridge.default(pi);
 	await emit(pi, "session_start", sessionId, { reason: "new" });
@@ -155,7 +158,7 @@ async function threeTurns(bridge, sessionId) {
 		const returned = await beforeAgentStart(pi, sessionId, text);
 		notices.push(returned);
 		history = [...history, { role: "user", content: text, timestamp: stamp() }, ...returned.map((message) => ({ role: "custom", ...message, timestamp: stamp() }))];
-		const events = await collect(bridge.streamClaudeAgentSdk(model, { messages: convertToLlm(history) }, { sessionId }));
+		const events = await collect(bridge.streamClaudeAgentSdk(model, { messages: convertToLlm(history) }, { sessionId, ...(cwd ? { cwd } : {}) }));
 		const done = events.find((event) => event.type === "done");
 		assert.ok(done, "the turn finishes");
 		history = [...history, done.message];
@@ -166,6 +169,8 @@ async function threeTurns(bridge, sessionId) {
 
 const logFrom = (path, start) => existsSync(path) ? readFileSync(path, "utf8").slice(start) : "";
 const sizeOf = (path) => existsSync(path) ? statSync(path).size : 0;
+/** Writes the user claude-bridge.json of the test's agent directory. */
+const userConfig = (config) => writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify(config));
 
 beforeEach(() => {
 	agentDir = mkdtempSync(join(tmpdir(), "bridge-agent-notice-"));
@@ -185,8 +190,9 @@ afterEach(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-describe("debug-mode anomaly notices", () => {
+describe("agent notices", () => {
 	it("tells a told anomaly once with the next prompt, never expected cleanup, and keeps Claude's session, system prompt and tools", { timeout: 20_000 }, async () => {
+		userConfig({ agentNotices: true });
 		const logPath = process.env.CLAUDE_BRIDGE_DEBUG_PATH;
 		const diagPath = process.env.CLAUDE_BRIDGE_DIAG_PATH;
 		const logStart = sizeOf(logPath);
@@ -199,7 +205,7 @@ describe("debug-mode anomaly notices", () => {
 		assert.equal(message.display, true, "the TUI shows it");
 		assert.deepEqual(message.details, { kinds: ["tool_handler_unmatched"] });
 		const lines = message.content.split("\n");
-		assert.equal(lines[0], "Claude bridge (debug mode): 1 anomaly since your last message.");
+		assert.equal(lines[0], "Claude bridge: 1 anomaly since your last message.");
 		assert.equal(lines[1], "- Claude Code called a Pi tool (tools/call) that the bridge could not match to any tool call in Claude's stream, so Claude got an error for it (tool_handler_unmatched; an error was shown)");
 		assert.match(lines[2], /^Details are in the bridge debug log \(.+\) and diag log \(.+\)\. If one looks like a bridge bug, tell the user\.$/);
 		assert.equal(lines.length, 3);
@@ -214,30 +220,58 @@ describe("debug-mode anomaly notices", () => {
 		assert.deepEqual(paths, ["clean-start", "reuse", "reuse"], "no rebuild on or after the turn that carries the notice");
 		assert.deepEqual(observed.map((entry) => entry.resume), [null, "notice-debug-claude", "notice-debug-claude"]);
 		const second = observed[1].promptText;
-		assert.ok(second.indexOf("second question") < second.indexOf("Claude bridge (debug mode):"), "the notice follows the user's text");
-		assert.ok(!observed[2].promptText.includes("Claude bridge (debug mode):"), "turn 3 does not resend it");
+		assert.ok(second.indexOf("second question") < second.indexOf("Claude bridge: 1 anomaly"), "the notice follows the user's text");
+		assert.ok(!observed[2].promptText.includes("Claude bridge: 1 anomaly"), "turn 3 does not resend it");
 		assert.equal(new Set(observed.map((entry) => entry.systemPrompt)).size, 1, "the system prompt is unchanged");
 		assert.equal(new Set(observed.map((entry) => entry.tools.join(","))).size, 1, "the tool list is unchanged");
 	});
 
-	it("tells nothing without CLAUDE_BRIDGE_DEBUG=1", { timeout: 20_000 }, async () => {
+	it("tells with agentNotices on and CLAUDE_BRIDGE_DEBUG unset, saying the details were not recorded", { timeout: 20_000 }, async () => {
+		userConfig({ agentNotices: true });
 		const quietBridge = await freshCopy({ debug: false });
 		try {
-			const { notices } = await threeTurns(quietBridge, "notice-quiet");
-			assert.deepEqual(notices.map((returned) => returned.length), [0, 0, 0]);
+			const { notices } = await threeTurns(quietBridge, "notice-no-logs");
+			assert.deepEqual(notices.map((returned) => returned.length), [0, 1, 0]);
+			const [message] = notices[1];
+			assert.equal(message.customType, "claude-bridge-notice");
+			assert.deepEqual(message.details, { kinds: ["tool_handler_unmatched"] });
+			assert.equal(message.content.split("\n").at(-1), "The bridge did not record details; the user can set CLAUDE_BRIDGE_DEBUG=1 to record them in the bridge logs. If one looks like a bridge bug, tell the user.");
 		} finally {
 			quietBridge.__testSetSdkQueryFactory();
 		}
 	});
 
-	it("reaches a session through any DEBUG copy it loads, and never through a copy loaded without DEBUG", { timeout: 20_000 }, async () => {
+	it("tells nothing with CLAUDE_BRIDGE_DEBUG=1 alone, and still writes the logs", { timeout: 20_000 }, async () => {
+		const logStart = sizeOf(process.env.CLAUDE_BRIDGE_DEBUG_PATH);
+		const diagStart = sizeOf(process.env.CLAUDE_BRIDGE_DIAG_PATH);
+		const { notices } = await threeTurns(debugBridge, "notice-logs-only");
+		assert.deepEqual(notices.map((returned) => returned.length), [0, 0, 0]);
+		assert.match(logFrom(process.env.CLAUDE_BRIDGE_DEBUG_PATH, logStart), /syncResult: path=clean-start/, "the debug log is written");
+		assert.ok(logFrom(process.env.CLAUDE_BRIDGE_DIAG_PATH, diagStart).includes("tool_handler_unmatched"), "the diag log is written");
+	});
+
+	it("tells nothing when only a trusted project's claude-bridge.json turns agentNotices on", { timeout: 20_000 }, async () => {
+		const project = mkdtempSync(join(agentDir, "project-"));
+		mkdirSync(join(project, ".pi"));
+		writeFileSync(join(project, ".pi", "claude-bridge.json"), JSON.stringify({ agentNotices: true, systemPrompt: { replacement: "From the project." } }));
+		recordProjectTrust({ cwd: project, isProjectTrusted: () => true });
+		assert.equal(loadConfig(project).systemPrompt?.replacement, "From the project.", "the project's file is trusted and read");
+		const { notices } = await threeTurns(debugBridge, "notice-project", { cwd: project });
+		assert.deepEqual(notices.map((returned) => returned.length), [0, 0, 0]);
+	});
+
+	it("reaches a session through any copy it loads while agentNotices is on, with or without CLAUDE_BRIDGE_DEBUG, and through none while it is off", { timeout: 20_000 }, async () => {
+		userConfig({ agentNotices: true });
 		runInRequestLane("notice-copies", () => noteAnomaly("empty_prompt"));
-		assert.deepEqual(await promptThrough(await freshCopy({ debug: false }), "notice-copies"), [], "a copy without DEBUG tells nothing");
-		const told = await promptThrough(await freshCopy({ debug: true }), "notice-copies");
-		assert.deepEqual(told.map((message) => message.details), [{ kinds: ["empty_prompt"] }], "another DEBUG copy (a /reload, a subagent) tells it");
+		userConfig({});
+		assert.deepEqual(await promptThrough(await freshCopy({ debug: true }), "notice-copies"), [], "no copy tells while the switch is off");
+		userConfig({ agentNotices: true });
+		const told = await promptThrough(await freshCopy({ debug: false }), "notice-copies");
+		assert.deepEqual(told.map((message) => message.details), [{ kinds: ["empty_prompt"] }], "another copy (a /reload, a subagent) tells it once the switch is on");
 	});
 
 	it("tells the Pi session a forked query served about a steering write that finishes after the fork was released", { timeout: 20_000 }, async () => {
+		userConfig({ agentNotices: true });
 		const owner = "notice-late-fork";
 		const pi = fakePi();
 		debugBridge.default(pi);

@@ -26,6 +26,7 @@ import { takeAgentNotice } from "../src/agent-notice.ts";
 import { resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
 import { consumeLikePi } from "./lib/pi-frame-consumer.mjs";
+import { withAgentNotices } from "./lib/agent-notices.mjs";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -194,7 +195,7 @@ describe("a truncated tool call left out of the error message is owed no result"
 });
 
 describe("the user is told what follows a stream idle timeout", () => {
-	it("an error: retryable by Pi's auto-retry, which announces its own retries", { timeout: 10_000 }, async () => {
+	it("an error: retryable by Pi's auto-retry, which announces its own retries", { timeout: 10_000 }, () => withAgentNotices(async () => {
 		process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "200ms";
 		installFakeClaudeCode([], { stall: true });
 		const run = await consumeLikePi(streamClaudeAgentSdk(model, context(), { sessionId: "frames-idle-notice" }));
@@ -204,5 +205,5 @@ describe("the user is told what follows a stream idle timeout", () => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.deepEqual(notifications, [], "no bridge warning: Pi shows the turn's error");
 		assert.ok(takeAgentNotice("frames-idle-notice")?.message.details.kinds.includes("stream_idle_timeout"), "the agent notice tells the agent");
-	});
+	}));
 });

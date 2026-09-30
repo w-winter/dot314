@@ -27,6 +27,7 @@ import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAg
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { takeAgentNotice } from "../src/agent-notice.ts";
 import { resetStack } from "../src/query-state.ts";
+import { withAgentNotices } from "./lib/agent-notices.mjs";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -261,7 +262,7 @@ function installGiveUpAnywayClaudeCode(observed) {
 }
 
 describe("if Claude Code gives up on a Pi tool call anyway", () => {
-	it("tells the user, and a follow-up call issued while Pi is busy fails explicitly", async () => {
+	it("tells the user, and a follow-up call issued while Pi is busy fails explicitly", () => withAgentNotices(async () => {
 		const notices = [];
 		const entries = [];
 		__testSetBridgeIntegrityState({ ui: { notify: (message) => notices.push(message) } });
@@ -307,5 +308,5 @@ describe("if Claude Code gives up on a Pi tool call anyway", () => {
 		assert.match(observed.secondResult.content[0].text, /never forwarded to Pi/);
 		assert.ok(!notices.some((notice) => /never reached Pi/.test(notice)), `no TUI warning for the stranded call: ${JSON.stringify(notices)}`);
 		assert.ok(takeAgentNotice(sessionId)?.message.details.kinds.includes("tool_handlers_stranded"), "the agent notice tells the agent");
-	});
+	}));
 });

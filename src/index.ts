@@ -1907,7 +1907,7 @@ export default function (pi: ExtensionAPI) {
 		deleteSharedSessionLane(sessionId);
 		deleteQueryLane(sessionId);
 	});
-	// With CLAUDE_BRIDGE_DEBUG=1, the anomalies this session's requests hit
+	// With agentNotices on, the anomalies this session's requests hit
 	// since its last prompt, as one message after the user's prompt
 	// (agent-notice.ts).
 	pi.on("before_agent_start", (_event, ctx) => takeAgentNotice(ctx.sessionManager.getSessionId()));

@@ -7,19 +7,18 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 ### Highlights
 
 - **No automatic bug reports.** The incident system is gone. Errors that need you still show in the TUI.
-- **Debug mode:**
-  - It now tells the agent about bridge anomalies.
-  - Its log no longer carries tool output or your text.
+- **Agent notices:** with `agentNotices` on, the agent is told about bridge anomalies.
+- **Debug log:** it no longer carries tool output or your text.
 - **Dropped attempts:** a tool call from a response attempt that Claude Code dropped never reaches Pi.
 - **Third-party apps:** the bridge no longer refuses a request over its system prompt. When Anthropic rejects one as a third-party app, the error now says how to fix it.
 
 ### Added
 
-- **Debug-mode notice:** with `CLAUDE_BRIDGE_DEBUG=1`, the agent now hears about bridge anomalies it would otherwise never see.
+- **Agent notices:** with `agentNotices: true` in the user `claude-bridge.json`, the agent now hears about bridge anomalies it would otherwise never see.
   - That means an error the bridge wrote, or a problem the bridge recovered from on its own, such as a dropped mid-turn message or a tool call left without a result.
-  - Each kind is told once per Pi session. The notice goes with your next prompt and is shown in the TUI. Repeats go to the debug log only.
+  - Each kind is told once per Pi session. The notice goes with your next prompt as a message in the conversation, and is shown in the TUI. Repeats are not told again.
   - Normal cleanup is not told. That covers a cancelled request, a max-tokens stop and a restart on compacted history. Neither are errors reported by the API or Claude Code.
-  - Without the flag, nothing is told.
+  - It is off by default, and a project's `claude-bridge.json` cannot turn it on. `CLAUDE_BRIDGE_DEBUG=1` does not turn it on or off: it keeps the details in the bridge logs, and the notice says where they are, or that they were not recorded.
   - The bridge never sends a message or starts a turn of its own. (`13ff322`, `05a6999`, `13480a9`)
 - **Versions in the debug log:** it now records what wrote it.
   - When the bridge loads, one line gives the bridge commit, the Pi version and the Node version.
@@ -29,7 +28,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 - **Three TUI warnings removed:** they needed nothing from you.
   - The three were parked early tool results, the stream idle timeout (Pi already shows the turn's error), and tool calls that never reached Pi.
-  - In debug mode, the agent is told about each one instead. (`45bd6c7`)
+  - With agent notices on, the agent is told about each one instead. (`45bd6c7`)
 
 ### Removed
 
@@ -40,7 +39,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - the `incidents.repo` setting;
   - GitHub issues that the agent filed.
 
-  Reporting a bug is your call, not the bridge's. Errors and warnings that need you still show in the TUI, and debug mode adds local logs plus the notice to the agent (see Added). An `incidents` key left in `claude-bridge.json` is ignored. (`89f090d`)
+  Reporting a bug is your call, not the bridge's. Errors and warnings that need you still show in the TUI, debug mode keeps local logs, and agent notices tell the agent (see Added). An `incidents` key left in `claude-bridge.json` is ignored. (`89f090d`)
 - **The third-party-app refusal**, added 2026-09-29.
   - **What it did:** the bridge refused any request whose system prompt carried both clauses of Pi's documentation line, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`, before Claude Code started. In debug mode, the agent was told about each refusal.
   - **Why it is gone:** some setups send such requests on purpose and make them acceptable their own way, and for them every refusal was a false block.
