@@ -18,7 +18,9 @@ import { convertToLlm as bundledConvertToLlm } from "@earendil-works/pi-coding-a
 import { tsImport } from "tsx/esm/api";
 
 import * as debugBridge from "../src/index.ts";
+import { noteAnomaly } from "../src/debug-notice.ts";
 import { resetStack } from "../src/query-state.ts";
+import { runInRequestLane } from "../src/request-lane.ts";
 
 // Pi's own convertToLlm when installed: the function that turns the notice
 // into what the provider receives.
@@ -80,6 +82,24 @@ async function collect(stream) {
 	const events = [];
 	for await (const event of stream) events.push(event);
 	return events;
+}
+
+/** A fresh copy of every bridge module, as Pi loads one on /reload or for an
+ *  in-process subagent, evaluated with CLAUDE_BRIDGE_DEBUG on or off. */
+async function freshCopy({ debug }) {
+	if (!debug) delete process.env.CLAUDE_BRIDGE_DEBUG;
+	try {
+		return await tsImport("../src/index.ts", import.meta.url);
+	} finally {
+		process.env.CLAUDE_BRIDGE_DEBUG = "1";
+	}
+}
+
+/** A Pi session's before_agent_start through its own loaded copy `bridge`. */
+async function promptThrough(bridge, sessionId) {
+	const pi = fakePi();
+	bridge.default(pi);
+	return beforeAgentStart(pi, sessionId, "next question");
 }
 
 /** Three prompts of one Pi session through `bridge`. Turns 1 and 2 each have
@@ -198,19 +218,19 @@ describe("debug-mode anomaly notices", () => {
 	});
 
 	it("tells nothing without CLAUDE_BRIDGE_DEBUG=1", { timeout: 20_000 }, async () => {
-		// A fresh copy of every bridge module, evaluated with the flag unset.
-		delete process.env.CLAUDE_BRIDGE_DEBUG;
-		let quietBridge;
-		try {
-			quietBridge = await tsImport("../src/index.ts", import.meta.url);
-		} finally {
-			process.env.CLAUDE_BRIDGE_DEBUG = "1";
-		}
+		const quietBridge = await freshCopy({ debug: false });
 		try {
 			const { notices } = await threeTurns(quietBridge, "notice-quiet");
 			assert.deepEqual(notices.map((returned) => returned.length), [0, 0, 0]);
 		} finally {
 			quietBridge.__testSetSdkQueryFactory();
 		}
+	});
+
+	it("reaches a session through any DEBUG copy it loads, and never through a copy loaded without DEBUG", { timeout: 20_000 }, async () => {
+		runInRequestLane("notice-copies", () => noteAnomaly("empty_prompt"));
+		assert.deepEqual(await promptThrough(await freshCopy({ debug: false }), "notice-copies"), [], "a copy without DEBUG tells nothing");
+		const told = await promptThrough(await freshCopy({ debug: true }), "notice-copies");
+		assert.deepEqual(told.map((message) => message.details), [{ kinds: ["empty_prompt"] }], "another DEBUG copy (a /reload, a subagent) tells it");
 	});
 });

@@ -131,8 +131,11 @@ function noticeText(kinds: AnomalyKind[]): string {
 }
 
 /** The before_agent_start result for session `sessionId`: one message with
- *  every kind pending for it, or nothing. Takes them: each is told once. */
+ *  every kind pending for it, or nothing. Takes them: each is told once. A
+ *  copy loaded without DEBUG tells nothing, even what a DEBUG copy queued in
+ *  the shared store. */
 export function takeDebugNotice(sessionId: string): BeforeAgentStartEventResult | undefined {
+	if (!DEBUG) return undefined;
 	const notices = store().get(sessionId);
 	if (!notices || notices.pending.length === 0) return undefined;
 	const kinds = sessionNotices(sessionId).pending.splice(0);
