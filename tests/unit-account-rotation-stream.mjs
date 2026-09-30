@@ -550,6 +550,36 @@ describe("managed account stream rotation", () => {
 		assert.equal(events.some((event) => event.type === "error"), false);
 	});
 
+	it("surfaces Anthropic's third-party-app rejection on the first profile instead of rotating", async () => {
+		// The SDK 0.3.284 sequence: Claude Code's synthetic error message, a
+		// success-labelled error result, then the iterator throws with its text.
+		const rejection = "API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.";
+		const observed = observedState();
+		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			calls += 1;
+			return calls === 1
+				? fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "session-a" },
+					{ type: "assistant", error: "unknown", message: { model: "<synthetic>", content: [{ type: "text", text: rejection }], usage: { input_tokens: 0, output_tokens: 0 } } },
+					{ type: "result", subtype: "success", is_error: true, api_error_status: 400, result: rejection },
+					new Error(`Claude Code returned an error result: ${rejection}`),
+				], "a", observed)
+				: fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "session-b" },
+					{ type: "result", subtype: "success", result: "ok-from-b" },
+				], "b", observed);
+		});
+
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "third-party-rejection" }));
+		assert.equal(calls, 1, "every profile rejects the same request");
+		assert.deepEqual(observed.failures, []);
+		const errors = events.filter((event) => event.type === "error");
+		assert.equal(errors.length, 1);
+		assert.ok(errors[0].error.errorMessage.includes(rejection), errors[0].error.errorMessage);
+	});
+
 	it("never replays after visible text has committed", async () => {
 		const observed = observedState();
 		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);

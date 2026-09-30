@@ -122,6 +122,9 @@ describe("classifyClaudeFailure", () => {
 		["Too many requests", "rate-limit"],
 		["Extra usage is disabled for this account", "rate-limit"],
 		["overage not provisioned", "rate-limit"],
+		// Anthropic's third-party-app rejection follows the system prompt, not
+		// the account.
+		["API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.", undefined],
 		["You have exceeded your usage quota", "rate-limit"],
 		["API quota exceeded for requests", "rate-limit"],
 		["status 429 Too Many Requests", "rate-limit"],

@@ -43,6 +43,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Fixed
 
+- **Anthropic's third-party-app rejection rotated accounts.**
+  - **Before:** its text mentions extra usage, so the bridge took it for a rate limit. With managed account profiles, the request moved to the next profile, which rejected it the same way, and each profile it tried had a rate limit recorded against it.
+  - **Now:** the request ends on the first profile with Anthropic's error. The rejection follows the system prompt, not the account.
 - **Pi could run a call from a dropped attempt.**
   - **Before:** Pi could run a tool call from a response attempt that Claude Code had thrown away. When Claude Code retries a response, it aborts the attempt's tools and never uses their results. The bridge, though, kept the attempt's finished calls and waited for a separate cancel message, which can arrive after the retry has finished.
   - **Now:** a dropped attempt's calls are withdrawn at once, and their waiting handlers get an error. (`6120d60`, `e234203`, `0e6b9cf`, `f897b13`, `9efca58`)

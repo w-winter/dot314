@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { debug } from "./debug.js";
 import { resetTimestampMs } from "./rate-limit.js";
+import { isThirdPartyAppRejection } from "./third-party-rejection.js";
 
 export const CLAUDE_ACCOUNT_ROUTER_SYMBOL = Symbol.for("kendex.pi.claude-account-router.v1");
 export const CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL = Symbol.for("kendex.pi.claude-bridge.account-host.v1");
@@ -273,6 +274,9 @@ export function classifyClaudeFailure(value: unknown): ClaudeAccountFailureKind 
 		if (typeof detail === "string" || typeof detail === "number") return String(detail);
 		try { return JSON.stringify(detail ?? ""); } catch { return String(detail); }
 	}).join(" ");
+	// Anthropic's third-party-app rejection depends on the system prompt, not
+	// the account: every profile rejects the same request.
+	if (isThirdPartyAppRejection(text)) return undefined;
 	const normalized = text.toLowerCase().replace(/[_-]+/g, " ");
 	// Structured status fields are unambiguous — classify them before prose.
 	const statusKind = numericStatus !== undefined ? classifyStatusCode(numericStatus) : undefined;
