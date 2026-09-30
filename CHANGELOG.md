@@ -1,31 +1,19 @@
 # Changelog
 
-Notable changes to this fork, newest first. Each entry describes what was wrong or missing, and what the bridge does now. Entries written when this file was created list the commits behind them.
+Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Entries written when this file was created list the commits behind them.
 
-## [Unreleased]
+## 2026-09-30
 
 ### Highlights
 
-- **Tool calls:**
-  - Each MCP call is matched by the id Claude Code tags it with, so calls can no longer get each other's results.
-  - A call from a response attempt that Claude Code dropped never reaches Pi.
-- **Messages sent while a Pi tool runs:** they reach Claude before that tool's result, so they change Claude's next step instead of arriving after the whole reply.
-- **Keeping Claude's session in sync:** before reusing Claude's session, the bridge checks it against Pi's history, and rebuilds it when Pi rewrote something Claude already holds.
-- **Tools:** every Pi tool reaches Claude under a name it can call, with its real JSON Schema. That includes tools an extension turns on mid-turn.
-- **Third-party apps:** a request that Anthropic would treat as a third-party app is refused before it is sent. Set `systemPrompt.replacement` to use Pi's main prompt.
-- **Loading:** Pi loads the bridge from its TypeScript source, and `/reload` picks up changes.
-- **Debug mode:** the agent is told about bridge anomalies, and the debug log never carries tool output or your text.
+- **No automatic bug reports.** The incident system is gone. Errors that need you still show in the TUI.
+- **Debug mode:**
+  - It now tells the agent about bridge anomalies.
+  - Its log no longer carries tool output or your text.
+- **Dropped attempts:** a tool call from a response attempt that Claude Code dropped never reaches Pi.
 
 ### Added
 
-- **Claude Sonnet 5.5** (`pi-claude/claude-sonnet-5-5`) is now in Pi's model menu.
-  - Claude Code 2.1.284 serves it, but Pi's registry does not list it, so the bridge registers it with its own metadata: 1M context, 128K output, text and images, and xhigh and max effort.
-  - Claude Code rejects disabled thinking for it, so Pi hides "off".
-  - When it refuses, Claude Code uses its own fallback model. (`9b251d8`)
-- **Claude Opus 5.5** (`pi-claude/claude-opus-5-5`) is now in Pi's model menu. It needs Claude Code 2.1.280 or later. (`bfdcc6a`)
-- **Thinking tokens:** Pi now sees how many output tokens Claude spent thinking, in `usage.reasoning`.
-  - Before, Claude Code reported them, but the bridge mapped only the input, output and cache counts.
-  - They are not added to `totalTokens` or cost a second time, because the output count already includes them. (`032e449`)
 - **Debug-mode notice:** with `CLAUDE_BRIDGE_DEBUG=1`, the agent now hears about bridge anomalies it would otherwise never see.
   - That means an error the bridge wrote, or a problem the bridge recovered from on its own, such as a dropped mid-turn message or a tool call left without a result.
   - Each kind is told once per Pi session. The notice goes with your next prompt and is shown in the TUI. Repeats go to the debug log only.
@@ -38,24 +26,9 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
 
 ### Changed
 
-- **Needs `systemPrompt.replacement`.**
-  - **What Anthropic does:** a subscription request is treated as a third-party app when its system prompt carries both clauses of Pi's documentation line: `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Such a request draws from Extra Usage instead of plan limits, and fails with HTTP 400 when the account has no Extra Usage credit.
-  - **Who sends both clauses:** Pi's default main prompt, pi-subagents children in append mode, and extension calls that copy Pi's prompt.
-  - **What the bridge does:** it refuses such a request before it syncs the session or starts Claude Code. You get one Pi error that names the clauses and the fix, and Pi neither retries nor compacts on it.
-  - **The fix:** a replacement drops Pi's documentation section.
-  - Only the two exact clauses count. A live test showed that either clause alone passes Anthropic's check, and so do both paths in other wording. (`4c1fc12`, `4748819`)
-- **Loading:** Pi now loads `src/index.ts` directly instead of a committed esbuild bundle, so there is nothing to rebuild and `/reload` picks up an edit. (`4e044a6`)
-- **Anthropic environment variables:** Claude Code children no longer inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
-  - Before, an exported one silently routed subscription turns through another gateway or credential.
-  - To use a gateway on purpose, set `provider.inheritAnthropicEnv: true` in the user `claude-bridge.json`. A project config cannot set it.
-  - A stripped key no longer makes Pi report the provider as connected. (`f217e0c`)
-- **Log growth:** the debug and diag logs now rotate at 10 MiB and keep three old files. Claude Code CLI logs older than seven days, or beyond the newest 100, are pruned. Before, all three grew for as long as debugging stayed on. (`e9f1a1a`)
 - **Three TUI warnings removed:** they needed nothing from you.
   - The three were parked early tool results, the stream idle timeout (Pi already shows the turn's error), and tool calls that never reached Pi.
   - In debug mode, the agent is told about each one instead. (`45bd6c7`)
-- **Claude Agent SDK:** updated from 0.3.280 to 0.3.284. The bridge needed no change for it. (`a33a828`)
-- **CI:** the typecheck, an export guard and the unit tests now run on every push and pull request. (`a425a42`)
-- **Integration tests:** they now run pi-intercom, and extension side calls made while a tool runs, through real Pi and Claude Code. (`4fb2c33`, `afe5ef8`)
 
 ### Removed
 
@@ -70,7 +43,73 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
 
 ### Fixed
 
-#### Tool calls
+- **Pi could run a call from a dropped attempt.**
+  - **Before:** Pi could run a tool call from a response attempt that Claude Code had thrown away. When Claude Code retries a response, it aborts the attempt's tools and never uses their results. The bridge, though, kept the attempt's finished calls and waited for a separate cancel message, which can arrive after the retry has finished.
+  - **Now:** a dropped attempt's calls are withdrawn at once, and their waiting handlers get an error. (`6120d60`, `e234203`, `0e6b9cf`, `f897b13`, `9efca58`)
+- **A rebuild could send a request the API rejects.**
+  - **Before, two ways:**
+    - It wrote redacted thinking as ordinary thinking, with a signature that didn't match.
+    - It imported a modified copy of a latest turn whose thinking was cut off mid-stream.
+  - **Now:**
+    - Redacted thinking is replayed as `redacted_thinking`.
+    - A latest turn that cannot be replayed exactly is imported as a note of what it said and did: its text and calls in order, then the results in the order they came back, with images carried. For a while that turn was dropped instead, and then Claude didn't know it had, for example, written a file. (`71ea6af`, `00b740d`, `3d3c49c`, `e21ea59`, `91f562d`)
+- **The debug log carried payloads.**
+  - **Before:** with `CLAUDE_BRIDGE_DEBUG=1`, the debug log carried:
+    - the start of every tool result, prompt and mid-turn message;
+    - your replacement prompt;
+    - tool argument names;
+    - the text that JSON parse errors quote.
+  - **Now:** it logs only the shape: ids, block counts and types, and lengths. (`fb42799`, `159525c`, `27c296e`, `dc1c045`)
+- **Two messages pointed elsewhere.**
+  - **Before:** the session-file warning asked you to file an issue on another project's page, and the old-Pi error said to pin another package.
+  - **Now:** the warning points at the bridge's diag log, and the error says the bridge needs Pi 0.81 or later. (`384b7a0`)
+
+## 2026-09-29
+
+### Highlights
+
+- **Third-party apps:** a request that Anthropic would treat as a third-party app is refused before it is sent. Set `systemPrompt.replacement` to use Pi's main prompt.
+
+### Changed
+
+- **Needs `systemPrompt.replacement`.**
+  - **What Anthropic does:** a subscription request is treated as a third-party app when its system prompt carries both clauses of Pi's documentation line: `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Such a request draws from Extra Usage instead of plan limits, and fails with HTTP 400 when the account has no Extra Usage credit.
+  - **Who sends both clauses:** Pi's default main prompt, pi-subagents children in append mode, and extension calls that copy Pi's prompt.
+  - **What the bridge does:** it refuses such a request before it syncs the session or starts Claude Code. You get one Pi error that names the clauses and the fix, and Pi neither retries nor compacts on it.
+  - **The fix:** a replacement drops Pi's documentation section.
+  - Only the two exact clauses count. A live test showed that either clause alone passes Anthropic's check, and so do both paths in other wording. (`4c1fc12`, `4748819`)
+- **Claude Agent SDK:** updated from 0.3.280 to 0.3.284. The bridge needed no change for it. (`a33a828`)
+
+### Fixed
+
+- **A message cut off mid-stream ended the run.**
+  - **Before:** when every tool call in a message was cut off mid-stream, Pi got a tool-use turn with no call and stopped the run. Meanwhile, Claude Code issued the call again under a new id, with no Pi turn left to join.
+  - **Now:** Pi's turn stays open for the re-issued call. (`72b96fa`)
+- **A rebuilt session resumed as an interrupted turn.**
+  - **Before:** Claude Code resumed a rebuilt session as an interrupted turn, and injected "Continue from where you left off." before your prompt.
+  - **Now:** it no longer does. (`786afeb`)
+- **Compaction during a tool call.**
+  - **Now:** when Pi compacts while Claude waits on a Pi tool, the query restarts on Pi's new history, with the completed tool results. Draining the replaced query counts as normal cleanup, not as an error. (`bcb455c`, `ff53882`, `ea0553d`)
+- **Each query read the whole Claude Code binary.**
+  - **Before:** each fresh query read the whole binary, over 200 MB and 20–30 ms, just to check its first 16 bytes. A binary over 2 GiB failed the check.
+  - **Now:** the check reads only those 16 bytes. (`9a21e51`)
+
+## 2026-09-28
+
+### Highlights
+
+- **Tool calls:** each MCP call is matched by the id Claude Code tags it with, so calls can no longer get each other's results.
+- **Messages sent while a Pi tool runs:** they reach Claude before that tool's result, so they change Claude's next step instead of arriving after the whole reply.
+- **Claude Sonnet 5.5** is in Pi's model menu.
+
+### Added
+
+- **Claude Sonnet 5.5** (`pi-claude/claude-sonnet-5-5`) is now in Pi's model menu.
+  - Claude Code 2.1.284 serves it, but Pi's registry does not list it, so the bridge registers it with its own metadata: 1M context, 128K output, text and images, and xhigh and max effort.
+  - Claude Code rejects disabled thinking for it, so Pi hides "off".
+  - When it refuses, Claude Code uses its own fallback model. (`9b251d8`)
+
+### Fixed
 
 - **A call could get another call's result.**
   - **Before:** a call could get another call's result, or an internal "no matching tool_call id" error while Pi still ran the tool. Claude Code can run an MCP call before the bridge has read the tool_use it belongs to, and the bridge matched calls by name and arguments.
@@ -78,9 +117,54 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
     - A duplicate call joins the first one's wait.
     - A call for an answered or dead id gets an explicit error.
     - Untagged calls still match by name and arguments. (`2c4e74c`, `96684e7`, `b50a7ef`)
-- **Pi could run a call from a dropped attempt.**
-  - **Before:** Pi could run a tool call from a response attempt that Claude Code had thrown away. When Claude Code retries a response, it aborts the attempt's tools and never uses their results. The bridge, though, kept the attempt's finished calls and waited for a separate cancel message, which can arrive after the retry has finished.
-  - **Now:** a dropped attempt's calls are withdrawn at once, and their waiting handlers get an error. (`6120d60`, `e234203`, `0e6b9cf`, `f897b13`, `9efca58`)
+- **A mid-turn message arrived too late.**
+  - **Before:** a message you sent while a Pi tool ran reached Claude only after the whole query ended, so Claude finished the original instruction first.
+  - **Now:** it is written to the running query before the tool results, so Claude's next response follows it.
+  - It is sent with priority "next", because "now" makes Claude Code discard the pending tool's result. (`9233eed`)
+- **A failure after the tool turn went unreported.**
+  - **Before:** when Claude Code failed after its tool turn reached Pi, Pi ended the turn as if Claude had finished. For example, the process died, or a usage limit was hit while Pi ran the tool.
+  - **Now:** the failure is reported once, with the tool-result callback that follows, including when a steer rides along with it. (`23d460d`, `99c8a0f`)
+- **A refusal on Opus 5.5 failed the request.**
+  - **Before:** when Opus 5.5's classifier declined a turn, the request failed instead of continuing on Opus 4.8.
+  - **Now:** it continues on Opus 4.8. Every model switch Claude Code makes after a refusal is announced, not only the one the bridge configures. (`88ef4cb`, `7223a0a`)
+- **Thinking "off" didn't turn thinking off.**
+  - **Before:** Pi's "off" thinking level still let Claude think on every turn.
+  - **Now:** "off" sends Claude Code disabled thinking.
+    - Fable 5.1, Opus 5.5 and Sonnet 5.5 reject disabled thinking, so Pi hides "off" for them.
+    - A level that a model's `thinkingLevelMap` marks as null sends no effort. (`7920ebf`, `30090a3`, `dca0ac2`)
+- **The replacement cut too much.**
+  - **Before:** under a replacement, a session's own base prompt was cut away, so pi-subagents children in replace mode never saw their instructions. That base prompt comes from `SYSTEM.md`, `--system-prompt`, or a pi-subagents agent in replace mode. Pi's `<rules>` section, and the sections Pi placed before its tools, were lost too.
+  - **Now:** the replacement swaps out only Pi's default preamble, tools and docs. Fixes [#1](https://github.com/nicobailon/pi-claude-bridge/issues/1). (`ae0c56e`, `21bfa66`, `1544ff8`)
+
+## 2026-09-27
+
+### Highlights
+
+- **Keeping Claude's session in sync:** before reusing Claude's session, the bridge checks it against Pi's history, and rebuilds it when Pi rewrote something Claude already holds.
+- **Tools:** every Pi tool reaches Claude under a name it can call, with its real JSON Schema. That includes tools an extension turns on mid-turn.
+- **Loading:** Pi loads the bridge from its TypeScript source, and `/reload` picks up changes.
+
+### Added
+
+- **Thinking tokens:** Pi now sees how many output tokens Claude spent thinking, in `usage.reasoning`.
+  - Before, Claude Code reported them, but the bridge mapped only the input, output and cache counts.
+  - They are not added to `totalTokens` or cost a second time, because the output count already includes them. (`032e449`)
+
+### Changed
+
+- **Loading:** Pi now loads `src/index.ts` directly instead of a committed esbuild bundle, so there is nothing to rebuild and `/reload` picks up an edit. (`4e044a6`)
+- **Anthropic environment variables:** Claude Code children no longer inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+  - Before, an exported one silently routed subscription turns through another gateway or credential.
+  - To use a gateway on purpose, set `provider.inheritAnthropicEnv: true` in the user `claude-bridge.json`. A project config cannot set it.
+  - A stripped key no longer makes Pi report the provider as connected. (`f217e0c`)
+- **Log growth:** the debug and diag logs now rotate at 10 MiB and keep three old files. Claude Code CLI logs older than seven days, or beyond the newest 100, are pruned. Before, all three grew for as long as debugging stayed on. (`e9f1a1a`)
+- **CI:** the typecheck, an export guard and the unit tests now run on every push and pull request. (`a425a42`)
+- **Integration tests:** they now run pi-intercom, and extension side calls made while a tool runs, through real Pi and Claude Code. (`4fb2c33`, `afe5ef8`)
+
+### Fixed
+
+#### Tool calls
+
 - **A stalled response lost its retry.**
   - **Before:** when a streamed response stalled, Pi got the truncated attempt ("Readi") and never the retry. If the dropped attempt had started a tool call, Pi could run it with `{}` arguments.
   - **Now:** the retry replaces the dropped attempt. Pi's stream stays append-only, and the message Pi keeps leaves the dropped blocks out. (`b0c5149`)
@@ -102,9 +186,6 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
 - **A truncated tool call could run.**
   - **Before:** a truncated tool call could reach Pi and run, at the end of a query, on abort, and on every error path. Pi runs the tool calls in any final message.
   - **Now:** unfinished calls are dropped from the message Pi keeps, and they are no longer reported as missing results afterwards. (`9457e0c`, `204f1b5`, `e04b880`)
-- **A message cut off mid-stream ended the run.**
-  - **Before:** when every tool call in a message was cut off mid-stream, Pi got a tool-use turn with no call and stopped the run. Meanwhile, Claude Code issued the call again under a new id, with no Pi turn left to join.
-  - **Now:** Pi's turn stays open for the re-issued call. (`72b96fa`)
 - **A late sibling call went to a used turn.**
   - **Before:** a repeated SDK message could reveal a sibling tool call late. It was appended to a turn Pi had already consumed.
   - **Now:** it runs in the next turn. (`72faa4f`)
@@ -114,10 +195,6 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
 
 #### Mid-turn messages and failures
 
-- **A mid-turn message arrived too late.**
-  - **Before:** a message you sent while a Pi tool ran reached Claude only after the whole query ended, so Claude finished the original instruction first.
-  - **Now:** it is written to the running query before the tool results, so Claude's next response follows it.
-  - It is sent with priority "next", because "now" makes Claude Code discard the pending tool's result. (`9233eed`)
 - **A mid-query message could be lost.**
   - **Before:** a message sent mid-query, such as a steer or an intercom message, could be recorded by Pi and never reach Claude, when anything followed it in the context.
   - **Now:** every user message gets an owner before the cursor passes it. Either it is queued for Claude, or a rebuild re-imports it. (`989095f`)
@@ -131,9 +208,6 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
     - A follow-up's reply no longer replaces the reply before it in the same Pi message; both stay.
     - A follow-up that repeats an earlier reply, such as "OK" twice, is no longer dropped as a duplicate.
     - Esc during a follow-up now interrupts Claude, including when a query spans two Pi runs. (`3190fc9`, `566a828`, `d79094d`)
-- **A failure after the tool turn went unreported.**
-  - **Before:** when Claude Code failed after its tool turn reached Pi, Pi ended the turn as if Claude had finished. For example, the process died, or a usage limit was hit while Pi ran the tool.
-  - **Now:** the failure is reported once, with the tool-result callback that follows, including when a steer rides along with it. (`23d460d`, `99c8a0f`)
 - **A silent child could hang the turn.**
   - **Before:** a Claude Code child that went silent after its first output could hang the Pi turn forever, and an abort could wait forever on a child that ignored it.
   - **Now:**
@@ -141,26 +215,11 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
     - Abort teardown finishes within 5 seconds.
     - After an idle timeout, the message says what actually happens next instead of promising a retry. (`d16333a`, `1ffff5d`)
 
-#### Keeping Claude's session in sync with Pi
+#### Sessions and other requests
 
 - **Claude kept answering from an old copy.**
   - **Before:** when Pi rewrote an earlier message, through a `context_edit` or an extension transform, Claude kept answering from its old copy for the rest of the session. Reuse only compared message counts.
   - **Now:** the bridge stores a digest of the history Claude holds, and rebuilds Claude's session when Pi's history no longer matches. The digest ignores tool-result bodies, so extensions that prune old results do not cause rebuilds. (`7fc89a5`, `c9e6d23`, `53dea3d`)
-- **A rebuild could send a request the API rejects.**
-  - **Before, two ways:**
-    - It wrote redacted thinking as ordinary thinking, with a signature that didn't match.
-    - It imported a modified copy of a latest turn whose thinking was cut off mid-stream.
-  - **Now:**
-    - Redacted thinking is replayed as `redacted_thinking`.
-    - A latest turn that cannot be replayed exactly is imported as a note of what it said and did: its text and calls in order, then the results in the order they came back, with images carried. For a while that turn was dropped instead, and then Claude didn't know it had, for example, written a file. (`71ea6af`, `00b740d`, `3d3c49c`, `e21ea59`, `91f562d`)
-- **A rebuilt session resumed as an interrupted turn.**
-  - **Before:** Claude Code resumed a rebuilt session as an interrupted turn, and injected "Continue from where you left off." before your prompt.
-  - **Now:** it no longer does. (`786afeb`)
-- **Compaction during a tool call.**
-  - **Now:** when Pi compacts while Claude waits on a Pi tool, the query restarts on Pi's new history, with the completed tool results. Draining the replaced query counts as normal cleanup, not as an error. (`bcb455c`, `ff53882`, `ea0553d`)
-
-#### Other requests and lanes
-
 - **A side call took over the main query.**
   - **Before:** an extension's side call through `ctx.modelRegistry`, made while the main turn waited on a tool, took over the main query. Examples are a reviewer, a summary, or MCP sampling. The side call never got an answer, the main query lost its tools, and its session was rebuilt twice.
   - **Now:** a request joins a running query only if it carries a tool call that the query gave Pi. Anything else runs as its own query.
@@ -171,40 +230,22 @@ Notable changes to this fork, newest first. Each entry describes what was wrong 
 - **pi-subagents marked successful children as failed.**
   - **Before:** the bridge replaced the message's `model` with the dated id Claude Code reported.
   - **Now:** `model` stays the Pi model id, and the model that served the reply goes into `responseModel` when it differs. (`d8e7311`)
-- **Pi 0.86 transcript contexts** are supported. (`b0a5d64`)
-
-#### Models and thinking
-
-- **A refusal on Opus 5.5 failed the request.**
-  - **Before:** when Opus 5.5's classifier declined a turn, the request failed instead of continuing on Opus 4.8.
-  - **Now:** it continues on Opus 4.8. Every model switch Claude Code makes after a refusal is announced, not only the one the bridge configures. (`88ef4cb`, `7223a0a`)
-- **Thinking "off" didn't turn thinking off.**
-  - **Before:** Pi's "off" thinking level still let Claude think on every turn.
-  - **Now:** "off" sends Claude Code disabled thinking.
-    - Fable 5.1, Opus 5.5 and Sonnet 5.5 reject disabled thinking, so Pi hides "off" for them.
-    - A level that a model's `thinkingLevelMap` marks as null sends no effort. (`7920ebf`, `30090a3`, `dca0ac2`)
-
-#### System prompt
-
 - **The replacement hit every system prompt.**
   - **Before:** `systemPrompt.replacement` applied to every system prompt. pi-prune's summarizer and Pi's own compaction summaries got the replacement instead of their instructions.
   - **Now:** it applies only to Pi's main agent prompt. (`9f05ea1`)
-- **The replacement cut too much.**
-  - **Before:** under a replacement, a session's own base prompt was cut away, so pi-subagents children in replace mode never saw their instructions. That base prompt comes from `SYSTEM.md`, `--system-prompt`, or a pi-subagents agent in replace mode. Pi's `<rules>` section, and the sections Pi placed before its tools, were lost too.
-  - **Now:** the replacement swaps out only Pi's default preamble, tools and docs. Fixes [#1](https://github.com/nicobailon/pi-claude-bridge/issues/1). (`ae0c56e`, `21bfa66`, `1544ff8`)
 
-#### Logs and warnings
+## 2026-09-22
 
-- **The debug log carried payloads.**
-  - **Before:** with `CLAUDE_BRIDGE_DEBUG=1`, the debug log carried:
-    - the start of every tool result, prompt and mid-turn message;
-    - your replacement prompt;
-    - tool argument names;
-    - the text that JSON parse errors quote.
-  - **Now:** it logs only the shape: ids, block counts and types, and lengths. (`fb42799`, `159525c`, `27c296e`, `dc1c045`)
-- **Two messages pointed elsewhere.**
-  - **Before:** the session-file warning asked you to file an issue on another project's page, and the old-Pi error said to pin another package.
-  - **Now:** the warning points at the bridge's diag log, and the error says the bridge needs Pi 0.81 or later. (`384b7a0`)
-- **Each query read the whole Claude Code binary.**
-  - **Before:** each fresh query read the whole binary, over 200 MB and 20–30 ms, just to check its first 16 bytes. A binary over 2 GiB failed the check.
-  - **Now:** the check reads only those 16 bytes. (`9a21e51`)
+### Added
+
+- **Claude Opus 5.5** (`pi-claude/claude-opus-5-5`) is now in Pi's model menu. It needs Claude Code 2.1.280 or later. (`bfdcc6a`)
+
+## 2026-09-21
+
+### Fixed
+
+- **Pi 0.86 transcript contexts** are supported. (`b0a5d64`)
+
+## 2026-09-12
+
+- The fork starts. (`bbb8146`)
