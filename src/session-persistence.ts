@@ -6,7 +6,7 @@ import { resolve as pathResolve } from "path";
 import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
-import { DEBUG, DEBUG_LOG_PATH, debug } from "./debug.js";
+import { debug, diagGuidance } from "./debug.js";
 import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
 import { reportDiag, withIncident } from "./incidents.js";
 import { ctx } from "./query-state.js";
@@ -462,8 +462,8 @@ function verifyWrittenSession(
 	const warnings = _verifyWrittenSession(jsonlPath, expectedSessionId, expectedRecordCount);
 	for (const msg of warnings) {
 		debug(`WARNING session verify: ${msg}`);
-		// No CLAUDE_CONFIG_DIR value here: this text asks to be pasted into a
-		// public issue and config-dir paths are account-identifying (see the
+		// No CLAUDE_CONFIG_DIR value here: a user may paste this text anywhere
+		// and config-dir paths are account-identifying (see the
 		// persisted-shape note at the top of this file). The diagDump below
 		// records it locally instead. Paths are home-relativized for the same
 		// reason — an absolute cwd carries the username; the diagDump keeps the
@@ -471,8 +471,7 @@ function verifyWrittenSession(
 		safeNotify(
 			`Session file issue: ${msg}\n` +
 			`cwd=${displayPath(cwd)} realpath=${displayPath(safeRealpath(cwd))}\n` +
-			`Please copy and paste this message into a new issue at https://github.com/vanillagreencom/kendex/issues/new` +
-			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
+			`For details, ${diagGuidance()}.`,
 			"warning",
 		);
 		reportDiag("session_verify_fail", "verifyWrittenSession", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? null }, ctx());
