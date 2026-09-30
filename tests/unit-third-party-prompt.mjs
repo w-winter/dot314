@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { getCurrentSystemPrompt, isContextOverflow, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
+import { Type, getCurrentSystemPrompt, isContextOverflow, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
 // Not in the package's exports map: Pi's session prompt builder.
 import { buildSystemPromptSections } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 
@@ -169,5 +169,56 @@ describe("a system prompt Anthropic takes for a third-party app", () => {
 			assert.equal(retry.isRetryableAssistantError(message), false, "the installed Pi retries it");
 			assert.equal(overflow.isContextOverflow(message, model.contextWindow), false, "the installed Pi compacts on it");
 		}
+	});
+
+	it("shows the whole hint in the warning when a deferred continuation is rejected after a completed reply", { timeout: 10_000 }, async () => {
+		writeFileSync(join(root, "claude-bridge.json"), "{}");
+		const notifications = [];
+		__testSetBridgeIntegrityState({ sharedSession: null, ui: { notify: (message) => notifications.push(message) } });
+		resetStack();
+		// The first query delivers a tool call, waits, then completes a reply; the
+		// steer queued meanwhile replays as a continuation, which Anthropic rejects.
+		const gate = Promise.withResolvers();
+		const toolCall = [
+			streamEvent({ type: "message_start", message: { id: "m-tool", model: model.id, usage: { input_tokens: 1 } } }),
+			streamEvent({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call-1", name: "mcp__custom-tools__echo", input: {} } }),
+			streamEvent({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } }),
+			streamEvent({ type: "content_block_stop", index: 0 }),
+			streamEvent({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } }),
+			streamEvent({ type: "message_stop" }),
+		];
+		const steps = [[...toolCall, () => gate.promise, ...REPLY], REJECTED];
+		__testSetSdkQueryFactory(() => {
+			const queryIndex = steps.length === 2 ? 0 : 1;
+			const sdkMessages = steps.shift();
+			return {
+				async *[Symbol.asyncIterator]() {
+					yield { type: "system", subtype: "init", session_id: `continuation-${queryIndex}` };
+					for (const step of sdkMessages) {
+						if (step instanceof Error) throw step;
+						if (typeof step === "function") await step();
+						else yield step;
+					}
+				},
+				close() {},
+				async interrupt() {},
+			};
+		});
+		const initial = [{ role: "system", content: "test system prompt", toolsAdded: [{ name: "echo", description: "Echo", parameters: Type.Object({}) }], timestamp: 0 }, user("hello")];
+		const first = streamClaudeAgentSdk(model, { messages: initial }, { sessionId: "continuation-rejected" });
+		for await (const _event of first);
+		// A text-only callback: the steer waits for the query to end.
+		const callback = streamClaudeAgentSdk(model, { messages: [...initial, await first.result(), user("a steer")] }, { sessionId: "continuation-rejected" });
+		gate.resolve();
+		const events = [];
+		for await (const event of callback) events.push(event);
+		assert.equal(steps.length, 0, "the steer replayed as a continuation");
+		assert.equal(events.at(-1).type, "done", "the completed reply is kept");
+		const warning = notifications.find((message) => message.includes("mid-turn message"));
+		assert.ok(warning, JSON.stringify(notifications));
+		assert.ok(warning.includes(REJECTION), warning);
+		assert.match(warning, /systemPrompt\.replacement/);
+		for (const clause of CLAUSES) assert.ok(warning.includes(clause), `the warning names ${clause}`);
+		assert.equal(warning.split("systemPrompt.replacement").length, 2, "the hint appears once");
 	});
 });

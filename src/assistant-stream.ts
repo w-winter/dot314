@@ -8,7 +8,7 @@ import { noteAnomaly } from "./agent-notice.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
-import { withThirdPartyAppHint } from "./third-party-rejection.js";
+import { thirdPartyAppHintFor, withThirdPartyAppHint, withoutThirdPartyAppHint } from "./third-party-rejection.js";
 import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
 
 // --- Usage helpers ---
@@ -189,6 +189,7 @@ export function endStreamForFailure(
 	c: QueryContext,
 	failure: { errorMessage: string; notice?: string; fields?: Record<string, unknown> },
 ): FailureEnding {
+	const hint = thirdPartyAppHintFor(failure.errorMessage);
 	failure = { ...failure, errorMessage: withThirdPartyAppHint(failure.errorMessage) };
 	const aborted = c.requestAborted();
 	const stream = c.currentPiStream;
@@ -220,7 +221,9 @@ export function endStreamForFailure(
 		diagDump("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
 		noteAnomaly("continuation_failed_after_reply");
 		appendIntegrityEntry("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
-		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${(failure.notice ?? failure.errorMessage).slice(0, 200)}). Its reply before that message is kept; send the message again to get an answer.`, "warning");
+		// The excerpt quotes the failure alone; a hint follows it whole.
+		const excerpt = (failure.notice ?? withoutThirdPartyAppHint(failure.errorMessage)).slice(0, 200);
+		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${excerpt}). Its reply before that message is kept; send the message again to get an answer.${hint ? `\n\n${hint}` : ""}`, "warning");
 		ensureTurnStarted(c);
 		stream.push({ type: "done", reason: reply.stopReason === "length" ? "length" : "stop", message: reply });
 		stream.end();

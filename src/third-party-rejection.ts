@@ -19,6 +19,17 @@ const THIRD_PARTY_APP_HINT = "Pi Claude: Anthropic treats a system prompt that c
 /** `message` with the bridge's hint added when it is Anthropic's third-party-app
  *  rejection; any other message unchanged. */
 export function withThirdPartyAppHint(message: string): string {
-	if (!isThirdPartyAppRejection(message)) return message;
-	return message.includes(THIRD_PARTY_APP_HINT) ? message : `${message}\n\n${THIRD_PARTY_APP_HINT}`;
+	const hint = thirdPartyAppHintFor(message);
+	return !hint || message.includes(hint) ? message : `${message}\n\n${hint}`;
+}
+
+/** The bridge's hint when `message` is Anthropic's third-party-app rejection. */
+export function thirdPartyAppHintFor(message: string): string | undefined {
+	return isThirdPartyAppRejection(message) ? THIRD_PARTY_APP_HINT : undefined;
+}
+
+/** `message` without the bridge's hint, for a report that quotes the failure
+ *  and adds the hint on its own. */
+export function withoutThirdPartyAppHint(message: string): string {
+	return message.replace(`\n\n${THIRD_PARTY_APP_HINT}`, "");
 }
