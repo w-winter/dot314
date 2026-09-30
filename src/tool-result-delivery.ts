@@ -11,7 +11,7 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { endStreamForFailure } from "./assistant-stream.js";
 import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
 import { contentShape, debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./debug-notice.js";
+import { currentPiSession, noteAnomaly } from "./debug-notice.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.js";
@@ -126,6 +126,10 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 	const historyReplacedBefore = queryCtx.piHistoryReplaced;
 	const aborted = (): boolean => live.signal?.aborted === true || queryCtx.requestAborted();
 	let written = false;
+	// The Pi session to tell about an anomaly of this write, resolved while
+	// the callback runs: the write can finish after the query ended and its
+	// fork lane, which alone maps to that session, was released.
+	const piSession = currentPiSession();
 	queryCtx.steeringWriteQuery = sdkQuery;
 	// The record this write belongs to: this query's generation of the
 	// context and the Claude session it resumed. None for a detached query.
@@ -156,7 +160,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 		if (queryCtx.activeQuery !== sdkQuery) {
 			debug("provider: query ended while steering was written; releasing no tool results");
 			diagDump("steering_query_ended_during_write", { resultCount: live.resultCount, detached: queryCtx.detachedFromSharedSession });
-			noteAnomaly("steering_query_ended_during_write");
+			noteAnomaly("steering_query_ended_during_write", piSession);
 			// Only the record this write belongs to, never a replacement's: a
 			// newer query in this context (a rebuild may keep the session id),
 			// a rotated session, a quarantined context or a released lane is
@@ -200,7 +204,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 			debug("provider: steering write ended by the query's own cancellation or end:", error);
 			return;
 		}
-		failSteeringDelivery(queryCtx, sdkQuery, error, live);
+		failSteeringDelivery(queryCtx, sdkQuery, error, live, piSession);
 	});
 }
 
@@ -208,7 +212,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
  *  neither the results nor a continuation may follow it. The request ends
  *  with an error and the next one rebuilds from Pi history, which carries the
  *  steer. */
-function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<QueryContext["activeQuery"]>, error: unknown, live: LiveSteer): void {
+function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<QueryContext["activeQuery"]>, error: unknown, live: LiveSteer, piSession: string | undefined): void {
 	debug("provider: steering delivery to Claude Code failed; ending the request and rebuilding from Pi history:", error);
 	queryCtx.handledTerminalError = true;
 	queryCtx.priorHistoryRewritten = true;
@@ -216,7 +220,7 @@ function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<Quer
 	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
 	const detail = { resultCount: live.resultCount, userMessageCount: live.userMessageCount, detached: queryCtx.detachedFromSharedSession };
 	diagDump("steering_delivery_failed", { ...detail, error: error instanceof Error ? error.message : String(error) });
-	noteAnomaly("steering_delivery_failed");
+	noteAnomaly("steering_delivery_failed", piSession);
 	appendIntegrityEntry("steering_delivery_failed", detail);
 	endStreamForFailure(queryCtx, { errorMessage: STEERING_DELIVERY_FAILED_MESSAGE });
 	// The query's own abort path drains the held handlers, drops deferred

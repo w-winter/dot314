@@ -99,12 +99,20 @@ function sessionNotices(sessionId: string): SessionNotices {
 	return notices;
 }
 
-/** With DEBUG on, queues `kind` for the next prompt of the Pi session of the
- *  current request lane, unless that session was told about it; a repeat
- *  goes to the debug log only. */
-export function noteAnomaly(kind: AnomalyKind): void {
+/** The Pi session the current request lane serves, resolved now. A fork
+ *  lane maps to its Pi session only until the fork is released, so an
+ *  operation whose anomaly can be noted after its query ended captures this
+ *  when it starts and passes it to noteAnomaly. */
+export function currentPiSession(): string | undefined {
+	return piSessionOfLane(currentRequestLaneId());
+}
+
+/** With DEBUG on, queues `kind` for the next prompt of Pi session
+ *  `owner` (by default the current lane's), unless that session was told
+ *  about it; a repeat goes to the debug log only. */
+export function noteAnomaly(kind: AnomalyKind, owner?: string): void {
 	if (!DEBUG) return;
-	const sessionId = piSessionOfLane(currentRequestLaneId());
+	const sessionId = owner ?? currentPiSession();
 	if (sessionId === undefined) {
 		debug(`debug notice: ${kind} outside any Pi session; not told`);
 		return;

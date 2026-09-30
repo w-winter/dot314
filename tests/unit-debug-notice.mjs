@@ -3,7 +3,9 @@
 // displayed message its before_agent_start handler returns; a kind is told
 // once per session, and expected cleanup is never told. The notice follows
 // the user's prompt, so Claude's session is reused and the system prompt and
-// tools stay as they were. Without the flag nothing is told.
+// tools stay as they were. Without the flag nothing is told, even what a
+// copy loaded with it queued. An anomaly noted after a forked query's lane
+// was released still reaches the Pi session the fork served.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
@@ -18,9 +20,10 @@ import { convertToLlm as bundledConvertToLlm } from "@earendil-works/pi-coding-a
 import { tsImport } from "tsx/esm/api";
 
 import * as debugBridge from "../src/index.ts";
+import { setSharedSession } from "../src/bridge-state.ts";
 import { noteAnomaly } from "../src/debug-notice.ts";
-import { resetStack } from "../src/query-state.ts";
-import { runInRequestLane } from "../src/request-lane.ts";
+import { ctx, isForkLane, resetStack } from "../src/query-state.ts";
+import { currentRequestLaneId, runInRequestLane } from "../src/request-lane.ts";
 
 // Pi's own convertToLlm when installed: the function that turns the notice
 // into what the provider receives.
@@ -232,5 +235,83 @@ describe("debug-mode anomaly notices", () => {
 		assert.deepEqual(await promptThrough(await freshCopy({ debug: false }), "notice-copies"), [], "a copy without DEBUG tells nothing");
 		const told = await promptThrough(await freshCopy({ debug: true }), "notice-copies");
 		assert.deepEqual(told.map((message) => message.details), [{ kinds: ["empty_prompt"] }], "another DEBUG copy (a /reload, a subagent) tells it");
+	});
+
+	it("tells the Pi session a forked query served about a steering write that finishes after the fork was released", { timeout: 20_000 }, async () => {
+		const owner = "notice-late-fork";
+		const pi = fakePi();
+		debugBridge.default(pi);
+		const system = { role: "system", content: "test system prompt", toolsAdded: [ECHO], timestamp: 0 };
+		const user = (content) => ({ role: "user", content, timestamp: stamp() });
+		// The session's record holds another conversation, so this one runs in
+		// a fork lane of its own.
+		runInRequestLane(owner, () => setSharedSession({
+			sessionId: "11111111-1111-4111-8111-111111111111", cursor: 2, cwd: process.cwd(),
+			conversationFingerprint: debugBridge.conversationFingerprint([system, user("the session's own opener")]), historyDigest: "h1:own",
+		}));
+		const steerPulled = Promise.withResolvers();
+		const failQuery = Promise.withResolvers();
+		const writeGate = Promise.withResolvers();
+		const writeDone = Promise.withResolvers();
+		let forkId;
+		debugBridge.__testSetSdkQueryFactory(({ options }) => {
+			forkId = currentRequestLaneId();
+			return {
+				async *[Symbol.asyncIterator]() {
+					const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+					await options.mcpServers["custom-tools"].instance.connect(serverTransport);
+					const client = new Client({ name: "fake-claude-code", version: "1.0.0" });
+					await client.connect(clientTransport);
+					yield { type: "system", subtype: "init", session_id: "22222222-2222-4222-8222-222222222222" };
+					yield { type: "stream_event", event: { type: "message_start", message: { id: "m-fork", model: model.id, usage: { input_tokens: 1 } } } };
+					yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t-fork", name: "mcp__custom-tools__echo", input: {} } } };
+					yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"text\":\"x\"}" } } };
+					yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+					yield { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } } };
+					yield { type: "stream_event", event: { type: "message_stop" } };
+					void client.callTool({ name: "echo", arguments: { text: "x" }, _meta: { "claudecode/toolUseId": "t-fork" } }).catch(() => {});
+					await failQuery.promise;
+					yield { type: "result", subtype: "error_during_execution", errors: ["API Error: 500 internal server error"] };
+				},
+				// Holds the steer's write until the test releases it.
+				async streamInput(input) {
+					for await (const _message of input) {
+						steerPulled.resolve();
+						await writeGate.promise;
+					}
+					writeDone.resolve();
+				},
+				close() {},
+				async interrupt() {},
+			};
+		});
+		const until = async (check) => {
+			for (let i = 0; i < 1000 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
+			assert.ok(check(), "timed out");
+		};
+
+		const initial = [system, user("a different opener")];
+		const first = await collect(debugBridge.streamClaudeAgentSdk(model, { messages: initial }, { sessionId: owner }));
+		assert.ok(isForkLane(forkId), "the query runs in a fork lane");
+		await until(() => runInRequestLane(forkId, () => ctx().pendingToolCalls.has("t-fork")));
+		// Pi's callback: the call's result and a steer, whose write is held
+		// while the query fails and its fork lane is released.
+		const callback = collect(debugBridge.streamClaudeAgentSdk(model, { messages: [
+			...initial,
+			first.at(-1).message,
+			{ role: "toolResult", toolCallId: "t-fork", toolName: "echo", content: [{ type: "text", text: "result" }], isError: false, timestamp: stamp() },
+			user("a steer"),
+		] }, { sessionId: owner }));
+		await steerPulled.promise;
+		failQuery.resolve();
+		assert.equal((await callback).at(-1).type, "error");
+		await until(() => !isForkLane(forkId));
+		await beforeAgentStart(pi, owner, "next question"); // what the query's end told
+
+		writeGate.resolve();
+		await writeDone.promise;
+		const told = await beforeAgentStart(pi, owner, "next question");
+		assert.deepEqual(told.map((message) => message.details), [{ kinds: ["steering_query_ended_during_write"] }], "the late anomaly reaches the Pi session");
+		assert.deepEqual(await beforeAgentStart(pi, forkId, "next question"), [], "nothing is queued under the released fork's id");
 	});
 });
