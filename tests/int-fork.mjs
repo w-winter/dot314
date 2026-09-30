@@ -30,18 +30,15 @@ if (!PROVIDER || !MODEL_ID) {
 
 const TIMEOUT = 240_000;
 
-// Random per-run so the model can't memorize across runs and tests don't
-// collide if multiple instances run concurrently.
-const SUFFIX = Math.random().toString(36).slice(2, 6);
-const WORD_A = `alpha${SUFFIX}`;
-const WORD_B = `beta${SUFFIX}`;
-const WORD_C = `gamma${SUFFIX}`;
+// Plain words picked at random per run. Haiku refuses to repeat values that
+// look like tokens (random strings) or read as variable assignments.
+const WORDS = ["marmalade", "tambourine", "periwinkle", "zeppelin", "quokka", "saxophone", "kumquat", "gondola", "platypus", "trombone", "origami", "avalanche", "pelican", "harmonica", "lighthouse", "cinnamon"];
+const [WORD_A, WORD_B, WORD_C] = WORDS.map((word) => ({ word, key: Math.random() })).sort((a, b) => a.key - b.key).slice(0, 3).map(({ word }) => word);
 
-const PROMPT_1 = `Remember: word_A=${WORD_A}. Reply only "ok".`;
-const PROMPT_2 = `Remember: word_B=${WORD_B}. Reply only "ok".`;
-const PROMPT_3 = `Remember: word_C=${WORD_C}. Reply only "ok".`;
-// Neutral wording: Haiku refuses to repeat values framed as secrets.
-const FORK_PROBE = `List every word_ value I have asked you to remember in this conversation, separated by commas. Just the values, no labels.`;
+const PROMPT_1 = `We're playing a word game. My first word is ${WORD_A}. Reply only "ok".`;
+const PROMPT_2 = `My second word is ${WORD_B}. Reply only "ok".`;
+const PROMPT_3 = `My third word is ${WORD_C}. Reply only "ok".`;
+const FORK_PROBE = `Which words have I given you so far in our word game? List them separated by commas, nothing else.`;
 
 function logStep(n, msg) {
 	console.log(`\n[${n}] ${msg}`);
