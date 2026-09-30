@@ -664,7 +664,7 @@ describe("bridge incidents", () => {
 			const { isContextOverflow: overflow } = await import(join(INSTALLED_PI_AI, "overflow.js"));
 			classifiers.push({ isRetryableAssistantError: retry, isContextOverflow: overflow });
 		}
-		const docsPrompt = "see docs/custom-provider.md and docs/packages.md";
+		const docsPrompt = "- When asked about: custom providers (docs/custom-provider.md), pi packages (docs/packages.md)";
 		const texts = [
 			"Claude bridge internal error: no matching tool_call id for echo",
 			"Tool echo is no longer active in Pi.",

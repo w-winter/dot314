@@ -1,10 +1,11 @@
-// Anthropic classifies a subscription request whose system prompt carries both
-// docs/custom-provider.md and docs/packages.md (the two paths in Pi's docs
-// section) as a third-party app: it bills Extra Usage, or fails with HTTP 400
-// without Extra Usage credit. The bridge refuses such a request before any SDK
-// query exists and ends it with one error Pi does not retry. Prompts come from
-// Pi's own builder, summarizers and pi-ai's context helpers, and requests run
-// through the provider against a fake SDK.
+// Anthropic's check treats a subscription request whose system prompt carries
+// both "custom providers (docs/custom-provider.md)" and "pi packages
+// (docs/packages.md)" (two clauses of Pi's documentation line) as a third-party
+// app: it draws Extra Usage, or fails with HTTP 400 without Extra Usage credit.
+// The bridge refuses such a request before any SDK query exists and ends it
+// with one error Pi does not retry. Prompts come from Pi's own builder,
+// summarizers and pi-ai's context helpers, and requests run through the
+// provider against a fake SDK.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
@@ -39,6 +40,7 @@ const model = {
 };
 
 const PATHS = ["docs/custom-provider.md", "docs/packages.md"];
+const CLAUSES = ["custom providers (docs/custom-provider.md)", "pi packages (docs/packages.md)"];
 const REPLACEMENT = "You are Claude Code, Anthropic's official CLI for Claude.\nYou are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.";
 const CONFIGS = {
 	default: {},
@@ -143,12 +145,12 @@ async function request(config, messages, options = {}) {
 
 async function assertRefused(config, messages, fix, options) {
 	const prompt = getCurrentSystemPrompt(messages);
-	assert.ok(PATHS.every((path) => prompt.includes(path)), "the request carries both paths");
+	assert.ok(CLAUSES.every((clause) => prompt.includes(clause)), "the request carries both clauses");
 	const { queries, events, message } = await request(config, messages, options);
 	assert.equal(queries.length, 0, "an SDK query was built");
 	assert.deepEqual(events.map((event) => event.type), ["error"]);
 	assert.equal(message.stopReason, "error");
-	assert.match(message.errorMessage, /docs\/custom-provider\.md and docs\/packages\.md/);
+	assert.match(message.errorMessage, /"custom providers \(docs\/custom-provider\.md\)" and "pi packages \(docs\/packages\.md\)"/);
 	assert.match(message.errorMessage, /third-party app/);
 	assert.match(message.errorMessage, /Extra Usage/);
 	assert.match(message.errorMessage, /HTTP 400/);
@@ -183,8 +185,13 @@ describe("a system prompt Anthropic takes for a third-party app", () => {
 		await assertRefused(CONFIGS.owner, callerMessages(copied), EXTENSION_COPIED, { sessionId: "side-chat-overlay" });
 	});
 
-	it("refuses a main prompt whose own base carries both paths under the owner config", { timeout: 10_000 }, async () => {
-		const messages = sessionMessages({ customPrompt: `My SYSTEM.md. Read ${PATHS[0]} and ${PATHS[1]} first.` });
+	it("refuses the two clauses alone as a caller prompt", { timeout: 10_000 }, async () => {
+		const prompt = `- When asked about: ${CLAUSES[0]}, ${CLAUSES[1]}`;
+		await assertRefused(CONFIGS.default, callerMessages(prompt), EXTENSION_COPIED);
+	});
+
+	it("refuses a main prompt whose own base carries both clauses under the owner config", { timeout: 10_000 }, async () => {
+		const messages = sessionMessages({ customPrompt: `My SYSTEM.md. When asked about ${CLAUSES[0]} or ${CLAUSES[1]}, read them first.` });
 		await assertRefused(CONFIGS.owner, messages, /still carries both after the configured systemPrompt\.replacement/);
 	});
 
@@ -215,10 +222,26 @@ describe("a system prompt Anthropic takes for a third-party app", () => {
 		}
 	});
 
-	it("sends a prompt carrying only one of the two paths", { timeout: 10_000 }, async () => {
-		for (const path of PATHS) {
-			const prompt = `You review Pi packages. See ${path} before answering.`;
+	it("sends a prompt carrying only one of the two clauses", { timeout: 10_000 }, async () => {
+		for (const clause of CLAUSES) {
+			const prompt = `- When asked about: ${clause}`;
 			assert.equal(await assertSent(CONFIGS.default, callerMessages(prompt)), prompt);
+		}
+	});
+
+	it("sends a prompt naming both paths without Pi's clauses under either config", { timeout: 10_000 }, async () => {
+		const readFirst = "Read docs/custom-provider.md and docs/packages.md first.";
+		const prompts = [
+			() => sessionMessages({ customPrompt: `My SYSTEM.md. ${readFirst}` }),
+			() => sessionMessages({ customPrompt: "My SYSTEM.md.", contextFiles: [{ path: "/tmp/project/AGENTS.md", content: readFirst }] }),
+			() => callerMessages(readFirst),
+			() => callerMessages("- When asked about: custom providers (docs/custom-provider.md), banana packages (docs/packages.md)"),
+		];
+		for (const config of Object.values(CONFIGS)) {
+			for (const messages of prompts) {
+				const sent = await assertSent(config, messages());
+				assert.ok(PATHS.every((path) => sent.includes(path)), "the sent prompt carries both paths");
+			}
 		}
 	});
 });
