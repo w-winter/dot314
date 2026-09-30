@@ -4,7 +4,7 @@ import { appendIntegrityEntry, safeNotify } from "./bridge-state.js";
 import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.js";
 import { isChildExecutedTool } from "./connectors.js";
 import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./debug-notice.js";
+import { noteAnomaly } from "./agent-notice.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";

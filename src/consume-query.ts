@@ -18,7 +18,7 @@ import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, p
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./debug-notice.js";
+import { noteAnomaly } from "./agent-notice.js";
 import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";

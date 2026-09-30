@@ -1,6 +1,6 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { debug, diagDump, diagGuidance } from "./debug.js";
-import { noteAnomaly } from "./debug-notice.js";
+import { noteAnomaly } from "./agent-notice.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
 import { type QueryContext } from "./query-state.js";

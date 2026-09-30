@@ -21,7 +21,7 @@ import { tsImport } from "tsx/esm/api";
 
 import * as debugBridge from "../src/index.ts";
 import { setSharedSession } from "../src/bridge-state.ts";
-import { noteAnomaly } from "../src/debug-notice.ts";
+import { noteAnomaly } from "../src/agent-notice.ts";
 import { ctx, isForkLane, resetStack } from "../src/query-state.ts";
 import { currentRequestLaneId, runInRequestLane } from "../src/request-lane.ts";
 
@@ -168,7 +168,7 @@ const logFrom = (path, start) => existsSync(path) ? readFileSync(path, "utf8").s
 const sizeOf = (path) => existsSync(path) ? statSync(path).size : 0;
 
 beforeEach(() => {
-	agentDir = mkdtempSync(join(tmpdir(), "bridge-debug-notice-"));
+	agentDir = mkdtempSync(join(tmpdir(), "bridge-agent-notice-"));
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "0";
 	process.env.CLAUDE_CODE_OAUTH_TOKEN = "test-token";
@@ -195,7 +195,7 @@ describe("debug-mode anomaly notices", () => {
 
 		assert.deepEqual(notices.map((returned) => returned.length), [0, 1, 0], "turn 1's anomaly rides with turn 2's prompt only; turn 2's repeat is not told");
 		const [message] = notices[1];
-		assert.equal(message.customType, "claude-bridge-debug");
+		assert.equal(message.customType, "claude-bridge-notice");
 		assert.equal(message.display, true, "the TUI shows it");
 		assert.deepEqual(message.details, { kinds: ["tool_handler_unmatched"] });
 		const lines = message.content.split("\n");
@@ -208,7 +208,7 @@ describe("debug-mode anomaly notices", () => {
 		assert.ok(diag.includes("partial_tool_calls_pruned"), "turn 1 did prune its unfinished call");
 		assert.ok(!message.content.includes("partial_tool_calls_pruned"), "a prune at a max-tokens stop is not told");
 		const log = logFrom(logPath, logStart);
-		assert.match(log, /debug notice: tool_handler_unmatched again for session notice-d; already told/);
+		assert.match(log, /agent notice: tool_handler_unmatched again for session notice-d; already told/);
 
 		const paths = [...log.matchAll(/syncResult: path=([a-z-]+)/g)].map((match) => match[1]);
 		assert.deepEqual(paths, ["clean-start", "reuse", "reuse"], "no rebuild on or after the turn that carries the notice");

@@ -22,7 +22,7 @@ import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
-import { takeDebugNotice } from "../src/debug-notice.ts";
+import { takeAgentNotice } from "../src/agent-notice.ts";
 import { resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
 import { consumeLikePi } from "./lib/pi-frame-consumer.mjs";
@@ -203,6 +203,6 @@ describe("the user is told what follows a stream idle timeout", () => {
 		assert.equal(isRetryableAssistantError(error), true, "Pi's auto-retry takes this error");
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.deepEqual(notifications, [], "no bridge warning: Pi shows the turn's error");
-		assert.ok(takeDebugNotice("frames-idle-notice")?.message.details.kinds.includes("stream_idle_timeout"), "the debug notice tells the agent");
+		assert.ok(takeAgentNotice("frames-idle-notice")?.message.details.kinds.includes("stream_idle_timeout"), "the agent notice tells the agent");
 	});
 });

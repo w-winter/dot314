@@ -14,7 +14,7 @@ import { isConnectorTool } from "./connectors.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./debug-notice.js";
+import { noteAnomaly } from "./agent-notice.js";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
 import { UserMessageLedger } from "./user-message-ledger.js";
 

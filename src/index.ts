@@ -27,7 +27,7 @@ import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } fro
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { logVersions } from "./versions.js";
-import { noteAnomaly, takeDebugNotice } from "./debug-notice.js";
+import { noteAnomaly, takeAgentNotice } from "./agent-notice.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -1909,8 +1909,8 @@ export default function (pi: ExtensionAPI) {
 	});
 	// With CLAUDE_BRIDGE_DEBUG=1, the anomalies this session's requests hit
 	// since its last prompt, as one message after the user's prompt
-	// (debug-notice.ts).
-	pi.on("before_agent_start", (_event, ctx) => takeDebugNotice(ctx.sessionManager.getSessionId()));
+	// (agent-notice.ts).
+	pi.on("before_agent_start", (_event, ctx) => takeAgentNotice(ctx.sessionManager.getSessionId()));
 	pi.on("message_end", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		const message = (event as { message?: AssistantMessage }).message;
 		if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx);

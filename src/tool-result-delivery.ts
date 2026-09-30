@@ -11,7 +11,7 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { endStreamForFailure } from "./assistant-stream.js";
 import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
 import { contentShape, debug, diagDump } from "./debug.js";
-import { currentPiSession, noteAnomaly } from "./debug-notice.js";
+import { currentPiSession, noteAnomaly } from "./agent-notice.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.js";

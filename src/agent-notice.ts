@@ -2,7 +2,7 @@
 // the agent would otherwise never see (an error the bridge wrote, or a
 // problem it recovered from) is told to the Pi session whose request hit it,
 // once per kind per session. Everything pending for a session goes out as one
-// `claude-bridge-debug` message that the session's before_agent_start handler
+// `claude-bridge-notice` message that the session's before_agent_start handler
 // returns with its next prompt. Pi puts that message after the user's prompt
 // and convertToLlm makes it a user message, so the bridge sees ordinary
 // appended user input and keeps reusing Claude's session. The bridge never
@@ -13,7 +13,7 @@
 // while each session (an in-process subagent too, and every session after a
 // /reload) runs the before_agent_start handler of the copy it loaded. The
 // pending kinds and what each session was told are therefore kept
-// process-global, by Pi session id, for the DEBUG_NOTICE_SESSIONS_KEPT
+// process-global, by Pi session id, for the AGENT_NOTICE_SESSIONS_KEPT
 // sessions most recently noted or prompted.
 
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
@@ -22,8 +22,8 @@ import { DEBUG, DEBUG_LOG_PATH, debug, diagLogPath } from "./debug.js";
 import { piSessionOfLane } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
 
-export const DEBUG_NOTICE_TYPE = "claude-bridge-debug";
-export const DEBUG_NOTICE_SESSIONS_KEPT = 64;
+export const AGENT_NOTICE_TYPE = "claude-bridge-notice";
+export const AGENT_NOTICE_SESSIONS_KEPT = 64;
 // Header and closing line included.
 const MESSAGE_LINES = 20;
 
@@ -72,7 +72,7 @@ interface SessionNotices {
 	pending: AnomalyKind[];
 }
 
-const STORE_SYMBOL = Symbol.for("pi-claude-bridge.debug-notices.v1");
+const STORE_SYMBOL = Symbol.for("pi-claude-bridge.agent-notices.v1");
 
 /** Least recently used session first. */
 function store(): Map<string, SessionNotices> {
@@ -92,7 +92,7 @@ function sessionNotices(sessionId: string): SessionNotices {
 	sessions.delete(sessionId);
 	sessions.set(sessionId, notices);
 	for (const id of sessions.keys()) {
-		if (sessions.size <= DEBUG_NOTICE_SESSIONS_KEPT) break;
+		if (sessions.size <= AGENT_NOTICE_SESSIONS_KEPT) break;
 		sessions.delete(id);
 	}
 	return notices;
@@ -113,17 +113,17 @@ export function noteAnomaly(kind: AnomalyKind, owner?: string): void {
 	if (!DEBUG) return;
 	const sessionId = owner ?? currentPiSession();
 	if (sessionId === undefined) {
-		debug(`debug notice: ${kind} outside any Pi session; not told`);
+		debug(`agent notice: ${kind} outside any Pi session; not told`);
 		return;
 	}
 	const notices = sessionNotices(sessionId);
 	if (notices.told.has(kind)) {
-		debug(`debug notice: ${kind} again for session ${sessionId.slice(0, 8)}; already told`);
+		debug(`agent notice: ${kind} again for session ${sessionId.slice(0, 8)}; already told`);
 		return;
 	}
 	notices.told.add(kind);
 	notices.pending.push(kind);
-	debug(`debug notice: ${kind} queued for session ${sessionId.slice(0, 8)}`);
+	debug(`agent notice: ${kind} queued for session ${sessionId.slice(0, 8)}`);
 }
 
 function noticeText(kinds: AnomalyKind[]): string {
@@ -141,14 +141,14 @@ function noticeText(kinds: AnomalyKind[]): string {
  *  every kind pending for it, or nothing. Takes them: each is told once. A
  *  copy loaded without DEBUG tells nothing, even what a DEBUG copy queued in
  *  the shared store. */
-export function takeDebugNotice(sessionId: string): BeforeAgentStartEventResult | undefined {
+export function takeAgentNotice(sessionId: string): BeforeAgentStartEventResult | undefined {
 	if (!DEBUG) return undefined;
 	const notices = store().get(sessionId);
 	if (!notices || notices.pending.length === 0) return undefined;
 	const kinds = sessionNotices(sessionId).pending.splice(0);
 	return {
 		message: {
-			customType: DEBUG_NOTICE_TYPE,
+			customType: AGENT_NOTICE_TYPE,
 			content: noticeText(kinds),
 			display: true,
 			details: { kinds },

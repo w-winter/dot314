@@ -7,7 +7,7 @@ import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, saf
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
 import { debug, diagDump, diagGuidance } from "./debug.js";
-import { noteAnomaly } from "./debug-notice.js";
+import { noteAnomaly } from "./agent-notice.js";
 import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import {

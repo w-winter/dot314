@@ -25,7 +25,7 @@ import { Type } from "@earendil-works/pi-ai";
 
 import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
-import { takeDebugNotice } from "../src/debug-notice.ts";
+import { takeAgentNotice } from "../src/agent-notice.ts";
 import { resetStack } from "../src/query-state.ts";
 
 const model = {
@@ -306,6 +306,6 @@ describe("if Claude Code gives up on a Pi tool call anyway", () => {
 		assert.equal(observed.secondResult?.isError, true);
 		assert.match(observed.secondResult.content[0].text, /never forwarded to Pi/);
 		assert.ok(!notices.some((notice) => /never reached Pi/.test(notice)), `no TUI warning for the stranded call: ${JSON.stringify(notices)}`);
-		assert.ok(takeDebugNotice(sessionId)?.message.details.kinds.includes("tool_handlers_stranded"), "the debug notice tells the agent");
+		assert.ok(takeAgentNotice(sessionId)?.message.details.kinds.includes("tool_handlers_stranded"), "the agent notice tells the agent");
 	});
 });

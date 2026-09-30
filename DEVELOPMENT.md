@@ -54,7 +54,7 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 
 ## Debug mode
 
-With `CLAUDE_BRIDGE_DEBUG=1`, an anomaly is queued for the Pi session whose request hit it and told once per kind, in one `claude-bridge-debug` message that the session's `before_agent_start` returns with its next prompt (`src/debug-notice.ts`, `tests/unit-debug-notice.mjs`). A kind is told when the bridge showed Claude or Pi an error for it, or recovered from it on its own; expected cleanup (a cancelled request, a max-tokens stop, a history restart) and reports from the API or Claude Code are not told. The told kinds and their sentences live in the one `TOLD` table in `src/debug-notice.ts`, keyed by diag label. A new anomaly needs a sentence there, and its site calls `noteAnomaly` with that label; a label missing from the table fails the typecheck.
+With `CLAUDE_BRIDGE_DEBUG=1`, an anomaly is queued for the Pi session whose request hit it and told once per kind, in one `claude-bridge-notice` message that the session's `before_agent_start` returns with its next prompt (`src/agent-notice.ts`, `tests/unit-agent-notice.mjs`). A kind is told when the bridge showed Claude or Pi an error for it, or recovered from it on its own; expected cleanup (a cancelled request, a max-tokens stop, a history restart) and reports from the API or Claude Code are not told. The told kinds and their sentences live in the one `TOLD` table in `src/agent-notice.ts`, keyed by diag label. A new anomaly needs a sentence there, and its site calls `noteAnomaly` with that label; a label missing from the table fails the typecheck.
 
 ## Rate limits
 
