@@ -68,11 +68,13 @@ export interface PendingToolCall {
 // resolve as an error — never as a successful result whose text merely says the
 // turn died, which a consumer cannot tell apart from a tool that genuinely
 // returned that string. The cause is carried because an abort, an idle timeout,
-// and a plain end-with-stragglers are different things to act on.
-export type ToolCallDrainCause = "abort" | "stream-idle-timeout" | "query-end";
+// a restart on Pi's replaced history and a plain end-with-stragglers are
+// different things to act on.
+export type ToolCallDrainCause = "abort" | "history-restart" | "stream-idle-timeout" | "query-end";
 
 const DRAIN_CAUSE_TEXT: Record<ToolCallDrainCause, string> = {
 	"abort": "the turn was aborted",
+	"history-restart": "the bridge restarted the query on Pi's replaced history",
 	"stream-idle-timeout": "the Claude Code stream went idle and the turn timed out",
 	"query-end": "the query ended",
 };
@@ -85,10 +87,12 @@ export function interruptedToolCallResult(cause: ToolCallDrainCause, incident?: 
 }
 
 // Precedence matches the forceRotate expression at the query-teardown site: an
-// explicit abort (pi's signal or our own abort handler) outranks a stream-idle
-// timeout, which outranks a plain end with stragglers.
-export function toolCallDrainCause(flags: { wasAborted?: boolean; signalAborted?: boolean; streamIdleTimedOut?: boolean }): ToolCallDrainCause {
+// explicit abort (pi's signal or our own abort handler) outranks a restart on
+// Pi's replaced history (a pending restartRequest), which outranks a
+// stream-idle timeout, which outranks a plain end with stragglers.
+export function toolCallDrainCause(flags: { wasAborted?: boolean; signalAborted?: boolean; historyRestart?: boolean; streamIdleTimedOut?: boolean }): ToolCallDrainCause {
 	if (flags.wasAborted || flags.signalAborted) return "abort";
+	if (flags.historyRestart) return "history-restart";
 	if (flags.streamIdleTimedOut) return "stream-idle-timeout";
 	return "query-end";
 }

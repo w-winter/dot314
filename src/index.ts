@@ -1807,7 +1807,7 @@ function streamRequestInLane(
 			// No signal of this query may cancel a later one.
 			abortCtx.stopListeningForAbort();
 			if (abortCtx.onRequestAbort === onAbort) abortCtx.onRequestAbort = null;
-			const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, streamIdleTimedOut });
+			const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, historyRestart: Boolean(abortCtx.restartRequest), streamIdleTimedOut });
 			teardownQuery(abortCtx, sdkQuery, cause, cwd);
 			closeSdkQuery(sdkQuery);
 		})

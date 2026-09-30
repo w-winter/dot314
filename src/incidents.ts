@@ -85,8 +85,11 @@ const INCIDENT_CLASSES = {
 	// A bridge-authored error reaching Pi that no site named: the exit it left
 	// through is the site (nameBridgeErrorEvents, nameThrownBridgeError).
 	bridge_error: "user-visible",
-	// Handlers drained by an abort answer calls the user cancelled.
-	tool_calls_interrupted: { default: "user-visible", abort: "expected" },
+	// Handlers drained by an abort answer calls the user cancelled. A restart
+	// on Pi's replaced history (restartOnReplacedHistory) re-imports Pi's
+	// history, tool results included, into a rotated session, and the drained
+	// answer reaches only the discarded child.
+	tool_calls_interrupted: { default: "user-visible", abort: "expected", "history-restart": "expected" },
 	api_error: "external",
 	claude_code_version_changed: "external",
 } as const satisfies Record<string, IncidentClass | SiteClasses>;
@@ -113,7 +116,7 @@ export const INCIDENT_SITES = [
 	"abort-completion", "continuation-error", "continuation-failure", "continuation-no-resume-id", "query-error",
 	"stream-idle-timeout", "stream-idle-timeout-completion", "terminal-failure",
 	// why waiting tool calls were drained (ToolCallDrainCause)
-	"query-end",
+	"query-end", "history-restart",
 	// why a tool-result delivery mismatch was reported (reportToolResultMismatch)
 	"query-teardown", "unmatched-tool-result", "session_compact", "session_tree",
 ] as const;

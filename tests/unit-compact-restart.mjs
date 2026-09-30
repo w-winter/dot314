@@ -9,6 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, onPiHistoryReplaced, streamClaudeAgentSdk } from "../src/index.ts";
 import { cancelScheduledToolUseEnd } from "../src/assistant-stream.ts";
+import { __testResetIncidents, listIncidents } from "../src/incidents.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 
 const model = { id: "claude-haiku-4-5", api: "claude-bridge", provider: "pi-claude", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -102,6 +103,29 @@ function throwingContinuation(record) {
 	};
 }
 
+/** A waitingQuery whose MCP handler for its call is invoked and waits for
+ *  Pi's result; `record.answer` is what Claude Code gets back for it. */
+function handlerWaitingQuery(record, options) {
+	const gate = Promise.withResolvers();
+	record.closed = false;
+	record.release = () => gate.resolve();
+	return {
+		async *[Symbol.asyncIterator]() {
+			yield { type: "system", subtype: "init", session_id: sessionId };
+			yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t0", name: "mcp__custom-tools__echo", input: { id: "t0" } }] } };
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			await options.mcpServers["custom-tools"].instance.connect(serverTransport);
+			const client = new Client({ name: "fake-claude-code", version: "1.0.0" });
+			await client.connect(clientTransport);
+			record.answer = client.callTool({ name: "echo", arguments: { id: "t0" }, _meta: { "claudecode/toolUseId": "t0" } });
+			while (!ctx().pendingToolCalls.has("t0")) await new Promise((resolve) => setTimeout(resolve, 1));
+			await gate.promise;
+		},
+		close() { record.closed = true; gate.resolve(); },
+		async interrupt() { record.closed = true; gate.resolve(); },
+	};
+}
+
 function importedMessages(root, id) {
 	return readFileSync(openSession({ sessionId: id, projectPath: root, claudeDir: root }).jsonlPath, "utf8")
 		.trim().split("\n").map((line) => JSON.parse(line).message);
@@ -162,6 +186,41 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 			assert.equal(events.some((event) => event.type === "toolcall_start"), false);
 			assert.equal(__testGetBridgeIntegrityState().sharedSession?.sessionId, calls[1].options.resume);
 		});
+	});
+
+	it("drains the waiting handler of a query it restarts as expected cleanup", async () => {
+		__testResetIncidents();
+		await withWaitingQuery(async ({ root, record, calls }) => {
+			await waitFor(() => ctx().pendingToolCalls.has("t0"));
+			onPiHistoryReplaced("session_compact");
+			const events = await collect(streamClaudeAgentSdk(model, { messages: [system, user("summary"), toolCall, toolResult] }, { cwd: root }));
+			assert.equal(calls.length, 2);
+			assert.equal(events.filter((event) => event.type === "done").length, 1);
+			const answer = await record.answer;
+			assert.equal(answer.isError, true);
+			assert.doesNotMatch(answer.content[0].text, /incident/);
+			const interrupted = listIncidents().filter((incident) => incident.signature.startsWith("tool_calls_interrupted@"));
+			assert.deepEqual(interrupted.map((incident) => [incident.signature, incident.class]), [["tool_calls_interrupted@history-restart", "expected"]]);
+			assert.deepEqual(listIncidents().filter((incident) => incident.class === "user-visible").map((incident) => incident.signature), []);
+			const imported = importedMessages(root, calls[1].options.resume);
+			const blocks = imported.flatMap((message) => Array.isArray(message.content) ? message.content : []);
+			assert.deepEqual(blocks.filter((block) => block.type === "tool_result").map((block) => block.content), ["tool output"]);
+		}, undefined, false, handlerWaitingQuery);
+		__testResetIncidents();
+	});
+
+	it("still names the drain of a query that ends with a waiting handler", async () => {
+		__testResetIncidents();
+		await withWaitingQuery(async ({ record }) => {
+			await waitFor(() => ctx().pendingToolCalls.has("t0"));
+			record.release();
+			const answer = await record.answer;
+			assert.equal(answer.isError, true);
+			const incident = listIncidents().find((entry) => entry.signature === "tool_calls_interrupted@query-end");
+			assert.equal(incident?.class, "user-visible");
+			assert.match(answer.content[0].text, new RegExp(`the query ended .* \\(incident ${incident.id}\\)$`));
+		}, undefined, false, handlerWaitingQuery);
+		__testResetIncidents();
 	});
 
 	for (const childToolName of ["mcp__claude_ai_slack__post_message", "mcp__linear__create_issue"]) {
