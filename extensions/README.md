@@ -20,6 +20,10 @@
   - Makes visible history covered by durable OpenAI Responses V2 checkpoints available to other providers through reusable plaintext summaries, with lazy and prewarm modes
   - Works with [`@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) and other compatible Responses V2 checkpoint extensions
 
+- ● [`pcc-native-tools.ts`](pcc-native-tools.ts)
+  - Selects Pi's native `codemode` and `tool_search` before each prompt: off while `@howaboua/pi-codex-conversion` (PCC) has Code or Notebook tools active, on otherwise, including PCC's normal mode
+  - Follows PCC's active `exec`/`wait` tools across model and mode changes; requires the native extensions to be loaded on Pi 0.99 or later
+
 - ● [`model-aware-compaction/`](model-aware-compaction/) ([README](./model-aware-compaction/README.md))
   - Triggers Pi's **built-in auto-compaction** at per-model percent-used thresholds (0-100), configured via `config.json` (keyed by model ID, supports `*` wildcards)
   - Nudges Pi's native compaction pipeline rather than calling `ctx.compact()`, preserving the compaction UI and automatic queued-message flush

@@ -147,6 +147,7 @@ These extensions are tracked in the repository but not exported by the Pi packag
 | ○ | `interactive-shell.ts` |
 | ● | `iterm-tab-color.ts` |
 | ● | `orca-session-tab-title/` |
+| ● | `pcc-native-tools.ts` |
 | ◐ | `plan-mode.ts` |
 | ● | `pi-codex-apply-patch-display/` |
 | ● | `poly-notify/` |
