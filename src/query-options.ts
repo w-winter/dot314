@@ -6,8 +6,7 @@ import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.js";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
-import { join } from "path";
-import { normalizeEffortLevel, piUserDir, resolveSystemPrompt, type Config } from "./config.js";
+import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.js";
 import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.js";
 import { connectorServersSnapshot } from "./connector-runtime.js";
 import { PROVIDER_ID } from "./convert.js";
@@ -72,7 +71,7 @@ export interface BuiltClaudeQueryOptions {
 	fallbackModel?: string;
 }
 
-export interface OutboundSystemPrompt {
+interface OutboundSystemPrompt {
 	prompt: string;
 	source: BuiltClaudeQueryOptions["systemPromptSource"];
 }
@@ -81,7 +80,7 @@ export interface OutboundSystemPrompt {
  * the configured replacement; a prompt from compaction or an extension's own
  * call keeps its instructions. The preamble tells resolveSystemPrompt whether
  * Pi built the base. */
-export function outboundSystemPrompt(
+function outboundSystemPrompt(
 	input: Pick<BuildClaudeQueryOptionsInput, "queryModel" | "bridgeConfig" | "systemPromptOrigin"> & { systemPrompt: string },
 ): OutboundSystemPrompt {
 	const { queryModel, bridgeConfig, systemPrompt, systemPromptOrigin } = input;
@@ -91,28 +90,6 @@ export function outboundSystemPrompt(
 		prompt: resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt, systemPromptOrigin?.preamble),
 		source: `pi-main:${evidence}`,
 	};
-}
-
-// Two clauses of Pi's documentation line, exactly as Pi writes them. Anthropic's
-// check treats a subscription request whose system prompt carries both as a
-// third-party app: it draws Extra Usage, or fails with HTTP 400 without Extra
-// Usage credit. The trigger is the pair of clauses: either clause alone passes,
-// and so do both paths with other wording, as does Pi's preamble alone.
-const THIRD_PARTY_APP_CLAUSES = ["custom providers (docs/custom-provider.md)", "pi packages (docs/packages.md)"] as const;
-
-/** The error a request ends with instead of sending `outbound`, or undefined
- * when it may be sent. The text avoids everything Pi's isRetryableAssistantError
- * and isContextOverflow match, so Pi neither retries nor compacts on it. */
-export function thirdPartyAppRefusal(outbound: OutboundSystemPrompt, bridgeConfig: Config): string | undefined {
-	if (!THIRD_PARTY_APP_CLAUSES.every((clause) => outbound.prompt.includes(clause))) return undefined;
-	const fix = outbound.source === "caller"
-		? "The extension that made this model call copied Pi's full system prompt into its own model call; it has to send a system prompt of its own."
-		: bridgeConfig.systemPrompt?.replacement
-			? "Pi's main prompt still carries both after the configured systemPrompt.replacement, so the session's own prompt text (its base, context files, skills, or an extension's section or hook) holds them; remove one of them there."
-			: `To fix it, set systemPrompt.replacement in ${join(piUserDir(), "claude-bridge.json")}; the replacement takes the place of Pi's default base and drops its documentation section.`;
-	return `Pi Claude did not send this request: its system prompt contains ${THIRD_PARTY_APP_CLAUSES.map((clause) => `"${clause}"`).join(" and ")}, two clauses of Pi's documentation line. `
-		+ "Anthropic's check treats a subscription request whose system prompt carries both as a third-party app. Its error says third-party apps draw from Extra Usage instead of plan limits, "
-		+ `and the request fails with HTTP 400 when the account has no Extra Usage credit. ${fix}`;
 }
 
 export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): BuiltClaudeQueryOptions {

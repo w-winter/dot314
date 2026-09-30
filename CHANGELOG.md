@@ -11,6 +11,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - It now tells the agent about bridge anomalies.
   - Its log no longer carries tool output or your text.
 - **Dropped attempts:** a tool call from a response attempt that Claude Code dropped never reaches Pi.
+- **Third-party apps:** the bridge no longer refuses a request over its system prompt.
 
 ### Added
 
@@ -40,6 +41,10 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - GitHub issues that the agent filed.
 
   Reporting a bug is your call, not the bridge's. Errors and warnings that need you still show in the TUI, and debug mode adds local logs plus the notice to the agent (see Added). An `incidents` key left in `claude-bridge.json` is ignored. (`89f090d`)
+- **The third-party-app refusal**, added 2026-09-29.
+  - **What it did:** the bridge refused any request whose system prompt carried both clauses of Pi's documentation line, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`, before Claude Code started. In debug mode, the agent was told about each refusal.
+  - **Why it is gone:** some setups send such requests on purpose and make them acceptable their own way, and for them every refusal was a false block.
+  - **What replaces it:** the bridge sends every request as it is. The README now requires Extra Usage turned off and `systemPrompt.replacement` set. With Extra Usage off, Anthropic rejects a third-party-app request itself with HTTP 400.
 
 ### Fixed
 

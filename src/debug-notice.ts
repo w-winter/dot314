@@ -42,7 +42,6 @@ const TOLD = {
 	repair_tool_pairing_synthetic_results: { sentence: "History given to Claude Code had tool calls without results; the bridge filled in placeholder results.", errorShown: true },
 	tool_no_longer_active: { sentence: "Claude Code called a Pi tool that is no longer active in Pi.", errorShown: true },
 	tool_results_unmatched: { sentence: "Pi returned tool results for calls this query did not make.", errorShown: true },
-	third_party_app_refused: { sentence: "The bridge refused a request whose system prompt Anthropic treats as a third-party app.", errorShown: true },
 	claude_account_not_connected: { sentence: "A request was made with no Claude account connected.", errorShown: true },
 	stream_idle_timeout: { sentence: "Claude's response stream went silent past the idle timeout and the request was ended.", errorShown: true },
 	tool_calls_interrupted: { sentence: "Pi tool calls Claude was waiting on were interrupted.", errorShown: true },

@@ -54,7 +54,7 @@ import {
 import { BRIDGE_ACCOUNT_HOST } from "./account-host.js";
 import { registerBridgeCommands } from "./bridge-commands.js";
 import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.js";
-import { buildClaudeQueryOptions, outboundSystemPrompt, thirdPartyAppRefusal } from "./query-options.js";
+import { buildClaudeQueryOptions } from "./query-options.js";
 import { sdkQuery as startSdkQuery } from "./sdk-query.js";
 import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.js";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
@@ -1235,36 +1235,6 @@ function streamRequestInLane(
 	const claudeExecutable = resolveClaudeExecutable(providerSettings.pathToClaudeCodeExecutable);
 	const claudeExecutablePreflight = claudeExecutable ? preflightClaudeExecutable(claudeExecutable, cwd) : undefined;
 
-	// The system prompt this query would send. A prompt Anthropic takes for a
-	// third-party app is refused here, before syncSharedSession and before any
-	// SDK query exists, so nothing records a turn Claude never received.
-	const systemPrompt = getCurrentSystemPrompt(context.messages);
-	const systemSections = getCurrentSystemMessage(context.messages)?.sections;
-	const systemPromptOrigin = {
-		preamble: systemSections && (systemSections.preamble ?? ""),
-		sessionId: options?.sessionId,
-		cacheRetention: options?.cacheRetention,
-	};
-	const refusal = thirdPartyAppRefusal(outboundSystemPrompt({ queryModel, bridgeConfig, systemPrompt, systemPromptOrigin }), bridgeConfig);
-	if (refusal) {
-		debug(`provider: refusing a third-party-app system prompt: ${refusal}`);
-		noteAnomaly("third_party_app_refused");
-		const errorOutput: AssistantMessage = {
-			role: "assistant", content: [],
-			api: model.api, provider: model.provider, model: model.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "error", timestamp: Date.now(),
-			errorMessage: refusal,
-		};
-		queueMicrotask(() => {
-			stream.push({ type: "error", reason: "error", error: errorOutput });
-			stream.end();
-			releaseEphemeralLane();
-		});
-		return stream;
-	}
-
 	const accountScope = accountSessionScope(account);
 	const cursorBeforeSync = getSharedSession()?.cursor ?? null;
 	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, queryModel.id, accountScope);
@@ -1325,14 +1295,19 @@ function streamRequestInLane(
 	const mcpServers = servedTools ? { [MCP_SERVER_NAME]: servedTools.config } : undefined;
 	// Pure SDK query-option assembly — see buildClaudeQueryOptions for the
 	// connector, system-prompt, setting-source, effort, and env rationale.
+	const systemSections = getCurrentSystemMessage(context.messages)?.sections;
 	const built = buildClaudeQueryOptions({
 		cwd,
 		requestedModel: model,
 		queryModel,
 		account,
 		bridgeConfig,
-		systemPrompt,
-		systemPromptOrigin,
+		systemPrompt: getCurrentSystemPrompt(context.messages),
+		systemPromptOrigin: {
+			preamble: systemSections && (systemSections.preamble ?? ""),
+			sessionId: options?.sessionId,
+			cacheRetention: options?.cacheRetention,
+		},
 		reasoning: options?.reasoning,
 		resumeSessionId,
 		mcpServers,

@@ -109,7 +109,10 @@ To work on the bridge, clone it, run `npm install`, and add the folder's path to
 
 A Claude Code login is required. Make `claude` available on `PATH` or set its executable path below.
 
-Set `systemPrompt.replacement` in `claude-bridge.json` (see [Settings](#settings)) before the first request. Without it, the bridge refuses Pi's default main prompt.
+Two things are required before the first request:
+
+- Extra Usage must be turned off on the Claude account. With it on, a request Anthropic treats as a third-party app is billed to Extra Usage instead of failing, and the bridge does not check.
+- `systemPrompt.replacement` must be set in `claude-bridge.json` (see [Settings](#settings)). Without it, Anthropic rejects Pi's default main prompt as a third-party app.
 
 Claude Sonnet 5.5 (`pi-claude/claude-sonnet-5-5`) requires [Claude Code 2.1.284 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284). Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 
@@ -137,7 +140,7 @@ The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-com
 - `provider.settingSources`: explicitly load selected filesystem settings from Claude Code. By default, no settings load when connectors are disabled. When connectors are enabled, the bridge loads the user's settings.
 - `provider.inheritAnthropicEnv`: `true` passes `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment to Claude Code, for an intentional gateway or API-key setup. By default the bridge removes them, so an exported variable cannot route subscription requests through another endpoint or credential, and it does not count them as credentials when deciding whether the provider is connected. Only the user `claude-bridge.json` can set it, and managed account profiles never inherit these variables.
 
-Without a `systemPrompt.replacement`, Pi's default main prompt is refused with a Pi error, and no Claude request is made. Its documentation line carries two clauses, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Anthropic's check treats a subscription request whose system prompt contains both clauses as a third-party app: third-party apps draw from Extra Usage instead of plan limits, and the request fails with HTTP 400 when the account has no Extra Usage credit. Either clause alone passes, and so do both paths in other wording. The bridge refuses any request whose system prompt contains both clauses exactly as Pi writes them. That covers pi-subagents children in append mode and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
+Pi's documentation line carries two clauses, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Anthropic's check treats a subscription request whose system prompt contains both clauses as a third-party app: with Extra Usage off, it rejects the request with HTTP 400; with Extra Usage on, it bills the request to Extra Usage. Either clause alone passes, and so do both paths in other wording. The bridge sends such a request unchanged. Requests that carry both clauses are Pi's default main prompt, pi-subagents children in append mode, and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
 
 Example `claude-bridge.json`:
 
@@ -178,7 +181,6 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 - Claude Code never resumes a rebuilt session as an interrupted turn, so no "Continue from where you left off." prompt is injected.
 
 **System prompt**
-- A system prompt that Anthropic's check treats as a third-party app (one carrying both of Pi's clauses `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`) is refused before any request is sent (see Settings).
 - Under a `systemPrompt.replacement`, Pi's rules and guidelines are kept, and so is a session's own base prompt (`SYSTEM.md`, `--system-prompt`, a pi-subagents agent in replace mode).
 
 **Models**
