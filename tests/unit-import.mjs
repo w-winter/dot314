@@ -260,8 +260,33 @@ describe("latest assistant thinking replay", () => {
 		] };
 		const result = rebuildConvert([...history, cutTail(), failed]);
 		const note = result.at(-1).content;
-		assert.ok(note.includes("It returned an error:\npartial read\n[image/png image, not carried in this note]"), note);
+		assert.ok(note.includes("Call 1 returned an error:\npartial read\n[image/png image, not carried in this note]"), note);
 		assert.ok(!note.includes("aGk="), "the image data is not carried");
+	});
+
+	it("lists the turn's text and calls in order, then the results in the order they came back", () => {
+		const turn = { role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+			{ type: "thinking", thinking: "cut off mid-thought" },
+			{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a" } },
+			{ type: "text", text: "Now the second file." },
+			{ type: "toolCall", id: "c2", name: "read", arguments: { path: "b" } },
+			{ type: "toolCall", id: "c3", name: "read", arguments: { path: "c" } },
+		] };
+		const result2 = { role: "toolResult", toolCallId: "c2", toolName: "read", content: "B body" };
+		const result1 = { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "A body" }] };
+		const content = rebuildConvert([...history, turn, result2, result1]).at(-1).content;
+		const note = typeof content === "string" ? content : content.map((block) => block.text ?? "").join("\n");
+		const at = (part) => {
+			const index = note.indexOf(part);
+			assert.ok(index >= 0, `${part} is missing from: ${note}`);
+			return index;
+		};
+		// The turn's own order, then the results in the order they came back.
+		const order = ['{"path":"a"}', "Now the second file.", '{"path":"b"}', '{"path":"c"}', "B body", "A body"].map(at);
+		assert.deepEqual(order, [...order].sort((a, b) => a - b), note);
+		// Each call has a number, each result names its call, and a call with no result says so.
+		for (const part of ['Call 1: you called read with arguments {"path":"a"}.', "Call 2 returned:\nB body", "Call 1 returned:\nA body"]) at(part);
+		assert.ok(note.endsWith("Call 3: no result was recorded."), note);
 	});
 
 	it("notes each trailing turn until the latest assistant replays exactly", () => {

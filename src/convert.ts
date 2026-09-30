@@ -178,24 +178,36 @@ function toolResultNoteText(content: unknown): string {
 }
 
 /** The user-side note a rebuild imports in place of a Claude turn it cannot
- *  replay exactly and that turn's tool results: its text, each tool call's Pi
- *  name and arguments, and each result's text and error flag. Not its
- *  thinking. Nothing is cut, so it carries what the normal import would. */
+ *  replay exactly and that turn's tool results. The turn wrote all of its text
+ *  and calls before any result came back, so the note lists its text and each
+ *  numbered tool call's Pi name and arguments in content order, then each
+ *  result by call number and error flag in the order `results` holds them
+ *  (history order), then each call with no recorded result. Not its thinking.
+ *  Nothing is cut, so it carries what the normal import would. */
 function unreplayedTurnNote(msg: AssistantMessage, results: Map<string, PiMessage>): string {
 	const parts = [UNREPLAYED_TURN_NOTE_HEADER];
+	const callNumbers = new Map<string, number>();
 	for (const block of msg.content) {
 		if (block.type === "text" && block.text) {
 			parts.push(`You wrote:\n${block.text}`);
 		} else if (block.type === "toolCall") {
-			parts.push(`You called ${block.name} with arguments ${JSON.stringify(block.arguments ?? {})}.`);
-			const result = results.get(block.id);
-			if (result?.role !== "toolResult") {
-				parts.push("No result was recorded for this call.");
-				continue;
-			}
-			const text = toolResultNoteText(result.content);
-			parts.push(`${result.isError ? "It returned an error:" : "It returned:"}\n${text || "(no text)"}`);
+			const number = callNumbers.size + 1;
+			callNumbers.set(block.id, number);
+			parts.push(`Call ${number}: you called ${block.name} with arguments ${JSON.stringify(block.arguments ?? {})}.`);
 		}
+	}
+	if (callNumbers.size === 0) return parts.join("\n\n");
+	parts.push("The results came back afterwards, in this order.");
+	const answered = new Set<string>();
+	for (const [id, result] of results) {
+		const number = callNumbers.get(id);
+		if (number === undefined || result.role !== "toolResult") continue;
+		answered.add(id);
+		const text = toolResultNoteText(result.content);
+		parts.push(`${result.isError ? `Call ${number} returned an error:` : `Call ${number} returned:`}\n${text || "(no text)"}`);
+	}
+	for (const [id, number] of callNumbers) {
+		if (!answered.has(id)) parts.push(`Call ${number}: no result was recorded.`);
 	}
 	return parts.join("\n\n");
 }
@@ -216,7 +228,8 @@ export function convertPiMessages(
 	const unreplayable = opts.noteUnreplayableTurns ? unreplayableTrailingTurns(messages) : new Set<number>();
 	const notedTurns: Array<{ calls: Array<{ id: string; name: string }> }> = [];
 	// A steer can split one turn's results across later messages, so a note
-	// finds its results by id anywhere after the turn.
+	// finds its results by id anywhere after the turn. The map keeps history
+	// order, which is the order the note lists them in.
 	const resultsById = new Map<string, PiMessage>();
 	if (unreplayable.size > 0) for (const message of messages) {
 		if (message.role === "toolResult" && !resultsById.has(message.toolCallId)) resultsById.set(message.toolCallId, message);
