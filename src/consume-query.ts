@@ -138,6 +138,9 @@ function noteAbandonedToolCalls(message: unknown, queryCtx: QueryContext): void 
 		const pending = queryCtx.pendingToolCalls.get(id);
 		if (!pending) continue;
 		const raw = block.content;
+		// Logged on purpose: the call is still pending, so Pi never answered it
+		// and Claude Code wrote this tool_result itself. The text is its give-up
+		// reason (a timeout or cancel message), not a tool payload.
 		const text = typeof raw === "string"
 			? raw
 			: Array.isArray(raw) ? raw.map((part: { text?: unknown }) => typeof part?.text === "string" ? part.text : "").join(" ") : "";
