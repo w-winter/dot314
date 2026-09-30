@@ -1,6 +1,6 @@
 import { type SpawnOptions, type SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { spawn as spawnProcess } from "child_process";
-import { accessSync, constants as fsConstants, readFileSync, realpathSync, statSync } from "fs";
+import { accessSync, closeSync, constants as fsConstants, openSync, readSync, realpathSync, statSync } from "fs";
 import { delimiter, join } from "path";
 import { isolatedFromEnv } from "./config.js";
 import { DEBUG, debug } from "./debug.js";
@@ -128,6 +128,24 @@ export function classifyClaudeExecutableBytes(bytes: Uint8Array): ClaudeExecutab
 	return "unknown";
 }
 
+// Reads at most the 16 bytes the classifier inspects; a shorter file yields
+// the bytes it has. The executable can be hundreds of MB (or over 2 GiB).
+function readExecutableHeader(realPath: string): Uint8Array {
+	const header = Buffer.alloc(16);
+	const fd = openSync(realPath, "r");
+	try {
+		let length = 0;
+		while (length < header.length) {
+			const read = readSync(fd, header, length, header.length - length, length);
+			if (read === 0) break;
+			length += read;
+		}
+		return header.subarray(0, length);
+	} finally {
+		closeSync(fd);
+	}
+}
+
 export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExecutablePreflightResult {
 	let realCwd: string;
 	try {
@@ -181,7 +199,7 @@ export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExec
 
 	let fileType: ClaudeExecutableFileType;
 	try {
-		fileType = classifyClaudeExecutableBytes(readFileSync(realPath).subarray(0, 16));
+		fileType = classifyClaudeExecutableBytes(readExecutableHeader(realPath));
 	} catch (err) {
 		throw makeClaudePreflightError("Claude Code executable preflight failed: cannot read executable header before spawning Claude Code.", {
 			code: codeValue(err, "EACCES"),

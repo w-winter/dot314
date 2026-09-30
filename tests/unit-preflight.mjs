@@ -3,7 +3,7 @@
  * The checks do not require Claude Code to be installed; they use temp files
  * and the current Node executable as a known platform binary.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -42,6 +42,17 @@ describe("preflightClaudeExecutable", () => {
 		const result = preflightClaudeExecutable(process.execPath, dir);
 		assert.equal(result.path, process.execPath);
 		assert.match(result.fileType, /^(elf|mach-o|pe)$/);
+	}));
+
+	it("accepts an executable over 2 GiB by its header", () => withTempDir((dir) => {
+		const script = join(dir, "claude-large");
+		writeFileSync(script, "#!/bin/sh\nexit 0\n");
+		chmodSync(script, 0o755);
+		// Sparse: the extension takes no disk space.
+		truncateSync(script, 2 ** 31 + 1);
+
+		const result = preflightClaudeExecutable(script, dir);
+		assert.equal(result.fileType, "shebang-script");
 	}));
 
 	it("reports errno details for a non-existent executable path", () => withTempDir((dir) => {
