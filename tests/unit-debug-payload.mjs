@@ -17,8 +17,10 @@ import { Type } from "@earendil-works/pi-ai";
 
 import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
+import { loadConfig } from "../src/config.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
+import { verifyWrittenSession } from "../src/session-verify.ts";
 
 const model = { id: "claude-haiku-4-5", name: "Claude Haiku", api: "claude-bridge", provider: "pi-claude", baseUrl: "claude-bridge", reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 };
 const SLOW = { name: "slow_tool", description: "A slow tool", parameters: Type.Object({}) };
@@ -169,4 +171,26 @@ it("logs the configured replacement prompt as its length", () => {
 	});
 	assert.match(log, /loadConfig: \{"enabled":false,"systemPrompt":\{"replacement":"<33 chars>"\}/);
 	assert.ok(!log.includes(marker), "the debug log carries the replacement prompt");
+});
+
+// JSON.parse's message quotes the input around the error, so a parse failure
+// is logged by name and position only. The markers are short enough to fit
+// the parser's excerpt whole.
+it("logs a malformed config without the parser's excerpt of it", () => {
+	const marker = "mk_b7e2";
+	const log = logWithConfig(`{"systemPrompt":{"replacement": ${marker}}}`, () => loadConfig(root));
+	assert.match(log, /config: ignoring malformed \S+claude-bridge\.json: SyntaxError/);
+	assert.ok(!log.includes(marker), "the debug log carries the config's text");
+});
+
+it("reports a malformed session record by line, without the parser's excerpt of it", () => {
+	// The warning is what the debug line, the session_verify_fail diag entry and
+	// the user notice carry.
+	const marker = "mk_0d4c";
+	const path = join(root, "session.jsonl");
+	writeFileSync(path, `{"sessionId":"s1","message":{"role":"user","content":"hi"}}\n{"sessionId":"s1","message":{"role":"user","content":${marker}}}\n`);
+	const warnings = verifyWrittenSession(path, "s1", 2);
+	assert.equal(warnings.length, 1);
+	assert.match(warnings[0], /^malformed JSONL — path=\S+ line=2 err=SyntaxError/);
+	assert.ok(!warnings[0].includes(marker), "the warning carries the record's content");
 });

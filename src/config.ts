@@ -6,7 +6,7 @@ import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve, sep } from "path";
-import { debug } from "./debug.js";
+import { debug, parseErrorShape } from "./debug.js";
 
 export type BridgeEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -265,7 +265,7 @@ export function tryParseJson(path: string): Partial<Config> {
 		// Malformed optional config should not write raw terminal diagnostics;
 		// stdout/stderr output can corrupt active Pi TUI widgets. The debug log is
 		// the one place a silently-ignored file explains itself.
-		debug(`config: ignoring malformed ${path}:`, error instanceof Error ? error.message : String(error));
+		debug(`config: ignoring malformed ${path}: ${parseErrorShape(error)}`);
 		return {};
 	}
 }

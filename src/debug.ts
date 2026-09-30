@@ -118,6 +118,16 @@ export function contentShape(content: unknown): string {
 	return `${content.length} block(s) [${types.join(",")}], ${chars} chars${images > 0 && !hasText ? ", image-only" : ""}`;
 }
 
+/** A failed read or JSON parse for a log line: the error's name, its code
+ *  when it has one, and the character position the parser reports. Never the
+ *  message: JSON.parse quotes the input around the error. */
+export function parseErrorShape(error: unknown): string {
+	if (!(error instanceof Error)) return "non-Error thrown";
+	const code = (error as { code?: unknown }).code;
+	const position = /\bposition (\d+)/.exec(error.message)?.[1];
+	return `${error.name}${typeof code === "string" ? ` ${code}` : ""}${position === undefined ? "" : ` at position ${position}`}`;
+}
+
 let debugBytesSinceCheck = 0;
 
 export function debug(...args: unknown[]) {
