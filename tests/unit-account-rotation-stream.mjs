@@ -578,6 +578,7 @@ describe("managed account stream rotation", () => {
 		const errors = events.filter((event) => event.type === "error");
 		assert.equal(errors.length, 1);
 		assert.ok(errors[0].error.errorMessage.includes(rejection), errors[0].error.errorMessage);
+		assert.match(errors[0].error.errorMessage, /systemPrompt\.replacement/);
 	});
 
 	it("never replays after visible text has committed", async () => {

@@ -8,6 +8,7 @@ import { noteAnomaly } from "./debug-notice.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
+import { withThirdPartyAppHint } from "./third-party-rejection.js";
 import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
 
 // --- Usage helpers ---
@@ -180,11 +181,15 @@ function completedReplyMessage(c: QueryContext): AssistantMessage | undefined {
  *  `notice` is the failure as the user is told it (defaults to
  *  errorMessage): an error message may carry retry advice that only holds
  *  when the request ends as that error. Returns how the request ended, so a
- *  caller's own report can say what happened. */
+ *  caller's own report can say what happened.
+ *
+ *  Anthropic's third-party-app rejection gets the bridge's hint here, so every
+ *  way a failure reaches Pi, a held one included, carries it. */
 export function endStreamForFailure(
 	c: QueryContext,
 	failure: { errorMessage: string; notice?: string; fields?: Record<string, unknown> },
 ): FailureEnding {
+	failure = { ...failure, errorMessage: withThirdPartyAppHint(failure.errorMessage) };
 	const aborted = c.requestAborted();
 	const stream = c.currentPiStream;
 	if (!stream) {

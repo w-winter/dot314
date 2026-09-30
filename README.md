@@ -140,7 +140,7 @@ The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-com
 - `provider.settingSources`: explicitly load selected filesystem settings from Claude Code. By default, no settings load when connectors are disabled. When connectors are enabled, the bridge loads the user's settings.
 - `provider.inheritAnthropicEnv`: `true` passes `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment to Claude Code, for an intentional gateway or API-key setup. By default the bridge removes them, so an exported variable cannot route subscription requests through another endpoint or credential, and it does not count them as credentials when deciding whether the provider is connected. Only the user `claude-bridge.json` can set it, and managed account profiles never inherit these variables.
 
-Pi's documentation line carries two clauses, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Anthropic's check treats a subscription request whose system prompt contains both clauses as a third-party app: with Extra Usage off, it rejects the request with HTTP 400; with Extra Usage on, it bills the request to Extra Usage. Either clause alone passes, and so do both paths in other wording. The bridge sends such a request unchanged. Requests that carry both clauses are Pi's default main prompt, pi-subagents children in append mode, and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
+Pi's documentation line carries two clauses, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Anthropic's check treats a subscription request whose system prompt contains both clauses as a third-party app: with Extra Usage off, it rejects the request with HTTP 400; with Extra Usage on, it bills the request to Extra Usage. Either clause alone passes, and so do both paths in other wording. The bridge sends such a request unchanged, and adds a hint to Anthropic's error that names the clauses and the fix. Requests that carry both clauses are Pi's default main prompt, pi-subagents children in append mode, and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
 
 Example `claude-bridge.json`:
 
@@ -181,6 +181,7 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 - Claude Code never resumes a rebuilt session as an interrupted turn, so no "Continue from where you left off." prompt is injected.
 
 **System prompt**
+- When Anthropic rejects a request as a third-party app (its system prompt carries both of Pi's clauses `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`), the error keeps Anthropic's text and adds a hint that names the clauses and the fix (see Settings).
 - Under a `systemPrompt.replacement`, Pi's rules and guidelines are kept, and so is a session's own base prompt (`SYSTEM.md`, `--system-prompt`, a pi-subagents agent in replace mode).
 
 **Models**

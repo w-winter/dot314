@@ -11,7 +11,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - It now tells the agent about bridge anomalies.
   - Its log no longer carries tool output or your text.
 - **Dropped attempts:** a tool call from a response attempt that Claude Code dropped never reaches Pi.
-- **Third-party apps:** the bridge no longer refuses a request over its system prompt.
+- **Third-party apps:** the bridge no longer refuses a request over its system prompt. When Anthropic rejects one as a third-party app, the error now says how to fix it.
 
 ### Added
 
@@ -44,7 +44,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 - **The third-party-app refusal**, added 2026-09-29.
   - **What it did:** the bridge refused any request whose system prompt carried both clauses of Pi's documentation line, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`, before Claude Code started. In debug mode, the agent was told about each refusal.
   - **Why it is gone:** some setups send such requests on purpose and make them acceptable their own way, and for them every refusal was a false block.
-  - **What replaces it:** the bridge sends every request as it is. The README now requires Extra Usage turned off and `systemPrompt.replacement` set. With Extra Usage off, Anthropic rejects a third-party-app request itself with HTTP 400.
+  - **What replaces it:** the bridge sends every request as it is. The README now requires Extra Usage turned off and `systemPrompt.replacement` set. With Extra Usage off, Anthropic rejects a third-party-app request itself with HTTP 400. Its error points at buying Extra Usage, so the bridge adds a hint that names the two clauses and the fix: `systemPrompt.replacement`, or, for an extension that copies Pi's prompt into its own model call, a prompt of its own.
 
 ### Fixed
 

@@ -2,24 +2,28 @@
 // "custom providers (docs/custom-provider.md)" and "pi packages
 // (docs/packages.md)" (two clauses of Pi's documentation line) as a
 // third-party app, and with Extra Usage off rejects it with HTTP 400. The
-// bridge sends such a request like any other.
+// bridge sends such a request like any other, and when Claude Code reports
+// Anthropic's rejection it adds a hint to the error Pi ends the turn with.
 // Prompts come from Pi's own builder and pi-ai's context helpers, and requests
 // run through the provider against a fake SDK.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { getCurrentSystemPrompt, normalizeContext } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, isContextOverflow, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
 // Not in the package's exports map: Pi's session prompt builder.
 import { buildSystemPromptSections } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 
 import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { resetStack } from "../src/query-state.ts";
+
+// The retry and overflow matchers of the Pi the owner runs, when installed here.
+const INSTALLED_PI_AI = "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/utils";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -35,6 +39,8 @@ const model = {
 };
 
 const CLAUSES = ["custom providers (docs/custom-provider.md)", "pi packages (docs/packages.md)"];
+// Anthropic's rejection as Claude Code 2.1.285 reports it.
+const REJECTION = "API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.";
 const ENV_KEYS = ["PI_CODING_AGENT_DIR", "CLAUDE_BRIDGE_ISOLATED", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT"];
 
 let root;
@@ -83,6 +89,20 @@ const REPLY = [
 	{ type: "result", subtype: "success", result: "ok" },
 ];
 
+// What SDK 0.3.284 yields for the rejection: Claude Code's synthetic error
+// message, a success-labelled error result, then, once Claude Code exits
+// with code 1, the iterator throws with the result text.
+const REJECTED = [
+	{
+		type: "assistant",
+		error: "unknown",
+		parent_tool_use_id: null,
+		message: { id: "synthetic-1", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: REJECTION }], stop_reason: "stop_sequence", usage: { input_tokens: 0, output_tokens: 0 } },
+	},
+	{ type: "result", subtype: "success", is_error: true, api_error_status: 400, result: REJECTION },
+	new Error(`Claude Code returned an error result: ${REJECTION}`),
+];
+
 // Streams one request through the provider under `config` and reports the
 // system prompts of the SDK queries it built and the final message.
 async function request(config, messages, sdkMessages, options = {}) {
@@ -119,6 +139,24 @@ describe("a system prompt Anthropic takes for a third-party app", () => {
 			const { queries, message } = await request({}, messages, REPLY, options);
 			assert.deepEqual(queries, [prompt]);
 			assert.equal(message.stopReason, "stop", message.errorMessage);
+		}
+	});
+
+	it("ends the turn with Anthropic's rejection and the bridge's hint, which Pi neither retries nor compacts on", { timeout: 10_000 }, async () => {
+		const { queries, message } = await request({}, sessionMessages(), REJECTED);
+		assert.equal(queries.length, 1);
+		assert.equal(message.stopReason, "error");
+		assert.ok(message.errorMessage.includes(REJECTION), message.errorMessage);
+		for (const clause of CLAUSES) assert.ok(message.errorMessage.includes(clause), `the hint names ${clause}`);
+		assert.match(message.errorMessage, /Set systemPrompt\.replacement in .*claude-bridge\.json/);
+		assert.match(message.errorMessage, /extension that copies Pi's full system prompt into its own model call has to send its own prompt/);
+		assert.equal(isRetryableAssistantError(message), false);
+		assert.equal(isContextOverflow(message, model.contextWindow), false);
+		if (existsSync(INSTALLED_PI_AI)) {
+			const retry = await import(join(INSTALLED_PI_AI, "retry.js"));
+			const overflow = await import(join(INSTALLED_PI_AI, "overflow.js"));
+			assert.equal(retry.isRetryableAssistantError(message), false, "the installed Pi retries it");
+			assert.equal(overflow.isContextOverflow(message, model.contextWindow), false, "the installed Pi compacts on it");
 		}
 	});
 });
