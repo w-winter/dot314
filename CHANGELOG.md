@@ -6,7 +6,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Highlights
 
-- **No automatic bug reports.** The incident system is gone. Errors that need you still show in the TUI.
+- **No automatic bug reports.** The incident system is gone. By default, you see an error when it ends the turn, plus a few TUI warnings. Tool-call errors the bridge returns to Claude, and problems it recovers from, stay out of the TUI.
 - **Agent notices:** with `agentNotices` on, the agent is told about bridge anomalies.
 - **Debug log:** it no longer carries tool output or your text.
 - **Dropped attempts:** a tool call from a response attempt that Claude Code dropped never reaches Pi.
@@ -39,7 +39,11 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - the `incidents.repo` setting;
   - GitHub issues that the agent filed.
 
-  Reporting a bug is your call, not the bridge's. Errors and warnings that need you still show in the TUI, debug mode keeps local logs, and agent notices tell the agent (see Added). An `incidents` key left in `claude-bridge.json` is ignored. (`89f090d`)
+  Reporting a bug is your call, not the bridge's.
+  - **What you see by default:** an error that ends the turn, and a few TUI warnings, such as a rate limit, a repaired or interrupted tool result, or a session file problem.
+  - **What stays out of the TUI:** tool-call errors the bridge returns to Claude as the call's result, and problems the bridge recovers from on its own. Agent notices tell the agent about them (see Added), and `CLAUDE_BRIDGE_DEBUG=1` records them in the local logs.
+
+  An `incidents` key left in `claude-bridge.json` is ignored. (`89f090d`)
 - **The third-party-app refusal**, added 2026-09-29.
   - **What it did:** the bridge refused any request whose system prompt carried both clauses of Pi's documentation line, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`, before Claude Code started. In debug mode, the agent was told about each refusal.
   - **Why it is gone:** some setups send such requests on purpose and make them acceptable their own way, and for them every refusal was a false block.

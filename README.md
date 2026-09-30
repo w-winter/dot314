@@ -160,7 +160,7 @@ Environment variables:
 - `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` (default 90s): how long Claude Code may stay silent during a turn, before or after its first output, while no Pi tool call is outstanding; bare numbers are seconds, `ms`, `s` and `m` suffixes are accepted, `0` disables.
 - `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. Without it, the bridge writes no log. It still writes what it needs to run: the Claude Code session files it builds from Pi history, its own entries in the Pi session file, and, with connectors on, the connector inventory cache in the Pi agent directory.
 
-Tool-result integrity problems always surface as a Pi error notification plus a metadata-only `claude-bridge-integrity` entry in the Pi session file, so a lost tool result can be analysed from the session alone.
+Tool-result integrity problems add a metadata-only `claude-bridge-integrity` entry to the Pi session file, so a lost tool result can be analysed from the session alone. Only some also show a TUI warning: a repaired or interrupted tool result, a tool call Claude Code stopped waiting for, and a failed answer to a mid-turn message.
 
 Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
