@@ -94,7 +94,6 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 			const names = stranded.map((entry) => entry.toolName).join(", ");
 			debug(`provider: failed ${stranded.length} stranded MCP handler(s) never forwarded to Pi: ${names}`);
 			appendIntegrityEntry("tool_handlers_stranded", { count: stranded.length, stranded });
-			safeNotify(`Claude bridge: failed ${stranded.length} tool call(s) that never reached Pi before their turn ended (${names}). The model saw a retryable error.`, "warning");
 		}
 		if (queryCtx.pendingToolCalls.size > 0) {
 			debug(`WARNING: ${queryCtx.pendingToolCalls.size} MCP handlers still waiting after delivering ${allResults.length} results`);

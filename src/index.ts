@@ -1532,11 +1532,10 @@ function streamRequestInLane(
 					fields: { rateLimitType: "stream_idle", retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS, streamIdleTimeoutMs: timeoutMs },
 				});
 				// Only an error can be retried, by Pi's own auto-retry, which shows
-				// its own notice when it does. A kept reply was reported by the
-				// ender; a cancelled request needs no report.
-				if (ending === "error" || ending === "held") {
-					safeNotify(`Claude bridge: Claude ${idle}. The turn ends with an error that Pi's auto-retry treats as retryable.`, "warning");
-				} else {
+				// its own notice when it does; Pi shows the turn's error. A kept
+				// reply was reported by the ender; a cancelled request needs no
+				// report.
+				if (ending !== "error" && ending !== "held") {
 					debug(`provider: stream idle timeout ended the request as ${ending}; no retry follows`);
 				}
 				requestAbort();

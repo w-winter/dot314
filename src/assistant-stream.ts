@@ -605,13 +605,13 @@ export function noteToolUseStreamActivity(c: QueryContext): void {
 
 /**
  * Park queued tool results whose handler has not fired by a child message
- * boundary, and say so everywhere it matters. The boundary is where stale
+ * boundary, and record it in the logs and the Pi session file (and, in debug
+ * mode, tell the agent). The boundary is where stale
  * entries would start poisoning mismatch reports — but it does NOT prove the
  * handler gave up: the SDK staggers handler invocations, and handlers in a
  * parallel batch routinely fire after this point. Parked results stay
  * consumable through takeQueuedOrParkedResult; one that is never consumed
- * belongs to a call the SDK abandoned client-side (permission denial), which
- * is exactly what the notice describes.
+ * belongs to a call the SDK abandoned client-side (permission denial).
  */
 export function reapStaleQueuedResults(c: QueryContext): void {
 	const stale = c.takeStaleQueuedResults();
@@ -621,11 +621,6 @@ export function reapStaleQueuedResults(c: QueryContext): void {
 	diagDump("stale_queued_tool_results_parked", { count: stale.length, stale });
 	noteAnomaly("stale_queued_tool_results_parked");
 	appendIntegrityEntry("stale_queued_tool_results_parked", { count: stale.length, stale });
-	safeNotify(
-		`Claude bridge: parked ${stale.length} early tool result(s) whose handler has not arrived (${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}). ` +
-		`A late handler can still consume them.`,
-		"warning",
-	);
 }
 
 /** Record the model Claude Code reports actually serving this turn (dated
