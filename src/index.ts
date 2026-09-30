@@ -1807,7 +1807,10 @@ function streamRequestInLane(
 			// No signal of this query may cancel a later one.
 			abortCtx.stopListeningForAbort();
 			if (abortCtx.onRequestAbort === onAbort) abortCtx.onRequestAbort = null;
-			const cause = toolCallDrainCause({ wasAborted, signalAborted: options?.signal?.aborted, historyRestart: Boolean(abortCtx.restartRequest), streamIdleTimedOut });
+			// A pending restart's callback may carry its own Pi signal (the query
+			// can span Pi runs); an abort there cancels the restart.
+			const signalAborted = options?.signal?.aborted || abortCtx.restartRequest?.options?.signal?.aborted;
+			const cause = toolCallDrainCause({ wasAborted, signalAborted, historyRestart: Boolean(abortCtx.restartRequest), streamIdleTimedOut });
 			teardownQuery(abortCtx, sdkQuery, cause, cwd);
 			closeSdkQuery(sdkQuery);
 		})

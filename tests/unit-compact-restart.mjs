@@ -259,10 +259,14 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 	});
 
 	it("ends the callback on abort without changing the delivered tool-use turn", async () => {
-		await withWaitingQuery(async ({ root, calls, opening }) => {
+		__testResetIncidents();
+		await withWaitingQuery(async ({ root, record, calls, opening }) => {
+			await waitFor(() => ctx().pendingToolCalls.has("t0"));
 			onPiHistoryReplaced("session_compact");
+			// The callback's signal is its own: the query started without one.
 			const abort = new AbortController();
 			const events = collect(streamClaudeAgentSdk(model, { messages: [system, user("summary"), toolCall, toolResult] }, { cwd: root, signal: abort.signal }));
+			assert.notEqual(ctx().restartRequest, null, "the abort lands while the restart is pending");
 			abort.abort();
 			const result = await events;
 			assert.equal(calls.length, 1);
@@ -270,7 +274,11 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 			assert.equal(result.at(-1)?.reason, "aborted");
 			assert.deepEqual(result.at(-1)?.error.content, []);
 			assert.equal(opening.find((event) => event.type === "done").message.stopReason, "toolUse");
-		});
+			assert.equal((await record.answer).isError, true);
+			const interrupted = listIncidents().filter((incident) => incident.signature.startsWith("tool_calls_interrupted@"));
+			assert.deepEqual(interrupted.map((incident) => [incident.signature, incident.class]), [["tool_calls_interrupted@abort", "expected"]]);
+		}, undefined, false, handlerWaitingQuery);
+		__testResetIncidents();
 	});
 
 	it("rebuilds in place when no Claude query is active at compaction", async () => {
