@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEBUG, debug } from "./debug.js";
 
-export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function readGitFile(path: string): string | undefined {
 	try { return readFileSync(path, "utf8").trim(); } catch { return undefined; }
@@ -15,7 +15,7 @@ function readGitFile(path: string): string | undefined {
 
 /** The commit the bridge was loaded from, read once from its clone's `.git`
  *  (a directory, or a worktree's `gitdir:` file). Undefined outside a clone. */
-export function readBridgeCommit(root: string): string | undefined {
+function readBridgeCommit(root: string): string | undefined {
 	try {
 		let gitDir = join(root, ".git");
 		const pointer = readGitFile(gitDir);
@@ -40,7 +40,7 @@ export function readBridgeCommit(root: string): string | undefined {
 
 /** The host Pi's version, from the package its CLI entry belongs to. Read
  *  from disk: importing the host package from here would evaluate it again. */
-export function readPiVersion(): string | undefined {
+function readPiVersion(): string | undefined {
 	try {
 		const entry = process.argv[1];
 		if (!entry) return undefined;
