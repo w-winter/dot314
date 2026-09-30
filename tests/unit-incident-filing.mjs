@@ -467,6 +467,17 @@ describe("the labels, versions and model an issue and a comment publish", () => 
 		assert.ok((await shownFor(PROVIDER_THROW)).includes("ProjectPayrollError"), "show keeps the recorded name");
 	});
 
+	it("publishes only Node's own listed ERR_ codes and errno names: another ERR_ code becomes a placeholder", async () => {
+		installFakeGh();
+		const data = { code: "ERR_PRIVATEALICE_PAYROLL", causes: [{ code: "ERR_STREAM_PREMATURE_CLOSE" }, { code: "ENOENT" }] };
+		const filed = await fileInTwoProcesses(() => recordIncident(PROVIDER_THROW, "user-visible", data));
+		for (const write of filed) {
+			assert.ok(!write.stdin.includes("PRIVATEALICE"), `no project code in the ${write.argv[1]}`);
+			assert.ok(write.stdin.includes('"code": "[unknown code]"'), `placeholder in the ${write.argv[1]}`);
+			for (const kept of ['"code": "ERR_STREAM_PREMATURE_CLOSE"', '"code": "ENOENT"']) assert.ok(write.stdin.includes(kept), `${kept} in the ${write.argv[1]}`);
+		}
+	});
+
 	it("keeps built-in error names, errno names, Node ERR_ codes, the bridge's own labels and Node's syscalls", async () => {
 		installFakeGh();
 		const data = {

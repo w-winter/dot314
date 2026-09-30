@@ -423,11 +423,31 @@ const PUBLIC_ERROR_NAMES: ReadonlySet<string> = new Set([
 	CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME, CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME,
 	"DirectConnectError", "McpError", "NoProjectDirectoryError", "PublishRefusedError", "TelemetrySafeError", "ZodError", "ZodEncodeError",
 ]);
-// Error codes: the runtime's errno names, Node's own `ERR_` namespace, and
-// the codes the bridge's errors set.
+// Error codes: the runtime's errno names, the codes the bridge's errors set,
+// and an exact list of Node's own codes, never a prefix: any library or
+// project may name its own codes `ERR_*`.
 const ERRNO_NAMES: ReadonlySet<string> = new Set(Object.keys(osConstants.errno));
-const NODE_ERROR_CODE = /^ERR_[A-Z0-9_]{1,60}$/;
 const BRIDGE_ERROR_CODES: ReadonlySet<string> = new Set([CLAUDE_SPAWN_FAILED_CODE, CLAUDE_SPAWN_UNKNOWN_CODE]);
+// The Node codes a thrown error's `code` can carry here (nameThrown: the
+// synchronous part of a request), grouped by the Node API that throws them.
+const NODE_ERROR_CODES: ReadonlySet<string> = new Set([
+	// argument validation
+	"ERR_INVALID_ARG_TYPE", "ERR_INVALID_ARG_VALUE", "ERR_OUT_OF_RANGE", "ERR_MISSING_ARGS", "ERR_INVALID_STATE", "ERR_UNKNOWN_ENCODING",
+	// fs, file URLs, and reading a file into memory
+	"ERR_FS_EISDIR", "ERR_FS_FILE_TOO_LARGE", "ERR_DIR_CLOSED", "ERR_DIR_CONCURRENT_OPERATION",
+	"ERR_INVALID_URL", "ERR_INVALID_URL_SCHEME", "ERR_INVALID_FILE_URL_PATH", "ERR_INVALID_FILE_URL_HOST", "ERR_STRING_TOO_LONG", "ERR_BUFFER_TOO_LARGE",
+	// child_process and its IPC channel
+	"ERR_UNKNOWN_SIGNAL", "ERR_CHILD_PROCESS_IPC_REQUIRED", "ERR_INVALID_SYNC_FORK_INPUT",
+	"ERR_IPC_CHANNEL_CLOSED", "ERR_IPC_DISCONNECTED", "ERR_IPC_ONE_PIPE", "ERR_IPC_SYNC_FORK",
+	// streams, pipes, readline and events
+	"ERR_STREAM_PREMATURE_CLOSE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END", "ERR_STREAM_ALREADY_FINISHED", "ERR_STREAM_CANNOT_PIPE",
+	"ERR_STREAM_PUSH_AFTER_EOF", "ERR_STREAM_NULL_VALUES", "ERR_MULTIPLE_CALLBACK", "ERR_METHOD_NOT_IMPLEMENTED", "ERR_USE_AFTER_CLOSE", "ERR_UNHANDLED_ERROR",
+	// module loading
+	"ERR_MODULE_NOT_FOUND", "ERR_REQUIRE_ESM", "ERR_REQUIRE_ASYNC_MODULE", "ERR_PACKAGE_PATH_NOT_EXPORTED", "ERR_INVALID_PACKAGE_CONFIG",
+	"ERR_UNKNOWN_FILE_EXTENSION", "ERR_UNSUPPORTED_DIR_IMPORT",
+	// libuv failures outside an errno (os)
+	"ERR_SYSTEM_ERROR",
+]);
 // The `syscall` of Node's and libuv's errors (fs, child_process, net, dns,
 // os, process), and the bridge's own preflight syscalls (`chdir`, `exec`).
 const PUBLIC_SYSCALLS: ReadonlySet<string> = new Set([
@@ -458,7 +478,7 @@ export function publishedModel(model: string): string {
 const PUBLISHED_EVIDENCE: Partial<Record<EvidenceKind, (value: string) => string>> = {
 	toolName: (value) => value === UNREGISTERED_TOOL_NAME ? value : publicToolName(value),
 	errorName: (value) => PUBLIC_ERROR_NAMES.has(value) ? value : "[unknown error name]",
-	errorCode: (value) => ERRNO_NAMES.has(value) || NODE_ERROR_CODE.test(value) || BRIDGE_ERROR_CODES.has(value) ? value : "[unknown code]",
+	errorCode: (value) => ERRNO_NAMES.has(value) || NODE_ERROR_CODES.has(value) || BRIDGE_ERROR_CODES.has(value) ? value : "[unknown code]",
 	syscall: (value) => PUBLIC_SYSCALLS.has(value) ? value : "[unknown syscall]",
 	version: publishedVersion,
 };
