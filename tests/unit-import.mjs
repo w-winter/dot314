@@ -195,6 +195,8 @@ describe("thinking block filtering", () => {
 // is owned by the REBUILD tests in unit-sync-shared-session.mjs.
 describe("latest assistant thinking replay", () => {
 	const rebuildConvert = (messages) => convertPiMessages(messages, undefined, { noteUnreplayableTurns: true }).anthropicMessages;
+	/** A note's text, whether it is a string or a content array. */
+	const noteText = (content) => typeof content === "string" ? content : content.map((block) => block.text ?? "").join("\n");
 	const history = [
 		{ role: "user", content: "start" },
 		{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
@@ -249,19 +251,21 @@ describe("latest assistant thinking replay", () => {
 		const result = rebuildConvert([...history, textOnly]);
 		assert.equal(result.length, 4);
 		assert.equal(result[3].role, "user");
-		assert.match(result[3].content, /could not be replayed as-is/);
-		assert.ok(result[3].content.includes("The file has two sections."), result[3].content);
+		assert.match(noteText(result[3].content), /could not be replayed as-is/);
+		assert.ok(noteText(result[3].content).includes("The file has two sections."), noteText(result[3].content));
 	});
 
-	it("notes a tool result's image and its error flag", () => {
+	it("carries a tool result's image in the note and keeps its error flag", () => {
 		const failed = { role: "toolResult", toolCallId: "t2", toolName: "read", isError: true, content: [
 			{ type: "text", text: "partial read" },
 			{ type: "image", data: "aGk=", mimeType: "image/png" },
+			{ type: "image", mimeType: "image/jpeg" },
 		] };
-		const result = rebuildConvert([...history, cutTail(), failed]);
-		const note = result.at(-1).content;
-		assert.ok(note.includes("Call 1 returned an error:\npartial read\n[image/png image, not carried in this note]"), note);
-		assert.ok(!note.includes("aGk="), "the image data is not carried");
+		const note = rebuildConvert([...history, cutTail(), failed]).at(-1).content;
+		assert.deepEqual(note.map((block) => block.type), ["text", "image", "text"]);
+		assert.ok(note[0].text.endsWith("Call 1 returned an error:\npartial read"), note[0].text);
+		assert.deepEqual(note[1], { type: "image", source: { type: "base64", media_type: "image/png", data: "aGk=" } });
+		assert.equal(note[2].text, "[image/jpeg image, not carried in this note]", "an image without data keeps a marker");
 	});
 
 	it("lists the turn's text and calls in order, then the results in the order they came back", () => {
@@ -274,8 +278,7 @@ describe("latest assistant thinking replay", () => {
 		] };
 		const result2 = { role: "toolResult", toolCallId: "c2", toolName: "read", content: "B body" };
 		const result1 = { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "A body" }] };
-		const content = rebuildConvert([...history, turn, result2, result1]).at(-1).content;
-		const note = typeof content === "string" ? content : content.map((block) => block.text ?? "").join("\n");
+		const note = noteText(rebuildConvert([...history, turn, result2, result1]).at(-1).content);
 		const at = (part) => {
 			const index = note.indexOf(part);
 			assert.ok(index >= 0, `${part} is missing from: ${note}`);
@@ -298,7 +301,7 @@ describe("latest assistant thinking replay", () => {
 		const result = rebuildConvert([...history, earlierCut, tailResult, laterCut]);
 		assert.deepEqual(result.map((message) => message.role), ["user", "assistant", "user", "user", "user"]);
 		assert.deepEqual(result[1].content[0], { type: "thinking", thinking: "step one", signature: "sig1" });
-		assert.ok(result[3].content.includes("b body") && result[4].content.includes("b is empty"));
+		assert.ok(noteText(result[3].content).includes("b body") && noteText(result[4].content).includes("b is empty"));
 	});
 });
 

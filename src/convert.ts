@@ -165,16 +165,46 @@ function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
 
 export const UNREPLAYED_TURN_NOTE_HEADER = "[Claude bridge: one of your earlier replies could not be replayed as-is, because part of its thinking was cut off. This note records what that reply said and did, in order.]";
 
-/** A tool result's text as a note carries it: its text blocks, and a marker
- *  for anything else (an image is named, never carried). */
-function toolResultNoteText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content.map((block: { type?: string; text?: string; mimeType?: string }) => {
-		if (block.type === "text") return block.text ?? "";
-		if (block.type === "image") return `[${block.mimeType ?? "unknown"} image, not carried in this note]`;
-		return `[${block.type}]`;
-	}).filter((part) => part.length > 0).join("\n");
+/** A piece of a note: a line of text, or an image block. */
+type NotePart = string | ContentBlock;
+
+/** A tool result's content as a note carries it, in its own order: each text
+ *  block, each image as the image block the normal import builds, and a text
+ *  marker for an image that converter cannot carry (no data or mimeType) or
+ *  for any other block. */
+function toolResultNoteText(content: unknown): NotePart[] {
+	if (typeof content === "string") return content ? [content] : [];
+	if (!Array.isArray(content)) return [];
+	const parts: NotePart[] = [];
+	for (const block of content as Array<{ type?: string; text?: string; data?: string; mimeType?: string }>) {
+		if (block.type === "text") {
+			if (block.text) parts.push(block.text);
+		} else if (block.type === "image") {
+			parts.push(imageBlockToAnthropic(block) ?? `[${block.mimeType ?? "unknown"} image, not carried in this note]`);
+		} else {
+			parts.push(`[${block.type}]`);
+		}
+	}
+	return parts;
+}
+
+/** A note's sections as content blocks: the lines of a section joined by one
+ *  newline and sections by a blank line, with each image block between the
+ *  text blocks around it. */
+function noteContent(sections: NotePart[][]): ContentBlock[] {
+	const blocks: ContentBlock[] = [];
+	let text = "";
+	sections.forEach((section, s) => section.forEach((part, p) => {
+		if (typeof part === "string") {
+			text += (text ? (p > 0 ? "\n" : s > 0 ? "\n\n" : "") : "") + part;
+			return;
+		}
+		if (text) blocks.push({ type: "text", text });
+		text = "";
+		blocks.push(part);
+	}));
+	if (text) blocks.push({ type: "text", text });
+	return blocks;
 }
 
 /** The user-side note a rebuild imports in place of a Claude turn it cannot
@@ -182,34 +212,35 @@ function toolResultNoteText(content: unknown): string {
  *  and calls before any result came back, so the note lists its text and each
  *  numbered tool call's Pi name and arguments in content order, then each
  *  result by call number and error flag in the order `results` holds them
- *  (history order), then each call with no recorded result. Not its thinking.
- *  Nothing is cut, so it carries what the normal import would. */
-function unreplayedTurnNote(msg: AssistantMessage, results: Map<string, PiMessage>): string {
-	const parts = [UNREPLAYED_TURN_NOTE_HEADER];
+ *  (history order), then each call with no recorded result. A result's images
+ *  are carried as image blocks in their place. Not its thinking. Nothing is
+ *  cut, so it carries what the normal import would. */
+function unreplayedTurnNote(msg: AssistantMessage, results: Map<string, PiMessage>): ContentBlock[] {
+	const sections: NotePart[][] = [[UNREPLAYED_TURN_NOTE_HEADER]];
 	const callNumbers = new Map<string, number>();
 	for (const block of msg.content) {
 		if (block.type === "text" && block.text) {
-			parts.push(`You wrote:\n${block.text}`);
+			sections.push(["You wrote:", block.text]);
 		} else if (block.type === "toolCall") {
 			const number = callNumbers.size + 1;
 			callNumbers.set(block.id, number);
-			parts.push(`Call ${number}: you called ${block.name} with arguments ${JSON.stringify(block.arguments ?? {})}.`);
+			sections.push([`Call ${number}: you called ${block.name} with arguments ${JSON.stringify(block.arguments ?? {})}.`]);
 		}
 	}
-	if (callNumbers.size === 0) return parts.join("\n\n");
-	parts.push("The results came back afterwards, in this order.");
+	if (callNumbers.size === 0) return noteContent(sections);
+	sections.push(["The results came back afterwards, in this order."]);
 	const answered = new Set<string>();
 	for (const [id, result] of results) {
 		const number = callNumbers.get(id);
 		if (number === undefined || result.role !== "toolResult") continue;
 		answered.add(id);
-		const text = toolResultNoteText(result.content);
-		parts.push(`${result.isError ? `Call ${number} returned an error:` : `Call ${number} returned:`}\n${text || "(no text)"}`);
+		const content = toolResultNoteText(result.content);
+		sections.push([result.isError ? `Call ${number} returned an error:` : `Call ${number} returned:`, ...(content.length > 0 ? content : ["(no text)"])]);
 	}
 	for (const [id, number] of callNumbers) {
-		if (!answered.has(id)) parts.push(`Call ${number}: no result was recorded.`);
+		if (!answered.has(id)) sections.push([`Call ${number}: no result was recorded.`]);
 	}
-	return parts.join("\n\n");
+	return noteContent(sections);
 }
 
 /** Convert pi message array to Anthropic API format. `noteUnreplayableTurns`

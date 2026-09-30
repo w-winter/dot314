@@ -446,7 +446,7 @@ describe("syncSharedSession REBUILD import of a turn it cannot replay exactly", 
 				const result = syncSharedSession(messages, cwd);
 
 				const imported = importedRecords(result.sessionId, cwd, claudeDir);
-				assert.deepEqual(imported.map(([type, content]) => [type, typeof content === "string" && type === "user" && content !== "start" ? "note" : shape(content)]), [
+				assert.deepEqual(imported.map(([type, content]) => [type, type === "user" && noteText(content).includes("could not be replayed as-is") ? "note" : shape(content)]), [
 					["user", "start"],
 					["assistant", ["thinking", "tool_use:t1"]],
 					["user", ["tool_result:t1"]],
