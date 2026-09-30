@@ -1,12 +1,12 @@
 # Changelog
 
-Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Entries written when this file was created list the commits behind them.
+Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
 ## 2026-09-30
 
 ### Highlights
 
-- **No automatic bug reports.** The incident system is gone. By default, you see an error when it ends the turn, plus a few TUI warnings. Tool-call errors the bridge returns to Claude, and problems it recovers from, stay out of the TUI.
+- **No automatic bug reports.** The incident system is gone.
 - **Agent notices:** with `agentNotices` on, the agent is told about bridge anomalies.
 - **Debug log:** it no longer carries tool output or your text.
 - **Dropped attempts:** a tool call from a response attempt that Claude Code dropped never reaches Pi.
@@ -14,12 +14,17 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Added
 
+- **A fix hint on Anthropic's third-party-app rejection.**
+  - **Before:** Anthropic's error said "Third-party apps now draw from your extra usage … Add more at claude.ai/settings/usage", which points at buying Extra Usage instead of the real fix.
+  - **Now:** the error keeps Anthropic's text and adds a fixed hint. The hint names Pi's two documentation clauses and says to set `systemPrompt.replacement` in the user `claude-bridge.json`. An extension that copies Pi's full prompt into its own model call has to send its own prompt instead.
+  - The hint is fixed text with no paths or other values in it, so it never makes Pi retry or compact on the error.
+  - When a reply to a mid-turn message is rejected this way, the warning shows the whole hint after its short excerpt. (`d13aaf7`, `72f6603`, `e8add1e`)
 - **Agent notices:** with `agentNotices: true` in the user `claude-bridge.json`, the agent now hears about bridge anomalies it would otherwise never see.
   - That means an error the bridge wrote, or a problem the bridge recovered from on its own, such as a dropped mid-turn message or a tool call left without a result.
   - Each kind is told once per Pi session. The notice goes with your next prompt as a message in the conversation, and is shown in the TUI. Repeats are not told again.
-  - Normal cleanup is not told. That covers a cancelled request, a max-tokens stop and a restart on compacted history. Neither are errors reported by the API or Claude Code.
+  - Normal cleanup is not told. That covers a cancelled request, a max-tokens stop and a restart on compacted history. Errors reported by the API or Claude Code aren't told either.
   - It is off by default, and a project's `claude-bridge.json` cannot turn it on. `CLAUDE_BRIDGE_DEBUG=1` does not turn it on or off: it keeps the details in the bridge logs, and the notice says where they are, or that they were not recorded.
-  - The bridge never sends a message or starts a turn of its own. (`13ff322`, `05a6999`, `13480a9`)
+  - The bridge never sends a message or starts a turn of its own. (`13ff322`, `05a6999`, `13480a9`, `58e3d64`, `cd58ad8`)
 - **Versions in the debug log:** it now records what wrote it.
   - When the bridge loads, one line gives the bridge commit, the Pi version and the Node version.
   - Another line gives Claude Code's version the first time a query reports it, and again whenever it changes. (`0946b32`)
@@ -47,13 +52,13 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 - **The third-party-app refusal**, added 2026-09-29.
   - **What it did:** the bridge refused any request whose system prompt carried both clauses of Pi's documentation line, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`, before Claude Code started. In debug mode, the agent was told about each refusal.
   - **Why it is gone:** some setups send such requests on purpose and make them acceptable their own way, and for them every refusal was a false block.
-  - **What replaces it:** the bridge sends every request as it is. The README now requires Extra Usage turned off and `systemPrompt.replacement` set. With Extra Usage off, Anthropic rejects a third-party-app request itself with HTTP 400. Its error points at buying Extra Usage, so the bridge adds a hint that names the two clauses and the fix: `systemPrompt.replacement`, or, for an extension that copies Pi's prompt into its own model call, a prompt of its own.
+  - **What replaces it:** the bridge sends every request as it is. The README now requires Extra Usage turned off and `systemPrompt.replacement` set. With Extra Usage off, Anthropic rejects a third-party-app request itself with HTTP 400, and the bridge adds a fix hint to that error (see Added). (`de58c87`)
 
 ### Fixed
 
 - **Anthropic's third-party-app rejection rotated accounts.**
   - **Before:** its text mentions extra usage, so the bridge took it for a rate limit. With managed account profiles, the request moved to the next profile, which rejected it the same way, and each profile it tried had a rate limit recorded against it.
-  - **Now:** the request ends on the first profile with Anthropic's error. The rejection follows the system prompt, not the account.
+  - **Now:** the request ends on the first profile with Anthropic's error. The rejection follows the system prompt, not the account. (`89aaa75`)
 - **Pi could run a call from a dropped attempt.**
   - **Before:** Pi could run a tool call from a response attempt that Claude Code had thrown away. When Claude Code retries a response, it aborts the attempt's tools and never uses their results. The bridge, though, kept the attempt's finished calls and waited for a separate cancel message, which can arrive after the retry has finished.
   - **Now:** a dropped attempt's calls are withdrawn at once, and their waiting handlers get an error. (`6120d60`, `e234203`, `0e6b9cf`, `f897b13`, `9efca58`)
