@@ -194,3 +194,33 @@ it("reports a malformed session record by line, without the parser's excerpt of 
 	assert.match(warnings[0], /^malformed JSONL — path=\S+ line=2 err=SyntaxError/);
 	assert.ok(!warnings[0].includes(marker), "the warning carries the record's content");
 });
+
+// A log read later has to name what produced it: the bridge commit, Pi and
+// Node when the extension loads, and Claude Code's version when a query first
+// reports it or reports a different one.
+it("stamps the log with the bridge, Pi, Node and Claude Code versions", async () => {
+	const log = logWithConfig(JSON.stringify({ enabled: false }), () => {
+		claudeBridge({ on: () => {}, registerCommand: () => {}, registerProvider: () => {}, registerTool: () => {}, events: { emit: () => {} }, appendEntry: () => {} });
+	});
+	assert.equal(log.match(/versions: bridge=([0-9a-f]{12}|unknown) pi=\S+ node=v\d+\.\d+\.\d+\n/g)?.length, 1, log);
+
+	const offset = readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8").length;
+	let version = "0.0.1";
+	__testSetSdkQueryFactory(() => ({
+		async *[Symbol.asyncIterator]() {
+			yield { type: "system", subtype: "init", session_id: `versions-${clock++}`, claude_code_version: version };
+			yield* textTurn("hi");
+			yield { type: "result", subtype: "success" };
+		},
+		async streamInput() {},
+		close() {},
+		async interrupt() {},
+	}));
+	for (const next of ["0.0.1", "0.0.1", "0.0.2"]) {
+		version = next;
+		const events = await collect(streamClaudeAgentSdk(model, { messages: [system, user("hello")] }, { sessionId: `VERSIONS-${clock++}` }));
+		assert.equal(events.at(-1).type, "done");
+	}
+	const lines = readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8").slice(offset).match(/versions: claude-code=\S+/g);
+	assert.deepEqual(lines, ["versions: claude-code=0.0.1", "versions: claude-code=0.0.2"]);
+});

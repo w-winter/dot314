@@ -12,11 +12,9 @@
 // leaves the process.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, stat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME, CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME, CLAUDE_SPAWN_FAILED_CODE, CLAUDE_SPAWN_UNKNOWN_CODE } from "./claude-executable.js";
 import { piUserDir } from "./config.js";
 import { DEBUG_LOG_MAX_BYTES, DEBUG_LOG_ROTATED_FILES, debug, diagDump } from "./debug.js";
@@ -26,6 +24,7 @@ import { RECORDER_KINDS, type FlightRecord, type FlightRecorder } from "./flight
 import { SDK_RESULT_SUBTYPES, SDK_SYSTEM_SUBTYPES, STREAM_ABANDON_REASONS, TURN_BLOCK_TYPES } from "./incident-labels.js";
 import { MODEL_IDS_IN_ORDER } from "./models.js";
 import { MCP_TOOL_PREFIX } from "./skills.js";
+import { PACKAGE_ROOT, readBridgeCommit, readPiVersion } from "./versions.js";
 
 /** user-visible: Claude or Pi got a bridge-authored error. silent: integrity
  *  mismatch, forced rebuild, dropped deferred message. expected: normal
@@ -178,59 +177,6 @@ export interface IncidentSource {
 }
 
 // --- Versions ---
-
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-function readGitFile(path: string): string | undefined {
-	try { return readFileSync(path, "utf8").trim(); } catch { return undefined; }
-}
-
-/** The commit the bridge was loaded from, read once from its clone's `.git`
- *  (a directory, or a worktree's `gitdir:` file). Undefined outside a clone. */
-function readBridgeCommit(root: string): string | undefined {
-	try {
-		let gitDir = join(root, ".git");
-		const pointer = readGitFile(gitDir);
-		if (pointer?.startsWith("gitdir:")) gitDir = resolve(root, pointer.slice("gitdir:".length).trim());
-		else if (!existsSync(join(gitDir, "HEAD"))) return undefined;
-		const commonDirRef = readGitFile(join(gitDir, "commondir"));
-		const commonDir = commonDirRef ? resolve(gitDir, commonDirRef) : gitDir;
-		const head = readGitFile(join(gitDir, "HEAD"));
-		if (!head) return undefined;
-		if (!head.startsWith("ref:")) return /^[0-9a-f]{40}$/.test(head) ? head.slice(0, 12) : undefined;
-		const ref = head.slice("ref:".length).trim();
-		const loose = readGitFile(join(gitDir, ref)) ?? readGitFile(join(commonDir, ref));
-		if (loose && /^[0-9a-f]{40}$/.test(loose)) return loose.slice(0, 12);
-		const packed = readGitFile(join(commonDir, "packed-refs"));
-		const line = packed?.split("\n").find((entry) => entry.endsWith(` ${ref}`));
-		const sha = line?.split(" ")[0];
-		return sha && /^[0-9a-f]{40}$/.test(sha) ? sha.slice(0, 12) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** The host Pi's version, from the package its CLI entry belongs to. Read
- *  from disk: importing the host package from here would evaluate it again. */
-function readPiVersion(): string | undefined {
-	try {
-		const entry = process.argv[1];
-		if (!entry) return undefined;
-		let dir = dirname(realpathSync(entry));
-		for (let i = 0; i < 6; i++) {
-			const pkg = readGitFile(join(dir, "package.json"));
-			if (pkg) {
-				const parsed = JSON.parse(pkg) as { name?: unknown; version?: unknown };
-				if ((parsed.name === "@earendil-works/pi-coding-agent" || parsed.name === "@mariozechner/pi-coding-agent") && typeof parsed.version === "string") return parsed.version;
-			}
-			const parent = dirname(dir);
-			if (parent === dir) break;
-			dir = parent;
-		}
-	} catch { /* not a Pi process */ }
-	return undefined;
-}
-
 const BRIDGE_COMMIT = readBridgeCommit(PACKAGE_ROOT);
 const PI_VERSION = readPiVersion();
 let claudeCodeVersion: string | undefined;

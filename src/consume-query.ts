@@ -25,6 +25,7 @@ import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
 import { sdkQueryAbandoned } from "./query-teardown.js";
 import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.js";
+import { logClaudeCodeVersion } from "./versions.js";
 
 const ABANDONED: unique symbol = Symbol("sdk-query-abandoned");
 
@@ -306,7 +307,10 @@ export async function consumeQuery(
 				}
 				break;
 			case "system":
-				if ((message as any).subtype === "init") noteClaudeCodeVersion((message as any).claude_code_version, queryCtx);
+				if ((message as any).subtype === "init") {
+					logClaudeCodeVersion((message as any).claude_code_version);
+					noteClaudeCodeVersion((message as any).claude_code_version, queryCtx);
+				}
 				if (!streamLive) break;
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
