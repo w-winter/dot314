@@ -127,4 +127,14 @@ describe("loadConfig", () => {
 		assert.equal(config.provider?.forceEffort, undefined);
 		assert.equal(config.provider?.modelEffortOverrides, undefined);
 	}));
+
+	it("ignores an incidents key like any other unknown key", () => withTempDirs(({ user, project }) => {
+		writeFileSync(join(user, "claude-bridge.json"), JSON.stringify({
+			enabled: false,
+			provider: { fastMode: true },
+			incidents: { repo: "owner/bridge-incidents" },
+		}));
+
+		assert.deepEqual(loadConfig(project), { enabled: false, systemPrompt: {}, provider: { fastMode: true } });
+	}));
 });

@@ -6,15 +6,12 @@ import { resolve as pathResolve } from "path";
 import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
-import { debug, diagGuidance } from "./debug.js";
+import { debug, diagDump, diagGuidance } from "./debug.js";
 import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
-import { reportDiag, withIncident } from "./incidents.js";
-import { ctx } from "./query-state.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import {
 	findUnpairedToolUses,
 	insertLostToolResultPlaceholders,
-	LOST_TOOL_RESULT_TEXT,
 	recoverLaterToolResults,
 } from "./tool-pairing-audit.js";
 import { claudeDirForProfile, resolveClaudeAccountRouter, type AccountSessionScope } from "./account-router.js";
@@ -314,7 +311,7 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 			// bridge marker and silently rebuilds — worth a diagnostic entry.
 			// Like all diagDump output this lands only under CLAUDE_BRIDGE_DEBUG=1
 			// and the failure itself stays non-fatal either way.
-			reportDiag("persist_shared_session_failed", "schedulePersistSharedSession", {
+			diagDump("persist_shared_session_failed", {
 				sessionId: snapshot.sessionId.slice(0, 8),
 				cursor: snapshot.cursor,
 				error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -342,7 +339,7 @@ function convertAndImportMessages(
 	if (notedTurns.length > 0) {
 		const calls = notedTurns.flatMap((turn) => turn.calls);
 		debug(`convertAndImportMessages: ${notedTurns.length} trailing Claude turn(s) with unsigned thinking imported as a note, carrying ${calls.length} tool call(s):`, calls.map((call) => `${call.name} [${call.id}]`).join(", "));
-		reportDiag("unreplayable_turn_imported_as_note", "convertAndImportMessages", { count: notedTurns.length, calls: calls.slice(0, 50) }, ctx());
+		diagDump("unreplayable_turn_imported_as_note", { count: notedTurns.length, calls: calls.slice(0, 50) });
 	}
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
@@ -373,14 +370,14 @@ function convertAndImportMessages(
 	// what to do. repairToolPairing still runs after (idempotent; finds nothing left).
 	const missingToolResults = findUnpairedToolUses(anthropicMessages);
 	if (missingToolResults.length > 0) {
-		const incident = reportSyntheticToolResultRepair(missingToolResults, {
+		reportSyntheticToolResultRepair(missingToolResults, {
 			cwd,
 			messageCount: messages.length,
 			anthropicMessageCount: anthropicMessages.length,
 			sessionId: session.sessionId,
 			jsonlPath: session.jsonlPath,
-		}, ctx());
-		insertLostToolResultPlaceholders(anthropicMessages, missingToolResults, withIncident(LOST_TOOL_RESULT_TEXT, incident));
+		});
+		insertLostToolResultPlaceholders(anthropicMessages, missingToolResults);
 	}
 	const repaired = repairToolPairing(anthropicMessages);
 	if (repaired.length !== anthropicMessages.length) {
@@ -474,7 +471,7 @@ function verifyWrittenSession(
 			`For details, ${diagGuidance()}.`,
 			"warning",
 		);
-		reportDiag("session_verify_fail", "verifyWrittenSession", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? null }, ctx());
+		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? null });
 	}
 }
 

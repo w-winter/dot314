@@ -9,7 +9,6 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, onPiHistoryReplaced, streamClaudeAgentSdk } from "../src/index.ts";
 import { cancelScheduledToolUseEnd } from "../src/assistant-stream.ts";
-import { __testResetIncidents, listIncidents } from "../src/incidents.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 
 const model = { id: "claude-haiku-4-5", api: "claude-bridge", provider: "pi-claude", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -188,39 +187,31 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 		});
 	});
 
-	it("drains the waiting handler of a query it restarts as expected cleanup", async () => {
-		__testResetIncidents();
+	it("gives the restarted query the real result, and the drain error only to the discarded one", async () => {
 		await withWaitingQuery(async ({ root, record, calls }) => {
 			await waitFor(() => ctx().pendingToolCalls.has("t0"));
 			onPiHistoryReplaced("session_compact");
 			const events = await collect(streamClaudeAgentSdk(model, { messages: [system, user("summary"), toolCall, toolResult] }, { cwd: root }));
 			assert.equal(calls.length, 2);
 			assert.equal(events.filter((event) => event.type === "done").length, 1);
+			assert.equal(events.some((event) => event.type === "error"), false, "Pi gets no error");
 			const answer = await record.answer;
 			assert.equal(answer.isError, true);
-			assert.doesNotMatch(answer.content[0].text, /incident/);
-			const interrupted = listIncidents().filter((incident) => incident.signature.startsWith("tool_calls_interrupted@"));
-			assert.deepEqual(interrupted.map((incident) => [incident.signature, incident.class]), [["tool_calls_interrupted@history-restart", "expected"]]);
-			assert.deepEqual(listIncidents().filter((incident) => incident.class === "user-visible").map((incident) => incident.signature), []);
+			assert.equal(answer.content[0].text, "Claude bridge: the bridge restarted the query on Pi's replaced history before this tool call's result was delivered. The call did not complete and produced no output.");
 			const imported = importedMessages(root, calls[1].options.resume);
 			const blocks = imported.flatMap((message) => Array.isArray(message.content) ? message.content : []);
-			assert.deepEqual(blocks.filter((block) => block.type === "tool_result").map((block) => block.content), ["tool output"]);
+			assert.deepEqual(blocks.filter((block) => block.type === "tool_result").map((block) => [block.content, block.is_error === true]), [["tool output", false]], "the restarted query holds the real result, not an error");
 		}, undefined, false, handlerWaitingQuery);
-		__testResetIncidents();
 	});
 
-	it("still names the drain of a query that ends with a waiting handler", async () => {
-		__testResetIncidents();
+	it("still fails the waiting handler of a query that ends, saying the query ended", async () => {
 		await withWaitingQuery(async ({ record }) => {
 			await waitFor(() => ctx().pendingToolCalls.has("t0"));
 			record.release();
 			const answer = await record.answer;
 			assert.equal(answer.isError, true);
-			const incident = listIncidents().find((entry) => entry.signature === "tool_calls_interrupted@query-end");
-			assert.equal(incident?.class, "user-visible");
-			assert.match(answer.content[0].text, new RegExp(`the query ended .* \\(incident ${incident.id}\\)$`));
+			assert.equal(answer.content[0].text, "Claude bridge: the query ended before this tool call's result was delivered. The call did not complete and produced no output.");
 		}, undefined, false, handlerWaitingQuery);
-		__testResetIncidents();
 	});
 
 	for (const childToolName of ["mcp__claude_ai_slack__post_message", "mcp__linear__create_issue"]) {
@@ -259,7 +250,6 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 	});
 
 	it("ends the callback on abort without changing the delivered tool-use turn", async () => {
-		__testResetIncidents();
 		await withWaitingQuery(async ({ root, record, calls, opening }) => {
 			await waitFor(() => ctx().pendingToolCalls.has("t0"));
 			onPiHistoryReplaced("session_compact");
@@ -274,11 +264,10 @@ describe("compaction while Claude waits for a Pi tool result", () => {
 			assert.equal(result.at(-1)?.reason, "aborted");
 			assert.deepEqual(result.at(-1)?.error.content, []);
 			assert.equal(opening.find((event) => event.type === "done").message.stopReason, "toolUse");
-			assert.equal((await record.answer).isError, true);
-			const interrupted = listIncidents().filter((incident) => incident.signature.startsWith("tool_calls_interrupted@"));
-			assert.deepEqual(interrupted.map((incident) => [incident.signature, incident.class]), [["tool_calls_interrupted@abort", "expected"]]);
+			const answer = await record.answer;
+			assert.equal(answer.isError, true);
+			assert.equal(answer.content[0].text, "Claude bridge: the turn was aborted before this tool call's result was delivered. The call did not complete and produced no output.");
 		}, undefined, false, handlerWaitingQuery);
-		__testResetIncidents();
 	});
 
 	it("rebuilds in place when no Claude query is active at compaction", async () => {

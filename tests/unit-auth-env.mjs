@@ -103,7 +103,8 @@ describe("Anthropic credentials in the parent environment", () => {
 
 		const refused = await collect(streamClaudeAgentSdk(model, context, { sessionId: "auth-env-default" }));
 		assert.equal(spawned.length, 0, "no child without a usable credential");
-		assert.match(refused.at(-1)?.error?.errorMessage ?? "", /Claude account not connected/);
+		assert.equal(refused.at(-1)?.error?.errorMessage, "Claude account not connected — connect an account (or run `claude login`) and retry.");
+		assert.equal(piAi.isRetryableAssistantError(refused.at(-1).error), false, "Pi does not retry a disconnected account");
 
 		optIn();
 		await collect(streamClaudeAgentSdk(model, context, { sessionId: "auth-env-opt-in" }));

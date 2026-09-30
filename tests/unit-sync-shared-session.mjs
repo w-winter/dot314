@@ -18,7 +18,6 @@ import { conversationFingerprint, syncSharedSession } from "../src/session-persi
 import { getSessionPath, parseJsonlFile } from "cc-session-io";
 import { historyDigest } from "../src/history-digest.js";
 import { __testGetBridgeIntegrityState, setSharedSession } from "../src/bridge-state.js";
-import { __testResetIncidents, listIncidents } from "../src/incidents.js";
 import { findUnpairedToolUses } from "../src/tool-pairing-audit.js";
 
 const user = (text) => ({ role: "user", content: text });
@@ -383,7 +382,6 @@ describe("syncSharedSession REBUILD import of a turn it cannot replay exactly", 
 		withTempClaudeDir((claudeDir) => {
 			const cwd = mkdtempSync(join(tmpdir(), "bridge-sync-cwd-"));
 			try {
-				__testResetIncidents();
 				const messages = [
 					user("create notes.md"),
 					{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
@@ -405,10 +403,6 @@ describe("syncSharedSession REBUILD import of a turn it cannot replay exactly", 
 				assert.ok(note.includes('write with arguments {"path":"notes.md","content":"x"}'), note);
 				assert.ok(note.includes("Wrote notes.md"), note);
 				assert.ok(!note.includes("cut off mid-thought"), "thinking is not carried");
-				assert.deepEqual(
-					listIncidents().filter((incident) => incident.signature.startsWith("unreplayable_turn")).map((incident) => [incident.signature, incident.class]),
-					[["unreplayable_turn_imported_as_note@convertAndImportMessages", "silent"]],
-				);
 
 				// Claude holds the turn's content, so the digest may vouch for it.
 				const record = __testGetBridgeIntegrityState().sharedSession;
@@ -417,7 +411,6 @@ describe("syncSharedSession REBUILD import of a turn it cannot replay exactly", 
 				assert.equal(second.sessionId, first.sessionId, "the next prompt reuses the rebuilt session");
 				assert.equal(second.promptStart, 3);
 			} finally {
-				__testResetIncidents();
 				rmSync(cwd, { recursive: true, force: true });
 			}
 		});

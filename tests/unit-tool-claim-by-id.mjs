@@ -285,6 +285,19 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		await second;
 	});
 
+	it("answers an untagged tools/call it cannot match to any tool_use with an internal error", async () => {
+		const observed = {};
+		installFakeClaudeCode(observed, async function* (client) {
+			observed.call = client.callTool({ name: "echo", arguments: ARGS });
+			await observed.call;
+			yield* FINAL_REPLY;
+		});
+		await collect(streamClaudeAgentSdk(model, initialContext(), { sessionId: "claim-unmatched" }));
+		const result = await observed.call;
+		assert.equal(result.isError, true);
+		assert.deepEqual(result.content, [{ type: "text", text: "Claude bridge internal error: no matching tool_call id for echo" }]);
+	});
+
 	it("rejects a new tagged call under a withdrawn tool without taking another call's result", async () => {
 		let openGate, freshIssued;
 		const observed = {
@@ -317,7 +330,7 @@ describe("an MCP tool call is claimed by its tool_use id", () => {
 		await observed.issued;
 		const fresh = await observed.fresh;
 		assert.equal(fresh.content.length, 1);
-		assert.match(fresh.content[0].text, /^Tool echo is no longer active in Pi\. \(incident bi-[0-9a-z]{4,6}\)$/);
+		assert.equal(fresh.content[0].text, "Tool echo is no longer active in Pi.");
 		assert.equal(fresh.isError, true);
 		assert.deepEqual((await observed.old).content, [{ type: "text", text: "RESULT OLD" }], "the executed call's late invocation still gets its result");
 		await second;

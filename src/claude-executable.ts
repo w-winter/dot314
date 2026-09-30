@@ -74,15 +74,6 @@ export const CLAUDE_SPAWN_UNKNOWN_CODE = "SPAWN_ERROR";
  *  wording, not the class, is what reaches the query's catch. */
 export const CLAUDE_SPAWN_FAILED_WORDING = "Claude Code spawn failed: ";
 
-/** Whether `error` is one the bridge wrote about Claude Code's executable or
- *  spawn, as thrown or as the SDK rewrapped it. */
-export function isBridgeClaudeError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	return error.name === CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME
-		|| error.name === CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME
-		|| (typeof error.message === "string" && error.message.includes(CLAUDE_SPAWN_FAILED_WORDING));
-}
-
 function makeClaudePreflightError(
 	summary: string,
 	details: { code: string; errno?: string | number; syscall?: string; path: string; cwd: string; fileType?: ClaudeExecutableFileType; realPath?: string; cause?: unknown },

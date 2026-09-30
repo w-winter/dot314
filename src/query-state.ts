@@ -12,10 +12,8 @@ import type { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { isConnectorTool } from "./connectors.js";
 import type { McpResult } from "./extract-tool-results.js";
-import { FlightRecorder } from "./flight-recorder.js";
-import { reportDiag, reportIncident, withIncident, type Incident } from "./incidents.js";
 import { currentRequestLaneId } from "./request-lane.js";
-import { debug } from "./debug.js";
+import { debug, diagDump } from "./debug.js";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
 import { UserMessageLedger } from "./user-message-ledger.js";
 
@@ -79,9 +77,9 @@ const DRAIN_CAUSE_TEXT: Record<ToolCallDrainCause, string> = {
 	"query-end": "the query ended",
 };
 
-export function interruptedToolCallResult(cause: ToolCallDrainCause, incident?: Incident): McpResult {
+export function interruptedToolCallResult(cause: ToolCallDrainCause): McpResult {
 	return {
-		content: [{ type: "text", text: withIncident(`Claude bridge: ${DRAIN_CAUSE_TEXT[cause]} before this tool call's result was delivered. The call did not complete and produced no output.`, incident) }],
+		content: [{ type: "text", text: `Claude bridge: ${DRAIN_CAUSE_TEXT[cause]} before this tool call's result was delivered. The call did not complete and produced no output.` }],
 		isError: true,
 	};
 }
@@ -99,13 +97,17 @@ export function toolCallDrainCause(flags: { wasAborted?: boolean; signalAborted?
 
 /** Resolves every handler still waiting on `queryCtx` with an error result naming
  *  `cause`, clears the map, and returns how many were drained. Scoped to the one
- *  context it is given — never touches a sibling or parent query's handlers. */
+ *  context it is given — never touches a sibling or parent query's handlers.
+ *  A drain at "abort" or "history-restart" is expected cleanup: an abort answers
+ *  calls the user cancelled, and a restart on Pi's replaced history
+ *  (restartOnReplacedHistory) re-imports Pi's history, tool results included,
+ *  into a rotated session, so the drained answer reaches only the discarded
+ *  child. A drain at any other cause gives Claude an error for a call that
+ *  did not complete. */
 export function drainPendingToolCalls(queryCtx: QueryContext, cause: ToolCallDrainCause): number {
 	const drained = queryCtx.pendingToolCalls.size;
 	if (drained === 0) return 0;
-	queryCtx.recorder.record("handlers_drained", undefined, undefined, drained);
-	const incident = reportIncident("tool_calls_interrupted", cause, { count: drained, cause, toolCallIds: [...queryCtx.pendingToolCalls.keys()] }, queryCtx);
-	const result = interruptedToolCallResult(cause, incident);
+	const result = interruptedToolCallResult(cause);
 	for (const pending of queryCtx.pendingToolCalls.values()) pending.resolve(result);
 	queryCtx.pendingToolCalls.clear();
 	return drained;
@@ -114,9 +116,9 @@ export function drainPendingToolCalls(queryCtx: QueryContext, cause: ToolCallDra
 /** The error a stranded handler resolves with: its call never reached Pi and
  *  the forward paths have marked it dead, so no result can ever arrive and the
  *  call is guaranteed not to have executed on the Pi side. */
-export function strandedToolCallResult(incident?: Incident): McpResult {
+export function strandedToolCallResult(): McpResult {
 	return {
-		content: [{ type: "text", text: withIncident("Claude bridge: this tool call was never forwarded to Pi before its turn ended, so it did not execute and no result can arrive. Re-run the tool.", incident) }],
+		content: [{ type: "text", text: "Claude bridge: this tool call was never forwarded to Pi before its turn ended, so it did not execute and no result can arrive. Re-run the tool." }],
 		isError: true,
 	};
 }
@@ -133,8 +135,8 @@ export function failStrandedToolCall(queryCtx: QueryContext, id: string): boolea
 	if (!pending) return false;
 	queryCtx.pendingToolCalls.delete(id);
 	queryCtx.deadToolCallIds.add(id);
-	const incident = reportDiag("tool_handler_stranded", "finalize-no-stream", { toolCallId: id, toolName: pending.toolName, site: "finalize-no-stream" }, queryCtx);
-	pending.resolve(strandedToolCallResult(incident));
+	diagDump("tool_handler_stranded", { toolCallId: id, toolName: pending.toolName, site: "finalize-no-stream" });
+	pending.resolve(strandedToolCallResult());
 	return true;
 }
 
@@ -154,12 +156,12 @@ export function drainStrandedToolCalls(queryCtx: QueryContext): Array<{ id: stri
 		stranded.push({ id, toolName: pending.toolName });
 	}
 	if (stranded.length === 0) return stranded;
-	const incident = reportDiag("tool_handlers_stranded", "resolveToolResults", { count: stranded.length, stranded }, queryCtx);
+	diagDump("tool_handlers_stranded", { count: stranded.length, stranded });
 	for (const { id } of stranded) {
 		const pending = queryCtx.pendingToolCalls.get(id)!;
 		queryCtx.pendingToolCalls.delete(id);
 		queryCtx.deadToolCallIds.add(id);
-		pending.resolve(strandedToolCallResult(incident));
+		pending.resolve(strandedToolCallResult());
 	}
 	return stranded;
 }
@@ -289,13 +291,6 @@ function unique(values: Iterable<string | undefined>): string[] {
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: ReturnType<typeof query> | null = null;
-	/** The query's recent events, for incidents (flight-recorder.ts). */
-	readonly recorder = new FlightRecorder();
-	/** The model a fresh request asked for, from its entry until its SDK query
-	 *  starts; null otherwise. Until then the recorder and turn output are an
-	 *  earlier query's, so incidents take this model and no snapshot
-	 *  (incidents.ts, IncidentSource). */
-	preQueryModel: string | null = null;
 	currentPiStream: AssistantMessageEventStream | null = null;
 	/** Pi replaced the history while this query was active. Its next callback
 	 *  must use the new context instead of resuming the stale Claude session. */
@@ -938,14 +933,10 @@ export class QueryContext {
 	/** Records `answer` as what `id`'s handler returns until it settles. */
 	trackAnswer(id: string, answer: Promise<McpResult>): Promise<McpResult> {
 		this.answeringToolCalls.set(id, answer);
-		const generation = this.queryGeneration;
 		const returned = (): void => {
 			if (this.answeringToolCalls.get(id) === answer) this.answeringToolCalls.delete(id);
 		};
-		answer.then(() => {
-			if (this.queryGeneration === generation) this.recorder.record("tools_answer", id);
-			returned();
-		}, returned);
+		answer.then(returned, returned);
 		return answer;
 	}
 

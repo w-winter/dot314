@@ -7,7 +7,6 @@ import { accountSessionScope, resolveClaudeAccountRouter } from "./account-route
 import { loadConfig } from "./config.js";
 import { listAccountConnectors, resolveClaudeOAuth } from "./connector-inventory.js";
 import { connectorCredentialEnv, readCredentialFile } from "./connector-runtime.js";
-import { findIncident, listIncidents, type Incident } from "./incidents.js";
 
 const COMMANDS_REGISTERED_KEY = Symbol.for("claude-bridge:commandsRegistered");
 
@@ -22,39 +21,6 @@ function showBridgeStatus(ctx: { ui: ExtensionUIContext; cwd?: string }): void {
 		`Pi Claude: ${config.enabled === false ? "disabled" : "enabled"}`,
 		"Claude account billing settings (including Extra Usage) are managed in Claude.",
 	].join("\n"), "info");
-}
-
-function incidentLine(incident: Incident): string {
-	return [
-		incident.id,
-		incident.class,
-		`×${incident.count}`,
-		`last ${incident.lastSeen}`,
-		incident.signature,
-		...(incident.issue !== undefined ? [`#${incident.issue}`] : []),
-	].join("  ");
-}
-
-// `/pi-claude incidents` lists this process's incidents, one line per
-// signature; `/pi-claude incidents <id>` shows one in full, as JSON.
-function showIncidents(ctx: { ui: ExtensionUIContext }, id: string | undefined): void {
-	if (id) {
-		const incident = findIncident(id);
-		if (!incident) {
-			ctx.ui.notify(`Pi Claude: no incident ${id} in this process.`, "warning");
-			return;
-		}
-		ctx.ui.notify(`Pi Claude incident ${incident.id}\n${JSON.stringify(incident, null, 2)}`, "info");
-		return;
-	}
-	const incidents = listIncidents();
-	if (incidents.length === 0) {
-		ctx.ui.notify("Pi Claude: no incidents in this process.", "info");
-		return;
-	}
-	// Expected ones last: they are counted, not problems.
-	const ordered = [...incidents.filter((incident) => incident.class !== "expected"), ...incidents.filter((incident) => incident.class === "expected")];
-	ctx.ui.notify([`Pi Claude incidents (${incidents.length}):`, ...ordered.map(incidentLine)].join("\n"), "info");
 }
 
 // Deterministic connector enumeration for the host app. Reports the
@@ -96,9 +62,7 @@ export function registerBridgeCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("pi-claude", {
 		description: "Show Pi Claude status",
 		handler: async (args: string, ctx) => {
-			const [command, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-			if (command === "incidents" && rest.length <= 1) showIncidents(ctx, rest[0]);
-			else if (command) ctx.ui.notify("Unknown /pi-claude argument.", "warning");
+			if (args.trim()) ctx.ui.notify("Unknown /pi-claude argument.", "warning");
 			else showBridgeStatus(ctx);
 		},
 	});

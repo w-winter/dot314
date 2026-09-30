@@ -25,12 +25,8 @@ import { hasClaudeCredentials } from "./auth-presence.js";
 import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.js";
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
 import { resolveGetModels } from "./pi-ai-compat.js";
-import { contentShape, debug, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
+import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { logVersions } from "./versions.js";
-import type { RecorderKind } from "./flight-recorder.js";
-import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrownBridgeError, noteRegisteredToolNames, reportDiag, reportIncident, setIncidentListener, withIncident } from "./incidents.js";
-import { noticeIncident, takeIncidentNotice } from "./incident-notice.js";
-import { incidentTool } from "./incident-tool.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -58,7 +54,7 @@ import { BRIDGE_ACCOUNT_HOST } from "./account-host.js";
 import { registerBridgeCommands } from "./bridge-commands.js";
 import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.js";
 import { buildClaudeQueryOptions, outboundSystemPrompt, thirdPartyAppRefusal } from "./query-options.js";
-import { sdkErrorText, sdkQuery as startSdkQuery } from "./sdk-query.js";
+import { sdkQuery as startSdkQuery } from "./sdk-query.js";
 import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.js";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
 
@@ -309,8 +305,6 @@ export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolN
 } {
 	const mcpTools: Tool[] = [];
 	const piTools = getCurrentTools(context.messages);
-	// The tools Pi registered: the only tool names an incident keeps.
-	noteRegisteredToolNames(piTools.map((tool) => tool.name));
 	for (const tool of piTools) {
 		if (tool.name === excludeToolName) continue;
 		// Never re-offer a tool the child owns natively. The claude.ai connector
@@ -331,7 +325,6 @@ export function resolveMcpTools(context: Pick<Context, "messages">, excludeToolN
 	// Served under an alias Claude Code keeps verbatim (see mcpToolAliases);
 	// a new ServedToolServer derives the same aliases from the same names.
 	const { customToolNameToSdk, customToolNameToPi } = toolNameManifest(mcpToolAliases(mcpTools.map((tool) => tool.name)));
-	noteRegisteredToolNames(customToolNameToSdk.values());
 	return { mcpTools, customToolNameToSdk, customToolNameToPi };
 }
 
@@ -378,7 +371,6 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	return async (args, extra) => {
 		const mappedArgs = mapToolArgs(tool.name, args);
 		const toolUseId = extra?._meta?.[CLAUDE_CODE_TOOL_USE_ID];
-		queryCtx.recorder.record("tools_call", typeof toolUseId === "string" ? toolUseId : undefined);
 		let claim: ClaimedToolCall;
 		if (typeof toolUseId === "string") {
 			const tagged = queryCtx.claimToolUseId(toolUseId, tool.name, mappedArgs);
@@ -388,7 +380,6 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			claim = queryCtx.claimToolCall(tool.name, mappedArgs);
 		}
 		const toolCallId = claim.toolCallId;
-		queryCtx.recorder.record(toolCallId ? "claim" : "claim_unmatched", toolCallId);
 		if (toolCallId) {
 			// This invocation may have been the last one a postponed schema change
 			// was waiting for (it was validated against the old schema already);
@@ -399,35 +390,34 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			if (queryCtx.servedTools && !queryCtx.servedTools.serves(tool.name)) {
 				// A new call under a tool Pi has since deactivated (see served-tools.ts).
 				debug(`mcp handler: ${tool.name} is no longer active in Pi; rejecting unclaimed call`);
-				const incident = reportIncident("tool_no_longer_active", "mcpToolHandler", { toolName: tool.name }, queryCtx);
-				return { content: [{ type: "text", text: withIncident(`Tool ${tool.name} is no longer active in Pi.`, incident) }], isError: true } satisfies McpResult;
+				return { content: [{ type: "text", text: `Tool ${tool.name} is no longer active in Pi.` }], isError: true } satisfies McpResult;
 			}
 			debug(`WARNING: mcp handler ${tool.name} has no toolCallId (available=${claim.available})`);
-			const incident = reportDiag("tool_handler_unmatched", "mcpToolHandler", {
+			diagDump("tool_handler_unmatched", {
 				toolName: tool.name,
 				argKeyCount: argKeyCount(mappedArgs),
 				available: claim.available,
 				turnToolCallIds: queryCtx.turnToolCallIds,
 				turnToolCalls: safeToolCallSummary(queryCtx.turnToolCalls),
-			}, queryCtx);
+			});
 			appendIntegrityEntry("tool_handler_unmatched", {
 				toolName: tool.name,
 				argKeys: argKeys(mappedArgs),
 				available: claim.available,
 				turnToolCallIds: queryCtx.turnToolCallIds,
 			});
-			return { content: [{ type: "text", text: withIncident(`Claude bridge internal error: no matching tool_call id for ${tool.name}`, incident) }], isError: true } satisfies McpResult;
+			return { content: [{ type: "text", text: `Claude bridge internal error: no matching tool_call id for ${tool.name}` }], isError: true } satisfies McpResult;
 		}
 		if (claim.argsMismatch) {
 			// Claimed anyway (sole same-name candidate) — record the divergence so
 			// a schema/validator drift stays visible without stranding the call.
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed sole same-name call despite args mismatch`);
-			reportDiag("tool_claim_args_mismatch", "mcpToolHandler", {
+			diagDump("tool_claim_args_mismatch", {
 				toolName: tool.name,
 				toolCallId,
 				handlerArgKeyCount: argKeyCount(mappedArgs),
 				recordedArgKeyCount: argKeyCount(queryCtx.turnToolCalls.find((call) => call.id === toolCallId)?.arguments),
-			}, queryCtx);
+			});
 		} else if (claim.recordedAhead) {
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed by tool_use id before the stream recorded it`);
 		} else if ((claim.match !== "tool-args" && claim.match !== "tool-use-id") || claim.ambiguous) {
@@ -436,7 +426,6 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 		const earlyResult = toolCallId ? takeQueuedOrParkedResult(queryCtx, toolCallId) : undefined;
 		if (earlyResult !== undefined) {
 			queryCtx.markToolResultResolved(toolCallId);
-			queryCtx.recorder.record("result_taken_early", toolCallId);
 			debug(`mcp handler: ${tool.name} [${toolCallId}] → resolved from queue/parked (${queryCtx.pendingResults.size} queued, ${queryCtx.reapedResults.size} parked remaining)`);
 			const settling = queryCtx.servedToolsSettling;
 			if (!settling) return earlyResult;
@@ -472,18 +461,9 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 	};
 }
 
-const UNCLAIMED_KINDS: Record<Exclude<ToolUseIdClaim, { outcome: "claimed" }>["outcome"], RecorderKind> = {
-	waiting: "claim_waiting",
-	dead: "claim_dead",
-	answered: "claim_answered",
-	withdrawn: "claim_withdrawn",
-	"other-tool": "claim_other_tool",
-};
-
 /** Answers a tagged tools/call whose own id it cannot claim, touching no
  *  other id. */
 function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUseId: string, tagged: Exclude<ToolUseIdClaim, { outcome: "claimed" }>): McpResult | Promise<McpResult> {
-	queryCtx.recorder.record(UNCLAIMED_KINDS[tagged.outcome], toolUseId);
 	switch (tagged.outcome) {
 		case "waiting":
 			debug(`mcp handler: ${toolName} [${toolUseId}] invoked again while its first invocation waits; both get Pi's result`);
@@ -491,17 +471,19 @@ function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUs
 		case "dead":
 			// A dead id was never forwarded to Pi and never will be.
 			debug(`mcp handler: ${toolName} [${toolUseId}] is dead (never forwarded to Pi); answering as stranded`);
-			return strandedToolCallResult(reportIncident("tool_call_dead", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId }, queryCtx));
+			return strandedToolCallResult();
 		case "answered":
 			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] invoked again after it was answered`);
-			return { content: [{ type: "text", text: withIncident(`Claude bridge: tool call ${toolUseId} (${toolName}) was already answered and its result already returned. This repeated invocation did not run the tool.`, reportDiag("tool_call_already_answered", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId }, queryCtx)) }], isError: true };
+			diagDump("tool_call_already_answered", { toolName, toolCallId: toolUseId });
+			return { content: [{ type: "text", text: `Claude bridge: tool call ${toolUseId} (${toolName}) was already answered and its result already returned. This repeated invocation did not run the tool.` }], isError: true };
 		case "withdrawn":
 			// A new call under a tool Pi has since deactivated (see served-tools.ts).
 			debug(`mcp handler: ${toolName} is no longer active in Pi; rejecting new call [${toolUseId}]`);
-			return { content: [{ type: "text", text: withIncident(`Tool ${toolName} is no longer active in Pi.`, reportIncident("tool_no_longer_active", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId }, queryCtx)) }], isError: true };
+			return { content: [{ type: "text", text: `Tool ${toolName} is no longer active in Pi.` }], isError: true };
 		case "other-tool":
 			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] names a call recorded for ${tagged.recordedName}`);
-			return { content: [{ type: "text", text: withIncident(`Claude bridge internal error: tool call ${toolUseId} was issued for ${tagged.recordedName}, not ${toolName}`, reportDiag("tool_call_id_other_tool", "answerUnclaimedToolUse", { toolName, toolCallId: toolUseId, recordedName: tagged.recordedName }, queryCtx)) }], isError: true };
+			diagDump("tool_call_id_other_tool", { toolName, toolCallId: toolUseId, recordedName: tagged.recordedName });
+			return { content: [{ type: "text", text: `Claude bridge internal error: tool call ${toolUseId} was issued for ${tagged.recordedName}, not ${toolName}` }], isError: true };
 	}
 }
 
@@ -764,13 +746,9 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// no .finally will ask. Ask here, under the same rule, and rethrow the
 	// error unchanged: a lane whose query or its replacement still runs, or
 	// that holds a failure for a later callback, is kept.
-	// It is one of the two exits a bridge-authored error reaches Pi through
-	// (the other is the error event, nameBridgeErrorEvents): one that names no
-	// incident is given one here, in place, keeping its fields.
 	try {
 		return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane);
 	} catch (error) {
-		nameThrownBridgeError(error, ctx());
 		releaseEphemeralLane();
 		throw error;
 	}
@@ -783,10 +761,7 @@ function streamRequestInLane(
 	laneId: string | undefined,
 	releaseEphemeralLane: () => void,
 ): AssistantMessageEventStream {
-	// Every error event this call hands Pi names an incident (incidents.ts,
-	// "Exits"), with this request's context as the evidence.
-	const requestCtx = ctx();
-	const stream = nameBridgeErrorEvents(newAssistantMessageEventStream(), () => requestCtx);
+	const stream = newAssistantMessageEventStream();
 
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
@@ -818,7 +793,6 @@ function streamRequestInLane(
 		queryCtx.callbackGeneration += 1;
 		activeStreamIdleWatchdogs.get(queryCtx)?.refresh();
 		const allResults = extractAllToolResults(context);
-		queryCtx.recorder.record("callback", undefined, undefined, allResults.length);
 		debug(`provider: tool results, ${allResults.length} results, ${queryCtx.pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`);
 		syncServedTools(queryCtx, context);
 		const toolsSettling = queryCtx.servedToolsSettling;
@@ -891,7 +865,7 @@ function streamRequestInLane(
 			// are released, so this should not happen; never write concurrently.
 			deliverLive = false;
 			debug("provider: a steering write is still in flight; deferring this steer to a continuation");
-			reportDiag("steering_write_in_flight", "streamRequestInLane", { contextLength: context.messages.length, userMessageCount: replay.userMessageCount, resultCount: deliveredResultIds.length }, queryCtx);
+			diagDump("steering_write_in_flight", { contextLength: context.messages.length, userMessageCount: replay.userMessageCount, resultCount: deliveredResultIds.length });
 		}
 		if (!deliverLive) releaseResults();
 		// The users this callback accepts for delivery to Claude, live or as a
@@ -908,12 +882,12 @@ function streamRequestInLane(
 				// Not owned: a later callback plans these again together with
 				// whatever arrives behind them.
 				capturedThrough = replay.runStart;
-				reportDiag("deferred_user_replay_skipped", "streamRequestInLane", {
+				diagDump("deferred_user_replay_skipped", {
 					contextLength: context.messages.length,
 					runStart: replay.runStart,
 					userMessageCount: replay.userMessageCount,
 					messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-				}, queryCtx);
+				});
 			}
 		}
 		if (replay.unresolvedIndexes.length > 0) {
@@ -928,14 +902,14 @@ function streamRequestInLane(
 			for (const index of replay.unresolvedIndexes) ledger.own(context.messages[index]);
 			queryCtx.userInputNeedsRebuild = true;
 			debug(`provider: ${replay.unresolvedIndexes.length} mid-query user message(s) could not be identified${replay.anchorIndex < 0 ? " (no known message left in the context)" : ` (anchor ${replay.anchorIndex}, ${replay.missingOwned} owned message(s) missing)`}; the next turn rebuilds from Pi history`);
-			reportDiag("user_message_identity_unresolved", "streamRequestInLane", {
+			diagDump("user_message_identity_unresolved", {
 				contextLength: context.messages.length,
 				indexes: replay.unresolvedIndexes,
 				anchor: replay.anchorIndex,
 				missingOwned: replay.missingOwned,
 				beforeAnchor: replay.unresolvedIndexes.filter((index) => index < replay.anchorIndex).length,
 				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-			}, queryCtx);
+			});
 			if (!queryCtx.detachedFromSharedSession) markSessionForRebuild();
 		}
 
@@ -983,7 +957,6 @@ function streamRequestInLane(
 		}
 		if (capturedThrough >= queryCtx.latestCursor) {
 			queryCtx.latestCursor = capturedThrough;
-			queryCtx.recorder.record("cursor", undefined, undefined, capturedThrough);
 			queryCtx.latestCursorDigest = capturedDigest;
 			if (heldResults) {
 				queryCtx.claimedAssistants = queryCtx.deliveredAssistants.length;
@@ -991,7 +964,6 @@ function streamRequestInLane(
 			}
 		}
 		if (deliverLive) {
-			queryCtx.recorder.record("steer_live", undefined, undefined, replay.userMessageCount);
 			deliverSteerBeforeResults(queryCtx, runningQuery, {
 				steer: steer!,
 				userMessageCount: replay.userMessageCount,
@@ -1072,11 +1044,6 @@ function streamRequestInLane(
 
 	// --- Fresh query ---
 
-	// Until the SDK query starts, the lane's context still holds the previous
-	// query's recorder and model: incidents take the requested model and no
-	// snapshot instead (IncidentSource.preQueryModel).
-	ctx().preQueryModel = model.id;
-
 	// Fail-fast credential re-check (only for a fresh query — NEVER for
 	// tool-result delivery of an in-flight query, handled above, where creds were
 	// valid at start and failing mid-turn would break tool pairing). This bounds
@@ -1088,7 +1055,7 @@ function streamRequestInLane(
 	// check is cheap (existsSync + env reads only, no credential contents).
 	if (!hasClaudeCredentials(unmanagedClaudeEnv()) && !resolveClaudeAccountRouter()) {
 		try { applyProviderRegistration("pre-spawn"); } catch { /* best effort */ }
-		const message = withIncident("Claude account not connected — connect an account (or run `claude login`) and retry.", reportIncident("claude_account_not_connected", "streamRequestInLane", {}, ctx()));
+		const message = "Claude account not connected — connect an account (or run `claude login`) and retry.";
 		debug(`provider: pre-spawn credential check failed; failing fast: ${message}`);
 		const errorOutput: AssistantMessage = {
 			role: "assistant", content: [],
@@ -1126,8 +1093,6 @@ function streamRequestInLane(
 	ctx().deferredUserMessages = [];
 	ctx().steeringWriteQuery = null;
 	ctx().queryGeneration += 1;
-	ctx().recorder.reset();
-	ctx().recorder.record("query_start", undefined, undefined, context.messages.length);
 	ctx().stopListeningForAbort();
 	ctx().onRequestAbort = null;
 	ctx().abortRequested = false;
@@ -1271,14 +1236,13 @@ function streamRequestInLane(
 	const refusal = thirdPartyAppRefusal(outboundSystemPrompt({ queryModel, bridgeConfig, systemPrompt, systemPromptOrigin }), bridgeConfig);
 	if (refusal) {
 		debug(`provider: refusing a third-party-app system prompt: ${refusal}`);
-		const incident = reportIncident("third_party_app_refused", "streamRequestInLane", { configuredReplacement: Boolean(bridgeConfig.systemPrompt?.replacement) }, ctx());
 		const errorOutput: AssistantMessage = {
 			role: "assistant", content: [],
 			api: model.api, provider: model.provider, model: model.id,
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 			stopReason: "error", timestamp: Date.now(),
-			errorMessage: withIncident(refusal, incident),
+			errorMessage: refusal,
 		};
 		queueMicrotask(() => {
 			stream.push({ type: "error", reason: "error", error: errorOutput });
@@ -1315,7 +1279,7 @@ function streamRequestInLane(
 	// into "\n\n", so test the trimmed text, not truthiness). Should never
 	// happen — dump diagnostics if it does.
 	if (!promptText.trim() && !promptBlocks) {
-		reportDiag("empty_prompt", "streamRequestInLane", {
+		diagDump("empty_prompt", {
 			contextLength: context.messages.length,
 			lastMsgRole: lastMsg?.role,
 			activeQueryExists: ctx().activeQuery !== null,
@@ -1327,7 +1291,7 @@ function streamRequestInLane(
 				return activeSession ? { sessionId: activeSession.sessionId.slice(0, 8), cursor: activeSession.cursor } : null;
 			})(),
 			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
-		}, ctx());
+		});
 		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
 		promptText = "[continue]";
 	}
@@ -1377,7 +1341,6 @@ function streamRequestInLane(
 	let retryFailure: ClaudeAttemptFailure | undefined;
 	const sdkQuery = startSdkQuery({ prompt, options: queryOptions });
 	ctx().activeQuery = sdkQuery;
-	ctx().preQueryModel = null;
 
 	// 4. Capture context for abort handling
 	const abortCtx = ctx();
@@ -1443,7 +1406,6 @@ function streamRequestInLane(
 	// session synchronously; after the hand-off this query's late teardown must
 	// not touch the record the replacement owns.
 	const quarantine = (): void => {
-		abortCtx.recorder.record("lane_quarantine");
 		markRebuildForThisQuery({ forceRotate: true });
 		detachContext(abortCtx);
 		abortCtx.detachedFromSharedSession = true;
@@ -1452,11 +1414,14 @@ function streamRequestInLane(
 	// LOUDLY — the cursor already advanced over it on the promise of replay.
 	// Callers that keep a session record after a non-empty drop must persist it
 	// with needsRebuild so the next turn re-imports the steers from Pi history.
-	const dropDeferredUserMessages = (site: IncidentSite, undelivered?: DeferredUserMessage): DeferredUserMessage[] => {
+	// A drop at "abort" or "abort-completion" is expected cleanup: the abort
+	// marks the record for a rotated rebuild, which re-imports the steers from
+	// Pi history. A drop at any other site loses a steer Claude never answered.
+	const dropDeferredUserMessages = (site: string, undelivered?: DeferredUserMessage): DeferredUserMessage[] => {
 		const dropped = [...(undelivered !== undefined ? [undelivered] : []), ...abortCtx.deferredUserMessages];
 		abortCtx.deferredUserMessages = [];
 		if (dropped.length > 0) {
-			reportDiag("deferred_user_messages_dropped", site, summarizeDroppedUserMessages(site, dropped), abortCtx);
+			diagDump("deferred_user_messages_dropped", summarizeDroppedUserMessages(site, dropped));
 		}
 		return dropped;
 	};
@@ -1518,7 +1483,6 @@ function streamRequestInLane(
 			onTimeout: ({ idleMs, timeoutMs }) => {
 				if (streamIdleTimedOut || wasAborted || options?.signal?.aborted || !abortCtx.activeQuery) return;
 				streamIdleTimedOut = true;
-				abortCtx.recorder.record("idle_timeout", undefined, undefined, idleMs);
 				dropDeferredUserMessages("stream-idle-timeout");
 				quarantine();
 				const errorMessage = buildStreamIdleTimeoutErrorMessage(timeoutMs);
@@ -1546,9 +1510,8 @@ function streamRequestInLane(
 					timeoutMs,
 				});
 				const idle = `stream idle timeout after ${formatDurationShort(timeoutMs)}`;
-				const incident = reportIncident("stream_idle_timeout", "streamIdleWatchdog", { timeoutMs, idleMs }, abortCtx);
 				const ending = endStreamForFailure(abortCtx, {
-					errorMessage: withIncident(errorMessage, incident),
+					errorMessage,
 					notice: idle,
 					fields: { rateLimitType: "stream_idle", retryAfterMs: STREAM_IDLE_BACKOFF_HINT_MS, streamIdleTimeoutMs: timeoutMs },
 				});
@@ -1577,7 +1540,6 @@ function streamRequestInLane(
 		if (wasAborted) return;
 		wasAborted = true;
 		abortCtx.abortRequested = true;
-		abortCtx.recorder.record("abort");
 		// An aborted query must not replay its deferred messages later.
 		dropDeferredUserMessages("abort");
 		reportToolResultMismatch(abortCtx, "abort", cwd, {
@@ -1690,7 +1652,6 @@ function streamRequestInLane(
 					const steerShape = contentShape(steer.blocks ?? steer.text);
 					debug(`provider: replaying deferred user message: ${steerShape}`);
 					abortCtx.prepareContinuation();
-					abortCtx.recorder.record("continuation_start");
 					// What Claude has completed so far outlives a failure of this
 					// continuation (endStreamForFailure), and the continuation may
 					// repeat it (queryBlocks).
@@ -1741,7 +1702,7 @@ function streamRequestInLane(
 						debug(`provider: continuation query error:`, contError);
 						const continuationFailure: ClaudeAttemptFailure = {
 							kind: classifyClaudeFailure(contError),
-							message: sdkErrorText(contError),
+							message: contError instanceof Error ? contError.message : String(contError),
 						};
 						recordAttemptFailure(continuationFailure);
 						if (!abortCtx.handledTerminalError) surfaceFailure(continuationFailure);
@@ -1793,7 +1754,7 @@ function streamRequestInLane(
 				? attemptFailure.failure
 				: {
 					kind: classifyClaudeFailure(error),
-					message: sdkErrorText(error),
+					message: error instanceof Error ? error.message : String(error),
 				};
 			if (requestRotation(failure)) return;
 			if (!wasAborted && !options?.signal?.aborted) persistSession(null);
@@ -1904,9 +1865,6 @@ export default function (pi: ExtensionAPI) {
 	// The replacement is prompt text the user wrote: the log gets its length.
 	const replacement = config.systemPrompt?.replacement;
 	debug("loadConfig:", JSON.stringify(replacement === undefined ? config : { ...config, systemPrompt: { ...config.systemPrompt, replacement: `<${replacement.length} chars>` } }));
-	configureIncidents(config.incidents);
-	// Notices are always on; only filing needs incidents.repo.
-	setIncidentListener(noticeIncident);
 	// Registered before the disabled early return: a bridge switched off by
 	// claude-bridge.json is exactly when the settings editor has to show where
 	// that value came from.
@@ -1922,9 +1880,6 @@ export default function (pi: ExtensionAPI) {
 		const host = globalThis as Record<symbol, any>;
 		host[CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL] = BRIDGE_ACCOUNT_HOST;
 	}
-	// Registered once, at load, with or without incidents.repo: the tool list
-	// stays the same for the process.
-	pi.registerTool(incidentTool());
 
 	// Reset shared (Claude) conversation state on pi session lifecycle events.
 	// Registration tokens are managed separately by applyProviderRegistration
@@ -1962,9 +1917,6 @@ export default function (pi: ExtensionAPI) {
 		deleteSharedSessionLane(sessionId);
 		deleteQueryLane(sessionId);
 	});
-	// The incidents this session's requests hit since its last prompt, as one
-	// message after the user's prompt (incident-notice.ts).
-	pi.on("before_agent_start", (_event, ctx) => takeIncidentNotice(ctx.sessionManager.getSessionId()));
 	pi.on("message_end", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		const message = (event as { message?: AssistantMessage }).message;
 		if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx);

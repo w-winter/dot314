@@ -136,7 +136,6 @@ The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-com
 - `provider.forceEffort`, `provider.modelEffortOverrides`: pin a Claude effort for every request or per model. Override keys are bare ids (`claude-opus-4-8`), `pi-claude/<id>` or `*`; values are `low`, `medium`, `high`, `xhigh` or `max`; a per-model entry beats the global force.
 - `provider.settingSources`: explicitly load selected filesystem settings from Claude Code. By default, no settings load when connectors are disabled. When connectors are enabled, the bridge loads the user's settings.
 - `provider.inheritAnthropicEnv`: `true` passes `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment to Claude Code, for an intentional gateway or API-key setup. By default the bridge removes them, so an exported variable cannot route subscription requests through another endpoint or credential, and it does not count them as credentials when deciding whether the provider is connected. Only the user `claude-bridge.json` can set it, and managed account profiles never inherit these variables.
-- `incidents.repo`: a GitHub `owner/name` that bridge incidents belong to. Setting it lets the bridge write its incidents to `claude-bridge-incidents.jsonl` in the Pi agent directory (metadata only, mode 0600), and lets the agent file an incident with the `claude_bridge_incident` tool. The bridge never files one on its own. The agent files an incident when it looks like a bridge bug, as an issue in that repository with the `gh` CLI (which must be installed and logged in), or as a comment on the open issue already filed for it. The issue carries only the evidence the bridge recorded: ids, version numbers, the model, counts, labels, the order of events and the diag metadata. Tool names in it other than Pi's built-ins and the bridge's own are published as a short hash such as `tool-1a2b3c4d`. An error name, error code or model that is not a standard or bridge-known one, and a version's prerelease suffix, are published as placeholders. Nothing the agent writes is published; it tells you the issue number and gives you its own analysis in the chat. Only the user `claude-bridge.json` can set it; a project's value is ignored, and a value that is not `owner/name` is dropped. Unset, nothing about incidents is written to disk or filed; the tool still lists and shows incidents, and refuses to file.
 
 Without a `systemPrompt.replacement`, Pi's default main prompt is refused with a Pi error, and no Claude request is made. Its documentation line carries two clauses, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Anthropic's check treats a subscription request whose system prompt contains both clauses as a third-party app: third-party apps draw from Extra Usage instead of plan limits, and the request fails with HTTP 400 when the account has no Extra Usage credit. Either clause alone passes, and so do both paths in other wording. The bridge refuses any request whose system prompt contains both clauses exactly as Pi writes them. That covers pi-subagents children in append mode and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
 
@@ -155,11 +154,9 @@ Example `claude-bridge.json`:
 Environment variables:
 
 - `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` (default 90s): how long Claude Code may stay silent during a turn, before or after its first output, while no Pi tool call is outstanding; bare numbers are seconds, `ms`, `s` and `m` suffixes are accepted, `0` disables.
-- `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. Without it, only the incidents file of `incidents.repo` is ever written.
+- `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. Without it, the bridge writes no log. It still writes what it needs to run: the Claude Code session files it builds from Pi history, its own entries in the Pi session file, and, with connectors on, the connector inventory cache in the Pi agent directory.
 
 Tool-result integrity problems always surface as a Pi error notification plus a metadata-only `claude-bridge-integrity` entry in the Pi session file, so a lost tool result can be analysed from the session alone.
-
-Every anomaly the bridge detects becomes an incident with a short id such as `bi-7f3a`. An error text the bridge writes for Claude or Pi ends with ` (incident bi-7f3a)`. `/pi-claude incidents` lists this process's incidents, and `/pi-claude incidents <id>` shows one with its versions, metadata and the event order that led to it. When a session's requests hit an incident where the bridge showed an error or had to recover, the agent is told once per kind of incident, in one short message that goes with your next prompt, and can inspect it with the `claude_bridge_incident` tool. Plain API errors and normal cleanup are not reported to it.
 
 Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
@@ -186,9 +183,6 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 **Models**
 - Pi's thinking level "off" sends Claude Code disabled thinking; for models that reject it, the option is hidden.
 - Opus 5.5 falls back to Opus 4.8 when its safety classifier declines, and every model switch Claude Code makes for safety reasons is announced.
-
-**Incidents**
-- Every anomaly the bridge detects becomes an incident with an id. The agent is told about new ones with your next prompt, and can inspect or file them with the `claude_bridge_incident` tool (see Settings).
 
 **Operation**
 - Pi loads the TypeScript source directly; there is no bundle to rebuild, and `/reload` picks up edits. CI runs the typecheck and unit tests on every push.

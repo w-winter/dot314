@@ -82,12 +82,6 @@ export interface Config {
 		 */
 		inheritAnthropicEnv?: boolean;
 	};
-	/**
-	 * Where bridge incidents are filed: a GitHub `owner/name`. Setting it lets
-	 * the bridge write incidents to disk. Resolved from USER-scope config only,
-	 * so a project cannot redirect filing (see configLayers).
-	 */
-	incidents?: { repo: string };
 }
 
 type SettingsRecord = Record<string, unknown>;
@@ -369,33 +363,15 @@ function normalizeProviderConfig(provider: Config["provider"] | undefined): Conf
 	return out;
 }
 
-// GitHub's owner and repository name rules, loosely: the filer passes it to
-// `gh --repo`, so anything else is dropped rather than guessed at.
-const INCIDENTS_REPO = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
-
-function normalizeIncidentsConfig(value: unknown, path: string): Config["incidents"] {
-	const raw = asRecord(value);
-	if (!raw) return undefined;
-	const repo = stringFrom(raw, "repo");
-	if (!repo) return undefined;
-	if (!INCIDENTS_REPO.test(repo) || repo.split("/")[1] === "." || repo.split("/")[1] === "..") {
-		debug(`config: ignoring incidents.repo in ${path}: not an owner/name repository`);
-		return undefined;
-	}
-	return { repo };
-}
-
 function configFile(path: string): Partial<Config> {
 	const raw = asRecord(tryParseJson(path)) ?? {};
 	const enabled = boolFrom(raw, "enabled");
 	const provider = asRecord(raw.provider) as Config["provider"];
 	const systemPrompt = normalizeSystemPromptConfig(raw.systemPrompt);
-	const incidents = normalizeIncidentsConfig(raw.incidents, path);
 	return {
 		...(enabled !== undefined ? { enabled } : {}),
 		...(Object.keys(systemPrompt).length ? { systemPrompt } : {}),
 		...(provider ? { provider } : {}),
-		...(incidents ? { incidents } : {}),
 	};
 }
 
@@ -406,9 +382,7 @@ function configLayers(cwd: string): Partial<Config>[] {
 	const projectSettings = projectSettingsPath(cwd);
 	if (!projectSettingsTrusted(projectSettings)) return layers;
 	const projectPath = join(dirname(projectSettings), "claude-bridge.json");
-	// incidents.repo decides where the bridge files incidents: user scope only.
-	const { incidents: _projectIncidents, ...project } = stripUserScopeOnlyProviderKeys(configFile(projectPath));
-	return [...layers, project];
+	return [...layers, stripUserScopeOnlyProviderKeys(configFile(projectPath))];
 }
 
 function mergeLayers(layers: Partial<Config>[]): Partial<Config> {
@@ -417,7 +391,6 @@ function mergeLayers(layers: Partial<Config>[]): Partial<Config> {
 		if (layer.enabled !== undefined) merged.enabled = layer.enabled;
 		merged.systemPrompt = { ...merged.systemPrompt, ...layer.systemPrompt };
 		merged.provider = { ...merged.provider, ...layer.provider };
-		if (layer.incidents) merged.incidents = layer.incidents;
 	}
 	return merged;
 }
@@ -428,7 +401,6 @@ export function loadConfig(cwd: string): Config {
 		enabled: config.enabled ?? true,
 		systemPrompt: config.systemPrompt,
 		provider: normalizeProviderConfig(config.provider),
-		...(config.incidents ? { incidents: config.incidents } : {}),
 	};
 }
 

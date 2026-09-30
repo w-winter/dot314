@@ -1,7 +1,6 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { debug, diagGuidance } from "./debug.js";
+import { debug, diagDump, diagGuidance } from "./debug.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
-import { reportDiag, type Incident, type IncidentSite, type IncidentSource } from "./incidents.js";
 import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
 import { type QueryContext } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
@@ -230,20 +229,20 @@ function compactToolNameSummary(names: Array<{ name: string; count: number }>, l
 }
 
 /** Reports lost tool results about to be replaced by explicit error
- *  placeholders; returns the incident the placeholders name. */
-export function reportSyntheticToolResultRepair(missing: MissingToolResult[], context: Record<string, unknown>, source?: IncidentSource): Incident | undefined {
+ *  placeholders. */
+export function reportSyntheticToolResultRepair(missing: MissingToolResult[], context: Record<string, unknown>): void {
 	try {
-		if (missing.length === 0) return undefined;
+		if (missing.length === 0) return;
 		const toolNames = summarizeMissingToolNames(missing);
 		const toolNameSummary = compactToolNameSummary(toolNames);
 		const sampledToolCallIds = missing.slice(0, 50).map((item) => item.id);
-		const incident = reportDiag("repair_tool_pairing_synthetic_results", "convertAndImportMessages", {
+		diagDump("repair_tool_pairing_synthetic_results", {
 			count: missing.length,
 			toolNames,
 			sampledToolCallIds,
 			missing: missing.slice(0, 50),
 			...context,
-		}, source);
+		});
 		appendIntegrityEntry("repair_tool_pairing_synthetic_results", {
 			count: missing.length,
 			toolNames,
@@ -255,23 +254,13 @@ export function reportSyntheticToolResultRepair(missing: MissingToolResult[], co
 			`Real tool output was lost before Claude session import; ${diagGuidance()}.`,
 			"error",
 		);
-		return incident;
 	} catch (error) {
 		debug("reportSyntheticToolResultRepair failed:", error);
-		return undefined;
 	}
 }
 
-/** Why a tool-result delivery mismatch is reported, and its incident site. */
-const TOOL_RESULT_MISMATCH_SITES = {
-	session_compact: "session_compact",
-	session_tree: "session_tree",
-	abort: "abort",
-	"query teardown": "query-teardown",
-	"unmatched tool result": "unmatched-tool-result",
-} as const satisfies Record<string, IncidentSite>;
-
-export type ToolResultMismatchReason = keyof typeof TOOL_RESULT_MISMATCH_SITES;
+/** Why a tool-result delivery mismatch is reported. */
+export type ToolResultMismatchReason = "session_compact" | "session_tree" | "abort" | "query teardown" | "unmatched tool result";
 
 export function reportToolResultMismatch(
 	queryCtx: QueryContext,
@@ -308,7 +297,7 @@ export function reportToolResultMismatch(
 		}
 		const toolNameSummary = compactToolNameSummary(progress.toolNames);
 		const sharedSession = getSharedSession();
-		reportDiag("tool_result_delivery_mismatch", TOOL_RESULT_MISMATCH_SITES[reason], {
+		diagDump("tool_result_delivery_mismatch", {
 			reason,
 			cwd,
 			progress,
@@ -320,7 +309,7 @@ export function reportToolResultMismatch(
 				needsRebuild: sharedSession.needsRebuild === true,
 				forceRotate: sharedSession.forceRotate === true,
 			} : null,
-		}, queryCtx);
+		});
 		appendIntegrityEntry("tool_result_delivery_mismatch", {
 			reason,
 			toolNames: progress.toolNames,

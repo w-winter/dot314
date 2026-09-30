@@ -767,7 +767,7 @@ describe("managed account stream rotation", () => {
 		assert.equal(calls, 0);
 		assert.equal(events.length, 1);
 		assert.equal(events[0].type, "error");
-		assert.match(events[0].error.errorMessage, /No Claude subscription account/);
+		assert.equal(events[0].error.errorMessage, "No Claude subscription account is available");
 		assert.equal(events[0].error.resetAtMs, resetAtMs);
 		assert.equal(events[0].error.rateLimitType, "all_accounts");
 	});

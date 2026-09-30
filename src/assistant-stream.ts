@@ -3,10 +3,8 @@ import { type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { appendIntegrityEntry, safeNotify } from "./bridge-state.js";
 import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.js";
 import { isChildExecutedTool } from "./connectors.js";
-import { debug } from "./debug.js";
+import { debug, diagDump } from "./debug.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
-import type { StreamAbandonReason, TurnBlockType } from "./incident-labels.js";
-import { reportDiag, type IncidentSite } from "./incidents.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
 import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
@@ -93,10 +91,9 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	// partial response) was never issued, and its arguments are truncated.
 	// Nothing can deliver a result for it either, so no teardown report may
 	// count it as missing one.
-	const { message, prunedIds } = terminalMessage(c, { site: reason === "length" ? "length" : "stream-end" });
+	const { message, prunedIds } = terminalMessage(c);
 	c.forgetToolCalls(prunedIds);
 	recordDeliveredReply(c, message);
-	c.recorder.record("turn_done");
 	c.currentPiStream.push({ type: "done", reason, message });
 	c.currentPiStream.end();
 	c.currentPiStream = null;
@@ -196,7 +193,6 @@ export function endStreamForFailure(
 		if (!aborted && c.forwardedToolCallIds.size > 0) {
 			debug(`provider: terminal failure after the Pi turn was delivered; holding it for the tool-result callback: ${failure.errorMessage}`);
 			c.undeliveredFailure = { errorMessage: failure.errorMessage, fields: failure.fields, toolCallIds: new Set(c.forwardedToolCallIds), runSignals: c.runSignals() };
-			c.recorder.record("failure_held");
 			return "held";
 		}
 		return aborted ? "aborted" : "unreported";
@@ -211,11 +207,11 @@ export function endStreamForFailure(
 		// A call the failed continuation was still writing never reaches Pi,
 		// so no teardown report may count it as missing a result (as in
 		// finalizeCurrentStream).
-		c.forgetToolCalls(terminalMessage(c, { site: "failure" }).prunedIds);
+		c.forgetToolCalls(terminalMessage(c).prunedIds);
 		const kept = reply.content.length;
 		const dropped = (c.turnOutput.content as Array<any>).filter((b) => isLiveBlock(b)).length - kept;
 		debug(`provider: deferred continuation failed after a completed reply; ending the Pi message with its ${kept} completed block(s), leaving out ${dropped} from the failed continuation: ${failure.errorMessage}`);
-		reportDiag("continuation_failed_after_reply", "endStreamForFailure", { keptBlocks: kept, droppedBlocks: dropped }, c);
+		diagDump("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
 		appendIntegrityEntry("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
 		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${(failure.notice ?? failure.errorMessage).slice(0, 200)}). Its reply before that message is kept; send the message again to get an answer.`, "warning");
 		ensureTurnStarted(c);
@@ -226,7 +222,7 @@ export function endStreamForFailure(
 	}
 	// As in finalizeCurrentStream: a pruned call never reaches Pi and is owed
 	// no result.
-	const { message, prunedIds } = terminalMessage(c, { site: "failure" });
+	const { message, prunedIds } = terminalMessage(c);
 	c.forgetToolCalls(prunedIds);
 	if (aborted && failure.errorMessage !== ABORTED_MESSAGE) debug(`provider: request was cancelled; ending the Pi message as aborted instead of: ${failure.errorMessage}`);
 	const error: AssistantMessage = {
@@ -236,7 +232,6 @@ export function endStreamForFailure(
 		stopReason: aborted ? "aborted" : "error",
 		errorMessage: aborted ? ABORTED_MESSAGE : failure.errorMessage,
 	};
-	c.recorder.record(aborted ? "turn_aborted" : "turn_error");
 	stream.push({ type: "error", reason: aborted ? "aborted" : "error", error });
 	stream.end();
 	c.currentPiStream = null;
@@ -307,13 +302,13 @@ export function addTurnBlock(c: QueryContext, block: any): number {
  *  may belong to the replacement, whose handlers can arrive before its
  *  message does.
  *  `replacementId` is the message that replaced it. */
-function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, replacementId: string | undefined): void {
+function discardAbandonedAttempt(c: QueryContext, why: "restreamed" | "non-streaming-fallback", replacementId: string | undefined): void {
 	const attempt = c.streamAttempt;
 	if (!attempt?.open) return;
 	attempt.open = false;
 	// A turn that already ended holds a message Pi owns; leave it untouched.
 	if (!c.currentPiStream || !c.turnOutput) return;
-	const discarded: Array<{ index: number; type: TurnBlockType; id?: string; withdrawn?: true }> = [];
+	const discarded: Array<{ index: number; type: string; id?: string; withdrawn?: true }> = [];
 	const droppedCallIds: string[] = [];
 	const withdrawnCallIds: string[] = [];
 	for (const idx of attempt.slots) {
@@ -345,7 +340,11 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	// block streams: disarmed, a stream with no terminal events never ends.
 	if (!c.turnSawToolCall && !hasWaitingEarlyCall(c)) cancelScheduledToolUseEnd(c);
 	debug(`discardAbandonedAttempt: ${why} as ${replacementId ?? "an unidentified message"}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}${entry.withdrawn ? " (withdrawn)" : ""}`).join(", "));
-	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded }, c);
+	// Expected cleanup: Claude Code abandoned a stalled response and asked
+	// again, and the retry is the answer. The attempt's blocks are dropped,
+	// except a completed call whose handler waits (its cancel decides), and
+	// Claude Code never starts a queued call of a discarded attempt.
+	diagDump("stream_attempt_abandoned", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded });
 }
 
 /** Whether a tagged call whose handler ran before the stream recorded it is
@@ -366,7 +365,6 @@ function hasWaitingEarlyCall(c: QueryContext): boolean {
  *  handler left and is not withdrawn again. Returns whether the call was
  *  withdrawn. */
 export function withdrawCancelledToolCall(c: QueryContext, id: string): boolean {
-	c.recorder.record("tools_cancel", id);
 	if (c.forwardedToolCallIds.has(id)) {
 		debug(`mcp handler: [${id}] cancelled by Claude Code after Pi was given it; its result answers it`);
 		return false;
@@ -375,7 +373,9 @@ export function withdrawCancelledToolCall(c: QueryContext, id: string): boolean 
 	if (!withdrawn) return false;
 	const { toolName, droppedBlock } = withdrawn;
 	debug(`mcp handler: ${toolName} [${id}] cancelled by Claude Code before Pi was given it; dropped${droppedBlock ? " its block and" : ""} the call`);
-	reportDiag("tool_call_cancelled_by_claude_code", "withdrawCancelledToolCall", { toolCallId: id, toolName, droppedBlock }, c);
+	// Expected cleanup: Claude Code cancelled a call Pi was never given, and
+	// the bridge drops it (a call Pi has was left alone above).
+	diagDump("tool_call_cancelled_by_claude_code", { toolCallId: id, toolName, droppedBlock });
 	return true;
 }
 
@@ -443,7 +443,9 @@ function dropUnclosedBlocksAtMessageStop(c: QueryContext): boolean {
 	// The cut message's message_delta set a tool-use stop reason.
 	if (c.turnOutput!.stopReason === "toolUse") c.turnOutput!.stopReason = "stop";
 	debug(`dropUnclosedBlocksAtMessageStop: every tool call of the turn was cut off; dropped ${unclosed.length} block(s) and kept the turn open:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-	reportDiag("partial_tool_calls_pruned", "message-stop", { count: calls.length, calls }, c);
+	// Not expected cleanup: every call of the turn was cut off, and Claude Code
+	// may have dispatched one.
+	diagDump("partial_tool_calls_pruned", { count: calls.length, calls });
 	appendIntegrityEntry("partial_tool_calls_pruned", { count: calls.length, calls });
 	return true;
 }
@@ -454,9 +456,8 @@ function dropUnclosedBlocksAtMessageStop(c: QueryContext): boolean {
  *  message, and truncated arguments must never execute). The live partial is
  *  left intact, since Pi may still be encoding queued events against it; when
  *  anything is left out the terminal message is a copy. Returns the ids of the
- *  pruned still-partial calls. `site` names the caller for the prune's
- *  incident; a cancelled request's prune is reported at "abort". */
-export function terminalMessage(c: QueryContext, { prunePartialCalls = true, site = "unknown" }: { prunePartialCalls?: boolean; site?: IncidentSite } = {}): { message: AssistantMessage; prunedIds: string[] } {
+ *  pruned still-partial calls. */
+export function terminalMessage(c: QueryContext, { prunePartialCalls = true } = {}): { message: AssistantMessage; prunedIds: string[] } {
 	const output = c.turnOutput!;
 	const content = output.content as Array<any>;
 	const isPartialCall = (b: any): boolean => prunePartialCalls && b?.type === "toolCall" && "partialJson" in b;
@@ -465,7 +466,11 @@ export function terminalMessage(c: QueryContext, { prunePartialCalls = true, sit
 	if (partial.length > 0) {
 		const calls = partial.map((b) => ({ id: b.id, name: b.name }));
 		debug(`terminalMessage: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-		reportDiag("partial_tool_calls_pruned", c.requestAborted() ? "abort" : site, { count: partial.length, calls }, c);
+		// Expected cleanup in a cancelled request (c.requestAborted()) and at a
+		// max-tokens stop (finalizeCurrentStream with reason "length"): the
+		// call's arguments never finished, so it was never issued. Anywhere else
+		// a prune cut off a call Claude Code may have dispatched.
+		diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
 		appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
 	}
 	const prunedIds = partial.map((b) => b.id).filter((id): id is string => typeof id === "string");
@@ -538,7 +543,7 @@ export function endToolUseTurn(c: QueryContext): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	cancelScheduledToolUseEnd(c);
 	c.turnOutput.stopReason = "toolUse";
-	const { message } = terminalMessage(c, { site: "tool-use-end" });
+	const { message } = terminalMessage(c);
 	recordDeliveredReply(c, message);
 	// Every tool call Pi is about to execute from this turn is owed a result and
 	// must never be dispatched again: a lagging stream replays the same tool_use
@@ -546,7 +551,6 @@ export function endToolUseTurn(c: QueryContext): void {
 	for (const block of message.content as Array<{ type?: string; id?: unknown }>) {
 		if (block?.type === "toolCall" && typeof block.id === "string") c.forwardedToolCallIds.add(block.id);
 	}
-	c.recorder.record("turn_end_tool_use");
 	c.currentPiStream.push({ type: "done", reason: "toolUse", message });
 	c.currentPiStream.end();
 	c.currentPiStream = null;
@@ -572,7 +576,6 @@ export function scheduleToolUseTurnEnd(c: QueryContext, action: () => void, sour
 	const fire = (): void => {
 		if (c.currentPiStream !== stream) return;
 		debug(`scheduleToolUseTurnEnd: no stream event for ${TOOL_USE_END_GRACE_MS}ms (${source}) — grace elapsed`);
-		c.recorder.record("grace_elapsed");
 		c.scheduledToolUseEnd = null;
 		entry.action();
 	};
@@ -611,8 +614,7 @@ export function reapStaleQueuedResults(c: QueryContext): void {
 	if (stale.length === 0) return;
 	const names = stale.map((entry) => entry.toolName);
 	debug(`reapStaleQueuedResults: parked ${stale.length} early tool result(s) awaiting a late handler:`, names.join(", "));
-	c.recorder.record("results_parked", undefined, undefined, stale.length);
-	reportDiag("stale_queued_tool_results_parked", "reapStaleQueuedResults", { count: stale.length, stale }, c);
+	diagDump("stale_queued_tool_results_parked", { count: stale.length, stale });
 	appendIntegrityEntry("stale_queued_tool_results_parked", { count: stale.length, stale });
 	safeNotify(
 		`Claude bridge: parked ${stale.length} early tool result(s) whose handler has not arrived (${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}). ` +

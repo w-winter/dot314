@@ -4,26 +4,13 @@
 // ~/.pi/agent: its claude-bridge.json cannot change results, and a log
 // written after a test deleted its own path override (a query teardown that
 // outlives afterEach) lands here instead of the user's diag log.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 if (!process.env.PI_CODING_AGENT_DIR) {
 	const dir = mkdtempSync(join(tmpdir(), "bridge-unit-agent-"));
 	process.env.PI_CODING_AGENT_DIR = dir;
-	process.on("exit", () => {
-		try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
-	});
-}
-
-// A `gh` that always fails, first on PATH: a test that enables incident
-// filing without its own fake gh must never reach GitHub. Tests that assert
-// filing put their recording fake ahead of this one.
-if (!process.env.CLAUDE_BRIDGE_TEST_GH_STUB) {
-	const dir = mkdtempSync(join(tmpdir(), "bridge-unit-gh-"));
-	writeFileSync(join(dir, "gh"), "#!/bin/sh\necho 'gh stub: unit tests never reach GitHub' >&2\nexit 1\n", { mode: 0o755 });
-	process.env.CLAUDE_BRIDGE_TEST_GH_STUB = dir;
-	process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ""}`;
 	process.on("exit", () => {
 		try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
 	});

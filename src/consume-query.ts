@@ -17,9 +17,7 @@ import {
 import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.js";
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
-import { debug } from "./debug.js";
-import { sdkRecorderKind } from "./flight-recorder.js";
-import { markExternalError, noteClaudeCodeVersion, reportDiag, reportIncident } from "./incidents.js";
+import { debug, diagDump } from "./debug.js";
 import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
@@ -90,21 +88,6 @@ export interface ConsumeQueryResult {
 	failure?: ClaudeAttemptFailure;
 }
 
-/** One flight-recorder record per SDK message: the stream event type (with
- *  its block index, and a tool_use block's id), `system_<subtype>` or
- *  `result_<subtype>`, else the message type; `<type>_[unknown]` for one the
- *  bridge does not handle (sdkRecorderKind). Runs per streamed token. */
-function recordSdkMessage(queryCtx: QueryContext, message: SDKMessage): void {
-	const raw = message as { type: string; subtype?: unknown; event?: { type?: unknown; index?: unknown; content_block?: { id?: unknown } } };
-	if (raw.type === "stream_event") {
-		const event = raw.event;
-		const id = event?.type === "content_block_start" && typeof event.content_block?.id === "string" ? event.content_block.id : undefined;
-		queryCtx.recorder.record(sdkRecorderKind(raw), id, typeof event?.index === "number" ? event.index : undefined);
-	} else {
-		queryCtx.recorder.record(sdkRecorderKind(raw));
-	}
-}
-
 /** Claude Code reports a tool_result only once a call is over, so a forwarded
  *  call it reports can no longer be invoked late: retire it, which lets a
  *  served-tool redefinition it was postponing apply (served-tools.ts). Covers
@@ -148,7 +131,7 @@ function noteAbandonedToolCalls(message: unknown, queryCtx: QueryContext): void 
 		const reason = text.trim().slice(0, 200) || "no reason given";
 		queryCtx.abandonedToolCalls.set(id, { toolName: pending.toolName, reason });
 		debug(`consumeQuery: Claude Code gave up on ${pending.toolName} [${id}] while Pi is still running it: ${reason}`);
-		reportDiag("tool_call_abandoned_by_claude_code", "noteAbandonedToolCalls", { id, toolName: pending.toolName, reason }, queryCtx);
+		diagDump("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName, reason });
 		appendIntegrityEntry("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName });
 		safeNotify(`Claude bridge: Claude Code stopped waiting for ${pending.toolName} while Pi is still running it (${reason}). Claude will not see that call's result.`, "warning");
 	}
@@ -180,9 +163,6 @@ export async function consumeQuery(
 	let failure: ClaudeAttemptFailure | undefined;
 	let accountProbe: Promise<void> | undefined;
 	const holdFailure = (next: ClaudeAttemptFailure | undefined): void => {
-		// Every held failure relays Claude Code or the API: its error text, the
-		// SDK's error copy, or a rejected rate_limit_event.
-		if (next) markExternalError(next.message);
 		failure = next;
 		if (attemptFailureBox) attemptFailureBox.failure = next;
 	};
@@ -219,7 +199,6 @@ export async function consumeQuery(
 			}));
 		}
 		if (!queryCtx.turnOutput) continue;
-		recordSdkMessage(queryCtx, message);
 		// Only RENDERING needs a live Pi stream. Failure metadata and
 		// child-executed tool results must be captured even when a tool-use turn
 		// boundary has nulled the stream — skipping them there dropped terminal
@@ -282,11 +261,9 @@ export async function consumeQuery(
 					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
 				} else if (message.subtype !== "success") {
 					const errorLines = Array.isArray((message as any).errors) ? uniqueNonEmptyLines((message as any).errors) : [];
-					const errors = markExternalError(errorLines.length > 0 ? errorLines.join("\n") : String((message as any).result || message.subtype || "Claude Code request failed"));
+					const errors = errorLines.length > 0 ? errorLines.join("\n") : String((message as any).result || message.subtype || "Claude Code request failed");
 					const usageLimit = isUsageLimitMessage(message);
 					const kind = usageLimit ? "rate-limit" : classifyClaudeFailure(errors);
-					// An account's own limit is not an API fault; anything else is.
-					if (kind !== "rate-limit") reportIncident("api_error", "consumeQuery", { subtype: message.subtype, kind: kind ?? "unclassified" }, queryCtx);
 					if (!failure || !failure.rateLimitInfo) {
 						holdFailure({ kind, message: errors });
 					}
@@ -307,10 +284,7 @@ export async function consumeQuery(
 				}
 				break;
 			case "system":
-				if ((message as any).subtype === "init") {
-					logClaudeCodeVersion((message as any).claude_code_version);
-					noteClaudeCodeVersion((message as any).claude_code_version, queryCtx);
-				}
+				if ((message as any).subtype === "init") logClaudeCodeVersion((message as any).claude_code_version);
 				if (!streamLive) break;
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
