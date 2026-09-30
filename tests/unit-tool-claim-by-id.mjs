@@ -5,7 +5,7 @@
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -565,6 +565,36 @@ describe("a tool call Claude Code cancelled", () => {
 		});
 		await assertOnlyReplacementReachesPi(observed, "cancel-replacement-early-streamed");
 	});
+
+	// Claude Code aborts every tool of an attempt it discards and never uses
+	// their results, but its cancel travels apart from the stream: the
+	// replacement can end before it is handled, or it may never come.
+	for (const cancelled of [true, false]) {
+		it(`withdraws a waiting call of the abandoned attempt at the discard${cancelled ? ", ignoring its later cancel" : ", with no cancel"}`, { timeout: 8000 }, async () => {
+			const observed = {};
+			installFakeClaudeCode(observed, async function* (client) {
+				yield messageStart("m1");
+				yield toolUseStart("toolu_old", 0);
+				yield* toolUseRest(0);
+				const old = cancellableCall(client, "toolu_old");
+				observed.old = old.call;
+				await settle(20); // the old handler waits
+				yield* toolUseMessage("m2", ["toolu_new"]); // the replacement reaches message_stop
+				observed.fresh = client.callTool({ name: "echo", arguments: ARGS, ...tagged("toolu_new") });
+				await settle(30);
+				if (cancelled) old.cancel();
+				yield* answerFresh(observed);
+			});
+			await assertOnlyReplacementReachesPi(observed, `withdraw-at-discard-${cancelled}`);
+			const { result } = await observed.old;
+			assert.equal(result?.isError, true, "the old handler gets an error result");
+			assert.match(result.content[0].text, /cancelled this tool call before Pi ran it; it did not execute/);
+			const diag = readFileSync(process.env.CLAUDE_BRIDGE_DIAG_PATH, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			const abandoned = diag.filter((entry) => entry.label === "stream_attempt_abandoned");
+			assert.deepEqual(abandoned.map((entry) => entry.discarded), [[{ index: 0, type: "toolCall", id: "toolu_old", withdrawn: true }]]);
+			assert.equal(diag.filter((entry) => entry.label === "tool_call_cancelled_by_claude_code").length, 0, "a withdrawn call's cancel reports nothing");
+		});
+	}
 
 	it("leaves a call Pi was given to Pi's result, which never answers another call", { timeout: 8000 }, async () => {
 		let cancelOld, retry;

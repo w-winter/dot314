@@ -262,8 +262,10 @@ export const ABORTED_MESSAGE = "Operation aborted";
 // thinking is unsigned, the text stops mid-word, and Claude Code never
 // dispatches the partial call. Claude Code retries even after a tool call
 // completed, and discards that attempt's calls too: it never starts one that
-// was still queued, and aborts one that was executing, whose tools/call it
-// then cancels (withdrawCancelledToolCall).
+// was still queued, aborts one that was executing, whose tools/call it then
+// cancels (withdrawCancelledToolCall), and never uses the result of one it
+// started. So the discard withdraws a waiting call without waiting for that
+// cancel.
 //
 // Pi's stream contract is APPEND-ONLY. Its frame encoder (pi-ai
 // AssistantMessageFrameEncoder, run by coding-agent on every event) rejects a
@@ -296,11 +298,14 @@ export function addTurnBlock(c: QueryContext, block: any): number {
 
 /** Mark the open attempt's blocks discarded and forget their tool calls.
  *  Nothing is emitted for them and the live content is not touched (see the
- *  section note). A completed tool call whose handler is waiting is kept:
- *  Claude Code started it, and its cancel decides whether Pi gets it. Any
- *  other call of the attempt never runs. A call whose handler ran with no
- *  block in the attempt is left alone: it may belong to the replacement,
- *  whose handlers can arrive before its message does.
+ *  section note). Claude Code aborts every tool of an attempt it discards and
+ *  never uses their results, so a completed call whose handler is waiting is
+ *  withdrawn here as its cancel would withdraw it (withdrawToolCall): the
+ *  cancel travels apart from the stream and can come after the replacement
+ *  ended the turn, or never. A call Pi has been given is left to Pi's result.
+ *  A call whose handler ran with no block in the attempt is left alone: it
+ *  may belong to the replacement, whose handlers can arrive before its
+ *  message does.
  *  `replacementId` is the message that replaced it. */
 function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, replacementId: string | undefined): void {
 	const attempt = c.streamAttempt;
@@ -308,14 +313,20 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	attempt.open = false;
 	// A turn that already ended holds a message Pi owns; leave it untouched.
 	if (!c.currentPiStream || !c.turnOutput) return;
-	const discarded: Array<{ index: number; type: TurnBlockType; id?: string }> = [];
+	const discarded: Array<{ index: number; type: TurnBlockType; id?: string; withdrawn?: true }> = [];
 	const droppedCallIds: string[] = [];
+	const withdrawnCallIds: string[] = [];
 	for (const idx of attempt.slots) {
 		const block = c.turnBlocks[idx];
 		if (!block || !isLiveBlock(block)) continue;
-		if (block.type === "toolCall" && !("partialJson" in block) && (c.pendingToolCalls.has(block.id) || c.answeringToolCalls.has(block.id))) continue;
-		if (block.type === "toolCall" && typeof block.id === "string") droppedCallIds.push(block.id);
-		discarded.push({ index: idx, type: block.type, ...(block.type === "toolCall" ? { id: block.id } : {}) });
+		const completedCall = block.type === "toolCall" && !("partialJson" in block);
+		if (completedCall && c.forwardedToolCallIds.has(block.id)) continue;
+		const withdrawn = completedCall && c.pendingToolCalls.has(block.id);
+		// A handler answered by other means is already answering its own call.
+		if (completedCall && !withdrawn && c.answeringToolCalls.has(block.id)) continue;
+		if (withdrawn) withdrawnCallIds.push(block.id);
+		else if (block.type === "toolCall" && typeof block.id === "string") droppedCallIds.push(block.id);
+		discarded.push({ index: idx, type: block.type, ...(block.type === "toolCall" ? { id: block.id } : {}), ...(withdrawn ? { withdrawn: true as const } : {}) });
 		discardedBlocks.add(block);
 		// The retry reuses the same Anthropic stream indexes: this block must no
 		// longer match their deltas and stops.
@@ -325,6 +336,7 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	// Never forwardable later: should a lagging replay of one of these ids
 	// arrive, every forward path skips dead ids.
 	for (const id of droppedCallIds) c.deadToolCallIds.add(id);
+	for (const id of withdrawnCallIds) withdrawToolCall(c, id);
 	c.childExecutedStreamIndexes.clear();
 	c.suppressedStreamIndexes.clear();
 	c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));
@@ -332,7 +344,7 @@ function discardAbandonedAttempt(c: QueryContext, why: StreamAbandonReason, repl
 	// message_start) armed the grace timer, and nothing re-arms it once its
 	// block streams: disarmed, a stream with no terminal events never ends.
 	if (!c.turnSawToolCall && !hasWaitingEarlyCall(c)) cancelScheduledToolUseEnd(c);
-	debug(`discardAbandonedAttempt: ${why} as ${replacementId ?? "an unidentified message"}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}`).join(", "));
+	debug(`discardAbandonedAttempt: ${why} as ${replacementId ?? "an unidentified message"}; discarded ${discarded.length} block(s) of ${attempt.id ?? "an unidentified message"}:`, discarded.map((entry) => `${entry.type}@${entry.index}${entry.id ? ` [${entry.id}]` : ""}${entry.withdrawn ? " (withdrawn)" : ""}`).join(", "));
 	reportDiag("stream_attempt_abandoned", "discardAbandonedAttempt", { why, messageId: attempt.id, replacementMessageId: replacementId, discarded }, c);
 }
 
@@ -348,19 +360,33 @@ function hasWaitingEarlyCall(c: QueryContext): boolean {
 /** Claude Code cancelled the tagged tools/call for `id`: its bundled MCP
  *  client sends notifications/cancelled when the tool's abort signal fires,
  *  which is how a discarded attempt's executing tools are aborted. A call Pi
- *  has not been given never reaches it: the id is dead, its block leaves the
- *  live turn the way an abandoned attempt's blocks do, and its handler is
- *  answered (the MCP server sends no response for a cancelled request). A
- *  call Pi has been given is left alone: Pi's result answers its own handler,
- *  never another call's. Returns whether the call was withdrawn. */
+ *  has not been given is withdrawn (withdrawToolCall). A call Pi has been
+ *  given is left alone: Pi's result answers its own handler, never another
+ *  call's. A call already withdrawn, at its attempt's discard, has no waiting
+ *  handler left and is not withdrawn again. Returns whether the call was
+ *  withdrawn. */
 export function withdrawCancelledToolCall(c: QueryContext, id: string): boolean {
 	c.recorder.record("tools_cancel", id);
 	if (c.forwardedToolCallIds.has(id)) {
 		debug(`mcp handler: [${id}] cancelled by Claude Code after Pi was given it; its result answers it`);
 		return false;
 	}
+	const withdrawn = withdrawToolCall(c, id);
+	if (!withdrawn) return false;
+	const { toolName, droppedBlock } = withdrawn;
+	debug(`mcp handler: ${toolName} [${id}] cancelled by Claude Code before Pi was given it; dropped${droppedBlock ? " its block and" : ""} the call`);
+	reportDiag("tool_call_cancelled_by_claude_code", "withdrawCancelledToolCall", { toolCallId: id, toolName, droppedBlock }, c);
+	return true;
+}
+
+/** Withdraw the waiting call `id`, which Pi has not been given: Pi never gets
+ *  it. The id is dead, its block leaves the live turn the way an abandoned
+ *  attempt's blocks do, and its handler is answered with an error result
+ *  (the MCP server sends no response for a cancelled request). Returns null
+ *  when no handler waits for `id`. */
+function withdrawToolCall(c: QueryContext, id: string): { toolName: string; droppedBlock: boolean } | null {
 	const pending = c.pendingToolCalls.get(id);
-	if (!pending) return false;
+	if (!pending) return null;
 	c.pendingToolCalls.delete(id);
 	c.earlyToolCallIds.delete(id);
 	c.deadToolCallIds.add(id);
@@ -379,10 +405,8 @@ export function withdrawCancelledToolCall(c: QueryContext, id: string): boolean 
 		}
 		if (droppedBlock) c.turnSawToolCall = c.turnBlocks.some((b: any) => b?.type === "toolCall" && isLiveBlock(b));
 	}
-	debug(`mcp handler: ${pending.toolName} [${id}] cancelled by Claude Code before Pi was given it; dropped${droppedBlock ? " its block and" : ""} the call`);
-	reportDiag("tool_call_cancelled_by_claude_code", "withdrawCancelledToolCall", { toolCallId: id, toolName: pending.toolName, droppedBlock }, c);
 	pending.resolve({ content: [{ type: "text", text: "Claude bridge: Claude Code cancelled this tool call before Pi ran it; it did not execute." }], isError: true });
-	return true;
+	return { toolName: pending.toolName, droppedBlock };
 }
 
 /** A message ended (message_stop) while a tool call of this turn never got its
