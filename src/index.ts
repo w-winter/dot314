@@ -31,7 +31,7 @@ import { type IncidentSite, configureIncidents, nameBridgeErrorEvents, nameThrow
 import { noticeIncident, takeIncidentNotice } from "./incident-notice.js";
 import { incidentTool } from "./incident-tool.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
-import { appendIntegrityEntry, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
+import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
 import { primeConnectorServers } from "./connector-runtime.js";
 import { cancelScheduledSessionPersistence, conversationFingerprint, isForeignConversation, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
@@ -404,7 +404,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			debug(`WARNING: mcp handler ${tool.name} has no toolCallId (available=${claim.available})`);
 			const incident = reportDiag("tool_handler_unmatched", "mcpToolHandler", {
 				toolName: tool.name,
-				argKeys: argKeys(mappedArgs),
+				argKeyCount: argKeyCount(mappedArgs),
 				available: claim.available,
 				turnToolCallIds: queryCtx.turnToolCallIds,
 				turnToolCalls: safeToolCallSummary(queryCtx.turnToolCalls),
@@ -424,8 +424,8 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			reportDiag("tool_claim_args_mismatch", "mcpToolHandler", {
 				toolName: tool.name,
 				toolCallId,
-				handlerArgKeys: argKeys(mappedArgs),
-				recordedArgKeys: argKeys(queryCtx.turnToolCalls.find((call) => call.id === toolCallId)?.arguments),
+				handlerArgKeyCount: argKeyCount(mappedArgs),
+				recordedArgKeyCount: argKeyCount(queryCtx.turnToolCalls.find((call) => call.id === toolCallId)?.arguments),
 			}, queryCtx);
 		} else if (claim.recordedAhead) {
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed by tool_use id before the stream recorded it`);

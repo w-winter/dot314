@@ -186,8 +186,15 @@ export function argKeys(args: Record<string, unknown> | undefined): string[] {
 	return Object.keys(args ?? {}).sort();
 }
 
-export function safeToolCallSummary(calls: Array<{ id: string; toolName: string; arguments?: Record<string, unknown> }>): Array<{ id: string; toolName: string; argKeys: string[] }> {
-	return calls.map((call) => ({ id: call.id, toolName: call.toolName, argKeys: argKeys(call.arguments) }));
+/** How many argument properties a call has. Logs and diag entries carry this
+ *  instead of the names: a record-shaped argument makes its property names
+ *  free text of the caller's. */
+export function argKeyCount(args: Record<string, unknown> | undefined): number {
+	return Object.keys(args ?? {}).length;
+}
+
+export function safeToolCallSummary(calls: Array<{ id: string; toolName: string; arguments?: Record<string, unknown> }>): Array<{ id: string; toolName: string; argKeyCount: number }> {
+	return calls.map((call) => ({ id: call.id, toolName: call.toolName, argKeyCount: argKeyCount(call.arguments) }));
 }
 
 export const INTEGRITY_CUSTOM_TYPE = "claude-bridge-integrity";
