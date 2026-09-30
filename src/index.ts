@@ -1899,7 +1899,9 @@ export default function (pi: ExtensionAPI) {
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
 	const config = loadConfig(process.cwd());
-	debug("loadConfig:", JSON.stringify(config));
+	// The replacement is prompt text the user wrote: the log gets its length.
+	const replacement = config.systemPrompt?.replacement;
+	debug("loadConfig:", JSON.stringify(replacement === undefined ? config : { ...config, systemPrompt: { ...config.systemPrompt, replacement: `<${replacement.length} chars>` } }));
 	configureIncidents(config.incidents);
 	// Notices are always on; only filing needs incidents.repo.
 	setIncidentListener(noticeIncident);

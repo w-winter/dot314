@@ -7,7 +7,7 @@
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, it } from "node:test";
@@ -15,7 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Type } from "@earendil-works/pi-ai";
 
-import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
+import claudeBridge, { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
@@ -143,4 +143,30 @@ it("logs no tool result content, prompt or steer text, only their shape", async 
 	for (const marker of [PROMPT_MARKER, RESULT_MARKER, STEER_MARKER]) {
 		assert.ok(!log.includes(marker), `the debug log carries ${marker}`);
 	}
+});
+
+/** The debug log lines `run` writes, with `claude-bridge.json` in a scratch
+ *  agent dir holding `configText`. */
+function logWithConfig(configText, run) {
+	const agentDir = join(root, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(join(agentDir, "claude-bridge.json"), configText);
+	const saved = process.env.PI_CODING_AGENT_DIR;
+	const offset = existsSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH) ? readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8").length : 0;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		run();
+	} finally {
+		process.env.PI_CODING_AGENT_DIR = saved;
+	}
+	return readFileSync(process.env.CLAUDE_BRIDGE_DEBUG_PATH, "utf8").slice(offset);
+}
+
+it("logs the configured replacement prompt as its length", () => {
+	const marker = "replacement-marker-61d0";
+	const log = logWithConfig(JSON.stringify({ enabled: false, systemPrompt: { replacement: `Be brief. ${marker}` } }), () => {
+		claudeBridge({ on: () => {}, registerCommand: () => {}, registerProvider: () => {}, registerTool: () => {}, events: { emit: () => {} }, appendEntry: () => {} });
+	});
+	assert.match(log, /loadConfig: \{"enabled":false,"systemPrompt":\{"replacement":"<33 chars>"\}/);
+	assert.ok(!log.includes(marker), "the debug log carries the replacement prompt");
 });
