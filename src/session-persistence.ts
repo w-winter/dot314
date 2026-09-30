@@ -7,6 +7,7 @@ import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, saf
 import { displayPath } from "./config.js";
 import { convertPiMessages } from "./convert.js";
 import { debug, diagDump, diagGuidance } from "./debug.js";
+import { noteAnomaly } from "./debug-notice.js";
 import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import {
@@ -316,6 +317,7 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 				cursor: snapshot.cursor,
 				error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
 			});
+			noteAnomaly("persist_shared_session_failed");
 		}
 	}, 0);
 	timers.set(sessionManager, timer);
@@ -340,6 +342,7 @@ function convertAndImportMessages(
 		const calls = notedTurns.flatMap((turn) => turn.calls);
 		debug(`convertAndImportMessages: ${notedTurns.length} trailing Claude turn(s) with unsigned thinking imported as a note, carrying ${calls.length} tool call(s):`, calls.map((call) => `${call.name} [${call.id}]`).join(", "));
 		diagDump("unreplayable_turn_imported_as_note", { count: notedTurns.length, calls: calls.slice(0, 50) });
+		noteAnomaly("unreplayable_turn_imported_as_note");
 	}
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
@@ -472,6 +475,7 @@ function verifyWrittenSession(
 			"warning",
 		);
 		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: claudeDir ?? null });
+		noteAnomaly("session_verify_fail");
 	}
 }
 

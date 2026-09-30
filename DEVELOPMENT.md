@@ -52,6 +52,10 @@ Each child-executed connector call (never a child-internal built-in) appends a s
 - Pi's TypeScript loader does not keep a reassigned `export let` in sync for importers, and on `/new`, fork, or resume it reuses the loaded modules while passing the extension a new API object. Shared module state is therefore read through functions such as `getExtensionApi()`. `npm run check:exports` rejects `export let` and `export var` in `src/`, and `tests/int-session-new.mjs` checks that the provider survives `/new`. Unit tests run under tsx, which keeps real ESM bindings and cannot catch this.
 - Startup preflight (`src/claude-executable.ts::preflightClaudeExecutable`) preserves `code`, `errno`, `syscall`, `path`, `cwd` and the detected executable file type on the error it hands the SDK.
 
+## Debug mode
+
+With `CLAUDE_BRIDGE_DEBUG=1`, an anomaly is queued for the Pi session whose request hit it and told once per kind, in one `claude-bridge-debug` message that the session's `before_agent_start` returns with its next prompt (`src/debug-notice.ts`, `tests/unit-debug-notice.mjs`). A kind is told when the bridge showed Claude or Pi an error for it, or recovered from it on its own; expected cleanup (a cancelled request, a max-tokens stop, a history restart) and reports from the API or Claude Code are not told. The told kinds and their sentences live in the one `TOLD` table in `src/debug-notice.ts`, keyed by diag label. A new anomaly needs a sentence there, and its site calls `noteAnomaly` with that label; a label missing from the table fails the typecheck.
+
 ## Rate limits
 
 `src/rate-limit.ts::normalizeRateLimitUtilization` reads a value in `(0, 1]` as a fraction and `(1, 100]` as a percent; exactly `1` is ambiguous and resolves to full, the fail-closed direction. `formatAllowedRateLimitWarning` emits a neutral toast from `ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD` up and never quotes a `% used` figure. Rate-limit errors are deduplicated before notification and emitted as `pi-claude:rate-limit`.

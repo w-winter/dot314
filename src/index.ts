@@ -27,6 +27,7 @@ import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } fro
 import { resolveGetModels } from "./pi-ai-compat.js";
 import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
 import { logVersions } from "./versions.js";
+import { noteAnomaly, takeDebugNotice } from "./debug-notice.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
 import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
@@ -390,6 +391,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 			if (queryCtx.servedTools && !queryCtx.servedTools.serves(tool.name)) {
 				// A new call under a tool Pi has since deactivated (see served-tools.ts).
 				debug(`mcp handler: ${tool.name} is no longer active in Pi; rejecting unclaimed call`);
+				noteAnomaly("tool_no_longer_active");
 				return { content: [{ type: "text", text: `Tool ${tool.name} is no longer active in Pi.` }], isError: true } satisfies McpResult;
 			}
 			debug(`WARNING: mcp handler ${tool.name} has no toolCallId (available=${claim.available})`);
@@ -400,6 +402,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 				turnToolCallIds: queryCtx.turnToolCallIds,
 				turnToolCalls: safeToolCallSummary(queryCtx.turnToolCalls),
 			});
+			noteAnomaly("tool_handler_unmatched");
 			appendIntegrityEntry("tool_handler_unmatched", {
 				toolName: tool.name,
 				argKeys: argKeys(mappedArgs),
@@ -418,6 +421,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 				handlerArgKeyCount: argKeyCount(mappedArgs),
 				recordedArgKeyCount: argKeyCount(queryCtx.turnToolCalls.find((call) => call.id === toolCallId)?.arguments),
 			});
+			noteAnomaly("tool_claim_args_mismatch");
 		} else if (claim.recordedAhead) {
 			debug(`mcp handler: ${tool.name} [${toolCallId}] claimed by tool_use id before the stream recorded it`);
 		} else if ((claim.match !== "tool-args" && claim.match !== "tool-use-id") || claim.ambiguous) {
@@ -471,18 +475,22 @@ function answerUnclaimedToolUse(queryCtx: QueryContext, toolName: string, toolUs
 		case "dead":
 			// A dead id was never forwarded to Pi and never will be.
 			debug(`mcp handler: ${toolName} [${toolUseId}] is dead (never forwarded to Pi); answering as stranded`);
+			noteAnomaly("tool_call_dead");
 			return strandedToolCallResult();
 		case "answered":
 			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] invoked again after it was answered`);
 			diagDump("tool_call_already_answered", { toolName, toolCallId: toolUseId });
+			noteAnomaly("tool_call_already_answered");
 			return { content: [{ type: "text", text: `Claude bridge: tool call ${toolUseId} (${toolName}) was already answered and its result already returned. This repeated invocation did not run the tool.` }], isError: true };
 		case "withdrawn":
 			// A new call under a tool Pi has since deactivated (see served-tools.ts).
 			debug(`mcp handler: ${toolName} is no longer active in Pi; rejecting new call [${toolUseId}]`);
+			noteAnomaly("tool_no_longer_active");
 			return { content: [{ type: "text", text: `Tool ${toolName} is no longer active in Pi.` }], isError: true };
 		case "other-tool":
 			debug(`WARNING: mcp handler: ${toolName} [${toolUseId}] names a call recorded for ${tagged.recordedName}`);
 			diagDump("tool_call_id_other_tool", { toolName, toolCallId: toolUseId, recordedName: tagged.recordedName });
+			noteAnomaly("tool_call_id_other_tool");
 			return { content: [{ type: "text", text: `Claude bridge internal error: tool call ${toolUseId} was issued for ${tagged.recordedName}, not ${toolName}` }], isError: true };
 	}
 }
@@ -866,6 +874,7 @@ function streamRequestInLane(
 			deliverLive = false;
 			debug("provider: a steering write is still in flight; deferring this steer to a continuation");
 			diagDump("steering_write_in_flight", { contextLength: context.messages.length, userMessageCount: replay.userMessageCount, resultCount: deliveredResultIds.length });
+			noteAnomaly("steering_write_in_flight");
 		}
 		if (!deliverLive) releaseResults();
 		// The users this callback accepts for delivery to Claude, live or as a
@@ -888,6 +897,7 @@ function streamRequestInLane(
 					userMessageCount: replay.userMessageCount,
 					messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 				});
+				noteAnomaly("deferred_user_replay_skipped");
 			}
 		}
 		if (replay.unresolvedIndexes.length > 0) {
@@ -910,6 +920,7 @@ function streamRequestInLane(
 				beforeAnchor: replay.unresolvedIndexes.filter((index) => index < replay.anchorIndex).length,
 				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 			});
+			noteAnomaly("user_message_identity_unresolved");
 			if (!queryCtx.detachedFromSharedSession) markSessionForRebuild();
 		}
 
@@ -1057,6 +1068,7 @@ function streamRequestInLane(
 		try { applyProviderRegistration("pre-spawn"); } catch { /* best effort */ }
 		const message = "Claude account not connected — connect an account (or run `claude login`) and retry.";
 		debug(`provider: pre-spawn credential check failed; failing fast: ${message}`);
+		noteAnomaly("claude_account_not_connected");
 		const errorOutput: AssistantMessage = {
 			role: "assistant", content: [],
 			api: model.api, provider: model.provider, model: model.id,
@@ -1236,6 +1248,7 @@ function streamRequestInLane(
 	const refusal = thirdPartyAppRefusal(outboundSystemPrompt({ queryModel, bridgeConfig, systemPrompt, systemPromptOrigin }), bridgeConfig);
 	if (refusal) {
 		debug(`provider: refusing a third-party-app system prompt: ${refusal}`);
+		noteAnomaly("third_party_app_refused");
 		const errorOutput: AssistantMessage = {
 			role: "assistant", content: [],
 			api: model.api, provider: model.provider, model: model.id,
@@ -1292,6 +1305,7 @@ function streamRequestInLane(
 			})(),
 			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 		});
+		noteAnomaly("empty_prompt");
 		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
 		promptText = "[continue]";
 	}
@@ -1422,6 +1436,7 @@ function streamRequestInLane(
 		abortCtx.deferredUserMessages = [];
 		if (dropped.length > 0) {
 			diagDump("deferred_user_messages_dropped", summarizeDroppedUserMessages(site, dropped));
+			if (site !== "abort" && site !== "abort-completion") noteAnomaly("deferred_user_messages_dropped");
 		}
 		return dropped;
 	};
@@ -1510,6 +1525,7 @@ function streamRequestInLane(
 					timeoutMs,
 				});
 				const idle = `stream idle timeout after ${formatDurationShort(timeoutMs)}`;
+				noteAnomaly("stream_idle_timeout");
 				const ending = endStreamForFailure(abortCtx, {
 					errorMessage,
 					notice: idle,
@@ -1917,6 +1933,10 @@ export default function (pi: ExtensionAPI) {
 		deleteSharedSessionLane(sessionId);
 		deleteQueryLane(sessionId);
 	});
+	// With CLAUDE_BRIDGE_DEBUG=1, the anomalies this session's requests hit
+	// since its last prompt, as one message after the user's prompt
+	// (debug-notice.ts).
+	pi.on("before_agent_start", (_event, ctx) => takeDebugNotice(ctx.sessionManager.getSessionId()));
 	pi.on("message_end", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		const message = (event as { message?: AssistantMessage }).message;
 		if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx);

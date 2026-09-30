@@ -9,3 +9,4 @@ Read [DEVELOPMENT.md](DEVELOPMENT.md) before changing behavior. It holds the inv
 - Bound every test run, because a promise that never settles hangs the runner. macOS has no `timeout`, so wrap the command in a 250-second perl `alarm` that then `exec`s it, and add `--test-timeout=60000` for a single file. A hang is a bug to fix, not a timeout to raise. CI runs `test:ci` on Node 22.
 - A test proves itself by failing without the change. Commit first, swap the source with `git show <base>:<file> > <file>`, run the test, then `git checkout HEAD -- <file>`. Never use `git stash`.
 - Integration suites (`tests/int-*`) spend real Claude usage. Run them with Haiku, and only with a `claude-bridge.json` that sets `systemPrompt.replacement`; without one, Anthropic refuses the request as a third-party app.
+- When a debug notice names an anomaly, read the bridge debug and diag logs for it.

@@ -155,6 +155,7 @@ Environment variables:
 
 - `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` (default 90s): how long Claude Code may stay silent during a turn, before or after its first output, while no Pi tool call is outstanding; bare numbers are seconds, `ms`, `s` and `m` suffixes are accepted, `0` disables.
 - `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. Without it, the bridge writes no log. It still writes what it needs to run: the Claude Code session files it builds from Pi history, its own entries in the Pi session file, and, with connectors on, the connector inventory cache in the Pi agent directory.
+  - In debug mode, the agent is also told about each kind of bridge anomaly (an error the bridge wrote, or a problem it recovered from) with your next prompt, once per kind per session, and the TUI shows that notice.
 
 Tool-result integrity problems always surface as a Pi error notification plus a metadata-only `claude-bridge-integrity` entry in the Pi session file, so a lost tool result can be analysed from the session alone.
 
@@ -188,6 +189,7 @@ Upstream here is the bridge in dot314, whose changes this fork merges. Everythin
 - Pi loads the TypeScript source directly; there is no bundle to rebuild, and `/reload` picks up edits. CI runs the typecheck and unit tests on every push.
 - Claude Code children do not inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` unless `provider.inheritAnthropicEnv` is set.
 - The debug log rotates, and old Claude Code CLI logs are pruned.
+- In debug mode, the agent is told about bridge anomalies with the next prompt.
 
 The Claude Agent SDK may prepend its own identity text to the system prompt.
 

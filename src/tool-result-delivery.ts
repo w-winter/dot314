@@ -11,6 +11,7 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources";
 import { endStreamForFailure } from "./assistant-stream.js";
 import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
 import { contentShape, debug, diagDump } from "./debug.js";
+import { noteAnomaly } from "./debug-notice.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.js";
@@ -68,6 +69,7 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 		}
 	}
 	if (unmatchedResultIds.length > 0) {
+		noteAnomaly("tool_results_unmatched");
 		const errorResult: McpResult = {
 			content: [{ type: "text", text: `Claude bridge internal error: ${unmatchedResultIds.length} tool result(s) did not match any registered tool_call id. The turn was stopped to avoid delivering tool output to the wrong call. Unmatched ids: ${unmatchedResultIds.slice(0, 8).join(", ")}${unmatchedResultIds.length > 8 ? ", ..." : ""}` }],
 			isError: true,
@@ -155,6 +157,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 		if (queryCtx.activeQuery !== sdkQuery) {
 			debug("provider: query ended while steering was written; releasing no tool results");
 			diagDump("steering_query_ended_during_write", { resultCount: live.resultCount, detached: queryCtx.detachedFromSharedSession });
+			noteAnomaly("steering_query_ended_during_write");
 			// Only the record this write belongs to, never a replacement's: a
 			// newer query in this context (a rebuild may keep the session id),
 			// a rotated session, a quarantined context or a released lane is
@@ -214,6 +217,7 @@ function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<Quer
 	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
 	const detail = { resultCount: live.resultCount, userMessageCount: live.userMessageCount, detached: queryCtx.detachedFromSharedSession };
 	diagDump("steering_delivery_failed", { ...detail, error: error instanceof Error ? error.message : String(error) });
+	noteAnomaly("steering_delivery_failed");
 	appendIntegrityEntry("steering_delivery_failed", detail);
 	endStreamForFailure(queryCtx, { errorMessage: STEERING_DELIVERY_FAILED_MESSAGE });
 	// The query's own abort path drains the held handlers, drops deferred

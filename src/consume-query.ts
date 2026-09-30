@@ -18,6 +18,7 @@ import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, p
 import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
 import { debug, diagDump } from "./debug.js";
+import { noteAnomaly } from "./debug-notice.js";
 import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
@@ -132,6 +133,7 @@ function noteAbandonedToolCalls(message: unknown, queryCtx: QueryContext): void 
 		queryCtx.abandonedToolCalls.set(id, { toolName: pending.toolName, reason });
 		debug(`consumeQuery: Claude Code gave up on ${pending.toolName} [${id}] while Pi is still running it: ${reason}`);
 		diagDump("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName, reason });
+		noteAnomaly("tool_call_abandoned_by_claude_code");
 		appendIntegrityEntry("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName });
 		safeNotify(`Claude bridge: Claude Code stopped waiting for ${pending.toolName} while Pi is still running it (${reason}). Claude will not see that call's result.`, "warning");
 	}

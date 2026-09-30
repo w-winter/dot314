@@ -4,6 +4,7 @@ import { appendIntegrityEntry, safeNotify } from "./bridge-state.js";
 import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.js";
 import { isChildExecutedTool } from "./connectors.js";
 import { debug, diagDump } from "./debug.js";
+import { noteAnomaly } from "./debug-notice.js";
 import { deliveredAssistantDigest } from "./history-digest.js";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
@@ -91,7 +92,7 @@ export function finalizeCurrentStream(stopReason?: string, c: QueryContext = ctx
 	// partial response) was never issued, and its arguments are truncated.
 	// Nothing can deliver a result for it either, so no teardown report may
 	// count it as missing one.
-	const { message, prunedIds } = terminalMessage(c);
+	const { message, prunedIds } = terminalMessage(c, { maxTokensStop: reason === "length" });
 	c.forgetToolCalls(prunedIds);
 	recordDeliveredReply(c, message);
 	c.currentPiStream.push({ type: "done", reason, message });
@@ -212,6 +213,7 @@ export function endStreamForFailure(
 		const dropped = (c.turnOutput.content as Array<any>).filter((b) => isLiveBlock(b)).length - kept;
 		debug(`provider: deferred continuation failed after a completed reply; ending the Pi message with its ${kept} completed block(s), leaving out ${dropped} from the failed continuation: ${failure.errorMessage}`);
 		diagDump("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
+		noteAnomaly("continuation_failed_after_reply");
 		appendIntegrityEntry("continuation_failed_after_reply", { keptBlocks: kept, droppedBlocks: dropped });
 		safeNotify(`Claude bridge: Claude failed while answering your mid-turn message (${(failure.notice ?? failure.errorMessage).slice(0, 200)}). Its reply before that message is kept; send the message again to get an answer.`, "warning");
 		ensureTurnStarted(c);
@@ -446,6 +448,7 @@ function dropUnclosedBlocksAtMessageStop(c: QueryContext): boolean {
 	// Not expected cleanup: every call of the turn was cut off, and Claude Code
 	// may have dispatched one.
 	diagDump("partial_tool_calls_pruned", { count: calls.length, calls });
+	noteAnomaly("partial_tool_calls_pruned");
 	appendIntegrityEntry("partial_tool_calls_pruned", { count: calls.length, calls });
 	return true;
 }
@@ -456,8 +459,9 @@ function dropUnclosedBlocksAtMessageStop(c: QueryContext): boolean {
  *  message, and truncated arguments must never execute). The live partial is
  *  left intact, since Pi may still be encoding queued events against it; when
  *  anything is left out the terminal message is a copy. Returns the ids of the
- *  pruned still-partial calls. */
-export function terminalMessage(c: QueryContext, { prunePartialCalls = true } = {}): { message: AssistantMessage; prunedIds: string[] } {
+ *  pruned still-partial calls. `maxTokensStop` is set when the message ends at
+ *  a max-tokens stop. */
+export function terminalMessage(c: QueryContext, { prunePartialCalls = true, maxTokensStop = false } = {}): { message: AssistantMessage; prunedIds: string[] } {
 	const output = c.turnOutput!;
 	const content = output.content as Array<any>;
 	const isPartialCall = (b: any): boolean => prunePartialCalls && b?.type === "toolCall" && "partialJson" in b;
@@ -466,11 +470,11 @@ export function terminalMessage(c: QueryContext, { prunePartialCalls = true } = 
 	if (partial.length > 0) {
 		const calls = partial.map((b) => ({ id: b.id, name: b.name }));
 		debug(`terminalMessage: pruning ${partial.length} still-partial tool call(s) — truncated arguments never execute:`, calls.map((entry) => `${entry.name} [${entry.id}]`).join(", "));
-		// Expected cleanup in a cancelled request (c.requestAborted()) and at a
-		// max-tokens stop (finalizeCurrentStream with reason "length"): the
+		// Expected cleanup in a cancelled request and at a max-tokens stop: the
 		// call's arguments never finished, so it was never issued. Anywhere else
 		// a prune cut off a call Claude Code may have dispatched.
 		diagDump("partial_tool_calls_pruned", { count: partial.length, calls });
+		if (!maxTokensStop && !c.requestAborted()) noteAnomaly("partial_tool_calls_pruned");
 		appendIntegrityEntry("partial_tool_calls_pruned", { count: partial.length, calls });
 	}
 	const prunedIds = partial.map((b) => b.id).filter((id): id is string => typeof id === "string");
@@ -615,6 +619,7 @@ export function reapStaleQueuedResults(c: QueryContext): void {
 	const names = stale.map((entry) => entry.toolName);
 	debug(`reapStaleQueuedResults: parked ${stale.length} early tool result(s) awaiting a late handler:`, names.join(", "));
 	diagDump("stale_queued_tool_results_parked", { count: stale.length, stale });
+	noteAnomaly("stale_queued_tool_results_parked");
 	appendIntegrityEntry("stale_queued_tool_results_parked", { count: stale.length, stale });
 	safeNotify(
 		`Claude bridge: parked ${stale.length} early tool result(s) whose handler has not arrived (${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}). ` +

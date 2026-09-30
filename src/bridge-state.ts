@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { debug, diagDump, diagGuidance } from "./debug.js";
+import { noteAnomaly } from "./debug-notice.js";
 import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
 import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
 import { type QueryContext } from "./query-state.js";
@@ -243,6 +244,7 @@ export function reportSyntheticToolResultRepair(missing: MissingToolResult[], co
 			missing: missing.slice(0, 50),
 			...context,
 		});
+		noteAnomaly("repair_tool_pairing_synthetic_results");
 		appendIntegrityEntry("repair_tool_pairing_synthetic_results", {
 			count: missing.length,
 			toolNames,
@@ -310,6 +312,7 @@ export function reportToolResultMismatch(
 				forceRotate: sharedSession.forceRotate === true,
 			} : null,
 		});
+		noteAnomaly("tool_result_delivery_mismatch");
 		appendIntegrityEntry("tool_result_delivery_mismatch", {
 			reason,
 			toolNames: progress.toolNames,

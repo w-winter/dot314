@@ -14,6 +14,7 @@ import { isConnectorTool } from "./connectors.js";
 import type { McpResult } from "./extract-tool-results.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { debug, diagDump } from "./debug.js";
+import { noteAnomaly } from "./debug-notice.js";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
 import { UserMessageLedger } from "./user-message-ledger.js";
 
@@ -108,6 +109,7 @@ export function drainPendingToolCalls(queryCtx: QueryContext, cause: ToolCallDra
 	const drained = queryCtx.pendingToolCalls.size;
 	if (drained === 0) return 0;
 	const result = interruptedToolCallResult(cause);
+	if (cause !== "abort" && cause !== "history-restart") noteAnomaly("tool_calls_interrupted");
 	for (const pending of queryCtx.pendingToolCalls.values()) pending.resolve(result);
 	queryCtx.pendingToolCalls.clear();
 	return drained;
@@ -136,6 +138,7 @@ export function failStrandedToolCall(queryCtx: QueryContext, id: string): boolea
 	queryCtx.pendingToolCalls.delete(id);
 	queryCtx.deadToolCallIds.add(id);
 	diagDump("tool_handler_stranded", { toolCallId: id, toolName: pending.toolName, site: "finalize-no-stream" });
+	noteAnomaly("tool_handler_stranded");
 	pending.resolve(strandedToolCallResult());
 	return true;
 }
@@ -157,6 +160,7 @@ export function drainStrandedToolCalls(queryCtx: QueryContext): Array<{ id: stri
 	}
 	if (stranded.length === 0) return stranded;
 	diagDump("tool_handlers_stranded", { count: stranded.length, stranded });
+	noteAnomaly("tool_handlers_stranded");
 	for (const { id } of stranded) {
 		const pending = queryCtx.pendingToolCalls.get(id)!;
 		queryCtx.pendingToolCalls.delete(id);
