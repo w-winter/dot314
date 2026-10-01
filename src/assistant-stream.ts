@@ -1,15 +1,15 @@
 import { calculateCost, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { appendIntegrityEntry, safeNotify } from "./bridge-state.js";
-import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.js";
-import { isChildExecutedTool } from "./connectors.js";
-import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { deliveredAssistantDigest } from "./history-digest.js";
-import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
-import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
-import { thirdPartyAppHintFor, withThirdPartyAppHint, withoutThirdPartyAppHint } from "./third-party-rejection.js";
-import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
+import { appendIntegrityEntry, safeNotify } from "./bridge-state.ts";
+import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.ts";
+import { isChildExecutedTool } from "./connectors.ts";
+import { debug, diagDump } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { deliveredAssistantDigest } from "./history-digest.ts";
+import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.ts";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.ts";
+import { thirdPartyAppHintFor, withThirdPartyAppHint, withoutThirdPartyAppHint } from "./third-party-rejection.ts";
+import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.ts";
 
 // --- Usage helpers ---
 

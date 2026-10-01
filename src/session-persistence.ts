@@ -3,19 +3,19 @@ import { createSession, deleteSession, openSession, repairToolPairing } from "cc
 import { createHash } from "crypto";
 import { realpathSync, statSync } from "fs";
 import { resolve as pathResolve } from "path";
-import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
-import { displayPath } from "./config.js";
-import { convertPiMessages } from "./convert.js";
-import { debug, diagDump, diagGuidance } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
-import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
+import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.ts";
+import { displayPath } from "./config.ts";
+import { convertPiMessages } from "./convert.ts";
+import { debug, diagDump, diagGuidance } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { historyDigest, sharedHistoryMatches } from "./history-digest.ts";
+import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.ts";
 import {
 	findUnpairedToolUses,
 	insertLostToolResultPlaceholders,
 	recoverLaterToolResults,
-} from "./tool-pairing-audit.js";
-import { claudeDirForProfile, resolveClaudeAccountRouter, type AccountSessionScope } from "./account-router.js";
+} from "./tool-pairing-audit.ts";
+import { claudeDirForProfile, resolveClaudeAccountRouter, type AccountSessionScope } from "./account-router.ts";
 
 // --- Session persistence ---
 

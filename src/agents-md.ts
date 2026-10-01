@@ -26,8 +26,8 @@
 
 import { lstatSync, readFileSync, statSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { isolatedFromEnv, piUserDir } from "./config.js";
-import { debug } from "./debug.js";
+import { isolatedFromEnv, piUserDir } from "./config.ts";
+import { debug } from "./debug.ts";
 
 const CONTEXT_FILE_CANDIDATES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"];
 

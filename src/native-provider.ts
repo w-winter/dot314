@@ -21,9 +21,9 @@
 // the Claude Code subprocess does its own authentication; pi never needs a
 // real secret, so none is read or exposed.
 
-import { unmanagedClaudeEnv } from "./account-router.js";
-import { hasClaudeCredentials } from "./auth-presence.js";
-import { PROVIDER_ID } from "./convert.js";
+import { unmanagedClaudeEnv } from "./account-router.ts";
+import { hasClaudeCredentials } from "./auth-presence.ts";
+import { PROVIDER_ID } from "./convert.ts";
 
 export const NATIVE_PROVIDER_UNSUPPORTED_MESSAGE =
 	"Claude bridge needs Pi 0.81 or later. Upgrade Pi.";

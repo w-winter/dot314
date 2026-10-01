@@ -1,6 +1,6 @@
 import { type AssistantMessage, type Context } from "@earendil-works/pi-ai";
 import { createHash } from "crypto";
-import { convertPiMessages } from "./convert.js";
+import { convertPiMessages } from "./convert.ts";
 
 // Digest of the history Claude Code already holds, so warm reuse of its
 // session can check that Pi's copy still matches. A message count cannot show

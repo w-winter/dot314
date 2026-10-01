@@ -8,14 +8,14 @@
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
-import { endStreamForFailure } from "./assistant-stream.js";
-import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
-import { contentShape, debug, diagDump } from "./debug.js";
-import { currentPiSession, noteAnomaly } from "./agent-notice.js";
-import type { McpResult } from "./extract-tool-results.js";
-import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
-import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.js";
-import { abortSdkQuery } from "./query-teardown.js";
+import { endStreamForFailure } from "./assistant-stream.ts";
+import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.ts";
+import { contentShape, debug, diagDump } from "./debug.ts";
+import { currentPiSession, noteAnomaly } from "./agent-notice.ts";
+import type { McpResult } from "./extract-tool-results.ts";
+import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.ts";
+import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.ts";
+import { abortSdkQuery } from "./query-teardown.ts";
 
 export const STEERING_DELIVERY_FAILED_MESSAGE = "Claude bridge could not deliver steering to Claude Code. Retry to rebuild from Pi history.";
 

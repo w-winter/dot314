@@ -13,18 +13,18 @@ import {
 	type ClaudeAccountFailureKind,
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
-} from "./account-router.js";
-import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.js";
-import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
-import { type Config } from "./config.js";
-import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { modelDisplayName } from "./models.js";
-import { type QueryContext } from "./query-state.js";
-import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
-import { sdkQueryAbandoned } from "./query-teardown.js";
-import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.js";
-import { logClaudeCodeVersion } from "./versions.js";
+} from "./account-router.ts";
+import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.ts";
+import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.ts";
+import { type Config } from "./config.ts";
+import { debug, diagDump } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { modelDisplayName } from "./models.ts";
+import { type QueryContext } from "./query-state.ts";
+import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.ts";
+import { sdkQueryAbandoned } from "./query-teardown.ts";
+import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.ts";
+import { logClaudeCodeVersion } from "./versions.ts";
 
 const ABANDONED: unique symbol = Symbol("sdk-query-abandoned");
 

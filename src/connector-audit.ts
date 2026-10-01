@@ -17,9 +17,9 @@
 // messages, documents); the audit answers whether a call happened and what came
 // back, not what it said.
 
-import { getExtensionApi } from "./bridge-state.js";
-import { debug } from "./debug.js";
-import type { QueryContext, ToolCallDrainCause } from "./query-state.js";
+import { getExtensionApi } from "./bridge-state.ts";
+import { debug } from "./debug.ts";
+import type { QueryContext, ToolCallDrainCause } from "./query-state.ts";
 
 export const CONNECTOR_CALL_CUSTOM_TYPE = "claude-bridge-connector-call";
 

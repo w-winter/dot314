@@ -3,10 +3,10 @@
 
 import { type Model } from "@earendil-works/pi-ai";
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { accountSessionScope, resolveClaudeAccountRouter } from "./account-router.js";
-import { loadConfig } from "./config.js";
-import { listAccountConnectors, resolveClaudeOAuth } from "./connector-inventory.js";
-import { connectorCredentialEnv, readCredentialFile } from "./connector-runtime.js";
+import { accountSessionScope, resolveClaudeAccountRouter } from "./account-router.ts";
+import { loadConfig } from "./config.ts";
+import { listAccountConnectors, resolveClaudeOAuth } from "./connector-inventory.ts";
+import { connectorCredentialEnv, readCredentialFile } from "./connector-runtime.ts";
 
 const COMMANDS_REGISTERED_KEY = Symbol.for("claude-bridge:commandsRegistered");
 

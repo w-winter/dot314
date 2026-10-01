@@ -7,6 +7,10 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    // Relative imports name the .ts file, so Pi's loader resolves each one on
+    // its first try. Importing .ts paths requires noEmit; nothing emits anyway.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "types": ["node"],
     "strict": false,
     "skipLibCheck": true,

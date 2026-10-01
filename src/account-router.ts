@@ -10,10 +10,10 @@
 import type { AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "./config.js";
-import { debug } from "./debug.js";
-import { resetTimestampMs } from "./rate-limit.js";
-import { isThirdPartyAppRejection } from "./third-party-rejection.js";
+import { loadConfig } from "./config.ts";
+import { debug } from "./debug.ts";
+import { resetTimestampMs } from "./rate-limit.ts";
+import { isThirdPartyAppRejection } from "./third-party-rejection.ts";
 
 export const CLAUDE_ACCOUNT_ROUTER_SYMBOL = Symbol.for("kendex.pi.claude-account-router.v1");
 export const CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL = Symbol.for("kendex.pi.claude-bridge.account-host.v1");

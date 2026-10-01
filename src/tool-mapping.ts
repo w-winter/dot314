@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { isMcpResourceTool } from "./connectors.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
+import { isMcpResourceTool } from "./connectors.ts";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.ts";
 
 // --- MCP aliases for Pi tool names ---
 //

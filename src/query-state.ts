@@ -10,13 +10,13 @@ import { randomUUID } from "node:crypto";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { isConnectorTool } from "./connectors.js";
-import type { McpResult } from "./extract-tool-results.js";
-import { currentRequestLaneId } from "./request-lane.js";
-import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
-import { UserMessageLedger } from "./user-message-ledger.js";
+import { isConnectorTool } from "./connectors.ts";
+import type { McpResult } from "./extract-tool-results.ts";
+import { currentRequestLaneId } from "./request-lane.ts";
+import { debug, diagDump } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import type { ServedToolServer, ServedToolUpdate } from "./served-tools.ts";
+import { UserMessageLedger } from "./user-message-ledger.ts";
 
 /** A mid-query user run captured for replay after the active query ends.
  *  `text` is the joined text form (previews, and the replay prompt when no

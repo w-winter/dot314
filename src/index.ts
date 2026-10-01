@@ -13,31 +13,31 @@ import * as piAi from "@earendil-works/pi-ai";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
-import { PROVIDER_ID, messageContentToText } from "./convert.js";
-import { buildModels, modelDisplayName } from "./models.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
-import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, isForkLane, laneInUse, releaseForkLane, requestLaneFor, strandedToolCallResult, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type ClaimedToolCall, type DeferredUserMessage, type QueryRestartRequest, type ToolUseIdClaim } from "./query-state.js";
-import { answersKnownCall, deliverSteerBeforeResults, resolveToolResults } from "./tool-result-delivery.js";
-import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.js";
-import { loadConfig, recordProjectTrust } from "./config.js";
-import { hasClaudeCredentials } from "./auth-presence.js";
-import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.js";
-import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.js";
-import { resolveGetModels } from "./pi-ai-compat.js";
-import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.js";
-import { logVersions } from "./versions.js";
-import { noteAnomaly, takeAgentNotice } from "./agent-notice.js";
-import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.js";
-import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.js";
-import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.js";
-import { primeConnectorServers } from "./connector-runtime.js";
-import { cancelScheduledSessionPersistence, conversationFingerprint, isForeignConversation, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.js";
-import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, historyDigest } from "./history-digest.js";
-import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.js";
-import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.js";
-import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.js";
-import { ABORTED_MESSAGE, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, markContinuationStart, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel, withdrawCancelledToolCall } from "./assistant-stream.js";
+import { PROVIDER_ID, messageContentToText } from "./convert.ts";
+import { buildModels, modelDisplayName } from "./models.ts";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.ts";
+import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.ts";
+import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCalls, isForkLane, laneInUse, releaseForkLane, requestLaneFor, strandedToolCallResult, summarizeDroppedUserMessages, takeQueuedOrParkedResult, toolCallDrainCause, type ClaimedToolCall, type DeferredUserMessage, type QueryRestartRequest, type ToolUseIdClaim } from "./query-state.ts";
+import { answersKnownCall, deliverSteerBeforeResults, resolveToolResults } from "./tool-result-delivery.ts";
+import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.ts";
+import { loadConfig, recordProjectTrust } from "./config.ts";
+import { hasClaudeCredentials } from "./auth-presence.ts";
+import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.ts";
+import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.ts";
+import { resolveGetModels } from "./pi-ai-compat.ts";
+import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } from "./debug.ts";
+import { logVersions } from "./versions.ts";
+import { noteAnomaly, takeAgentNotice } from "./agent-notice.ts";
+import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.ts";
+import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.ts";
+import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.ts";
+import { primeConnectorServers } from "./connector-runtime.ts";
+import { cancelScheduledSessionPersistence, conversationFingerprint, isForeignConversation, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.ts";
+import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, historyDigest } from "./history-digest.ts";
+import { STREAM_IDLE_BACKOFF_HINT_MS, activeStreamIdleWatchdogs, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, formatDurationShort, streamIdleTimeoutMsFromEnv } from "./stream-idle-watchdog.ts";
+import { RATE_LIMIT_TOKEN, formatResetTimestamp } from "./rate-limit.ts";
+import { mapToolArgs, markAuthoritativeManifest, mcpToolAliases } from "./tool-mapping.ts";
+import { ABORTED_MESSAGE, endStreamForFailure, finalizeCurrentStream, finalizeToolUseTurnFromMcpInvocation, markContinuationStart, scheduleToolUseTurnEnd, terminalMessage, updateTurnResponseModel, withdrawCancelledToolCall } from "./assistant-stream.ts";
 import {
 	accountSessionScope,
 	classifyClaudeFailure,
@@ -50,30 +50,30 @@ import {
 	safeRouterCall,
 	unmanagedClaudeEnv,
 	type ClaudeAccountRoute,
-} from "./account-router.js";
-import { BRIDGE_ACCOUNT_HOST } from "./account-host.js";
-import { registerBridgeCommands } from "./bridge-commands.js";
-import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.js";
-import { buildClaudeQueryOptions } from "./query-options.js";
-import { sdkQuery as startSdkQuery } from "./sdk-query.js";
-import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.js";
-import { currentRequestLaneId, runInRequestLane } from "./request-lane.js";
+} from "./account-router.ts";
+import { BRIDGE_ACCOUNT_HOST } from "./account-host.ts";
+import { registerBridgeCommands } from "./bridge-commands.ts";
+import { consumeQuery, emitRateLimitEvent, type ClaudeAttemptFailure } from "./consume-query.ts";
+import { buildClaudeQueryOptions } from "./query-options.ts";
+import { sdkQuery as startSdkQuery } from "./sdk-query.ts";
+import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.ts";
+import { currentRequestLaneId, runInRequestLane } from "./request-lane.ts";
 
 // Re-exports: the module decomposition must not change the entry's public
 // surface — unit tests and downstream consumers import these from index.ts.
-export { probeClaudeAccountProfile } from "./account-host.js";
-export { __testSetSdkQueryFactory } from "./sdk-query.js";
-export { resolveConfiguredEffort } from "./query-options.js";
-export { classifyClaudeExecutableBytes, preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics, wrapClaudeSpawnErrorForSdk, type ClaudeExecutableFileType, type ClaudeExecutablePreflightResult } from "./claude-executable.js";
-export { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, INTEGRITY_CUSTOM_TYPE, appendIntegrityEntry, reportToolResultMismatch } from "./bridge-state.js";
-export { CONNECTOR_CALL_CUSTOM_TYPE, connectorResultByteSize, flushConnectorCallAudit, recordConnectorCallResult, setConnectorCallAuditSink, type ConnectorCallAuditData, type ConnectorCallAuditSink, type ConnectorCallOutcome } from "./connector-audit.js";
-export { CLAUDE_AI_CONNECTOR_TOOL_PATTERNS, connectorMcpServers, connectorDeclarationsDisabled, CLAUDE_BRIDGE_TOOL_ISOLATION, CONNECTOR_DISCOVERY_TOOLS, CONNECTOR_WRITE_TOOLS, DISALLOWED_BUILTIN_TOOLS, connectorBuiltinAllowlistHook, connectorQueryOptions, connectorWriteDenyHook, connectorWriteModeFor, connectorWriteModeFromEnv, connectorsEnabledFor, connectorsEnabledFromEnv, denyAllToolsHook, isAllowlistedConnectorSessionTool, isChildExecutedTool, isChildInternalTool, isConnectorTool, isConnectorWriteTool, settingSourcesForQuery, toolIsolationForQuery } from "./connectors.js";
-export { cancelScheduledSessionPersistence, conversationFingerprint, conversationFingerprintsMatch, planIncrementalPromptBatch, restoreSharedSessionFromPi, shouldRestorePersistedBridgeEntry } from "./session-persistence.js";
-export { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, claudeAuthSourceLabel, supportsNativeProvider } from "./native-provider.js";
-export { DEFAULT_STREAM_IDLE_TIMEOUT_MS, STREAM_IDLE_BACKOFF_HINT_MS, STREAM_IDLE_TIMEOUT_ENV, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, streamIdleTimeoutMsFromEnv, type StreamIdleTimeoutInfo, type StreamIdleWatchdog, type StreamIdleWatchdogState } from "./stream-idle-watchdog.js";
-export { ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, normalizeRateLimitUtilization, resetTimestampMs, uniqueNonEmptyLines } from "./rate-limit.js";
-export { isPiDispatchable, mapToolName } from "./tool-mapping.js";
-export { cancelScheduledToolUseEnd, endToolUseTurn, finalizeToolUseTurnFromMcpInvocation, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, reapStaleQueuedResults, scheduleToolUseTurnEnd } from "./assistant-stream.js";
+export { probeClaudeAccountProfile } from "./account-host.ts";
+export { __testSetSdkQueryFactory } from "./sdk-query.ts";
+export { resolveConfiguredEffort } from "./query-options.ts";
+export { classifyClaudeExecutableBytes, preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics, wrapClaudeSpawnErrorForSdk, type ClaudeExecutableFileType, type ClaudeExecutablePreflightResult } from "./claude-executable.ts";
+export { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, INTEGRITY_CUSTOM_TYPE, appendIntegrityEntry, reportToolResultMismatch } from "./bridge-state.ts";
+export { CONNECTOR_CALL_CUSTOM_TYPE, connectorResultByteSize, flushConnectorCallAudit, recordConnectorCallResult, setConnectorCallAuditSink, type ConnectorCallAuditData, type ConnectorCallAuditSink, type ConnectorCallOutcome } from "./connector-audit.ts";
+export { CLAUDE_AI_CONNECTOR_TOOL_PATTERNS, connectorMcpServers, connectorDeclarationsDisabled, CLAUDE_BRIDGE_TOOL_ISOLATION, CONNECTOR_DISCOVERY_TOOLS, CONNECTOR_WRITE_TOOLS, DISALLOWED_BUILTIN_TOOLS, connectorBuiltinAllowlistHook, connectorQueryOptions, connectorWriteDenyHook, connectorWriteModeFor, connectorWriteModeFromEnv, connectorsEnabledFor, connectorsEnabledFromEnv, denyAllToolsHook, isAllowlistedConnectorSessionTool, isChildExecutedTool, isChildInternalTool, isConnectorTool, isConnectorWriteTool, settingSourcesForQuery, toolIsolationForQuery } from "./connectors.ts";
+export { cancelScheduledSessionPersistence, conversationFingerprint, conversationFingerprintsMatch, planIncrementalPromptBatch, restoreSharedSessionFromPi, shouldRestorePersistedBridgeEntry } from "./session-persistence.ts";
+export { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, claudeAuthSourceLabel, supportsNativeProvider } from "./native-provider.ts";
+export { DEFAULT_STREAM_IDLE_TIMEOUT_MS, STREAM_IDLE_BACKOFF_HINT_MS, STREAM_IDLE_TIMEOUT_ENV, buildStreamIdleTimeoutErrorMessage, createStreamIdleWatchdog, streamIdleTimeoutMsFromEnv, type StreamIdleTimeoutInfo, type StreamIdleWatchdog, type StreamIdleWatchdogState } from "./stream-idle-watchdog.ts";
+export { ALLOWED_RATE_LIMIT_WARNING_UTILIZATION_THRESHOLD, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, normalizeRateLimitUtilization, resetTimestampMs, uniqueNonEmptyLines } from "./rate-limit.ts";
+export { isPiDispatchable, mapToolName } from "./tool-mapping.ts";
+export { cancelScheduledToolUseEnd, endToolUseTurn, finalizeToolUseTurnFromMcpInvocation, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, reapStaleQueuedResults, scheduleToolUseTurnEnd } from "./assistant-stream.ts";
 export {
 	accountSessionScope,
 	claudeDirForProfile,
@@ -90,7 +90,7 @@ export {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 	type ClaudeBridgeAccountHostV1,
-} from "./account-router.js";
+} from "./account-router.ts";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;

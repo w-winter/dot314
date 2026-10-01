@@ -1,11 +1,11 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { debug, diagDump, diagGuidance } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
-import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
-import { type QueryContext } from "./query-state.js";
-import { currentRequestLaneId } from "./request-lane.js";
-import { summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.js";
+import { debug, diagDump, diagGuidance } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.ts";
+import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.ts";
+import { type QueryContext } from "./query-state.ts";
+import { currentRequestLaneId } from "./request-lane.ts";
+import { summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.ts";
 
 export interface SessionState {
 	sessionId: string;

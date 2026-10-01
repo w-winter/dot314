@@ -1,6 +1,6 @@
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
-import { piUserDir } from "./config.js";
+import { piUserDir } from "./config.ts";
 
 // --- Debug logging ---
 // CLAUDE_BRIDGE_DEBUG=1 enables debug logging to <piUserDir>/claude-bridge.log

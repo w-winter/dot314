@@ -20,10 +20,10 @@
 // from the file when it notes or tells.
 
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { agentNoticesEnabled, displayPath } from "./config.js";
-import { DEBUG, DEBUG_LOG_PATH, debug, diagLogPath } from "./debug.js";
-import { piSessionOfLane } from "./query-state.js";
-import { currentRequestLaneId } from "./request-lane.js";
+import { agentNoticesEnabled, displayPath } from "./config.ts";
+import { DEBUG, DEBUG_LOG_PATH, debug, diagLogPath } from "./debug.ts";
+import { piSessionOfLane } from "./query-state.ts";
+import { currentRequestLaneId } from "./request-lane.ts";
 
 export const AGENT_NOTICE_TYPE = "claude-bridge-notice";
 export const AGENT_NOTICE_SESSIONS_KEPT = 64;

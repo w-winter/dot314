@@ -4,15 +4,15 @@
 
 import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.js";
-import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
-import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.js";
-import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.js";
-import { connectorServersSnapshot } from "./connector-runtime.js";
-import { PROVIDER_ID } from "./convert.js";
-import { makeCliDebugOptions } from "./debug.js";
-import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.js";
-import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.js";
+import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.ts";
+import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.ts";
+import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.ts";
+import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.ts";
+import { connectorServersSnapshot } from "./connector-runtime.ts";
+import { PROVIDER_ID } from "./convert.ts";
+import { makeCliDebugOptions } from "./debug.ts";
+import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.ts";
+import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.ts";
 
 // --- Effort level mapping ---
 // Pi reasoning levels → CC SDK effort levels

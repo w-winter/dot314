@@ -31,6 +31,10 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Changed
 
+- **The bridge loads about six times faster.**
+  - **Before:** loading the bridge took about 0.45 s on every Pi start, every `/reload` and every subagent child. Nearly all of that went to Pi's loader trying each of the bridge's 166 internal imports as a `.js` file before falling back to the `.ts` file.
+  - **Now:** the internal imports name the `.ts` file, and the load takes about 0.07 s. On Pi 0.99.2, a warm start went from 442 ms to 71 ms and a `/reload` from 423 ms to 14 ms. The first start after a pull that changes every file went from 848 ms to 441 ms. These are medians measured while other work kept the machine busy, so absolute times on an idle machine are lower.
+  - `npm run check:imports` keeps a `.js` internal import from coming back.
 - **Three TUI warnings removed:** they needed nothing from you.
   - The three were parked early tool results, the stream idle timeout (Pi already shows the turn's error), and tool calls that never reached Pi.
   - With agent notices on, the agent is told about each one instead. (`45bd6c7`)

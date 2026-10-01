@@ -2,8 +2,8 @@ import { type SpawnOptions, type SpawnedProcess } from "@anthropic-ai/claude-age
 import { spawn as spawnProcess } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, openSync, readSync, realpathSync, statSync } from "fs";
 import { delimiter, join } from "path";
-import { isolatedFromEnv } from "./config.js";
-import { DEBUG, debug } from "./debug.js";
+import { isolatedFromEnv } from "./config.ts";
+import { DEBUG, debug } from "./debug.ts";
 
 function executableFromPath(name: string): string | undefined {
 	const paths = (process.env.PATH ?? "").split(delimiter).filter(Boolean);

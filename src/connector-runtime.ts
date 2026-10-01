@@ -14,10 +14,10 @@
 // race, which is the bug, but a network blip must not break the turn outright.
 
 import { readFileSync as nodeReadFileSync } from "node:fs";
-import { readCachedConnectors, scopeKeyFor, writeCachedConnectors } from "./connector-cache.js";
-import { listAccountConnectors, resolveClaudeOAuth } from "./connector-inventory.js";
-import { connectorMcpServers } from "./connectors.js";
-import { debug } from "./debug.js";
+import { readCachedConnectors, scopeKeyFor, writeCachedConnectors } from "./connector-cache.ts";
+import { listAccountConnectors, resolveClaudeOAuth } from "./connector-inventory.ts";
+import { connectorMcpServers } from "./connectors.ts";
+import { debug } from "./debug.ts";
 
 // Read a credential file, treating any read error as "absent" — a missing or
 // unreadable candidate must fall through to the next one, not abort resolution.

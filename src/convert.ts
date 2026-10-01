@@ -4,7 +4,7 @@
 import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai";
 import type { ContentBlock, Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
-import { isChildExecutedTool } from "./connectors.js";
+import { isChildExecutedTool } from "./connectors.ts";
 
 export const PROVIDER_ID = "pi-claude";
 
