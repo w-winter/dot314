@@ -6,7 +6,7 @@
   "license": "MIT",
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./bundle/index.js"
     ]
   },
   "dependencies": {
@@ -25,13 +25,15 @@
     "@earendil-works/pi-coding-agent": "^0.86.0",
     "@modelcontextprotocol/sdk": "1.30.1",
     "@types/node": "^24.3.0",
+    "esbuild": "^0.28.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   },
   "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --banner:js=\"/* oxlint-disable */\" --outfile=bundle/index.js --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent",
     "test:unit": "node --import tsx --import ./tests/lib/test-env.mjs --test tests/unit-*.mjs",
     "check:exports": "! grep -rnE '^export (let|var) ' src",
-    "test:ci": "npm run typecheck && npm run check:exports && npm run test:unit",
+    "test:ci": "npm run build && npm run typecheck && npm run check:exports && npm run test:unit",
     "test": "set -a && [ -f .env.test ] && . ./.env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
