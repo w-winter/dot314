@@ -19,6 +19,12 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - **Before:** about half of the `usage:` lines repeated the counters of the line before, because Anthropic reports a message's usage again when nothing changed.
   - **Now:** a `usage:` line that repeats the previous one of the same request is left out, and the request's `timing:` line counts how many were. Usage itself is counted as before.
 
+### Fixed
+
+- **`/reload` threw away the warm Claude session.**
+  - **Before:** the prompt after a `/reload` rebuilt Claude's session from scratch under a new session id, with a cold prompt cache. The bridge restored its session record from Pi's saved marker only when Pi started or resumed a session, and a reload drops the record. In one real session that wrote 192k tokens to the prompt cache and took about 10 s to the first token.
+  - **Now:** after a `/reload` the bridge restores the record from the marker, as after a Pi restart, and the next prompt resumes the warm session when Pi's history still matches it. It still rebuilds into a new session when the checks fail, and when a Claude Code process may still be writing the session at the reload: a query was still running (RPC and print mode can reload mid-response), or one was just stopped (Esc, an idle timeout) and its process had not exited yet.
+
 ## 2026-09-30
 
 ### Highlights

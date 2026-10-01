@@ -168,6 +168,37 @@ export function takeStartedLane(sessionManager: object): string | undefined {
 	return sessionId;
 }
 
+// SessionManagers whose `/reload` shutdown found that a Claude Code child may
+// still write the transcript Pi's marker names: a query still in the lane (RPC
+// and print mode reload mid-response, and session_shutdown does not stop it),
+// or a record marked forceRotate (an aborted or killed query detaches from the
+// lane at once while its child is still exiting, and the shutdown cancels the
+// persist that would have saved that mark). The reloaded copy's session_start
+// then skips the restore, and the next prompt rebuilds into a new session id.
+// On globalThis because the shutdown and the start reach different module
+// copies.
+const RELOADED_WITH_LIVE_WRITER_SYMBOL = Symbol.for("kendex.pi.claude-bridge.reloaded-with-live-writer.v1");
+
+function reloadedWithLiveWriterStore(): WeakSet<object> {
+	const host = globalThis as Record<symbol, unknown>;
+	let store = host[RELOADED_WITH_LIVE_WRITER_SYMBOL] as WeakSet<object> | undefined;
+	if (!store) {
+		store = new WeakSet<object>();
+		host[RELOADED_WITH_LIVE_WRITER_SYMBOL] = store;
+	}
+	return store;
+}
+
+export function noteReloadWithLiveWriter(sessionManager: object): void {
+	reloadedWithLiveWriterStore().add(sessionManager);
+}
+
+/** Whether this manager's `/reload` shutdown found a possible live writer,
+ *  removed as it is read: one start per shutdown. */
+export function takeReloadWithLiveWriter(sessionManager: object): boolean {
+	return reloadedWithLiveWriterStore().delete(sessionManager);
+}
+
 /** Force the next syncSharedSession down the REBUILD path (no-op without a
  *  session). `forceRotate` additionally rotates the session UUID — set it when
  *  a concurrent CC writer may still be flushing (abort, idle kill); see the

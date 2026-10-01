@@ -29,8 +29,8 @@ import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } 
 import { logVersions } from "./versions.ts";
 import { noteAnomaly, takeAgentNotice } from "./agent-notice.ts";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.ts";
-import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type RebuildMark, type SessionState } from "./bridge-state.ts";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.ts";
+import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, noteReloadWithLiveWriter, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeReloadWithLiveWriter, takeStartedLane, type RebuildMark, type SessionState } from "./bridge-state.ts";
 import { primeConnectorServers } from "./connector-runtime.ts";
 import { cancelScheduledSessionPersistence, conversationFingerprint, isForeignConversation, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.ts";
 import { UNVERIFIED_HISTORY_DIGEST, deliveredAssistantDigest, deliveredSuffix, historyDigest } from "./history-digest.ts";
@@ -1916,14 +1916,27 @@ export default function (pi: ExtensionAPI) {
 		// copies the parent's persisted bridge entries into the fork; restoring from
 		// them would --resume the parent's Claude jsonl and leak conversation past the
 		// fork point. Letting the first fork turn rebuild is the correct path.
-		if (event.reason === "startup" || event.reason === "resume") restoreSharedSessionFromPi(ctx);
+		// "reload" restores like "startup": its shutdown dropped the record, and
+		// without it the next prompt rebuilds Claude's session with a cold cache.
+		if (event.reason === "reload" && takeReloadWithLiveWriter(ctx.sessionManager)) {
+			debug("restoreSharedSession: a Claude Code child may still write the session at the reload — forcing rebuild");
+		} else if (event.reason === "startup" || event.reason === "resume" || event.reason === "reload") {
+			restoreSharedSessionFromPi(ctx);
+		}
 		// Live availability flip: re-evaluate credential presence every
 		// session_start so login/logout since load is reflected without /reload.
 		applyProviderRegistration(`session_start:${event.reason}`);
 	}));
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", (event, ctx) => {
 		const sessionId = takeStartedLane(ctx.sessionManager) ?? ctx.sessionManager.getSessionId();
 		runInRequestLane(sessionId, () => {
+			// Read before anything below clears the lane. forceRotate is the
+			// record's own mark that a child may still be flushing (abort, idle
+			// timeout, steering failure, history restart), and the persist that
+			// would have carried it to the marker is cancelled just below.
+			if (event.reason === "reload" && (laneInUse(sessionId) || getSharedSession()?.forceRotate === true)) {
+				noteReloadWithLiveWriter(ctx.sessionManager);
+			}
 			cancelScheduledSessionPersistence(ctx.sessionManager);
 			clearSession("session_shutdown");
 			releaseProviderTokens("session_shutdown");
