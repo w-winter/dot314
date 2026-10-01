@@ -359,6 +359,10 @@ Built-in scheduling uses 4-minute heartbeats for supported 5-minute cache routes
 
 The policy is recalculated from the Pi model handling the current agent turn on every wait. Explicit overrides are authoritative for proxies, private deployments, and newly released models. With `backgroundWaitHeartbeatEnabled` set to `false`, Context Builder and Oracle waits remain pending until the job finishes or fails, while CE Agent Mode waits can remain open until shortly before `toolCallTimeoutMs`.
 
+If you use Pi's native cache warming (`"cacheWarming": "streaming"` or `"idle"` in Pi's settings), I recommend setting `"backgroundWaitHeartbeatEnabled": false` in `~/.pi/agent/extensions/repoprompt-mcp.json`. Check `/session` to confirm native warming is active for your model. This avoids extra model turns from RP heartbeats while Pi refreshes its cache in the background. Job completion and accepted steering still release waits.
+
+As of this time of writing, you'll have to choose between these mechanisms manually. Native warming depends on model and request eligibility and has a one-hour limit during active runs. If you disable native warming or need RP's provider-aware heartbeats for waits it cannot cover, set `"backgroundWaitHeartbeatEnabled": true`.
+
 Command resolution for each app target checks `apps.<target>.command`, then app-specific MCP config entries (`repoprompt-ce` / `rpce` for CE, `repoprompt-classic` / `rpclassic` for Classic), then the target app bundle command, then the fixed target CLI (`rpce-cli` or `rp-cli`). Automatic tab restoration and provisioning is driven by `autoBindOnStart` and `persistBinding`; there is no separate tab-only configuration surface. Adaptive diff layout applies only to RepoPrompt `git` and `apply_edits` outputs that arrive as fenced `diff` blocks; other rendered output stays on the existing text-based path.
 
 ## Readcache
