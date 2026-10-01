@@ -138,26 +138,29 @@ try {
   if (!lower6.includes(WORD_B)) finish(1, `FAIL: Turn 6 response missing '${WORD_B}': ${text6}`);
   if (!lower6.includes(WORD_C)) finish(1, `FAIL: Turn 6 response missing '${WORD_C}': ${text6}`);
 
-  // sessionId stability: sessionId should stay stable across normal
-  // rebuilds (Case 2 → Case 4 → Case 3). It's allowed to rotate exactly
-  // once per abort: the post-abort rebuild takes a fresh UUID on purpose,
-  // to avoid a race with the killed CC subprocess's late interrupt-cleanup
-  // writes (which would otherwise append an orphan record at the same
-  // path and break the parent-uuid chain for the next resume).
+  // sessionId stability: sessionId should stay stable across full-import
+  // rebuilds (Case 2 → Case 4 → Case 3). It changes only where a rebuild
+  // takes a new UUID: the post-abort rebuild does on purpose, to avoid a race
+  // with the killed CC subprocess's late interrupt-cleanup writes (which
+  // would otherwise append an orphan record at the same path and break the
+  // parent-uuid chain for the next resume), and a rebuild that forks Claude
+  // Code's transcript (`forked=` on its syncResult) gets the fork's id.
   //
-  // This test exercises one abort (Turn 5), so we expect exactly 2 unique
-  // sessionIds: pre-abort and post-abort.
+  // This test exercises one abort (Turn 5), so we expect exactly one
+  // post-abort rotation, and no other id change.
   const debugLog = readFileSync(DEBUG_LOG, "utf8");
   const sessionIds = new Set();
   const rotatedPostAbort = [];
-  for (const match of debugLog.matchAll(/syncResult: path=(reuse|rebuild) sessionId=([a-f0-9-]+)(?: priors=\d+ (\S+))?/g)) {
+  let newIds = 0;
+  for (const match of debugLog.matchAll(/syncResult: path=(reuse|rebuild) sessionId=([a-f0-9-]+)(?: priors=\d+ (\S+))?(.*)/g)) {
+    if (!sessionIds.has(match[2]) && (match[3] === "rotated-post-abort" || / forked=\d+/.test(match[4]))) newIds++;
     sessionIds.add(match[2]);
     if (match[3] === "rotated-post-abort") rotatedPostAbort.push(match[2]);
   }
   if (sessionIds.size === 0) finish(1, "FAIL: no syncResult markers found in debug log");
-  if (sessionIds.size > 2) finish(1, `FAIL: expected ≤2 distinct sessionIds (one pre-abort, one post-abort rotation), got ${sessionIds.size}: ${[...sessionIds].join(", ")}`);
+  if (sessionIds.size > 1 + newIds) finish(1, `FAIL: expected ≤${1 + newIds} distinct sessionIds (the first, plus one per post-abort rotation or fork), got ${sessionIds.size}: ${[...sessionIds].join(", ")}`);
   if (rotatedPostAbort.length !== 1) finish(1, `FAIL: expected exactly 1 post-abort rotation, got ${rotatedPostAbort.length}`);
-  console.log(`  sessionIds observed: ${sessionIds.size} (expected 2 due to 1 post-abort rotation)`);
+  console.log(`  sessionIds observed: ${sessionIds.size} (the first, plus ${newIds} post-abort rotation(s) or fork(s))`);
 
   finish(0, "PASS");
 } catch (e) {

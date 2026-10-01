@@ -147,8 +147,10 @@ describe("a prompt sent right after an abort", () => {
 		// delivers the user's next prompt.
 		assert.notEqual(abortedCtx.activeQuery, null);
 		const next = streamClaudeAgentSdk(model, { messages: [system, user("run echo"), toolCall, abortedResult, user("say recovered")] }, { cwd: root });
-		assert.equal(calls.length, 2, "the prompt after abort must start its own SDK query");
 		const events = await collect(next);
+		// The rebuild forks Claude Code's transcript first, so the query may
+		// start after streamClaudeAgentSdk returns.
+		assert.equal(calls.length, 2, "the prompt after abort must start its own SDK query");
 
 		assert.equal(events.at(-1)?.type, "done");
 		assert.equal(textOf(events), "recovered");

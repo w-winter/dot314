@@ -63,7 +63,7 @@ function imageBlockToAnthropic(block: { data?: string; mimeType?: string }): Con
 	return { type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } } as ContentBlock;
 }
 
-function toolResultContentToAnthropic(
+export function toolResultContentToAnthropic(
 	content: string | Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 ): string | ContentBlock[] {
 	if (typeof content === "string") return content;
@@ -94,7 +94,7 @@ function assistantProvenancePrefix(msg: PiMessage): string | undefined {
 	return `[Prior Pi assistant response from ${provider ?? api ?? "unknown-provider"}${model ? `/${model}` : ""}]\n`;
 }
 
-function userMessageToAnthropic(msg: PiMessage): SessionMessage {
+export function userMessageToAnthropic(msg: PiMessage): SessionMessage {
 	if (typeof msg.content === "string") return { role: "user", content: msg.content || "[empty]" };
 	if (Array.isArray(msg.content)) {
 		const parts = [];
@@ -279,7 +279,7 @@ export function convertPiMessages(
 		const msg = messages[i];
 		if (msg.role === "user") {
 			// Rebuild imports each pi user message as its OWN record. The REUSE path
-			// (extractUserPrompt/extractUserPromptBlocks in index.ts) instead merges a
+			// (extractUserPrompt/extractUserPromptBlocks in user-prompt.ts) instead merges a
 			// trailing user run into one "\n\n"-joined prompt — accepted divergence,
 			// see the comment there; the merged form is never re-imported here.
 			anthropicMessages.push(userMessageToAnthropic(msg));

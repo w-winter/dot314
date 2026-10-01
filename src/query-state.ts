@@ -696,6 +696,10 @@ export class QueryContext {
 	 * the callback that follows, while a later run's new prompt is not.
 	 */
 	undeliveredFailure: { errorMessage: string; fields?: Record<string, unknown>; toolCallIds: Set<string>; runSignals: Set<AbortSignal> } | null = null;
+	/** A fresh request is waiting for its forked rebuild (session-persistence.ts
+	 *  rebuildFromNativePrefix) before it starts its query. The lane is in use
+	 *  meanwhile, though no query runs yet. */
+	forkSyncPending = false;
 	/** Debug only (request-timing.ts): the timing record of this context's
 	 *  current or latest Pi request, and steps that ran while none was live. */
 	timing: RequestTiming | undefined = undefined;
@@ -1214,7 +1218,7 @@ export function requestLaneFor(
 			if (forkCtx && handedToPi(forkCtx, ids)) return forkId;
 		}
 	}
-	const reason = own?.activeQuery || own?.undeliveredFailure ? "its lane is busy"
+	const reason = contextInUse(own) ? "its lane is busy"
 		: (messages.at(-1) as { role?: unknown } | undefined)?.role === "toolResult" ? "its tool result answers no call of its lane"
 		: otherConversation(sessionId) ? "its lane holds another conversation"
 		: undefined;
@@ -1241,14 +1245,21 @@ export function releaseForkLane(laneId: string): void {
 }
 
 /** Whether lane `laneId` is still in use: a query in it is running (the
- *  original one, or a restart or account retry that replaced it), or its
- *  ended query holds a terminal failure for a tool-result callback that has
- *  not arrived yet (QueryContext.undeliveredFailure). A lane's lifetime
+ *  original one, or a restart or account retry that replaced it), a fresh
+ *  request waits for its forked rebuild before starting one
+ *  (QueryContext.forkSyncPending), or its ended query holds a terminal
+ *  failure for a tool-result callback that has not arrived yet
+ *  (QueryContext.undeliveredFailure). A lane's lifetime
  *  belongs to the query that owns it, never to whichever provider call's
  *  Pi stream happens to end first. */
 export function laneInUse(laneId: string | undefined): boolean {
-	const queryCtx = peekQueryContext(laneId);
-	return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.undeliveredFailure));
+	return contextInUse(peekQueryContext(laneId));
+}
+
+/** laneInUse for a lane's context: routing (requestLaneFor) and lane release
+ *  ask the same question. */
+function contextInUse(queryCtx: QueryContext | undefined): boolean {
+	return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.forkSyncPending || queryCtx.undeliveredFailure));
 }
 
 export function __testForkLaneCount(): number {

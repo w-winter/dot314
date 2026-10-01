@@ -29,6 +29,9 @@ export interface SyncTiming {
 	mark?: string;
 	priors?: number;
 	missed?: number;
+	/** A forked rebuild: how many of `priors` it kept as Claude Code's own
+	 *  records (session-persistence.ts rebuildFromNativePrefix). */
+	forked?: number;
 }
 
 export type StepTotals = Partial<Record<TimingStep, { n: number; ms: number }>>;

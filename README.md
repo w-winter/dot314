@@ -95,6 +95,8 @@ Claude Code's own tools (its Bash, Read, Edit, web tools and so on) are turned o
                                     when another model took turns
 ```
 
+A rebuild keeps as much of Claude Code's own transcript as it can. When that transcript still holds the start of Pi's history with the same content, as it does after you press Esc, the bridge copies those records as they are into the new session and writes only the rest from Pi's history. Claude Code then sends the same request bytes as before, and the prompt cache still covers that part.
+
 The bridge saves which Claude Code session belongs to the Pi session in the Pi session file, so reopening a Pi session resumes the same Claude Code conversation. When Pi compacts or rewrites the history during a Pi tool call, the bridge restarts from Pi's new history with the completed tool results. A query that used one of Claude Code's own connectors finishes first, and the next turn uses Pi's new history.
 
 ## Install
