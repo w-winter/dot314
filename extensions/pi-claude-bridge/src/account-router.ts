@@ -10,8 +10,10 @@
 import type { AssistantMessageEvent, AssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "./config.js";
 import { debug } from "./debug.js";
 import { resetTimestampMs } from "./rate-limit.js";
+import { isThirdPartyAppRejection } from "./third-party-rejection.js";
 
 export const CLAUDE_ACCOUNT_ROUTER_SYMBOL = Symbol.for("kendex.pi.claude-account-router.v1");
 export const CLAUDE_BRIDGE_ACCOUNT_HOST_SYMBOL = Symbol.for("kendex.pi.claude-bridge.account-host.v1");
@@ -25,7 +27,8 @@ export interface ClaudeAccountRoute {
 	fallbackReason?: "fable-quota";
 }
 
-export type ClaudeAccountFailureKind = "auth" | "billing" | "rate-limit" | "overloaded" | "server" | "network";
+export const CLAUDE_ACCOUNT_FAILURE_KINDS = ["auth", "billing", "rate-limit", "overloaded", "server", "network"] as const;
+export type ClaudeAccountFailureKind = typeof CLAUDE_ACCOUNT_FAILURE_KINDS[number];
 
 export interface ClaudeAccountRouterV1 {
 	version: 1;
@@ -110,6 +113,33 @@ export function subscriberProfileEnv(
 	if (profile.configDir) env.CLAUDE_CONFIG_DIR = profile.configDir;
 	else delete env.CLAUDE_CONFIG_DIR;
 	return env;
+}
+
+// An exported gateway URL or API credential silently routes every child away
+// from the Claude Code login, so an unmanaged child drops them unless
+// `provider.inheritAnthropicEnv` opts in.
+const ANTHROPIC_ROUTING_ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
+/** Base environment for every Claude Code child; callers add bridge-owned
+ *  overrides after it. A managed profile always gets `subscriberProfileEnv`'s
+ *  stricter scrub, whatever `inheritAnthropicEnv` says. */
+export function claudeChildEnv(
+	profile: Pick<ClaudeAccountRoute, "configDir"> | undefined,
+	inheritAnthropicEnv: boolean | undefined,
+	base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	if (profile) return subscriberProfileEnv(profile, base);
+	const env: NodeJS.ProcessEnv = { ...base };
+	if (!inheritAnthropicEnv) for (const key of ANTHROPIC_ROUTING_ENV) delete env[key];
+	return env;
+}
+
+/** What an unmanaged child would see under the user's config. Credential
+ *  probes and the auth source label read this rather than process.env, so Pi
+ *  never counts a credential the child is not given. */
+export function unmanagedClaudeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	// inheritAnthropicEnv is user-scope only, so every cwd resolves it alike.
+	return claudeChildEnv(undefined, loadConfig(process.cwd()).provider?.inheritAnthropicEnv, base);
 }
 
 /** The claude config dir the CHILD actually uses under this profile: the
@@ -244,6 +274,9 @@ export function classifyClaudeFailure(value: unknown): ClaudeAccountFailureKind 
 		if (typeof detail === "string" || typeof detail === "number") return String(detail);
 		try { return JSON.stringify(detail ?? ""); } catch { return String(detail); }
 	}).join(" ");
+	// Anthropic's third-party-app rejection depends on the system prompt, not
+	// the account: every profile rejects the same request.
+	if (isThirdPartyAppRejection(text)) return undefined;
 	const normalized = text.toLowerCase().replace(/[_-]+/g, " ");
 	// Structured status fields are unambiguous — classify them before prose.
 	const statusKind = numericStatus !== undefined ? classifyStatusCode(numericStatus) : undefined;

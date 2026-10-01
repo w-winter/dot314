@@ -1,5 +1,8 @@
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { debug, diagDump, diagGuidance } from "./debug.js";
+import { noteAnomaly } from "./agent-notice.js";
+import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
+import { notePiSessionEnded, notePiSessionStarted } from "./pi-sessions.js";
 import { type QueryContext } from "./query-state.js";
 import { currentRequestLaneId } from "./request-lane.js";
 import { summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.js";
@@ -30,6 +33,18 @@ export interface SessionState {
 	// to the two-component form on the next REUSE. Absent on records restored
 	// from pre-3.1.1 markers → identity unknown, pre-fingerprint behavior.
 	conversationFingerprint?: string;
+	// Digest (history-digest.ts) of Pi's messages [0, cursor) as the bridge
+	// imports them: the content Claude Code holds. Every cursor write carries
+	// the digest of the slice it covers, and REUSE requires the slice to still
+	// match, so a same-length rewrite of that history rebuilds instead of
+	// resuming a stale transcript. Absent on records from before digests: the
+	// next REUSE accepts the record once and stamps one.
+	historyDigest?: string;
+	// historyDigest of the one assistant message the record's query delivered
+	// to Pi last, which Pi appends at index `cursor` and the next REUSE skips
+	// past as already Claude's. Checked only then, and dropped once a cursor
+	// write moves past it; absent when the query ended without delivering one.
+	trailingAssistantDigest?: string;
 	// Force the next syncSharedSession call down the REBUILD path. Set when
 	// pi has mutated its messages array out from under us (compact, tree
 	// navigation) or after an abort left the JSONL in an indeterminate state.
@@ -68,8 +83,15 @@ function sharedSessionLaneStore(): SharedSessionLaneStoreV1 {
 	return store;
 }
 
-export let extensionApi: ExtensionAPI | undefined;
-export let piUI: ExtensionUIContext | undefined;
+// Module state is read through functions, never `export let`: Pi's TypeScript
+// loader does not keep reassigned exports live across modules, so an importer
+// would keep the first session's API after /new or /reload.
+let extensionApi: ExtensionAPI | undefined;
+let piUI: ExtensionUIContext | undefined;
+
+export function getExtensionApi(): ExtensionAPI | undefined {
+	return extensionApi;
+}
 
 export function getSharedSession(): SessionState | null {
 	const store = sharedSessionLaneStore();
@@ -121,6 +143,7 @@ function startedLaneStore(): WeakMap<object, string> {
 
 export function recordStartedLane(sessionManager: object, sessionId: string): void {
 	startedLaneStore().set(sessionManager, sessionId);
+	notePiSessionStarted(sessionId);
 }
 
 /** The lane recorded at this manager's session_start, removed as it is read —
@@ -130,6 +153,7 @@ export function takeStartedLane(sessionManager: object): string | undefined {
 	const store = startedLaneStore();
 	const sessionId = store.get(sessionManager);
 	store.delete(sessionManager);
+	if (sessionId !== undefined) notePiSessionEnded(sessionId);
 	return sessionId;
 }
 
@@ -140,7 +164,9 @@ export function takeStartedLane(sessionManager: object): string | undefined {
 export function markSessionForRebuild(opts: { forceRotate?: boolean } = {}): void {
 	const sharedSession = getSharedSession();
 	if (!sharedSession) return;
-	setSharedSession({ ...sharedSession, needsRebuild: true, ...(opts.forceRotate ? { forceRotate: true } : {}) });
+	// A record owed a rebuild vouches for no history (history-digest.ts), so
+	// losing the mark alone cannot reopen warm reuse.
+	setSharedSession({ ...sharedSession, needsRebuild: true, historyDigest: UNVERIFIED_HISTORY_DIGEST, ...(opts.forceRotate ? { forceRotate: true } : {}) });
 }
 
 export function setExtensionApi(next: ExtensionAPI | undefined): void {
@@ -160,8 +186,15 @@ export function argKeys(args: Record<string, unknown> | undefined): string[] {
 	return Object.keys(args ?? {}).sort();
 }
 
-export function safeToolCallSummary(calls: Array<{ id: string; toolName: string; arguments?: Record<string, unknown> }>): Array<{ id: string; toolName: string; argKeys: string[] }> {
-	return calls.map((call) => ({ id: call.id, toolName: call.toolName, argKeys: argKeys(call.arguments) }));
+/** How many argument properties a call has. Logs and diag entries carry this
+ *  instead of the names: a record-shaped argument makes its property names
+ *  free text of the caller's. */
+export function argKeyCount(args: Record<string, unknown> | undefined): number {
+	return Object.keys(args ?? {}).length;
+}
+
+export function safeToolCallSummary(calls: Array<{ id: string; toolName: string; arguments?: Record<string, unknown> }>): Array<{ id: string; toolName: string; argKeyCount: number }> {
+	return calls.map((call) => ({ id: call.id, toolName: call.toolName, argKeyCount: argKeyCount(call.arguments) }));
 }
 
 export const INTEGRITY_CUSTOM_TYPE = "claude-bridge-integrity";
@@ -196,6 +229,8 @@ function compactToolNameSummary(names: Array<{ name: string; count: number }>, l
 	return shown;
 }
 
+/** Reports lost tool results about to be replaced by explicit error
+ *  placeholders. */
 export function reportSyntheticToolResultRepair(missing: MissingToolResult[], context: Record<string, unknown>): void {
 	try {
 		if (missing.length === 0) return;
@@ -209,6 +244,7 @@ export function reportSyntheticToolResultRepair(missing: MissingToolResult[], co
 			missing: missing.slice(0, 50),
 			...context,
 		});
+		noteAnomaly("repair_tool_pairing_synthetic_results");
 		appendIntegrityEntry("repair_tool_pairing_synthetic_results", {
 			count: missing.length,
 			toolNames,
@@ -225,9 +261,12 @@ export function reportSyntheticToolResultRepair(missing: MissingToolResult[], co
 	}
 }
 
+/** Why a tool-result delivery mismatch is reported. */
+export type ToolResultMismatchReason = "session_compact" | "session_tree" | "abort" | "query teardown" | "unmatched tool result";
+
 export function reportToolResultMismatch(
 	queryCtx: QueryContext,
-	reason: string,
+	reason: ToolResultMismatchReason,
 	cwd: string | undefined,
 	opts: { expectedInterruption?: boolean; forceRotate?: boolean } = {},
 ): boolean {
@@ -241,7 +280,7 @@ export function reportToolResultMismatch(
 		queryCtx.reportedToolResultMismatch = true;
 		// The single choke point every mismatch path funnels through (abort,
 		// unmatched result, stream-idle, teardown). A context with no claim on
-		// the shared record (reentrant subagent or foreign one-shot,)
+		// the shared record (a foreign one-shot or a quarantined query)
 		// still gets the full diagnostics below, but its unresolved tool state is
 		// its own — marking the PARENT's record needsRebuild/forceRotate here
 		// would flush the parent's prompt cache for a query that never touched
@@ -273,6 +312,7 @@ export function reportToolResultMismatch(
 				forceRotate: sharedSession.forceRotate === true,
 			} : null,
 		});
+		noteAnomaly("tool_result_delivery_mismatch");
 		appendIntegrityEntry("tool_result_delivery_mismatch", {
 			reason,
 			toolNames: progress.toolNames,

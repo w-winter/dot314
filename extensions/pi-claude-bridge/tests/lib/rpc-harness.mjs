@@ -23,9 +23,11 @@ if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
  * @param {string[]} opts.args - Additional pi CLI args (after --mode rpc)
  * @param {Object} opts.env - Extra env vars to set on the pi process
  * @param {number} opts.defaultTimeout - Default timeout for send/wait operations (default: 30000)
+ * @param {string[]} [opts.baseArgs] - Replaces the default `--no-session -ne -e <bridge>` arguments,
+ *   e.g. to load packages from an isolated agent dir's settings.json instead
  */
 export function createRpcHarness(opts) {
-	const { name, args = [], env = {}, defaultTimeout = 30_000 } = opts;
+	const { name, args = [], env = {}, defaultTimeout = 30_000, baseArgs } = opts;
 
 	const LOGDIR = `${DIR}/.test-output`;
 	mkdirSync(LOGDIR, { recursive: true });
@@ -48,10 +50,10 @@ export function createRpcHarness(opts) {
 		// failing runs. RPC log is still append so cross-run comparisons work.
 		writeFileSync(DEBUG_LOG, "");
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
-		const spawnArgs = ["--no-session", "-ne", "-e", DIR, "--mode", "rpc", ...args];
+		const spawnArgs = [...(baseArgs ?? ["--no-session", "-ne", "-e", DIR]), "--mode", "rpc", ...args];
 		pi = spawn("pi", spawnArgs, {
 			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, ...env },
+			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, CLAUDE_BRIDGE_DIAG_PATH: `${LOGDIR}/${name}-diag.log`, ...env },
 		});
 
 		pi.stderr.on("data", (d) => { if (!stopped) rpcLog.write(d); });

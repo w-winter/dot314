@@ -11,8 +11,8 @@ export interface StreamIdleWatchdogState {
 	activeQuery: unknown | null;
 	currentPiStream: AssistantMessageEventStream | null;
 	turnOutput: AssistantMessage | null;
-	turnSawStreamEvent: boolean;
-	turnStarted: boolean;
+	/** MCP handlers blocked on a Pi tool result. */
+	waitingToolCalls: number;
 }
 
 export interface StreamIdleTimeoutInfo {
@@ -22,7 +22,9 @@ export interface StreamIdleTimeoutInfo {
 
 export interface StreamIdleWatchdog {
 	dispose: () => void;
-	noteChunk: () => void;
+	/** `quietMs`: silence the child announced in advance (an API retry
+	 *  backoff), granted on top of the timeout. */
+	noteChunk: (quietMs?: number) => void;
 	refresh: () => void;
 	timedOut: () => boolean;
 }
@@ -64,9 +66,18 @@ export function formatDurationShort(ms: number): string {
 }
 
 export function buildStreamIdleTimeoutErrorMessage(timeoutMs: number): string {
-	return `Claude Code stream idle timeout after ${formatDurationShort(timeoutMs)} with no assistant/tool output; treating stalled stream as retryable 529 overloaded/rate limit condition. Retry after ${formatDurationShort(STREAM_IDLE_BACKOFF_HINT_MS)}.`;
+	return `Claude Code stream idle timeout after ${formatDurationShort(timeoutMs)} with no output from Claude Code; treating stalled stream as retryable 529 overloaded/rate limit condition. Retry after ${formatDurationShort(STREAM_IDLE_BACKOFF_HINT_MS)}.`;
 }
 
+/** How long an idle check waits before looking again while the silence is
+ *  the bridge's own (see `waitingOnBridge`). Bounds how much of that wait can
+ *  be miscounted as child silence once it ends. */
+const BRIDGE_WAIT_RECHECK_MS = 1_000;
+
+/** Watches for a Claude Code child that goes silent at ANY point of a live
+ *  request — before its first output or mid-stream. Silence is only counted
+ *  while the child owes the next message: every SDK message (API pings, tool
+ *  heartbeats, and retry notices included) resets the clock. */
 export function createStreamIdleWatchdog({
 	clearTimer = (timer: TimerHandle) => clearTimeout(timer),
 	getState,
@@ -93,23 +104,28 @@ export function createStreamIdleWatchdog({
 		timer = null;
 	};
 
-	const shouldMonitor = (state: StreamIdleWatchdogState): boolean => Boolean(
-		timeoutMs > 0
-		&& state.activeQuery
-		&& state.currentPiStream
-		&& state.turnOutput
-		&& !state.turnStarted
-		&& !state.turnSawStreamEvent,
-	);
+	// Legitimate silence that is not the child's: Pi holds no stream (its
+	// turn ended at a tool call and Pi is executing it), or an MCP handler is
+	// blocked until Pi delivers that tool's result.
+	const waitingOnBridge = (state: StreamIdleWatchdogState): boolean =>
+		!state.currentPiStream || state.waitingToolCalls > 0;
 
 	const schedule = () => {
 		clear();
 		if (disposed || didTimeout || timeoutMs <= 0) return;
 		const state = getState();
-		if (!shouldMonitor(state)) return;
+		if (!state.activeQuery || !state.turnOutput) return;
+		if (waitingOnBridge(state)) {
+			// The child's clock restarts when the wait ends; no call site has to
+			// remember to refresh the watchdog at that moment.
+			lastChunkAt = Math.max(lastChunkAt, now());
+			timer = setTimer(schedule, Math.min(timeoutMs, BRIDGE_WAIT_RECHECK_MS));
+			(timer as { unref?: () => void }).unref?.();
+			return;
+		}
 		const turnStartedAt = typeof state.turnOutput?.timestamp === "number" ? state.turnOutput.timestamp : 0;
 		const idleStartedAt = Math.max(lastChunkAt, turnStartedAt);
-		const idleMs = Math.max(0, now() - idleStartedAt);
+		const idleMs = now() - idleStartedAt;
 		if (idleMs >= timeoutMs) {
 			didTimeout = true;
 			onTimeout({ idleMs, timeoutMs });
@@ -124,8 +140,8 @@ export function createStreamIdleWatchdog({
 			disposed = true;
 			clear();
 		},
-		noteChunk: () => {
-			lastChunkAt = now();
+		noteChunk: (quietMs = 0) => {
+			lastChunkAt = now() + Math.max(0, quietMs);
 			schedule();
 		},
 		refresh: schedule,

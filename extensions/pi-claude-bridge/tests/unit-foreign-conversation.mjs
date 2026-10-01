@@ -177,9 +177,9 @@ describe("foreign-conversation completion (#1001)", () => {
 
 		assert.ok(events.some((event) => event.type === "done" && event.reason === "toolUse"));
 		assert.equal(
-			runInRequestLane("foreign-unresolved-tool", () => ctx().detachedFromSharedSession),
-			true,
-			"the foreign non-claim must ride the query context",
+			runInRequestLane("foreign-unresolved-tool", () => ctx().latestCursor),
+			0,
+			"the foreign query ran in a lane of its own, never on the parent's query context",
 		);
 		assert.deepEqual(
 			runInRequestLane("foreign-unresolved-tool", () => __testGetBridgeIntegrityState().sharedSession),

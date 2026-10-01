@@ -2,12 +2,12 @@
 // manager calls to read a profile's identity and usage figures under that
 // profile's credential scope. Extracted from index.ts (pure move).
 
-import { subscriberProfileEnv, type ClaudeAccountRoute, type ClaudeBridgeAccountHostV1 } from "./account-router.js";
+import { claudeChildEnv, type ClaudeAccountRoute, type ClaudeBridgeAccountHostV1 } from "./account-router.js";
 import { preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
 import { loadConfig } from "./config.js";
 import { CLAUDE_BRIDGE_TOOL_ISOLATION, denyAllToolsHook } from "./connectors.js";
 import { debug, makeCliDebugOptions } from "./debug.js";
-import { sdkQueryFactory } from "./sdk-query.js";
+import { sdkQuery } from "./sdk-query.js";
 
 /** Local /usage probe for the reciprocal account-host service: the companion
  *  account manager asks the bridge (the SDK owner) to read a profile's identity
@@ -32,12 +32,12 @@ export async function probeClaudeAccountProfile(input: {
 	const config = loadConfig(input.cwd);
 	const claudeExecutable = resolveClaudeExecutable(config.provider?.pathToClaudeCodeExecutable);
 	if (claudeExecutable) preflightClaudeExecutable(claudeExecutable, input.cwd);
-	const probe = sdkQueryFactory({
+	const probe = sdkQuery({
 		prompt: "/usage",
 		options: {
 			cwd: input.cwd,
 			env: {
-				...subscriberProfileEnv(input.profile),
+				...claudeChildEnv(input.profile, config.provider?.inheritAnthropicEnv),
 				ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 				DISABLE_AUTO_COMPACT: "1",
 			},

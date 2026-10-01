@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
-import { loadConfig, recordProjectTrust, resolveSystemPrompt } from "../src/config.ts";
+import { loadConfig, PI_DEFAULT_PREAMBLE, recordProjectTrust, resolveSystemPrompt } from "../src/config.ts";
 import { buildClaudeQueryOptions } from "../src/query-options.ts";
 
 const originalPiDir = process.env.PI_CODING_AGENT_DIR;
@@ -51,7 +51,8 @@ describe("fork prompt behavior", () => {
 		recordProjectTrust({ cwd: project, isProjectTrusted: () => true });
 
 		const marker = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
-		const prompt = `Default base\n${marker}\n\n<project_context>\nProject instructions`;
+		// A content-only rendering of Pi's default base, which opens with Pi's preamble.
+		const prompt = `${PI_DEFAULT_PREAMBLE}\n${marker}\n\n<project_context>\nProject instructions`;
 
 		assert.equal(
 			resolveSystemPrompt(prompt, "pi-claude/claude-sonnet-5", loadConfig(project).systemPrompt),

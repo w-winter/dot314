@@ -71,7 +71,7 @@ await new Promise((r) => setTimeout(r, 2000));
 try {
   // Turn 1: Non-provider prompt — establishes context before our provider is used
   console.log("Turn 1: Non-provider prompt (establish context)...");
-  const text1 = await promptAndWait(`The secret word is '${WORD_A}'. Acknowledge and be very brief.`);
+  const text1 = await promptAndWait(`The word to remember is '${WORD_A}'. Acknowledge and be very brief.`);
   if (!text1) finish(1, "FAIL: Turn 1 produced no text");
   console.log(`  Response: ${text1.slice(0, 80)}`);
 
@@ -84,7 +84,7 @@ try {
   // Turn 2: First provider turn — should see WORD_A from prior non-provider history
   console.log("Turn 2: First provider turn with prior history (Case 2)...");
   const text2 = await promptAndWait(
-    `The backup word is '${WORD_B}'. Also, what was the secret word? Reply with both words separated by a comma.`
+    `The backup word is '${WORD_B}'. Also, what was the word to remember? Reply with both words separated by a comma.`
   );
   console.log(`  Response: ${text2.slice(0, 80)}`);
   const lower2 = text2.toLowerCase();

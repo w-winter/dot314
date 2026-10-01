@@ -23,6 +23,7 @@ setup_test_env() {
 	export CLAUDE_BRIDGE_DEBUG=1
 	DEBUG_LOG="$LOGDIR/${name}-debug.log"
 	export CLAUDE_BRIDGE_DEBUG_PATH="$DEBUG_LOG"
+	export CLAUDE_BRIDGE_DIAG_PATH="$LOGDIR/${name}-diag.log"
 
 	if [[ "$log_suffix" != "none" ]]; then
 		LOGFILE="$LOGDIR/${name}${log_suffix}"
@@ -66,4 +67,38 @@ require_command() {
 			exit 1
 		fi
 	done
+}
+
+# Run a command with a time limit, like GNU `timeout` (which macOS lacks).
+# The command runs in its own process group; at the bound the whole group gets
+# TERM, then KILL after a 2 s grace, so a descendant holding captured output
+# cannot keep the caller waiting. Exits 124 on timeout, else the command's
+# status (128+signal if it was killed).
+# Usage: run_with_timeout SECONDS cmd args...
+run_with_timeout() {
+	perl -e '
+		use POSIX ();
+		my ($secs, @cmd) = @ARGV;
+		my $pid = fork // die "fork: $!\n";
+		if (!$pid) {
+			setpgrp(0, 0);
+			exec { $cmd[0] } @cmd or do { print STDERR "exec $cmd[0]: $!\n"; POSIX::_exit(127) };
+		}
+		setpgrp($pid, $pid);
+		$SIG{$_} = sub { kill $_[0], -$pid } for qw(INT TERM HUP);
+		my $timed_out = 0;
+		$SIG{ALRM} = sub {
+			if ($timed_out++) { kill "KILL", -$pid } else { kill "TERM", -$pid; alarm 2 }
+		};
+		alarm $secs;
+		waitpid($pid, 0);
+		my $status = $?;
+		alarm 0;
+		if ($timed_out) {
+			for (1 .. 20) { last unless kill 0, -$pid; select undef, undef, undef, 0.1 }
+			kill "KILL", -$pid;
+			exit 124;
+		}
+		exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+	' "$@"
 }

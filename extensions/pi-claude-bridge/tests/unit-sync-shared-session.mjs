@@ -15,7 +15,10 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { conversationFingerprint, syncSharedSession } from "../src/session-persistence.js";
+import { getSessionPath, parseJsonlFile } from "cc-session-io";
+import { historyDigest } from "../src/history-digest.js";
 import { __testGetBridgeIntegrityState, setSharedSession } from "../src/bridge-state.js";
+import { findUnpairedToolUses } from "../src/tool-pairing-audit.js";
 
 const user = (text) => ({ role: "user", content: text });
 const assistant = () => ({ role: "assistant", content: [] });
@@ -57,6 +60,9 @@ describe("syncSharedSession REUSE path", () => {
 		assert.deepEqual(__testGetBridgeIntegrityState().sharedSession, {
 			sessionId: "sess-reuse",
 			cursor: 2,
+			// The history Claude now holds, [0, cursor); a pre-digest record is
+			// accepted once and stamped.
+			historyDigest: historyDigest(messages.slice(0, 2)),
 			cwd: CWD,
 			// A REUSE match proves identity, so a pre-fingerprint record adopts
 			// the conversation anchor.
@@ -191,6 +197,7 @@ describe("syncSharedSession foreign-conversation guard (#1001)", () => {
 		assert.deepEqual(__testGetBridgeIntegrityState().sharedSession, {
 			sessionId: "sess-reuse",
 			cursor: 2,
+			historyDigest: historyDigest(messages.slice(0, 2)),
 			cwd: CWD,
 			conversationFingerprint: fp,
 		});
@@ -354,5 +361,98 @@ describe("syncSharedSession foreign-conversation guard (#1001)", () => {
 			__testGetBridgeIntegrityState().sharedSession.conversationFingerprint,
 			conversationFingerprint(messages),
 		);
+	});
+});
+
+// The API rejects a request whose latest assistant message carries thinking
+// that differs from the original response, so a rebuild cannot import a
+// Claude turn with an unsigned thinking block removed. It imports a note of
+// what the turn said and did instead.
+describe("syncSharedSession REBUILD import of a turn it cannot replay exactly", () => {
+	/** The rebuilt session's user and assistant records, as [type, content]. */
+	const importedRecords = (sessionId, cwd, claudeDir) => parseJsonlFile(getSessionPath(sessionId, cwd, claudeDir))
+		.filter((record) => record.type === "user" || record.type === "assistant")
+		.map((record) => [record.type, record.message.content]);
+	const shape = (content) => typeof content === "string"
+		? content
+		: content.map((block) => block.type === "tool_result" ? `tool_result:${block.tool_use_id}` : block.type === "tool_use" ? `tool_use:${block.id}` : block.type);
+	const noteText = (content) => typeof content === "string" ? content : content.map((block) => block.text ?? "").join("\n");
+
+	it("keeps the write call and its result in a note, so the next prompt's reuse is legitimate", () => {
+		withTempClaudeDir((claudeDir) => {
+			const cwd = mkdtempSync(join(tmpdir(), "bridge-sync-cwd-"));
+			try {
+				const messages = [
+					user("create notes.md"),
+					{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+						{ type: "thinking", thinking: "plan", thinkingSignature: "sig1" },
+						{ type: "thinking", thinking: "cut off mid-thought" },
+						{ type: "toolCall", id: "toolu_w", name: "write", arguments: { path: "notes.md", content: "x" } },
+					] },
+					{ role: "toolResult", toolCallId: "toolu_w", toolName: "write", content: "Wrote notes.md" },
+					user("now add a second line"),
+				];
+
+				const first = syncSharedSession(messages, cwd);
+
+				const imported = importedRecords(first.sessionId, cwd, claudeDir);
+				assert.deepEqual(imported.map(([type]) => type), ["user", "user"], "no assistant message is left to replay");
+				assert.equal(imported[0][1], "create notes.md");
+				const note = noteText(imported[1][1]);
+				assert.match(note, /could not be replayed as-is/);
+				assert.ok(note.includes('write with arguments {"path":"notes.md","content":"x"}'), note);
+				assert.ok(note.includes("Wrote notes.md"), note);
+				assert.ok(!note.includes("cut off mid-thought"), "thinking is not carried");
+
+				// Claude holds the turn's content, so the digest may vouch for it.
+				const record = __testGetBridgeIntegrityState().sharedSession;
+				assert.equal(record.historyDigest, historyDigest(messages.slice(0, 3)));
+				const second = syncSharedSession([...messages, user("and a third")], cwd);
+				assert.equal(second.sessionId, first.sessionId, "the next prompt reuses the rebuilt session");
+				assert.equal(second.promptStart, 3);
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("leaves the previous turn as the latest assistant, with its thinking untouched and every tool call paired", () => {
+		withTempClaudeDir((claudeDir) => {
+			const cwd = mkdtempSync(join(tmpdir(), "bridge-sync-cwd-"));
+			try {
+				const messages = [
+					user("start"),
+					{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+						{ type: "thinking", thinking: "step one", thinkingSignature: "sig1" },
+						{ type: "toolCall", id: "t1", name: "read", arguments: { path: "a" } },
+					] },
+					{ role: "toolResult", toolCallId: "t1", toolName: "read", content: "a body" },
+					{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+						{ type: "thinking", thinking: "settled", thinkingSignature: "sig2" },
+						{ type: "thinking", thinking: "cut off mid-thought" },
+						{ type: "toolCall", id: "t2", name: "read", arguments: { path: "b" } },
+					] },
+					{ role: "toolResult", toolCallId: "t2", toolName: "read", content: "b body" },
+					user("next"),
+				];
+
+				const result = syncSharedSession(messages, cwd);
+
+				const imported = importedRecords(result.sessionId, cwd, claudeDir);
+				assert.deepEqual(imported.map(([type, content]) => [type, type === "user" && noteText(content).includes("could not be replayed as-is") ? "note" : shape(content)]), [
+					["user", "start"],
+					["assistant", ["thinking", "tool_use:t1"]],
+					["user", ["tool_result:t1"]],
+					["user", "note"],
+				]);
+				const latest = imported.filter(([type]) => type === "assistant").at(-1)[1];
+				assert.deepEqual(latest[0], { type: "thinking", thinking: "step one", signature: "sig1" }, "its thinking is exactly as returned");
+				assert.deepEqual(findUnpairedToolUses(imported.map(([type, content]) => ({ role: type, content }))), []);
+				const note = noteText(imported[3][1]);
+				assert.ok(note.includes('read with arguments {"path":"b"}') && note.includes("b body"), note);
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
 	});
 });

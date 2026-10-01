@@ -169,12 +169,139 @@ describe("thinking block filtering", () => {
 		assert.equal(result[0].content[0].text, "[incompatible content omitted]");
 	});
 
+	it("Claude redacted thinking → redacted_thinking with its data", () => {
+		const result = convert([
+			{ role: "assistant", provider: "pi-claude", stopReason: "stop", content: [
+				{ type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque-payload", redacted: true },
+				{ type: "text", text: "answer" },
+			] },
+		]);
+		assert.deepEqual(result[0].content, [
+			{ type: "redacted_thinking", data: "opaque-payload" },
+			{ type: "text", text: "answer" },
+		]);
+	});
+
 	it("non-Claude assistant provider provenance is preserved", () => {
 		const result = convert([
 			{ role: "assistant", provider: "openai", model: "gpt-test", content: [{ type: "text", text: "hello" }] },
 		]);
 		assert.equal(result[0].content[0].text, "[Prior Pi assistant response from openai/gpt-test]\n");
 		assert.equal(result[0].content[1].text, "hello");
+	});
+});
+
+// A rebuild's import (noteUnreplayableTurns). The note in the written session
+// is owned by the REBUILD tests in unit-sync-shared-session.mjs.
+describe("latest assistant thinking replay", () => {
+	const rebuildConvert = (messages) => convertPiMessages(messages, undefined, { noteUnreplayableTurns: true }).anthropicMessages;
+	/** A note's text, whether it is a string or a content array. */
+	const noteText = (content) => typeof content === "string" ? content : content.map((block) => block.text ?? "").join("\n");
+	const history = [
+		{ role: "user", content: "start" },
+		{ role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+			{ type: "thinking", thinking: "step one", thinkingSignature: "sig1" },
+			{ type: "toolCall", id: "t1", name: "read", arguments: { path: "a" } },
+		] },
+		{ role: "toolResult", toolCallId: "t1", toolName: "read", content: "body" },
+	];
+	const cutTail = (provider = "pi-claude") => ({ role: "assistant", provider, stopReason: "toolUse", content: [
+		{ type: "thinking", thinking: "settled", thinkingSignature: "sig2" },
+		{ type: "thinking", thinking: "settled too", thinkingSignature: "sig3" },
+		{ type: "thinking", thinking: "cut off mid-thought" },
+		{ type: "text", text: "reading b" },
+		{ type: "toolCall", id: "t2", name: "read", arguments: { path: "b" } },
+	] });
+	const tailResult = { role: "toolResult", toolCallId: "t2", toolName: "read", content: "b body" };
+
+	it("keeps a historical Claude assistant with only its signed thinking blocks", () => {
+		const result = rebuildConvert([...history, cutTail(), tailResult,
+			{ role: "assistant", provider: "pi-claude", stopReason: "stop", content: [{ type: "text", text: "done" }] }]);
+		assert.deepEqual(result[3], { role: "assistant", content: [
+			{ type: "thinking", thinking: "settled", signature: "sig2" },
+			{ type: "thinking", thinking: "settled too", signature: "sig3" },
+			{ type: "text", text: "reading b" },
+			{ type: "tool_use", id: "t2", name: "Read", input: { path: "b" } },
+		] });
+		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+		assert.equal(result.length, 6);
+	});
+
+	it("keeps a latest Claude assistant whose thinking blocks are all signed or redacted", () => {
+		const signed = cutTail();
+		signed.content = signed.content.filter((block) => block.type !== "thinking" || block.thinkingSignature);
+		signed.content.unshift({ type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque-payload", redacted: true });
+		const result = rebuildConvert([...history, signed, tailResult]);
+		assert.deepEqual(result[3].content.map((block) => block.type), ["redacted_thinking", "thinking", "thinking", "text", "tool_use"]);
+		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+	});
+
+	it("keeps a latest assistant from a non-Claude provider", () => {
+		const result = rebuildConvert([...history, cutTail("openai"), tailResult]);
+		assert.deepEqual(result[3].content.map((block) => block.type), ["text", "text", "tool_use"]);
+		assert.equal(result[3].content[1].text, "reading b");
+		assert.deepEqual(result[4].content.map((block) => block.tool_use_id), ["t2"]);
+	});
+
+	it("notes a text-only latest turn with its text", () => {
+		const textOnly = { role: "assistant", provider: "pi-claude", stopReason: "stop", content: [
+			{ type: "thinking", thinking: "cut off mid-thought" },
+			{ type: "text", text: "The file has two sections." },
+		] };
+		const result = rebuildConvert([...history, textOnly]);
+		assert.equal(result.length, 4);
+		assert.equal(result[3].role, "user");
+		assert.match(noteText(result[3].content), /could not be replayed as-is/);
+		assert.ok(noteText(result[3].content).includes("The file has two sections."), noteText(result[3].content));
+	});
+
+	it("carries a tool result's image in the note and keeps its error flag", () => {
+		const failed = { role: "toolResult", toolCallId: "t2", toolName: "read", isError: true, content: [
+			{ type: "text", text: "partial read" },
+			{ type: "image", data: "aGk=", mimeType: "image/png" },
+			{ type: "image", mimeType: "image/jpeg" },
+		] };
+		const note = rebuildConvert([...history, cutTail(), failed]).at(-1).content;
+		assert.deepEqual(note.map((block) => block.type), ["text", "image", "text"]);
+		assert.ok(note[0].text.endsWith("Call 1 returned an error:\npartial read"), note[0].text);
+		assert.deepEqual(note[1], { type: "image", source: { type: "base64", media_type: "image/png", data: "aGk=" } });
+		assert.equal(note[2].text, "[image/jpeg image, not carried in this note]", "an image without data keeps a marker");
+	});
+
+	it("lists the turn's text and calls in order, then the results in the order they came back", () => {
+		const turn = { role: "assistant", provider: "pi-claude", stopReason: "toolUse", content: [
+			{ type: "thinking", thinking: "cut off mid-thought" },
+			{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a" } },
+			{ type: "text", text: "Now the second file." },
+			{ type: "toolCall", id: "c2", name: "read", arguments: { path: "b" } },
+			{ type: "toolCall", id: "c3", name: "read", arguments: { path: "c" } },
+		] };
+		const result2 = { role: "toolResult", toolCallId: "c2", toolName: "read", content: "B body" };
+		const result1 = { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "A body" }] };
+		const note = noteText(rebuildConvert([...history, turn, result2, result1]).at(-1).content);
+		const at = (part) => {
+			const index = note.indexOf(part);
+			assert.ok(index >= 0, `${part} is missing from: ${note}`);
+			return index;
+		};
+		// The turn's own order, then the results in the order they came back.
+		const order = ['{"path":"a"}', "Now the second file.", '{"path":"b"}', '{"path":"c"}', "B body", "A body"].map(at);
+		assert.deepEqual(order, [...order].sort((a, b) => a - b), note);
+		// Each call has a number, each result names its call, and a call with no result says so.
+		for (const part of ['Call 1: you called read with arguments {"path":"a"}.', "Call 2 returned:\nB body", "Call 1 returned:\nA body"]) at(part);
+		assert.ok(note.endsWith("Call 3: no result was recorded."), note);
+	});
+
+	it("notes each trailing turn until the latest assistant replays exactly", () => {
+		const earlierCut = cutTail();
+		const laterCut = { role: "assistant", provider: "pi-claude", stopReason: "stop", content: [
+			{ type: "thinking", thinking: "also cut" },
+			{ type: "text", text: "b is empty" },
+		] };
+		const result = rebuildConvert([...history, earlierCut, tailResult, laterCut]);
+		assert.deepEqual(result.map((message) => message.role), ["user", "assistant", "user", "user", "user"]);
+		assert.deepEqual(result[1].content[0], { type: "thinking", thinking: "step one", signature: "sig1" });
+		assert.ok(noteText(result[3].content).includes("b body") && noteText(result[4].content).includes("b is empty"));
 	});
 });
 

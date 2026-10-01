@@ -2,9 +2,9 @@
 // Extracted from index.ts (pure move): no closures — reads config, env, and
 // the provided context only.
 
-import { type Model } from "@earendil-works/pi-ai";
+import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { accountSessionScope, subscriberProfileEnv, type ClaudeAccountRoute } from "./account-router.js";
+import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.js";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
 import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.js";
 import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.js";
@@ -12,6 +12,7 @@ import { connectorServersSnapshot } from "./connector-runtime.js";
 import { PROVIDER_ID } from "./convert.js";
 import { makeCliDebugOptions } from "./debug.js";
 import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.js";
+import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.js";
 
 // --- Effort level mapping ---
 // Pi reasoning levels → CC SDK effort levels
@@ -49,6 +50,9 @@ export interface BuildClaudeQueryOptionsInput {
 	account?: ClaudeAccountRoute;
 	bridgeConfig: Config;
 	systemPrompt?: string;
+	/** Where the system prompt came from; without it the prompt is treated as
+	 * a caller's own and sent unchanged. */
+	systemPromptOrigin?: SystemPromptOrigin;
 	/** Pi reasoning level from the stream options, if any. */
 	reasoning?: string;
 	resumeSessionId: string | null;
@@ -60,12 +64,36 @@ export interface BuiltClaudeQueryOptions {
 	queryOptions: NonNullable<Parameters<typeof query>[0]["options"]>;
 	// Diagnostics-ish bits the caller's debug line reports.
 	enableCloudMcp: boolean;
+	/** `pi-main:<evidence>` for Pi's main agent prompt, the only prompt a
+	 * configured replacement changes; `caller` for any other prompt. */
+	systemPromptSource: "pi-main:sections" | "pi-main:session" | "caller";
 	effort?: EffortLevel;
 	fallbackModel?: string;
 }
 
+interface OutboundSystemPrompt {
+	prompt: string;
+	source: BuiltClaudeQueryOptions["systemPromptSource"];
+}
+
+/** The system prompt a query sends Claude. Only Pi's main agent prompt takes
+ * the configured replacement; a prompt from compaction or an extension's own
+ * call keeps its instructions. The preamble tells resolveSystemPrompt whether
+ * Pi built the base. */
+function outboundSystemPrompt(
+	input: Pick<BuildClaudeQueryOptionsInput, "queryModel" | "bridgeConfig" | "systemPromptOrigin"> & { systemPrompt: string },
+): OutboundSystemPrompt {
+	const { queryModel, bridgeConfig, systemPrompt, systemPromptOrigin } = input;
+	const evidence = piMainPromptEvidence(systemPromptOrigin);
+	if (!evidence) return { prompt: systemPrompt, source: "caller" };
+	return {
+		prompt: resolveSystemPrompt(systemPrompt, `${queryModel.provider}/${queryModel.id}`, bridgeConfig.systemPrompt, systemPromptOrigin?.preamble),
+		source: `pi-main:${evidence}`,
+	};
+}
+
 export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): BuiltClaudeQueryOptions {
-	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
+	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
 	const providerSettings = bridgeConfig.provider ?? {};
 	const accountScope = accountSessionScope(account);
 	// Whether to expose the Claude account's claude.ai cloud MCP connectors
@@ -80,11 +108,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// before the CLI has fetched them.
 	const connectorServers = enableCloudMcp ? connectorServersSnapshot(accountScope.claudeConfigDir) : {};
 	if (systemPrompt === undefined) throw new Error("pi-claude-bridge: missing Pi system prompt");
-	const resolvedSystemPrompt = resolveSystemPrompt(
-		systemPrompt,
-		`${queryModel.provider}/${queryModel.id}`,
-		bridgeConfig.systemPrompt,
-	);
+	const outbound = outboundSystemPrompt({ queryModel, bridgeConfig, systemPrompt, systemPromptOrigin });
 
 	// Non-connector queries load no Claude Code filesystem settings by default.
 	// Connector mode needs user settings for account connector discovery.
@@ -94,12 +118,22 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	);
 	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
 	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
+	// Fall back to our generic table only for an absent key. A null entry marks
+	// the level unsupported on that model, and a value Claude Code does not
+	// accept is untrusted; both send no effort so Claude Code's default applies.
+	const mapped = reasoning ? queryModel.thinkingLevelMap?.[reasoning as ModelThinkingLevel] : undefined;
 	const requestedEffort = reasoning
-		? ((queryModel as any).thinkingLevelMap?.[reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[reasoning]
+		? mapped === undefined
+			? REASONING_TO_EFFORT[reasoning]
+			: normalizeEffortLevel(mapped) as EffortLevel | undefined
 		: undefined;
 	const effort = resolveConfiguredEffort(queryModel.id, requestedEffort, providerSettings);
+	// Pi sends no reasoning for its "off" level. Without a thinking mode Claude
+	// Code thinks by default (adaptive, or a token budget on models without
+	// adaptive thinking), so off sends the disabled mode (`--thinking disabled`).
+	// A null `off` entry marks a model that cannot turn thinking off; Pi hides the
+	// level there, and a caller's missing reasoning leaves Claude Code's default.
+	const thinkingOff = !reasoning && queryModel.thinkingLevelMap?.off !== null;
 
 	const extraArgs: Record<string, string | null> = {};
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
@@ -108,7 +142,8 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// ThinkingConfig also emits `--thinking adaptive` or `--max-thinking-tokens`
 	// (verified in sdk.mjs flag mapping), so the typed form cannot set display
 	// without overriding the model's thinking mode alongside our `--effort`.
-	if (effort) extraArgs["thinking-display"] = "summarized";
+	// A configured effort still applies with thinking off; the display does not.
+	if (effort && !thinkingOff) extraArgs["thinking-display"] = "summarized";
 	// With a managed Fable pool, let every account's model-scoped allowance run
 	// out (rotation) before changing models — the CLI's own Opus fallback would
 	// silently skip accounts whose Fable quota is still available. Once the
@@ -130,10 +165,24 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// Manual /compact in CC still works (we never invoke it).
 	// When connectors are enabled, allow claude.ai cloud MCP servers so the
 	// authenticated account's Gmail/Calendar/Drive tools load. Default stays "0".
+	// CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0: with CLAUDE_AUTO_BACKGROUND_TASKS set,
+	// CC moves an MCP call still running after 120 s (this knob) to a background
+	// task and answers it with a placeholder. The model then ends its turn, the
+	// SDK closes the query on that result, and the call is interrupted; a Pi
+	// tool's real result is orphaned. A bridge query cannot carry a background
+	// task past its turn, so every MCP call stays in the foreground.
+	// CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS=1: Claude Code resumes a
+	// session whose last turn ended mid-turn (at a tool_result, say) as an
+	// interrupted turn, with its own "Continue from where you left off." prompt
+	// and a filler reply before the real one. Pi supplies every prompt, so the
+	// bridge never wants that; a 1 ms max age makes every stored turn too old.
+	// "0" would not do: Claude Code then falls back to its own limit (hours).
 	const childEnv = {
-		...(account ? subscriberProfileEnv(account) : process.env),
+		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
+		CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
+		CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 	};
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
@@ -144,9 +193,10 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		includePartialMessages: true,
 		...(fallbackModel ? { fallbackModel } : {}),
 		...(providerSettings.fastMode ? { settings: { fastMode: true } } : {}),
-		systemPrompt: { type: "custom", prompt: resolvedSystemPrompt, snapshot: false },
+		systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,
+		...(thinkingOff ? { thinking: { type: "disabled" as const } } : {}),
 		...(effort ? { effort } : {}),
 		settingSources,
 		...(mcpServers || Object.keys(connectorServers).length > 0
@@ -161,6 +211,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	return {
 		queryOptions,
 		enableCloudMcp,
+		systemPromptSource: outbound.source,
 		...(effort ? { effort } : {}),
 		...(fallbackModel ? { fallbackModel } : {}),
 	};

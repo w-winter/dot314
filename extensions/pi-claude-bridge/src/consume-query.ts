@@ -3,7 +3,7 @@
 // generator and pushes events into the query's captured Pi stream.
 
 import { type Model } from "@earendil-works/pi-ai";
-import { type query } from "@anthropic-ai/claude-agent-sdk";
+import { type query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
 	classifyClaudeFailure,
 	rateLimitResetFromInfo,
@@ -14,18 +14,31 @@ import {
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
 } from "./account-router.js";
-import { ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, prunePartialToolCalls, updateTurnOutputModel } from "./assistant-stream.js";
-import { extensionApi, safeNotify } from "./bridge-state.js";
+import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.js";
+import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
 import { type Config } from "./config.js";
-import { debug } from "./debug.js";
-import { fallbackModelForPrimaryModel, modelDisplayName } from "./models.js";
+import { debug, diagDump } from "./debug.js";
+import { noteAnomaly } from "./agent-notice.js";
+import { modelDisplayName } from "./models.js";
 import { type QueryContext } from "./query-state.js";
 import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
+import { sdkQueryAbandoned } from "./query-teardown.js";
 import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.js";
+import { logClaudeCodeVersion } from "./versions.js";
+
+const ABANDONED: unique symbol = Symbol("sdk-query-abandoned");
+
+/** Silence an `api_retry` notice announces: the backoff before the retry,
+ *  plus the retry's own wait for response headers after a no-response
+ *  failure. Claude Code is legitimately quiet for that long. */
+function announcedQuietMs(message: { type: string; subtype?: unknown; retry_delay_ms?: unknown; no_response?: { retry_wait_ms?: unknown } }): number {
+	if (message.type !== "system" || message.subtype !== "api_retry") return 0;
+	return (Number(message.retry_delay_ms) || 0) + (Number(message.no_response?.retry_wait_ms) || 0);
+}
 
 export function emitRateLimitEvent(payload: Record<string, unknown>): void {
 	try {
-		extensionApi?.events?.emit?.(RATE_LIMIT_AUTO_RESUME_EVENT, payload);
+		getExtensionApi()?.events?.emit?.(RATE_LIMIT_AUTO_RESUME_EVENT, payload);
 	} catch {
 		// Cross-extension broker is best-effort only.
 	}
@@ -76,13 +89,64 @@ export interface ConsumeQueryResult {
 	failure?: ClaudeAttemptFailure;
 }
 
+/** Claude Code reports a tool_result only once a call is over, so a forwarded
+ *  call it reports can no longer be invoked late: retire it, which lets a
+ *  served-tool redefinition it was postponing apply (served-tools.ts). Covers
+ *  calls that finished without a tools/call carrying Claude Code's tool_use id. */
+function settleReportedToolCalls(message: unknown, queryCtx: QueryContext): void {
+	const content = (message as { message?: { content?: unknown } }).message?.content;
+	if (!Array.isArray(content)) return;
+	const ids: string[] = [];
+	for (const block of content) {
+		const id = block?.type === "tool_result" ? block.tool_use_id : undefined;
+		if (typeof id === "string" && queryCtx.forwardedToolCallIds.has(id) && !queryCtx.settledInvocationIds.has(id)) ids.push(id);
+	}
+	if (ids.length > 0) {
+		debug(`consumeQuery: Claude Code finished forwarded call(s) ${ids.join(",")}`);
+		queryCtx.settleInvocations(ids);
+	}
+}
+
+/** Claude Code reports a call's tool_result only after the call is answered,
+ *  and the bridge removes a handler from pendingToolCalls before answering it.
+ *  A reported id still pending therefore means Claude Code answered the call
+ *  itself (a CC-side limit gave up on it) while Pi is still running the tool.
+ *  Pi's result can no longer reach Claude, so say so now instead of losing it
+ *  silently when it arrives. The bridge's server config keeps CC's known
+ *  limits from firing (served-tools.ts, query-options.ts); this is the net. */
+function noteAbandonedToolCalls(message: unknown, queryCtx: QueryContext): void {
+	const content = (message as { message?: { content?: unknown } }).message?.content;
+	if (!Array.isArray(content)) return;
+	for (const block of content) {
+		const id = block?.type === "tool_result" ? block.tool_use_id : undefined;
+		if (typeof id !== "string" || queryCtx.abandonedToolCalls.has(id)) continue;
+		const pending = queryCtx.pendingToolCalls.get(id);
+		if (!pending) continue;
+		const raw = block.content;
+		// Logged on purpose: the call is still pending, so Pi never answered it
+		// and Claude Code wrote this tool_result itself. The text is its give-up
+		// reason (a timeout or cancel message), not a tool payload.
+		const text = typeof raw === "string"
+			? raw
+			: Array.isArray(raw) ? raw.map((part: { text?: unknown }) => typeof part?.text === "string" ? part.text : "").join(" ") : "";
+		const reason = text.trim().slice(0, 200) || "no reason given";
+		queryCtx.abandonedToolCalls.set(id, { toolName: pending.toolName, reason });
+		debug(`consumeQuery: Claude Code gave up on ${pending.toolName} [${id}] while Pi is still running it: ${reason}`);
+		diagDump("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName, reason });
+		noteAnomaly("tool_call_abandoned_by_claude_code");
+		appendIntegrityEntry("tool_call_abandoned_by_claude_code", { id, toolName: pending.toolName });
+		safeNotify(`Claude bridge: Claude Code stopped waiting for ${pending.toolName} while Pi is still running it (${reason}). Claude will not see that call's result.`, "warning");
+	}
+}
+
 export async function consumeQuery(
 	sdkQuery: ReturnType<typeof query>,
 	// The CAPTURED context of the query being consumed, never the live ctx():
-	// an MCP tool can push a reentrant subagent context while this iterator is
-	// suspended, and reading live state then would consult the WRONG query — a
-	// recovered success could retain its failure and surface an error, or a
-	// child session id could stamp the subagent's context.
+	// a quarantine (abort, stream-idle timeout) can hand the lane to a new
+	// context while this iterator is suspended, and reading live state then
+	// would consult the WRONG query — a recovered success could retain its
+	// failure and surface an error, or a child session id could stamp the next
+	// query's context.
 	queryCtx: QueryContext,
 	customToolNameToPi: Map<string, string>,
 	model: Model<any>,
@@ -105,9 +169,24 @@ export async function consumeQuery(
 		if (attemptFailureBox) attemptFailureBox.failure = next;
 	};
 
-	for await (const message of sdkQuery) {
-		if (wasAborted()) break;
-		activeStreamIdleWatchdogs.get(queryCtx)?.noteChunk();
+	// Not `for await`: after an abort or idle timeout the iterator may never
+	// settle (a wedged child can survive close()), so every wait is raced
+	// against the query's abandonment and teardown proceeds regardless.
+	const iterator = sdkQuery[Symbol.asyncIterator]();
+	const abandoned = sdkQueryAbandoned(sdkQuery).then((): typeof ABANDONED => ABANDONED);
+	for (;;) {
+		const next = await Promise.race([iterator.next(), abandoned]);
+		if (next === ABANDONED) {
+			debug("consumeQuery: SDK iterator did not settle after abort; abandoning it");
+			break;
+		}
+		if (next.done) break;
+		const message = next.value as SDKMessage;
+		if (wasAborted()) {
+			await Promise.race([iterator.return?.(undefined), abandoned]);
+			break;
+		}
+		activeStreamIdleWatchdogs.get(queryCtx)?.noteChunk(announcedQuietMs(message));
 		if (account) {
 			// Thunk, not a value: this runs once per SDK message — including one
 			// stream_event per streamed token — and debug() only evaluates function
@@ -168,9 +247,11 @@ export async function consumeQuery(
 					if (!streamLive) break;
 					const text = message.result || "";
 					// The no-stream-events assistant fallback may have already rendered
-					// this exact text in this query (it does not set turnSawStreamEvent)
-					// — re-pushing it here is the other half of the duplicated-output bug.
-					if (queryCtx.queryBlocks.some((b: any) => b.type === "text" && b.text === text)) {
+					// this exact text in this query (it does not set
+					// turnSawStreamEvent) — re-pushing it here is the other half of the
+					// duplicated-output bug. An earlier deferred-replay query's reply
+					// may legitimately be repeated.
+					if (queryBlocks(queryCtx).some((b: any) => b.type === "text" && b.text === text)) {
 						debug("consumeQuery: result text already rendered by assistant fallback; skipping duplicate");
 						break;
 					}
@@ -184,8 +265,9 @@ export async function consumeQuery(
 					const errorLines = Array.isArray((message as any).errors) ? uniqueNonEmptyLines((message as any).errors) : [];
 					const errors = errorLines.length > 0 ? errorLines.join("\n") : String((message as any).result || message.subtype || "Claude Code request failed");
 					const usageLimit = isUsageLimitMessage(message);
+					const kind = usageLimit ? "rate-limit" : classifyClaudeFailure(errors);
 					if (!failure || !failure.rateLimitInfo) {
-						holdFailure({ kind: usageLimit ? "rate-limit" : classifyClaudeFailure(errors), message: errors });
+						holdFailure({ kind, message: errors });
 					}
 					// Managed attempts keep terminal error copy buffered as metadata so
 					// a pre-output failure can move to another subscription profile.
@@ -195,18 +277,7 @@ export async function consumeQuery(
 						// USAGE_LIMIT_ERROR_PREFIXES). Surface it immediately, exactly as
 						// before, and suppress the SDK's raw follow-up throw.
 						queryCtx.handledTerminalError = true;
-						if (queryCtx.currentPiStream) {
-							queryCtx.turnOutput.stopReason = "error";
-							queryCtx.turnOutput.errorMessage = errors;
-							prunePartialToolCalls(queryCtx.turnOutput);
-							queryCtx.currentPiStream.push({ type: "error", reason: "error", error: queryCtx.turnOutput });
-							queryCtx.currentPiStream.end();
-							queryCtx.currentPiStream = null;
-						} else {
-							// A tool-use turn already reached Pi; its tool-result callback reports this.
-							debug(`consumeQuery: usage limit after the Pi turn was delivered; holding it for the next callback`);
-							queryCtx.undeliveredFailureMessage = errors;
-						}
+						endStreamForFailure(queryCtx, { errorMessage: errors });
 					}
 					// Other non-success subtypes (error_max_turns,
 					// error_during_execution) surface at completion via the held
@@ -215,6 +286,7 @@ export async function consumeQuery(
 				}
 				break;
 			case "system":
+				if ((message as any).subtype === "init") logClaudeCodeVersion((message as any).claude_code_version);
 				if (!streamLive) break;
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;
@@ -242,11 +314,12 @@ export async function consumeQuery(
 				} else if ((message as any).subtype === "model_refusal_fallback") {
 					const originalModel = (message as any).original_model;
 					const fallbackModel = (message as any).fallback_model;
-					updateTurnOutputModel(fallbackModel, queryCtx);
+					updateTurnResponseModel(fallbackModel, queryCtx);
 					debug("consumeQuery: model_refusal_fallback", JSON.stringify({ originalModel, fallbackModel }));
-					// Notify only for reroutes we configured, so an unexpected pairing from
-					// Claude Code is still logged above but not announced as one of ours.
-					if (typeof fallbackModel === "string" && typeof originalModel === "string" && fallbackModelForPrimaryModel(originalModel) === fallbackModel) {
+					// Announce every reroute: Claude Code picks the target per refusal
+					// category (Opus 5.5 can land on Opus 5 or Opus 4.8), not only the
+					// fallback model the bridge configures.
+					if (typeof fallbackModel === "string" && typeof originalModel === "string" && fallbackModel !== originalModel) {
 						safeNotify(
 							`Pi Claude switched ${modelDisplayName(originalModel)} to ${modelDisplayName(fallbackModel)} after Claude Code safety fallback.`,
 							"info",
@@ -261,6 +334,8 @@ export async function consumeQuery(
 				// boundary nulled the stream (noteChildExecutedToolResults is
 				// side-effect-free on the Pi stream).
 				noteChildExecutedToolResults(message, queryCtx);
+				noteAbandonedToolCalls(message, queryCtx);
+				settleReportedToolCalls(message, queryCtx);
 				break;
 			case "rate_limit_event": {
 				if (!streamLive) break;

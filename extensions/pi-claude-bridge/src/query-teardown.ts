@@ -1,15 +1,15 @@
 // End-of-query teardown, extracted from streamClaudeAgentSdk's .finally so it
 // operates on the ONE context captured at query start — never the live ctx().
-// The two only differ while a reentrant (subagent) context is pushed, which is
-// exactly when a parent query ending abnormally (abort, child process death)
-// teardown must run against the parent state. Using the subagent state skips
-// the parent's drain, audit flush, and activeQuery clear, which leaks handlers.
+// The two differ once a quarantine (abort, stream-idle timeout) handed the
+// lane to a new context that the next prompt's query may already use. Using
+// that context would skip this query's drain, audit flush, and activeQuery
+// clear, which leaks handlers.
 
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import { reportToolResultMismatch } from "./bridge-state.js";
 import { flushConnectorCallAudit } from "./connector-audit.js";
 import { debug } from "./debug.js";
-import { drainPendingToolCalls, popContextFor, type QueryContext, type ToolCallDrainCause } from "./query-state.js";
+import { drainPendingToolCalls, type QueryContext, type ToolCallDrainCause } from "./query-state.js";
 
 /** A child transport may throw during close; teardown must still reach its
  *  replacement query or report an error on the stream Pi is waiting for. */
@@ -18,9 +18,50 @@ export function closeSdkQuery(sdkQuery: ReturnType<typeof query>): void {
 	catch (error) { debug("provider: closing the sdk query threw:", error); }
 }
 
+// How long an interrupted and closed child gets to end its SDK iterator. The
+// SDK escalates close() to SIGKILL after 5s; past that, only a wedged iterator
+// is still pending, and nothing guarantees it ever settles.
+const DEFAULT_SETTLE_GRACE_MS = 5_000;
+let settleGraceMs = DEFAULT_SETTLE_GRACE_MS;
+
+interface Abandonment {
+	promise: Promise<void>;
+	resolve: () => void;
+	armed: boolean;
+}
+
+const abandonments = new WeakMap<object, Abandonment>();
+
+function abandonment(sdkQuery: object): Abandonment {
+	let entry = abandonments.get(sdkQuery);
+	if (!entry) {
+		let resolve!: () => void;
+		const promise = new Promise<void>((done) => { resolve = done; });
+		entry = { promise, resolve, armed: false };
+		abandonments.set(sdkQuery, entry);
+	}
+	return entry;
+}
+
+/** Resolves once `sdkQuery` was aborted and its settle grace ran out; never
+ *  resolves for a query nobody aborted. consumeQuery races the iterator
+ *  against it so teardown cannot hang on a child that never lets go. */
+export function sdkQueryAbandoned(sdkQuery: object): Promise<void> {
+	return abandonment(sdkQuery).promise;
+}
+
+/** Test seam: shorten the settle grace. No argument restores the default. */
+export function __testSetSdkSettleGraceMs(ms?: number): void {
+	settleGraceMs = ms ?? DEFAULT_SETTLE_GRACE_MS;
+}
+
 export function abortSdkQuery(sdkQuery: ReturnType<typeof query>): void {
 	void sdkQuery.interrupt().catch(() => {});
 	closeSdkQuery(sdkQuery);
+	const pending = abandonment(sdkQuery);
+	if (pending.armed) return;
+	pending.armed = true;
+	setTimeout(pending.resolve, settleGraceMs).unref?.();
 }
 
 /** Tear down `queryCtx` after its SDK query settled. No-ops when the query is
@@ -31,7 +72,6 @@ export function teardownQuery(
 	sdkQuery: unknown,
 	cause: ToolCallDrainCause,
 	cwd: string,
-	isReentrant: boolean,
 ): boolean {
 	if (queryCtx.activeQuery !== sdkQuery) return false;
 	reportToolResultMismatch(queryCtx, "query teardown", cwd, { forceRotate: cause !== "query-end" });
@@ -47,12 +87,6 @@ export function teardownQuery(
 	const unobserved = flushConnectorCallAudit(queryCtx, cause);
 	if (unobserved > 0) debug(`provider: query teardown recorded ${unobserved} connector call(s) with no observed result (cause=${cause})`);
 
-	if (isReentrant) {
-		// Merges deferred messages and restores/repairs the stack. popContextFor
-		// (not popContext): a live subagent context may sit above this one.
-		if (!popContextFor(queryCtx)) debug("provider: query teardown found context already popped; skipping pop");
-	} else {
-		queryCtx.activeQuery = null;
-	}
+	queryCtx.activeQuery = null;
 	return true;
 }

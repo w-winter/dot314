@@ -43,6 +43,17 @@ try {
 	console.log("Triggering /new...");
 	await send({ type: "new_session" });
 
+	// Pi reuses the loaded modules on /new and hands the extension a new API
+	// object. The provider has to be registered on that one; if it isn't, Pi
+	// quietly answers with some other model.
+	const state = await send({ type: "get_state" });
+	if (state.model?.provider !== "pi-claude") {
+		throw new Error(`model after /new is ${state.model?.provider}/${state.model?.id}; the bridge provider was not re-registered`);
+	}
+	if (/registerProvider threw/.test(readFileSync(DEBUG_LOG, "utf8").slice(NEW_MARKER_LOG))) {
+		throw new Error("registerProvider threw after /new");
+	}
+
 	console.log("Turn 3: prompt after /new (should be a clean start)...");
 	await promptAndWait("Hello fresh session. Reply with just 'hi'.");
 

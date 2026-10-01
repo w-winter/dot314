@@ -4,11 +4,15 @@
 
 import { closeSync, openSync, readSync, statSync } from "fs";
 import { StringDecoder } from "node:string_decoder";
+import { parseErrorShape } from "./debug.js";
 
 interface JsonlSummary {
 	count: number;
 	firstLine?: string;
 	lastLine?: string;
+	/** 1-based file line numbers of firstLine and lastLine. */
+	firstLineNumber?: number;
+	lastLineNumber?: number;
 }
 
 function forEachJsonlLine(path: string, onLine: (line: string) => void): void {
@@ -42,11 +46,17 @@ function forEachJsonlLine(path: string, onLine: (line: string) => void): void {
 
 function summarizeJsonl(path: string): JsonlSummary {
 	const summary: JsonlSummary = { count: 0 };
+	let lineNumber = 0;
 	forEachJsonlLine(path, (line) => {
+		lineNumber += 1;
 		if (!line.trim()) return;
 		summary.count += 1;
-		if (summary.firstLine === undefined) summary.firstLine = line;
+		if (summary.firstLine === undefined) {
+			summary.firstLine = line;
+			summary.firstLineNumber = lineNumber;
+		}
 		summary.lastLine = line;
+		summary.lastLineNumber = lineNumber;
 	});
 	return summary;
 }
@@ -71,14 +81,18 @@ export function verifyWrittenSession(jsonlPath: string, expectedSessionId: strin
 		warnings.push(`record count mismatch — expected=${expectedRecordCount} actual=${summary.count} path=${jsonlPath} bytes=${st.size}`);
 		return warnings;
 	}
+	let line = summary.firstLineNumber;
 	try {
 		const firstRec = JSON.parse(summary.firstLine ?? "");
+		line = summary.lastLineNumber;
 		const lastRec = JSON.parse(summary.lastLine ?? "");
 		if (firstRec.sessionId !== expectedSessionId || lastRec.sessionId !== expectedSessionId) {
 			warnings.push(`sessionId drift — expected=${expectedSessionId} first=${firstRec.sessionId} last=${lastRec.sessionId}`);
 		}
 	} catch (e) {
-		warnings.push(`malformed JSONL — path=${jsonlPath} err=${e.message}`);
+		// The warning is logged and shown: it names where the parse failed,
+		// never the parser's message, which quotes the record's content.
+		warnings.push(`malformed JSONL — path=${jsonlPath} line=${line ?? "none"} err=${parseErrorShape(e)}`);
 	}
 	return warnings;
 }

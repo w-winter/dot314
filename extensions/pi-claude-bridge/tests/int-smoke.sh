@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 # Smoke tests for pi-claude-bridge provider.
 # Requires: pi CLI, Claude Code (for Agent SDK subprocess).
-# Requires: CLAUDE_BRIDGE_TESTING_ALT_MODEL (e.g. "MiniMax-M2.7-highspeed")
 
 source "$(dirname "$0")/lib/bash-setup.sh"
 
 echo "=== smoke-test.sh ==="
 
 setup_test_env "smoke-test"
-
-ALT_MODEL=$(require_env CLAUDE_BRIDGE_TESTING_ALT_MODEL)
 
 TIMEOUT=60
 PASS=0
@@ -22,7 +19,7 @@ run() {
   local slug=$(echo "$name" | tr ' :,' '-' | tr -cd '[:alnum:]-')
   local logfile="$LOGDIR/$slug.log"
   printf "%-50s " "$name"
-  if output=$(timeout "$TIMEOUT" "$@" 2>&1); then
+  if output=$(run_with_timeout "$TIMEOUT" "$@" 2>&1); then
     echo "$output" > "$logfile"
     if [ -n "$output" ]; then
       echo "PASS"
@@ -46,12 +43,13 @@ run() {
 
 run "provider: print mode responds" \
   pi --no-session -ne -e "$DIR" \
-  --model "pi-claude/claude-sonnet-5" \
+  --model "pi-claude/claude-haiku-4-5" \
   -p "Reply with just the word 'yes'"
 
 run "provider: --provider flag works" \
   pi --no-session -ne -e "$DIR" \
   --provider pi-claude \
+  --model claude-haiku-4-5 \
   -p "Reply with just the word 'yes'"
 
 run "provider: model list includes provider" \

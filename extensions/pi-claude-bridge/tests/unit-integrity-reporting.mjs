@@ -9,6 +9,9 @@ import { join } from "node:path";
 import { QueryContext } from "../src/query-state.js";
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, INTEGRITY_CUSTOM_TYPE, appendIntegrityEntry, reapStaleQueuedResults, reportToolResultMismatch } from "../src/index.js";
 import { setExtensionApi } from "../src/bridge-state.js";
+import { takeAgentNotice } from "../src/agent-notice.js";
+import { runInRequestLane } from "../src/request-lane.js";
+import { withAgentNotices } from "./lib/agent-notices.mjs";
 
 let dir;
 let diagPath;
@@ -149,13 +152,13 @@ describe("integrity entries persisted to the pi session", () => {
 		assert.equal(appendIntegrityEntry("anything", { count: 1 }), false);
 	});
 
-	it("reaping stale queued results parks them consumably, diags, notifies, and persists", () => {
+	it("reaping stale queued results parks them consumably, diags, persists and tells the agent with agent notices on, without a TUI warning", () => withAgentNotices(() => {
 		const queryCtx = new QueryContext();
 		queryCtx.recordToolCall("bash-lost", "bash", { command: "echo should-not-leak" });
 		queryCtx.pendingResults.set("bash-lost", { toolCallId: "bash-lost", content: [{ type: "text", text: "should-not-leak" }] });
 		queryCtx.resetToolTracking();
 
-		reapStaleQueuedResults(queryCtx);
+		runInRequestLane("integrity-reap", () => reapStaleQueuedResults(queryCtx));
 
 		assert.equal(queryCtx.pendingResults.size, 0);
 		// Parked, not destroyed: a handler firing after the boundary still gets
@@ -168,12 +171,11 @@ describe("integrity entries persisted to the pi session", () => {
 		assert.deepEqual(diag[0].stale, [{ id: "bash-lost", toolName: "bash" }]);
 		assert.equal(sessionEntries.length, 1);
 		assert.equal(sessionEntries[0].data.label, "stale_queued_tool_results_parked");
-		assert.equal(notifications.length, 1);
-		assert.equal(notifications[0].level, "warning");
-		assert.match(notifications[0].message, /bash/);
+		assert.deepEqual(notifications, [], "no TUI warning: the parked results need no action");
+		assert.deepEqual(takeAgentNotice("integrity-reap")?.message.details, { kinds: ["stale_queued_tool_results_parked"] });
 		assert.equal(JSON.stringify(diag).includes("should-not-leak"), false, "diag never carries tool output");
 		assert.equal(JSON.stringify(sessionEntries).includes("should-not-leak"), false, "session entry never carries tool output");
-	});
+	}));
 
 	it("reaping nothing appends nothing", () => {
 		reapStaleQueuedResults(new QueryContext());

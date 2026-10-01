@@ -9,7 +9,7 @@ import {
 	isConnectorWriteTool,
 	CONNECTOR_WRITE_TOOLS,
 	CLAUDE_AI_CONNECTOR_TOOL_PATTERNS,
-} from "../bundle/index.js";
+} from "../src/index.ts";
 
 function withEnv(value, fn) {
 	const prev = process.env.CLAUDE_BRIDGE_CONNECTOR_WRITE;

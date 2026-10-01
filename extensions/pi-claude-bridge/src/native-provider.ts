@@ -21,11 +21,12 @@
 // the Claude Code subprocess does its own authentication; pi never needs a
 // real secret, so none is read or exposed.
 
+import { unmanagedClaudeEnv } from "./account-router.js";
 import { hasClaudeCredentials } from "./auth-presence.js";
 import { PROVIDER_ID } from "./convert.js";
 
 export const NATIVE_PROVIDER_UNSUPPORTED_MESSAGE =
-	"Claude bridge 2.x requires pi >= 0.81 (native provider API). Upgrade the host pi, or pin @vanillagreen/pi-claude-bridge@1.x.";
+	"Claude bridge needs Pi 0.81 or later. Upgrade Pi.";
 
 /** pi-ai gained createProvider in 0.81 alongside the object-form
  *  registerProvider; its presence is the capability signal for both. */
@@ -58,7 +59,7 @@ export function buildNativeProvider(
 	env: NodeJS.ProcessEnv = process.env,
 	// Availability probe. Defaults to direct credential presence; the extension
 	// passes a probe that also accepts a companion account-router pool.
-	hasCredentials: () => boolean = () => hasClaudeCredentials(env),
+	hasCredentials: () => boolean = () => hasClaudeCredentials(unmanagedClaudeEnv(env)),
 ): unknown {
 	if (!supportsNativeProvider(piAi)) throw new Error(NATIVE_PROVIDER_UNSUPPORTED_MESSAGE);
 	// The legacy config path stamped provider/api/baseUrl onto each model during
@@ -82,9 +83,9 @@ export function buildNativeProvider(
 				// check() exists so pi's availability pass never has to call
 				// resolve(): both are existence-only, but check is the documented
 				// side-effect-free probe.
-				check: async () => (hasCredentials() ? { type: "api_key" as const, source: claudeAuthSourceLabel(env) } : undefined),
+				check: async () => (hasCredentials() ? { type: "api_key" as const, source: claudeAuthSourceLabel(unmanagedClaudeEnv(env)) } : undefined),
 				resolve: async () => (hasCredentials()
-					? { auth: { apiKey: "not-used" }, source: claudeAuthSourceLabel(env) }
+					? { auth: { apiKey: "not-used" }, source: claudeAuthSourceLabel(unmanagedClaudeEnv(env)) }
 					: undefined),
 			},
 		},

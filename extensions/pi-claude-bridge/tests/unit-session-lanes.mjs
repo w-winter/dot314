@@ -60,7 +60,14 @@ async function collect(stream) {
 	return events;
 }
 
-const userMessage = (text) => ({ role: "user", content: text, timestamp: Date.now() });
+// One object per prompt text: Pi hands the provider the same message (and
+// timestamp) on every call of a turn, and the bridge identifies user messages
+// by it. A re-stamped copy would read as rewritten history.
+const userMessages = new Map();
+const userMessage = (text) => {
+	if (!userMessages.has(text)) userMessages.set(text, { role: "user", content: text, timestamp: Date.now() });
+	return userMessages.get(text);
+};
 
 function streamWithPrompt(context, options = {}) {
 	return streamClaudeAgentSdk(model, {
@@ -113,6 +120,7 @@ function makeFakePi(handlers) {
 		on: (event, handler) => { handlers.set(event, handler); },
 		registerCommand: () => {},
 		registerProvider: () => {},
+		registerTool: () => {},
 		events: { emit: () => {} },
 		appendEntry: () => {},
 	};

@@ -83,6 +83,28 @@ describe("tool-message integration", () => {
 		assert.doesNotMatch(text, /ORIGINAL-REPLY/);
 	});
 
+	it("steer changes the first response after tool execution", { timeout: 20_000 }, async () => {
+		// The steer must reach the running query before the tool result, so
+		// Claude's first response after the tool follows it (not a later
+		// continuation), and the tool result must still reach Claude.
+		const collector = collectText();
+		await send({
+			type: "prompt",
+			message: "Call SlowTool with seconds=2 without any introductory text. After it returns, reply ORIGINAL-REPLY only.",
+		});
+		await waitForEvent("tool_execution_start");
+		await send({
+			type: "prompt",
+			message: "Change of instruction: instead of ORIGINAL-REPLY, reply STEERING-RECEIVED followed by the exact text SlowTool returned. Do not call more tools.",
+			streamingBehavior: "steer",
+		});
+		await waitForEvent("agent_end");
+		const text = collector.stop();
+		assert.match(text, /STEERING-RECEIVED/);
+		assert.match(text, /slowtool completed/i, `the tool result did not reach Claude: ${text.slice(0, 300)}`);
+		assert.doesNotMatch(text, /ORIGINAL-REPLY/);
+	});
+
 	it("parallel tool calls with steer delivers all results", { timeout: 30_000 }, async () => {
 		const collector = collectText();
 		await send({

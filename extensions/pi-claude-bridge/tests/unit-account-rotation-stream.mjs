@@ -453,6 +453,40 @@ describe("managed account stream rotation", () => {
 		assert.equal(events.some((event) => event.type === "error"), false);
 	});
 
+	it("rotates a request that went idle before any output, telling no one about a retry Pi never sees", { timeout: 10_000 }, async () => {
+		process.env.CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT = "200ms";
+		const observed = observedState();
+		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			calls += 1;
+			if (calls > 1) {
+				return fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "session-b" },
+					{ type: "result", subtype: "success", result: "idle-recovered" },
+				], "b", observed);
+			}
+			let wake = () => {};
+			const closed = new Promise((resolve) => { wake = resolve; });
+			return {
+				...fakeSdkQuery([], "a", observed),
+				async *[Symbol.asyncIterator]() {
+					yield { type: "system", subtype: "init", session_id: "session-a" };
+					await closed;
+				},
+				close() { wake(); },
+				async interrupt() { wake(); },
+			};
+		});
+
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "idle-rotation" }));
+		assert.equal(calls, 2);
+		assert.deepEqual(observed.failures, [{ profileId: "a", kind: "network" }]);
+		assert.ok(textEvents(events).includes("idle-recovered"));
+		assert.equal(events.some((event) => event.type === "error"), false);
+		assert.deepEqual(notifications.filter((entry) => /idle/.test(entry.message)), []);
+	});
+
 	it("terminates the stream when an abort lands after a rotation retry was queued", async () => {
 		// requestRotation discards the attempt buffer and nulls currentPiStream;
 		// only the retry re-entry ends the outer stream. An abort in the window
@@ -555,6 +589,37 @@ describe("managed account stream rotation", () => {
 		assert.deepEqual(observed.failures, [{ profileId: "a", kind: "rate-limit" }]);
 		assert.ok(textEvents(events).includes("recovered-without-local-billing-policy"));
 		assert.equal(events.some((event) => event.type === "error"), false);
+	});
+
+	it("surfaces Anthropic's third-party-app rejection on the first profile instead of rotating", async () => {
+		// The SDK 0.3.284 sequence: Claude Code's synthetic error message, a
+		// success-labelled error result, then the iterator throws with its text.
+		const rejection = "API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.";
+		const observed = observedState();
+		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);
+		let calls = 0;
+		__testSetSdkQueryFactory(() => {
+			calls += 1;
+			return calls === 1
+				? fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "session-a" },
+					{ type: "assistant", error: "unknown", message: { model: "<synthetic>", content: [{ type: "text", text: rejection }], usage: { input_tokens: 0, output_tokens: 0 } } },
+					{ type: "result", subtype: "success", is_error: true, api_error_status: 400, result: rejection },
+					new Error(`Claude Code returned an error result: ${rejection}`),
+				], "a", observed)
+				: fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "session-b" },
+					{ type: "result", subtype: "success", result: "ok-from-b" },
+				], "b", observed);
+		});
+
+		const events = await collect(streamClaudeAgentSdk(model, context, { sessionId: "third-party-rejection" }));
+		assert.equal(calls, 1, "every profile rejects the same request");
+		assert.deepEqual(observed.failures, []);
+		const errors = events.filter((event) => event.type === "error");
+		assert.equal(errors.length, 1);
+		assert.ok(errors[0].error.errorMessage.includes(rejection), errors[0].error.errorMessage);
+		assert.match(errors[0].error.errorMessage, /systemPrompt\.replacement/);
 	});
 
 	it("never replays after visible text has committed", async () => {
@@ -733,6 +798,10 @@ describe("managed account stream rotation", () => {
 		assert.equal(queryOptions.fallbackModel, "claude-opus-4-8");
 		assert.equal(queryOptions.env.CLAUDE_CONFIG_DIR, "/profiles/b");
 		assert.ok(textEvents(events).includes("opus-after-fable"));
+		// The router's model switch is a response model, not a new Pi model id.
+		const done = events.find((event) => event.type === "done");
+		assert.equal(done?.message.model, "claude-fable-5-1");
+		assert.equal(done?.message.responseModel, "claude-opus-5");
 	});
 
 	it("selects registered Fable 5.1 without skipping another managed account", async () => {
@@ -770,7 +839,7 @@ describe("managed account stream rotation", () => {
 		assert.equal(calls, 0);
 		assert.equal(events.length, 1);
 		assert.equal(events[0].type, "error");
-		assert.match(events[0].error.errorMessage, /No Claude subscription account/);
+		assert.equal(events[0].error.errorMessage, "No Claude subscription account is available");
 		assert.equal(events[0].error.resetAtMs, resetAtMs);
 		assert.equal(events[0].error.rateLimitType, "all_accounts");
 	});

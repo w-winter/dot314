@@ -1,7 +1,7 @@
 // Pure pi→Anthropic message conversion helpers.
 // Extracted so they can be tested without pulling in the full extension runtime.
 
-import type { Message as PiMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai";
 import type { ContentBlock, Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
 import { isChildExecutedTool } from "./connectors.js";
@@ -122,16 +122,149 @@ function hasToolUse(msg: PiMessage): boolean {
 	return msg.role === "assistant" && Array.isArray(msg.content) && msg.content.some((block) => block.type === "toolCall");
 }
 
-/** Convert pi message array to Anthropic API format. */
+function isClaudeAssistant(msg: PiMessage): msg is AssistantMessage {
+	return msg.role === "assistant" && (msg.provider === PROVIDER_ID || msg.api === "anthropic");
+}
+
+function isSkippedAssistant(msg: PiMessage): boolean {
+	return msg.role === "assistant" && (msg.stopReason === "error" || msg.stopReason === "aborted");
+}
+
+/** A Claude thinking block exactly as the API returned it, or undefined when
+ *  it cannot be replayed (no signature, or a redacted block without its payload). */
+function claudeThinkingToAnthropic(block: { thinking?: string; thinkingSignature?: string; redacted?: boolean }): ContentBlock | undefined {
+	const sig = block.thinkingSignature;
+	if (!sig) return undefined;
+	if (block.redacted) return { type: "redacted_thinking", data: sig } as unknown as ContentBlock;
+	return { type: "thinking", thinking: block.thinking ?? "", signature: sig };
+}
+
+// The API rejects a request whose latest assistant message carries thinking
+// blocks that differ from its original response, so a REBUILD cannot import
+// that message with a block removed. Older ones may lose blocks: the API
+// strips their thinking.
+function hasUnreplayableThinking(msg: PiMessage): boolean {
+	if (!isClaudeAssistant(msg) || !Array.isArray(msg.content)) return false;
+	return msg.content.some((block) => block.type === "thinking" && !claudeThinkingToAnthropic(block));
+}
+
+/** Indexes of the trailing Claude turns a rebuild cannot replay exactly: from
+ *  the latest assistant back, each one with unreplayable thinking, so that the
+ *  latest assistant left in the import replays as returned. Error and aborted
+ *  turns are never imported and are passed over. */
+function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
+	const turns = new Set<number>();
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (msg.role !== "assistant" || isSkippedAssistant(msg)) continue;
+		if (!hasUnreplayableThinking(msg)) break;
+		turns.add(i);
+	}
+	return turns;
+}
+
+export const UNREPLAYED_TURN_NOTE_HEADER = "[Claude bridge: one of your earlier replies could not be replayed as-is, because part of its thinking was cut off. This note records what that reply said and did, in order.]";
+
+/** A piece of a note: a line of text, or an image block. */
+type NotePart = string | ContentBlock;
+
+/** A tool result's content as a note carries it, in its own order: each text
+ *  block, each image as the image block the normal import builds, and a text
+ *  marker for an image that converter cannot carry (no data or mimeType) or
+ *  for any other block. */
+function toolResultNoteText(content: unknown): NotePart[] {
+	if (typeof content === "string") return content ? [content] : [];
+	if (!Array.isArray(content)) return [];
+	const parts: NotePart[] = [];
+	for (const block of content as Array<{ type?: string; text?: string; data?: string; mimeType?: string }>) {
+		if (block.type === "text") {
+			if (block.text) parts.push(block.text);
+		} else if (block.type === "image") {
+			parts.push(imageBlockToAnthropic(block) ?? `[${block.mimeType ?? "unknown"} image, not carried in this note]`);
+		} else {
+			parts.push(`[${block.type}]`);
+		}
+	}
+	return parts;
+}
+
+/** A note's sections as content blocks: the lines of a section joined by one
+ *  newline and sections by a blank line, with each image block between the
+ *  text blocks around it. */
+function noteContent(sections: NotePart[][]): ContentBlock[] {
+	const blocks: ContentBlock[] = [];
+	let text = "";
+	sections.forEach((section, s) => section.forEach((part, p) => {
+		if (typeof part === "string") {
+			text += (text ? (p > 0 ? "\n" : s > 0 ? "\n\n" : "") : "") + part;
+			return;
+		}
+		if (text) blocks.push({ type: "text", text });
+		text = "";
+		blocks.push(part);
+	}));
+	if (text) blocks.push({ type: "text", text });
+	return blocks;
+}
+
+/** The user-side note a rebuild imports in place of a Claude turn it cannot
+ *  replay exactly and that turn's tool results. The turn wrote all of its text
+ *  and calls before any result came back, so the note lists its text and each
+ *  numbered tool call's Pi name and arguments in content order, then each
+ *  result by call number and error flag in the order `results` holds them
+ *  (history order), then each call with no recorded result. A result's images
+ *  are carried as image blocks in their place. Not its thinking. Nothing is
+ *  cut, so it carries what the normal import would. */
+function unreplayedTurnNote(msg: AssistantMessage, results: Map<string, PiMessage>): ContentBlock[] {
+	const sections: NotePart[][] = [[UNREPLAYED_TURN_NOTE_HEADER]];
+	const callNumbers = new Map<string, number>();
+	for (const block of msg.content) {
+		if (block.type === "text" && block.text) {
+			sections.push(["You wrote:", block.text]);
+		} else if (block.type === "toolCall") {
+			const number = callNumbers.size + 1;
+			callNumbers.set(block.id, number);
+			sections.push([`Call ${number}: you called ${block.name} with arguments ${JSON.stringify(block.arguments ?? {})}.`]);
+		}
+	}
+	if (callNumbers.size === 0) return noteContent(sections);
+	sections.push(["The results came back afterwards, in this order."]);
+	const answered = new Set<string>();
+	for (const [id, result] of results) {
+		const number = callNumbers.get(id);
+		if (number === undefined || result.role !== "toolResult") continue;
+		answered.add(id);
+		const content = toolResultNoteText(result.content);
+		sections.push([result.isError ? `Call ${number} returned an error:` : `Call ${number} returned:`, ...(content.length > 0 ? content : ["(no text)"])]);
+	}
+	for (const [id, number] of callNumbers) {
+		if (!answered.has(id)) sections.push([`Call ${number}: no result was recorded.`]);
+	}
+	return noteContent(sections);
+}
+
+/** Convert pi message array to Anthropic API format. `noteUnreplayableTurns`
+ *  is for writing a Claude session only; history digests must not pass it.
+ *  `notedTurns` lists the tool calls of each turn it replaced with a note. */
 export function convertPiMessages(
 	messages: PiMessage[],
 	customToolNameToSdk?: Map<string, string>,
-): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string> } {
+	opts: { noteUnreplayableTurns?: boolean } = {},
+): { anthropicMessages: SessionMessage[]; sanitizedIds: Map<string, string>; notedTurns: Array<{ calls: Array<{ id: string; name: string }> }> } {
 	const anthropicMessages = [];
 	const sanitizedIds = new Map();
 	const skippedToolCallIds = new Set<string>();
 	const isSkippedToolResult = (message: PiMessage): boolean =>
 		message.role === "toolResult" && skippedToolCallIds.has(message.toolCallId);
+	const unreplayable = opts.noteUnreplayableTurns ? unreplayableTrailingTurns(messages) : new Set<number>();
+	const notedTurns: Array<{ calls: Array<{ id: string; name: string }> }> = [];
+	// A steer can split one turn's results across later messages, so a note
+	// finds its results by id anywhere after the turn. The map keeps history
+	// order, which is the order the note lists them in.
+	const resultsById = new Map<string, PiMessage>();
+	if (unreplayable.size > 0) for (const message of messages) {
+		if (message.role === "toolResult" && !resultsById.has(message.toolCallId)) resultsById.set(message.toolCallId, message);
+	}
 
 	const pushToolResultGroup = (toolMessages: PiMessage[]): void => {
 		const included = toolMessages.filter((message) => !isSkippedToolResult(message));
@@ -156,9 +289,14 @@ export function convertPiMessages(
 			// snapshots, not model-authored history. Pi's agent loop returns before
 			// dispatching their tool calls, so any associated results are orphaned
 			// history and must not be imported either.
-			if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+			if (isSkippedAssistant(msg) || unreplayable.has(i)) {
 				for (const block of content) {
 					if (block.type === "toolCall") skippedToolCallIds.add(block.id);
+				}
+				if (unreplayable.has(i)) {
+					// Its results are imported in the note, not as tool_result blocks.
+					anthropicMessages.push({ role: "user", content: unreplayedTurnNote(msg as AssistantMessage, resultsById) });
+					notedTurns.push({ calls: content.filter((block) => block.type === "toolCall").map((block) => ({ id: block.id, name: block.name })) });
 				}
 				continue;
 			}
@@ -169,11 +307,8 @@ export function convertPiMessages(
 				if (block.type === "text" && block.text) {
 					blocks.push({ type: "text", text: block.text });
 				} else if (block.type === "thinking") {
-					const sig = block.thinkingSignature;
-					const isAnthropicProvider = msg.provider === PROVIDER_ID || msg.api === "anthropic";
-					if (isAnthropicProvider && sig) {
-						blocks.push({ type: "thinking", thinking: block.thinking ?? "", signature: sig });
-					}
+					const thinking = isClaudeAssistant(msg) ? claudeThinkingToAnthropic(block) : undefined;
+					if (thinking) blocks.push(thinking);
 				} else if (block.type === "toolCall") {
 					const toolName = mapPiToolNameToSdk(block.name, customToolNameToSdk);
 					blocks.push({ type: "tool_use", id: sanitizeToolId(block.id, sanitizedIds), name: toolName, input: block.arguments ?? {} });
@@ -216,5 +351,5 @@ export function convertPiMessages(
 		}
 	}
 
-	return { anthropicMessages, sanitizedIds };
+	return { anthropicMessages, sanitizedIds, notedTurns };
 }

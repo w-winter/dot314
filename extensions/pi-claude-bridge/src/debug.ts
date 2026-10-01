@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, mkdirSync } from "fs";
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import { piUserDir } from "./config.js";
 
@@ -13,6 +13,58 @@ export function diagLogPath(): string {
 	return process.env.CLAUDE_BRIDGE_DIAG_PATH || join(piUserDir(), "claude-bridge-diag.log");
 }
 
+function cliLogDir(): string {
+	return join(dirname(DEBUG_LOG_PATH), "cc-cli-logs");
+}
+
+// --- Retention ---
+// Debug artifacts otherwise grow for as long as debugging stays on. Every step
+// is best effort: a failure leaves files as they are and never reaches a turn.
+
+export const DEBUG_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const DEBUG_LOG_ROTATED_FILES = 3;
+export const CLI_LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const CLI_LOG_MAX_FILES = 100;
+// debug() re-checks the log size after roughly this much output, so the hot
+// path does not stat on every line.
+const DEBUG_LOG_CHECK_BYTES = 1024 * 1024;
+// Only the names makeCliDebugOptions writes: <ISO time, ":." as "-">-<tag>-<seq>.log
+const CLI_LOG_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-z-]+-\d+\.log$/;
+
+/** Rotate `path` to `path.1` (shifting older ones up to `path.3`, dropping the
+ *  oldest) once it reaches DEBUG_LOG_MAX_BYTES. Renames keep the 0o600 mode. */
+export function rotateDebugLog(path: string): void {
+	try {
+		if (statSync(path).size < DEBUG_LOG_MAX_BYTES) return;
+		for (let i = DEBUG_LOG_ROTATED_FILES - 1; i >= 1; i--) {
+			try { renameSync(`${path}.${i}`, `${path}.${i + 1}`); } catch { /* gap in the sequence */ }
+		}
+		renameSync(path, `${path}.1`);
+	} catch { /* missing log, or another process rotated it first */ }
+}
+
+/** Delete the bridge's own per-query CLI logs in `dir` that are older than
+ *  CLI_LOG_MAX_AGE_MS or beyond the newest CLI_LOG_MAX_FILES. */
+export function pruneCliDebugLogs(dir: string): void {
+	try {
+		const now = Date.now();
+		const logs: Array<{ path: string; mtimeMs: number }> = [];
+		for (const name of readdirSync(dir)) {
+			if (!CLI_LOG_NAME.test(name)) continue;
+			const path = join(dir, name);
+			try {
+				const stat = statSync(path);
+				if (stat.isFile()) logs.push({ path, mtimeMs: stat.mtimeMs });
+			} catch { /* removed meanwhile */ }
+		}
+		logs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+		logs.forEach((log, i) => {
+			if (i < CLI_LOG_MAX_FILES && now - log.mtimeMs <= CLI_LOG_MAX_AGE_MS) return;
+			try { unlinkSync(log.path); } catch { /* removed meanwhile */ }
+		});
+	} catch { /* no log dir yet */ }
+}
+
 /** Trailing clause for user-facing integrity notifications. With DEBUG on the
  *  diag log exists and is worth pointing at; without it the file was never
  *  written (diagDump early-returns), so point at the switch that would have
@@ -24,7 +76,7 @@ export function diagGuidance(): string {
 }
 
 // Ensure log directories exist when debug is enabled. 0o700/0o600 throughout:
-// these logs carry prompt previews and session metadata and belong to the user
+// these logs carry session metadata, ids and paths and belong to the user
 // alone — same discipline as diagDump.
 if (DEBUG) {
 	try {
@@ -37,10 +89,46 @@ if (DEBUG) {
 	} catch {
 		// If directory creation fails, debug functions will throw on first use
 	}
+	rotateDebugLog(DEBUG_LOG_PATH);
+	rotateDebugLog(diagLogPath());
+	pruneCliDebugLogs(cliLogDir());
 }
 
 // Unique per module evaluation — confirms whether subagents share module state
 export const moduleInstanceId = Math.random().toString(36).slice(2, 8);
+
+/** The shape of message or tool-result content for a log line: block count,
+ *  block types, text length and whether it holds only images. Never the
+ *  content itself: no log line carries a tool payload or user-authored text. */
+export function contentShape(content: unknown): string {
+	if (typeof content === "string") return `${content.length} chars`;
+	if (!Array.isArray(content)) return content == null ? "no content" : `${typeof content} content`;
+	let chars = 0;
+	let images = 0;
+	let hasText = false;
+	const types = content.map((block) => {
+		const { type, text } = (block ?? {}) as { type?: unknown; text?: unknown };
+		if (typeof text === "string") {
+			chars += text.length;
+			if (text.trim()) hasText = true;
+		}
+		if (type === "image") images += 1;
+		return typeof type === "string" && /^[a-z_]{1,32}$/.test(type) ? type : "?";
+	});
+	return `${content.length} block(s) [${types.join(",")}], ${chars} chars${images > 0 && !hasText ? ", image-only" : ""}`;
+}
+
+/** A failed read or JSON parse for a log line: the error's name, its code
+ *  when it has one, and the character position the parser reports. Never the
+ *  message: JSON.parse quotes the input around the error. */
+export function parseErrorShape(error: unknown): string {
+	if (!(error instanceof Error)) return "non-Error thrown";
+	const code = (error as { code?: unknown }).code;
+	const position = /\bposition (\d+)/.exec(error.message)?.[1];
+	return `${error.name}${typeof code === "string" ? ` ${code}` : ""}${position === undefined ? "" : ` at position ${position}`}`;
+}
+
+let debugBytesSinceCheck = 0;
 
 export function debug(...args: unknown[]) {
 	if (!DEBUG) return;
@@ -89,7 +177,13 @@ export function debug(...args: unknown[]) {
 		}
 	};
 	const msg = args.map(safeFmt).join(" ");
-	try { appendFileSync(DEBUG_LOG_PATH, `[${ts}] [${moduleInstanceId}] ${msg}\n`, { mode: 0o600 }); } catch { /* debug is best effort */ }
+	const line = `[${ts}] [${moduleInstanceId}] ${msg}\n`;
+	debugBytesSinceCheck += line.length;
+	if (debugBytesSinceCheck >= DEBUG_LOG_CHECK_BYTES) {
+		debugBytesSinceCheck = 0;
+		rotateDebugLog(DEBUG_LOG_PATH);
+	}
+	try { appendFileSync(DEBUG_LOG_PATH, line, { mode: 0o600 }); } catch { /* debug is best effort */ }
 }
 
 // Per-query CLI debug capture. When CLAUDE_BRIDGE_DEBUG=1, ask the Claude Code
@@ -103,8 +197,9 @@ export function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?:
 	if (!DEBUG) return {};
 	const seq = nextCliDebugSeq++;
 	const ts = new Date().toISOString().replace(/[:.]/g, "-");
-	const logDir = join(dirname(DEBUG_LOG_PATH), "cc-cli-logs");
+	const logDir = cliLogDir();
 	try { mkdirSync(logDir, { recursive: true, mode: 0o700 }); chmodSync(logDir, 0o700); } catch { /* ignore */ }
+	pruneCliDebugLogs(logDir);
 	const debugFile = join(logDir, `${ts}-${tag}-${seq}.log`);
 	debug(`cli-debug: ${tag} #${seq} → ${debugFile}`);
 	return {
@@ -129,6 +224,7 @@ export function diagDump(label: string, data: Record<string, unknown>) {
 		const entry = { ts, moduleInstanceId, label, ...data };
 		const path = diagLogPath();
 		try { mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+		rotateDebugLog(path);
 		appendFileSync(path, JSON.stringify(entry) + "\n", { mode: 0o600 });
 		try { chmodSync(path, 0o600); } catch { /* best effort */ }
 		debug(`DIAG: ${label} (see ${path})`);

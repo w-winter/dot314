@@ -57,13 +57,13 @@ describe("pending tool call drain", () => {
 
 	it("every cause is an error and every cause reads differently", () => {
 		const texts = new Set();
-		for (const cause of ["abort", "stream-idle-timeout", "query-end"]) {
+		for (const cause of ["abort", "history-restart", "stream-idle-timeout", "query-end"]) {
 			const result = interruptedToolCallResult(cause);
 			assert.equal(result.isError, true, `${cause} must be an error result`);
 			assert.ok(result.content[0].text.length > 0);
 			texts.add(result.content[0].text);
 		}
-		assert.equal(texts.size, 3, "each teardown cause must produce its own message");
+		assert.equal(texts.size, 4, "each teardown cause must produce its own message");
 	});
 
 	it("drains every waiting handler, clears the map, and marks them resolved", async () => {
@@ -114,5 +114,12 @@ describe("teardown cause selection", () => {
 	it("prefers abort when a timeout and an abort both fired", () => {
 		assert.equal(toolCallDrainCause({ streamIdleTimedOut: true, wasAborted: true }), "abort");
 		assert.equal(toolCallDrainCause({ streamIdleTimedOut: true, signalAborted: true }), "abort");
+	});
+
+	it("ranks a restart on Pi's replaced history below abort and above a timeout", () => {
+		assert.equal(toolCallDrainCause({ historyRestart: true }), "history-restart");
+		assert.equal(toolCallDrainCause({ historyRestart: true, streamIdleTimedOut: true }), "history-restart");
+		assert.equal(toolCallDrainCause({ historyRestart: true, wasAborted: true }), "abort");
+		assert.equal(toolCallDrainCause({ historyRestart: true, signalAborted: true }), "abort");
 	});
 });

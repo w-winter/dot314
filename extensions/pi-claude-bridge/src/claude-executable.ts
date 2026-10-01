@@ -1,6 +1,6 @@
 import { type SpawnOptions, type SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { spawn as spawnProcess } from "child_process";
-import { accessSync, constants as fsConstants, readFileSync, realpathSync, statSync } from "fs";
+import { accessSync, closeSync, constants as fsConstants, openSync, readSync, realpathSync, statSync } from "fs";
 import { delimiter, join } from "path";
 import { isolatedFromEnv } from "./config.js";
 import { DEBUG, debug } from "./debug.js";
@@ -61,6 +61,19 @@ function displayValue(value: unknown): string {
 	return value === undefined || value === null || value === "" ? "<none>" : String(value);
 }
 
+// The bridge's own Claude Code error classes (by name: they are plain Errors).
+export const CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME = "ClaudeExecutablePreflightError";
+export const CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME = "ClaudeSpawnDiagnosticError";
+/** The codes those errors set that are not errno names. */
+export const CLAUDE_SPAWN_FAILED_CODE = "CLAUDE_BRIDGE_SPAWN_FAILED";
+export const CLAUDE_SPAWN_UNKNOWN_CODE = "SPAWN_ERROR";
+/** How every ClaudeSpawnDiagnosticError message begins. The SDK does not
+ *  throw that error itself: it throws "Failed to spawn Claude Code process: "
+ *  plus the message (or "Cannot write to process that exited with error: "
+ *  plus that), after a redaction that rewrites only credential tokens. So the
+ *  wording, not the class, is what reaches the query's catch. */
+export const CLAUDE_SPAWN_FAILED_WORDING = "Claude Code spawn failed: ";
+
 function makeClaudePreflightError(
 	summary: string,
 	details: { code: string; errno?: string | number; syscall?: string; path: string; cwd: string; fileType?: ClaudeExecutableFileType; realPath?: string; cause?: unknown },
@@ -75,7 +88,7 @@ function makeClaudePreflightError(
 		...(details.realPath ? [`realPath=${details.realPath}`] : []),
 	].join(" ");
 	const error = new Error(`${summary} (${detail})`) as Error & NodeJS.ErrnoException & { cwd: string; fileType?: ClaudeExecutableFileType; realPath?: string };
-	error.name = "ClaudeExecutablePreflightError";
+	error.name = CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME;
 	error.code = details.code;
 	if (details.errno !== undefined) error.errno = typeof details.errno === "number" ? details.errno : Number(details.errno);
 	if (details.syscall) error.syscall = details.syscall;
@@ -106,6 +119,24 @@ export function classifyClaudeExecutableBytes(bytes: Uint8Array): ClaudeExecutab
 	return "unknown";
 }
 
+// Reads at most the 16 bytes the classifier inspects; a shorter file yields
+// the bytes it has. The executable can be hundreds of MB (or over 2 GiB).
+function readExecutableHeader(realPath: string): Uint8Array {
+	const header = Buffer.alloc(16);
+	const fd = openSync(realPath, "r");
+	try {
+		let length = 0;
+		while (length < header.length) {
+			const read = readSync(fd, header, length, header.length - length, length);
+			if (read === 0) break;
+			length += read;
+		}
+		return header.subarray(0, length);
+	} finally {
+		closeSync(fd);
+	}
+}
+
 export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExecutablePreflightResult {
 	let realCwd: string;
 	try {
@@ -121,7 +152,7 @@ export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExec
 		accessSync(cwd, fsConstants.X_OK);
 		realCwd = realpathSync(cwd);
 	} catch (err) {
-		if ((err as Error).name === "ClaudeExecutablePreflightError") throw err;
+		if ((err as Error).name === CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME) throw err;
 		throw makeClaudePreflightError("Claude Code spawn cwd preflight failed: cwd is not reachable before spawning Claude Code.", {
 			code: codeValue(err, "EACCES"),
 			errno: errnoValue(err),
@@ -146,7 +177,7 @@ export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExec
 		accessSync(path, fsConstants.X_OK);
 		realPath = realpathSync(path);
 	} catch (err) {
-		if ((err as Error).name === "ClaudeExecutablePreflightError") throw err;
+		if ((err as Error).name === CLAUDE_EXECUTABLE_PREFLIGHT_ERROR_NAME) throw err;
 		throw makeClaudePreflightError("Claude Code executable preflight failed: cannot access resolved executable before spawning Claude Code.", {
 			code: codeValue(err, "ENOENT"),
 			errno: errnoValue(err),
@@ -159,7 +190,7 @@ export function preflightClaudeExecutable(path: string, cwd: string): ClaudeExec
 
 	let fileType: ClaudeExecutableFileType;
 	try {
-		fileType = classifyClaudeExecutableBytes(readFileSync(realPath).subarray(0, 16));
+		fileType = classifyClaudeExecutableBytes(readExecutableHeader(realPath));
 	} catch (err) {
 		throw makeClaudePreflightError("Claude Code executable preflight failed: cannot read executable header before spawning Claude Code.", {
 			code: codeValue(err, "EACCES"),
@@ -191,7 +222,7 @@ function envFlagEnabled(value: string | undefined): boolean {
 }
 
 export function wrapClaudeSpawnErrorForSdk(err: Error, options: SpawnOptions): Error & NodeJS.ErrnoException & { cwd: string; originalCode?: string; originalMessage?: string } {
-	const originalCode = codeValue(err, "SPAWN_ERROR");
+	const originalCode = codeValue(err, CLAUDE_SPAWN_UNKNOWN_CODE);
 	const originalMessage = err.message;
 	const spawnPath = pathValue(err) ?? options.command;
 	const cwd = options.cwd ?? process.cwd();
@@ -203,12 +234,12 @@ export function wrapClaudeSpawnErrorForSdk(err: Error, options: SpawnOptions): E
 		`cwd=${cwd}`,
 		`command=${options.command}`,
 	].join(" ");
-	const wrapped = new Error(`Claude Code spawn failed: ${originalMessage} (${detail})`) as Error & NodeJS.ErrnoException & { cwd: string; originalCode?: string; originalMessage?: string };
-	wrapped.name = "ClaudeSpawnDiagnosticError";
+	const wrapped = new Error(`${CLAUDE_SPAWN_FAILED_WORDING}${originalMessage} (${detail})`) as Error & NodeJS.ErrnoException & { cwd: string; originalCode?: string; originalMessage?: string };
+	wrapped.name = CLAUDE_SPAWN_DIAGNOSTIC_ERROR_NAME;
 	// The SDK special-cases code === ENOENT and replaces the message with its
 	// generic "native binary not found" text. Preserve the original code in the
 	// message/originalCode while using a bridge code so the SDK surfaces context.
-	wrapped.code = originalCode === "ENOENT" ? "CLAUDE_BRIDGE_SPAWN_FAILED" : originalCode;
+	wrapped.code = originalCode === "ENOENT" ? CLAUDE_SPAWN_FAILED_CODE : originalCode;
 	wrapped.originalCode = originalCode;
 	wrapped.originalMessage = originalMessage;
 	const errno = errnoValue(err);

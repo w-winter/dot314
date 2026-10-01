@@ -499,6 +499,28 @@ describe("usage across a Pi turn that spans several child messages", () => {
 		assert.equal(c.turnOutput.usage.output, 90, "cumulative-per-message counters must not be summed");
 	});
 
+	it("reports thinking tokens as reasoning without adding them to the total", () => {
+		const c = ctx();
+		c.resetTurnState(model);
+		installFakeStream();
+
+		processStreamEvent(streamEvent({
+			type: "message_start",
+			message: { id: "msg_1", model: model.id, usage: { input_tokens: 10, output_tokens: 0 } },
+		}), new Map(), model);
+		processStreamEvent(streamEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 30, output_tokens_details: { thinking_tokens: 12 } } }), new Map(), model);
+		processStreamEvent(streamEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 50, output_tokens_details: { thinking_tokens: 20 } } }), new Map(), model);
+		processStreamEvent(streamEvent({
+			type: "message_start",
+			message: { id: "msg_2", model: model.id, usage: { input_tokens: 5, output_tokens: 0 } },
+		}), new Map(), model);
+		processStreamEvent(streamEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 9, output_tokens_details: { thinking_tokens: 4 } } }), new Map(), model);
+
+		assert.equal(c.turnOutput.usage.reasoning, 24, "replaced within a message, summed across messages");
+		assert.equal(c.turnOutput.usage.output, 59);
+		assert.equal(c.turnOutput.usage.totalTokens, 15 + 59, "reasoning is a subset of output");
+	});
+
 	it("accumulates on the no-stream-events path too", () => {
 		// The SDK can deliver a turn as complete `assistant` messages with no
 		// stream events. That path begins the following child message, so

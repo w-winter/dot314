@@ -1,11 +1,11 @@
 /**
- * Tests for QueryContext class and context stack infrastructure.
- * Exercises isolation, guards, deferred message merging, and context pinning
+ * Tests for the QueryContext class and the lane's current context.
+ * Exercises tool-call matching, progress reporting, and context pinning
  * using the real module — no API calls, no extension activation.
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ctx, pushContext, popContext, resetStack, stackDepth } from "../src/query-state.js";
+import { ctx, detachContext, resetStack } from "../src/query-state.js";
 
 const fakeModel = { api: "anthropic", provider: "anthropic", id: "test-model" };
 
@@ -173,143 +173,36 @@ describe("QueryContext class", () => {
 	});
 });
 
-describe("context stack guards", () => {
-	beforeEach(() => resetStack());
-
-	it("pushContext throws with no active query", () => {
-		assert.throws(() => pushContext(), /no active query/);
-	});
-
-	it("popContext throws on empty stack", () => {
-		assert.throws(() => popContext(), /empty stack/);
-	});
-});
-
-describe("stack isolation and restore", () => {
-	beforeEach(() => resetStack());
-
-	it("push/pop isolates state and restores parent", () => {
-		// Parent setup
-		ctx().activeQuery = { id: "parent" };
-		ctx().pendingToolCalls.set("t1", { toolName: "read", resolve: () => {} });
-		ctx().latestCursor = 42;
-		ctx().deferredUserMessages = ["parent-msg"];
-
-		// Push — child should be clean
-		pushContext();
-		assert.strictEqual(ctx().activeQuery, null);
-		assert.strictEqual(ctx().pendingToolCalls.size, 0);
-		assert.strictEqual(ctx().pendingResults.size, 0);
-		assert.strictEqual(ctx().latestCursor, 0);
-		assert.deepStrictEqual(ctx().deferredUserMessages, []);
-
-		// Mutate child
-		ctx().activeQuery = { id: "child" };
-		ctx().pendingToolCalls.set("t2", { toolName: "write", resolve: () => {} });
-		ctx().latestCursor = 99;
-
-		// Pop — parent restored
-		popContext();
-		assert.deepStrictEqual(ctx().activeQuery, { id: "parent" });
-		assert.strictEqual(ctx().pendingToolCalls.size, 1);
-		assert.ok(ctx().pendingToolCalls.has("t1"));
-		assert.strictEqual(ctx().latestCursor, 42);
-	});
-
-	it("deferred messages merge on pop in FIFO order", () => {
-		ctx().activeQuery = { id: "parent" };
-		ctx().deferredUserMessages = ["parent-1", "parent-2"];
-
-		pushContext();
-		ctx().deferredUserMessages = ["child-1", "child-2"];
-
-		popContext();
-		assert.deepStrictEqual(
-			ctx().deferredUserMessages,
-			["parent-1", "parent-2", "child-1", "child-2"],
-		);
-	});
-
-	it("triple-nested isolation — each level independent, pop restores", () => {
-		// Level 0 (root)
-		ctx().activeQuery = { id: "L0" };
-		ctx().latestCursor = 10;
-		ctx().deferredUserMessages = ["L0-msg"];
-
-		// Level 1
-		pushContext();
-		assert.strictEqual(stackDepth(), 1);
-		ctx().activeQuery = { id: "L1" };
-		ctx().latestCursor = 20;
-		ctx().deferredUserMessages = ["L1-msg"];
-
-		// Level 2
-		pushContext();
-		assert.strictEqual(stackDepth(), 2);
-		ctx().activeQuery = { id: "L2" };
-		ctx().latestCursor = 30;
-		ctx().deferredUserMessages = ["L2-msg"];
-
-		// Pop L2 → L1 (L2's deferred merge into L1)
-		popContext();
-		assert.strictEqual(stackDepth(), 1);
-		assert.deepStrictEqual(ctx().activeQuery, { id: "L1" });
-		assert.strictEqual(ctx().latestCursor, 20);
-		assert.deepStrictEqual(ctx().deferredUserMessages, ["L1-msg", "L2-msg"]);
-
-		// Pop L1 → L0 (L1+L2's deferred merge into L0)
-		popContext();
-		assert.strictEqual(stackDepth(), 0);
-		assert.deepStrictEqual(ctx().activeQuery, { id: "L0" });
-		assert.strictEqual(ctx().latestCursor, 10);
-		assert.deepStrictEqual(ctx().deferredUserMessages, ["L0-msg", "L1-msg", "L2-msg"]);
-	});
-});
-
 describe("context pinning (MCP handler closure pattern)", () => {
 	beforeEach(() => resetStack());
 
-	it("captured context ref stays valid across push/pop", () => {
-		ctx().activeQuery = { id: "parent" };
-		ctx().pendingToolCalls.set("t1", { toolName: "read", resolve: () => {} });
+	it("a captured context stays valid after a quarantine hands the lane to a new context", () => {
+		ctx().activeQuery = { id: "aborted" };
+		ctx().recordToolCall("old-tool", "read", { path: "old.txt" });
+		ctx().pendingToolCalls.set("old-tool", { toolName: "read", resolve: () => {} });
+		ctx().detachedFromSharedSession = true;
 
-		// Simulate handler capturing parent context before push
-		const capturedCtx = ctx();
+		// A handler captures its query's context, then the query is quarantined.
+		const captured = ctx();
+		detachContext(captured);
+		assert.notStrictEqual(ctx(), captured);
+		assert.strictEqual(ctx().activeQuery, null, "the next query starts on a clean context");
+		assert.strictEqual(ctx().pendingToolCalls.size, 0);
+		assert.strictEqual(ctx().detachedFromSharedSession, true, "a late orphaned result stays attributed to the detached query");
 
-		pushContext();
-		// After push, ctx() is the child — but capturedCtx still points to parent
-		assert.notStrictEqual(ctx(), capturedCtx);
-		assert.strictEqual(capturedCtx.pendingToolCalls.size, 1);
-		assert.ok(capturedCtx.pendingToolCalls.has("t1"));
+		// The next query's state and the captured one stay apart.
+		ctx().activeQuery = { id: "next" };
+		ctx().recordToolCall("new-tool", "read", { path: "new.txt" });
+		captured.markToolResultDelivered("old-tool");
+		captured.markToolResultResolved("old-tool");
+		assert.equal(captured.toolResultProgress().resolvedCount, 1);
+		assert.equal(ctx().toolResultProgress().resolvedCount, 0);
+		assert.deepStrictEqual(ctx().toolResultProgress().missingDeliveredIds, ["new-tool"]);
+		assert.strictEqual(captured.pendingToolCalls.size, 1);
 
-		// Mutate child — captured parent unaffected
-		ctx().pendingToolCalls.set("t2", { toolName: "write", resolve: () => {} });
-		assert.strictEqual(capturedCtx.pendingToolCalls.size, 1);
-
-		// Pop restores parent as current
-		popContext();
-		assert.strictEqual(ctx(), capturedCtx);
-	});
-
-	it("captured parent context tracks a parent result while child query is current", () => {
-		ctx().activeQuery = { id: "parent" };
-		ctx().recordToolCall("parent-tool", "read", { path: "parent.txt" });
-		const capturedParent = ctx();
-
-		pushContext();
-		ctx().activeQuery = { id: "child" };
-		ctx().recordToolCall("child-tool", "read", { path: "child.txt" });
-
-		capturedParent.markToolResultDelivered("parent-tool");
-		capturedParent.markToolResultResolved("parent-tool");
-		const parentProgress = capturedParent.toolResultProgress();
-		const childProgress = ctx().toolResultProgress();
-
-		assert.equal(parentProgress.resolvedCount, 1);
-		assert.equal(childProgress.resolvedCount, 0);
-		assert.deepStrictEqual(childProgress.missingDeliveredIds, ["child-tool"]);
-
-		popContext();
-		assert.strictEqual(ctx(), capturedParent);
+		// Detaching an already replaced context is a no-op.
+		const next = ctx();
+		detachContext(captured);
+		assert.strictEqual(ctx(), next);
 	});
 });
