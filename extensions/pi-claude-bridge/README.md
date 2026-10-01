@@ -2,9 +2,9 @@
 
 A Pi provider that uses a logged-in Claude Code account through the Claude Agent SDK. You keep Pi's terminal interface and tools while Claude Code handles model requests.
 
-Requires Pi 0.86.0 or later.
+Requires Pi 0.86.0 or later and Node.js 22.19.0 or later.
 
-This is a fork of the bridge in [w-winter/dot314](https://github.com/w-winter/dot314/tree/main/extensions/pi-claude-bridge), which forks [vanillagreen's `@vanillagreen/pi-claude-bridge`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), itself a fork of [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). See [Differences from upstream](#differences-from-upstream) for what it adds.
+This is a fork of [vanillagreen's `@vanillagreen/pi-claude-bridge` in Kendex](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), which descends from [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). [nicobailon](https://github.com/nicobailon/) has contributed several tool, stream and session fixes described below. See [Differences from Kendex upstream](#differences-from-kendex-upstream) for the comparison.
 
 ## How it works
 
@@ -56,7 +56,7 @@ One Claude Code query spans the whole turn. While Pi runs a tool, Claude Code is
 
 ### How Pi's tools reach Claude
 
-Claude Code's own tools (its Bash, Read, Edit, web tools and so on) are turned off. Claude sees only the tools active in Pi, which the bridge serves from an MCP server named `custom-tools` inside the Pi process. Pi runs every call, so Claude Code never reads or writes your files itself.
+Claude Code's own file, shell and web tools are turned off. The bridge serves Pi's active tools from an MCP server named `custom-tools` inside the Pi process, and Pi executes those calls. Optional claude.ai connectors run inside Claude Code, as described below.
 
 ```
  Pi tool             served to Claude as                              back in Pi
@@ -68,10 +68,10 @@ Claude Code's own tools (its Bash, Read, Edit, web tools and so on) are turned o
 ```
 
 - **Names.** A tool whose name uses only letters, digits, `_` and `-`, and fits the API's 128-character limit for the full name, keeps its name. Any other name is served as a cleaned-up, shortened spelling plus an 8-character hash of the original, because Claude Code would rewrite it and the call could never be traced back. Each call maps back to the exact Pi name. A tool keeps its served name for the whole query.
-- **Arguments.** Claude sees each tool's own JSON Schema, not a simplified copy. Pi checks the arguments, and a check failure goes back to Claude as the tool result. Argument names Claude Code habitually uses are mapped to Pi's (`file_path` becomes `path`, `old_string`/`new_string` become `oldText`/`newText`), and `bash` gets a 120-second timeout when Claude gives none.
+- **Arguments.** Claude receives Pi's JSON Schema definitions, including references and constraints; schema fragments incompatible with JSON Schema 2020-12 are omitted. Pi checks the arguments, and a check failure goes back to Claude as the tool result. Argument names Claude Code habitually uses are mapped to Pi's (`file_path` becomes `path`, `old_string`/`new_string` become `oldText`/`newText`), and `bash` gets a 120-second timeout when Claude gives none.
 - **Results.** Claude Code tags every call with its tool_use id, and the bridge answers each call with that call's result only. A call whose arguments were cut off mid-stream is never run.
-- **Tools that change mid-turn.** When an extension turns tools on or off during a tool call, the served list changes with it. The tool result is held until Claude Code has re-read the list (at most 2 seconds), so Claude's next request already sees the new tools. A tool that is turned off disappears from the list but still answers a call Claude made before.
-- **Slow tools.** Claude Code's per-call timeout and its moving of long calls to the background are both off for Pi's tools. A Pi tool runs until it finishes, you abort it, or its own timeout fires.
+- **Tools that change mid-turn.** When an extension turns tools on or off during a tool call, the served list changes with it. The bridge waits up to 2 seconds for Claude Code to re-read the list before releasing the tool result. A tool that is turned off disappears from the list but still answers a call Claude made before.
+- **Slow tools.** The bridge advertises Claude Code's maximum MCP timeout and disables automatic backgrounding for Pi's tools. Pi's own tool timeouts and cancellation still apply. If Claude Code stops waiting for a call, the bridge warns that Claude will not receive its result.
 - **Tools Claude Code runs itself.** With connectors on, claude.ai connector tools (`mcp__claude_ai_*`) run inside Claude Code. They are not shown as Pi tool calls and are never offered twice under the `custom-tools` prefix. Each connector call is recorded in the Pi session as an audit entry.
 
 ### The next turn: resume or rebuild
@@ -99,26 +99,23 @@ The bridge saves which Claude Code session belongs to the Pi session in the Pi s
 
 ## Install
 
-Let Pi clone the repository and install its dependencies:
+Pi discovers the extension when this dot314 checkout is your Pi agent directory. To load it explicitly for one run, from the checkout root:
 
 ```bash
-pi install git:github.com/nicobailon/pi-claude-bridge
+pi -e ./extensions/pi-claude-bridge/bundle/index.js
 ```
 
-To work on the bridge, clone it, run `npm install`, and add the folder's path to `packages` in `~/.pi/agent/settings.json`. Pi loads `src/index.ts` directly, so `/reload` picks up edits. To load it for one run, use `pi -e ./src/index.ts`.
+Pi loads the committed bundle, which includes the JavaScript runtime dependencies. To develop the bridge, run `npm ci` and `npm run build` in `extensions/pi-claude-bridge`, then `/reload` in Pi. Claude Code itself must be installed separately.
 
 A Claude Code login is required. Make `claude` available on `PATH` or set its executable path below.
 
-Two things are required before the first request:
-
-- Extra Usage must be turned off on the Claude account. With it on, a request Anthropic treats as a third-party app is billed to Extra Usage instead of failing, and the bridge does not check.
-- `systemPrompt.replacement` must be set in `claude-bridge.json` (see [Settings](#settings)). Without it, Anthropic rejects Pi's default main prompt as a third-party app.
+System prompt replacement is optional; [Settings](#settings) explains how to configure it.
 
 Claude Sonnet 5.5 (`pi-claude/claude-sonnet-5-5`) requires [Claude Code 2.1.284 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284). Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 
 ## Features
 
-- Select Claude models from Pi's model menu, including `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
+- Select Claude models from Pi's model menu, including `pi-claude/claude-sonnet-5-5`, `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
 - Run Pi tool calls during Claude conversations.
 - Steer Claude while a Pi tool runs.
 - Resume the Claude conversation across Pi turns.
@@ -141,7 +138,7 @@ The bridge's `systemPrompt` configuration is independent of `anthropic-oauth-com
 - `provider.settingSources`: explicitly load selected filesystem settings from Claude Code. By default, no settings load when connectors are disabled. When connectors are enabled, the bridge loads the user's settings.
 - `provider.inheritAnthropicEnv`: `true` passes `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the environment to Claude Code, for an intentional gateway or API-key setup. By default the bridge removes them, so an exported variable cannot route subscription requests through another endpoint or credential, and it does not count them as credentials when deciding whether the provider is connected. Only the user `claude-bridge.json` can set it, and managed account profiles never inherit these variables.
 
-Pi's documentation line carries two clauses, `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`. Anthropic's check treats a subscription request whose system prompt contains both clauses as a third-party app: with Extra Usage off, it rejects the request with HTTP 400; with Extra Usage on, it bills the request to Extra Usage. Either clause alone passes, and so do both paths in other wording. The bridge sends such a request unchanged, and adds a hint to Anthropic's error that names the clauses and the fix. Requests that carry both clauses are Pi's default main prompt, pi-subagents children in append mode, and extension calls that copy Pi's full system prompt. A replacement drops Pi's documentation section from the main prompt.
+The bridge sends the configured prompt to Claude Code. If Anthropic returns its "Third-party apps now draw from your extra usage" error, the bridge displays that error with a troubleshooting hint about `systemPrompt.replacement`. The hint identifies Pi's documentation clauses `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)` as a possible prompt issue. Setups that manage the prompt elsewhere can leave the replacement unset.
 
 Example `claude-bridge.json`:
 
@@ -164,37 +161,63 @@ Tool-result integrity problems add a metadata-only `claude-bridge-integrity` ent
 
 Maintainer notes and the test suites are in [DEVELOPMENT.md](DEVELOPMENT.md).
 
-## Differences from upstream
+## Differences from Kendex upstream
 
-Upstream here is the bridge in dot314, whose changes this fork merges. Everything below is what this fork does and dot314's bridge does not.
+This comparison uses [Kendex's `@vanillagreen/pi-claude-bridge` 4.0.8](https://github.com/vanillagreencom/kendex/tree/fb55afe5cd4593b69939c7a53de56ea298a9b994/pi-extensions/pi-claude-bridge) as its reference. Session resumption, restarts after mid-tool compaction, managed account routing, read-only connectors and Opus 5.5 support are present in both.
 
-**Tool calls**
-- Each MCP tool call is claimed by the tool_use id Claude Code tags it with, so a call can never receive another call's result, including across Claude Code's stream retries.
-- A tool call cut off mid-stream no longer ends Pi's turn with nothing to run: Claude Code's re-issued call runs in the same turn. A call whose arguments never finished is never executed.
-- A stalled stream attempt is replaced by Claude Code's retry instead of mixing into it.
-- Every Pi tool is served under a name Claude can call, with its real JSON Schema, and tools an extension activates mid-turn are served too.
-- Claude Code does not background or give up on a slow Pi tool call.
+### Prompts and configuration
 
-**Keeping Claude's session in sync with Pi**
-- Before reusing Claude's session, the bridge checks with a digest that it still matches Pi's history, and rebuilds it when Pi rewrote history Claude already holds.
-- A rebuild replays redacted thinking correctly, and imports a latest Claude turn whose thinking cannot be replayed as a note of what it said and did.
-- Claude Code never resumes a rebuilt session as an interrupted turn, so no "Continue from where you left off." prompt is injected.
+- Forwards Pi's system prompt, including its project instructions, skills and extension context, with an optional base replacement. Kendex builds on Claude Code's preset prompt and selectively appends context files, skills and recognized extension hooks. The Claude Agent SDK may still prepend its own identity text.
+- Offers `systemPrompt.replacement`, `includeModelLine` and `preservePiContext` for Pi's main agent prompt. A replacement retains Pi's rules and project context by default, and a session's own base instructions remain intact. Compaction, branch summaries and extensions' independent model calls keep their own prompts.
+- Uses user and trusted-project `claude-bridge.json` files directly, with subprocess options under `provider`. Kendex also reads its extension-manager namespace in `settings.json` and exposes a settings panel; here `/pi-claude` shows status.
+- Always uses strict MCP configuration. Claude Code loads no filesystem settings by default outside connector mode, and user settings only in connector mode; `provider.settingSources` explicitly overrides that choice.
+- Removes inherited `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from unmanaged Claude Code children unless the user enables `provider.inheritAnthropicEnv`. These variables also follow that setting when checking whether the provider has credentials.
+- Adds troubleshooting text after an actual third-party-app rejection from Anthropic. Such a rejection ends the request on the current account instead of being treated as a rate limit that rotates through other profiles.
 
-**System prompt**
-- When Anthropic rejects a request as a third-party app (its system prompt carries both of Pi's clauses `custom providers (docs/custom-provider.md)` and `pi packages (docs/packages.md)`), the error keeps Anthropic's text and adds a hint that names the clauses and the fix (see Settings).
-- Under a `systemPrompt.replacement`, Pi's rules and guidelines are kept, and so is a session's own base prompt (`SYSTEM.md`, `--system-prompt`, a pi-subagents agent in replace mode).
+### Tools and streamed replies
 
-**Models**
-- Pi's thinking level "off" sends Claude Code disabled thinking; for models that reject it, the option is hidden.
-- Opus 5.5 falls back to Opus 4.8 when its safety classifier declines, and every model switch Claude Code makes for safety reasons is announced.
+- Matches tagged MCP calls by Claude Code's tool-use id. Duplicate invocations share the original wait, and an id belonging to another tool or an already-ended call receives an error rather than another call's result.
+- Gives tools with long names or unsupported characters stable MCP aliases, and maps replies back to their exact Pi names.
+- Forwards Pi's JSON Schema definitions and referenced definitions, where Kendex converts them through Zod. Pi validates the arguments; fragments incompatible with JSON Schema 2020-12 are omitted from the advertised schema.
+- Updates tools during a running query when Pi enables, disables or redefines them. Calls already issued retain the handler and definition they need until their results are delivered.
+- Sets the maximum MCP timeout and disables Claude Code's automatic backgrounding for Pi tools. A warning identifies calls Claude Code stopped waiting for.
+- Replaces abandoned response attempts with their retries and withdraws calls belonging to the abandoned attempt. Incomplete tool calls are excluded on completion, failure and abort paths; late siblings are delivered in a new turn rather than appended to one Pi already consumed.
+- Keeps the in-progress stream intact when producing the completed or failed message. It extends the wait for tool arguments while they are still arriving, rather than ending a call mid-stream.
+- Keeps Claude Code's file, shell and web built-ins disabled even when Pi provides no tools. Kendex 4.0.8 can restore those built-ins for an ordinary non-connector request whose Pi tools did not reach the child.
 
-**Operation**
-- Pi loads the TypeScript source directly; there is no bundle to rebuild, and `/reload` picks up edits. CI runs the typecheck and unit tests on every push.
-- Claude Code children do not inherit `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` unless `provider.inheritAnthropicEnv` is set.
-- The debug log rotates, and old Claude Code CLI logs are pruned.
-- With `agentNotices` on, the agent is told about bridge anomalies with the next prompt.
+### Steering, cancellation and concurrent requests
 
-The Claude Agent SDK may prepend its own identity text to the system prompt.
+- Writes steering and other user input received alongside tool results to the running query before releasing those results, so Claude's next response can use both. When live delivery is unavailable, the input is queued for a continuation.
+- Tracks which user messages the query has accepted, including messages interleaved with tool results. Repeated callbacks do not resend them; ambiguous history changes are handled by rebuilding from Pi's history.
+- Retains completed replies when a deferred continuation fails, warns about the unanswered message, and keeps legitimate repeated text from successive replies.
+- Reports a failure that arrives after Pi received a tool turn through the following tool-result callback, rather than changing the delivered turn or treating it as success.
+- Starts a fresh query for a prompt submitted just after Esc. Cancellation stops waiting for an unresponsive Claude Code query after a five-second grace period.
+- Watches for silence throughout the response, including after the first output, while allowing for Pi tool execution and retry backoff announced by Claude Code.
+- Runs reviewers, summarizers and MCP sampling requests as their own Claude queries, even when they share the main conversation's Pi session id. They cannot take over a main query that is waiting for a tool result.
+
+### History and models
+
+- Checks a content hash before reusing Claude's session, detecting edits that leave the message count unchanged. Tool-result bodies are excluded from that check so pruning old results does not force a rebuild.
+- A reopened Pi session still rebuilds when Claude's copy was left out of date. Rebuilds omit failed or aborted assistant turns and their associated tool results.
+- Replays redacted thinking in its correct format. A trailing Claude reply with incomplete thinking becomes a note containing its text, calls and results in order, including result images.
+- Suppresses Claude Code's automatic continuation of an interrupted stored turn; Pi supplies the next prompt.
+- Adds Sonnet 5.5 to the supported model list. Thinking "off" sends disabled thinking where supported; Pi hides that choice for Fable 5.1, Opus 5.5 and Sonnet 5.5.
+- Reports thinking-token usage separately. The reply retains the model id Pi requested and records a different serving model as `responseModel`; Claude Code's safety-related model switches are announced.
+
+### Diagnostics and distribution
+
+- Agent notices require `agentNotices: true` in user configuration, independently of `CLAUDE_BRIDGE_DEBUG=1`. Errors and warnings that need attention still appear in Pi by default.
+- Rotates debug and diagnostic logs, prunes old Claude Code CLI logs, and records the versions of Node, Pi and Claude Code when debugging is enabled. Log messages summarize payloads using counts, types and lengths; malformed JSON diagnostics omit the input text quoted by the parser.
+- Keeps provider registration and shared module state usable across `/new`, fork, resume and `/reload`, including when Pi loads TypeScript source directly.
+- Ships as dot314's local extension with a committed provider bundle. `npm run test:ci` builds it, checks types and exported state, and runs the offline tests. Includes `package-lock.json` for reproducible installation and requires Claude Agent SDK `0.3.284`.
+
+### Changes developed separately in Kendex
+
+Kendex 4.0.8 also has capabilities and optimizations that this fork has not incorporated:
+
+- Integration with Kendex's settings editor, a service that publishes the authenticated billing identity to other extensions, and a separately exported connector-inventory module.
+- Cached settings reads, memoized hashes for session restoration, cached executable-header checks and broader lazy formatting of debug messages.
+- End-of-query cleanup that releases stored tool arguments and parked results while the session is idle, plus a broader clean-start check for Pi history that converts to no Claude records.
 
 ## Connectors
 
