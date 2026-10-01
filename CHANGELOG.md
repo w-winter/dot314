@@ -2,6 +2,17 @@
 
 Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
+## 2026-10-01
+
+### Added
+
+- **Request timing in the debug log.**
+  - **Before:** the debug log could not say where a slow turn spent its time. Its lines name the module copy, not the request, so concurrent requests mixed; it recorded no durations; and it did not say why a turn rebuilt the Claude session instead of resuming it.
+  - **Now:** with `CLAUDE_BRIDGE_DEBUG=1`, each Pi request writes one `timing:` JSON line when it ends. The line names the request's lane, kind (a new query, tool results for a live query, or tool results after the query ended), model, message count and outcome. It gives the time from the request's start to each step that happened: the session sync, starting the query, Claude Code's first message and first stream event, the first text Pi received, and the end of the turn. For tool results it also times their release to Claude Code, its answer and its next message.
+  - It also records the event-loop delay, CPU and memory around the request, and the time spent writing a rebuilt session, saving the session marker, computing history digests and writing the debug log.
+  - When a turn does not resume the session, the `timing:` line and the `syncResult:` line say why, as a short cause, plus the reason the session was marked for rebuild when it was (an abort, an idle timeout, Pi replacing the history, and so on).
+  - Without the debug setting nothing is measured.
+
 ## 2026-09-30
 
 ### Highlights

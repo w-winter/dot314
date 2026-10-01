@@ -54,8 +54,15 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 				appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id, toolName: pending.toolName });
 			}
 			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""} content: ${contentShape(result.content)}`);
-			if (toolsSettling) void toolsSettling.then(() => pending.resolve(result));
-			else pending.resolve(result);
+			if (toolsSettling) {
+				void toolsSettling.then(() => {
+					queryCtx.timing?.phase("resultReleased");
+					pending.resolve(result);
+				});
+			} else {
+				queryCtx.timing?.phase("resultReleased");
+				pending.resolve(result);
+			}
 		} else if (id) {
 			queryCtx.pendingResults.set(id, result);
 			debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
@@ -171,7 +178,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 				queryCtx.queryGeneration === writtenInto.generation &&
 				record !== null && writtenInto.sessionId !== undefined && record.sessionId === writtenInto.sessionId &&
 				!record.needsRebuild
-			) markSessionForRebuild({ forceRotate: true });
+			) markSessionForRebuild({ reason: "steering-write", forceRotate: true });
 			return;
 		}
 		if (queryCtx.restartRequest) {
@@ -217,7 +224,7 @@ function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<Quer
 	queryCtx.handledTerminalError = true;
 	queryCtx.priorHistoryRewritten = true;
 	queryCtx.latestCursorDigest = UNVERIFIED_HISTORY_DIGEST;
-	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
+	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ reason: "steering-failed", forceRotate: true });
 	const detail = { resultCount: live.resultCount, userMessageCount: live.userMessageCount, detached: queryCtx.detachedFromSharedSession };
 	diagDump("steering_delivery_failed", { ...detail, error: error instanceof Error ? error.message : String(error) });
 	noteAnomaly("steering_delivery_failed", piSession);

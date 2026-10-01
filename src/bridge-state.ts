@@ -7,6 +7,14 @@ import { type QueryContext } from "./query-state.ts";
 import { currentRequestLaneId } from "./request-lane.ts";
 import { summarizeMissingToolNames, type MissingToolResult } from "./tool-pairing-audit.ts";
 
+/** Why a record was marked needsRebuild, for the debug log's syncResult and
+ *  timing lines. */
+export const REBUILD_MARKS = [
+	"abort", "idle-timeout", "history-replaced", "history-rewritten", "user-unresolved",
+	"dropped-steers", "steering-write", "steering-failed", "tool-results-outstanding", "orphan-unverified",
+] as const;
+export type RebuildMark = typeof REBUILD_MARKS[number];
+
 export interface SessionState {
 	sessionId: string;
 	cursor: number;
@@ -50,6 +58,9 @@ export interface SessionState {
 	// navigation) or after an abort left the JSONL in an indeterminate state.
 	// REBUILD wipes and rewrites the file to match pi's current history.
 	needsRebuild?: boolean;
+	// Why needsRebuild was set. The first mark's reason stays until a REBUILD
+	// or a completed query replaces the record.
+	rebuildReason?: RebuildMark;
 	// Set ONLY after an abort. The killed CC subprocess may still be flushing
 	// a late "[Request interrupted by user]" record to the session JSONL.
 	// Reusing the same sessionId/path would race that orphan write into our
@@ -161,12 +172,13 @@ export function takeStartedLane(sessionManager: object): string | undefined {
  *  session). `forceRotate` additionally rotates the session UUID — set it when
  *  a concurrent CC writer may still be flushing (abort, idle kill); see the
  *  field docs on SessionState. */
-export function markSessionForRebuild(opts: { forceRotate?: boolean } = {}): void {
+export function markSessionForRebuild(opts: { reason: RebuildMark; forceRotate?: boolean }): void {
 	const sharedSession = getSharedSession();
 	if (!sharedSession) return;
 	// A record owed a rebuild vouches for no history (history-digest.ts), so
 	// losing the mark alone cannot reopen warm reuse.
-	setSharedSession({ ...sharedSession, needsRebuild: true, historyDigest: UNVERIFIED_HISTORY_DIGEST, ...(opts.forceRotate ? { forceRotate: true } : {}) });
+	const rebuildReason = (sharedSession.needsRebuild && sharedSession.rebuildReason) || opts.reason;
+	setSharedSession({ ...sharedSession, needsRebuild: true, rebuildReason, historyDigest: UNVERIFIED_HISTORY_DIGEST, ...(opts.forceRotate ? { forceRotate: true } : {}) });
 }
 
 export function setExtensionApi(next: ExtensionAPI | undefined): void {
@@ -285,7 +297,12 @@ export function reportToolResultMismatch(
 		// its own — marking the PARENT's record needsRebuild/forceRotate here
 		// would flush the parent's prompt cache for a query that never touched
 		// its session.
-		if (!queryCtx.detachedFromSharedSession) markSessionForRebuild(opts);
+		if (!queryCtx.detachedFromSharedSession) {
+			markSessionForRebuild({
+				reason: reason === "abort" ? "abort" : reason === "session_compact" || reason === "session_tree" ? "history-replaced" : "tool-results-outstanding",
+				forceRotate: opts.forceRotate,
+			});
+		}
 		// A user abort interrupting in-flight tool calls is expected teardown, not
 		// an integrity fault: mark the rebuild but skip the diag dump and toast.
 		if (opts.expectedInterruption) {

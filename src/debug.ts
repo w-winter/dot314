@@ -129,9 +129,30 @@ export function parseErrorShape(error: unknown): string {
 }
 
 let debugBytesSinceCheck = 0;
+// Lines debug() wrote and the time it spent on them, process-wide, for the
+// request timing lines (request-timing.ts). Counted only with DEBUG on. On
+// globalThis under a versioned symbol so every loaded copy of this module
+// adds to the same totals.
+const DEBUG_WRITES_SYMBOL = Symbol.for("kendex.pi.claude-bridge.debug-writes.v1");
+
+function debugWrites(): { lines: number; ms: number } {
+	const host = globalThis as Record<symbol, unknown>;
+	let store = host[DEBUG_WRITES_SYMBOL] as { lines: number; ms: number } | undefined;
+	if (!store) {
+		store = { lines: 0, ms: 0 };
+		host[DEBUG_WRITES_SYMBOL] = store;
+	}
+	return store;
+}
+
+export function debugWriteTotals(): { lines: number; ms: number } {
+	const { lines, ms } = debugWrites();
+	return { lines, ms };
+}
 
 export function debug(...args: unknown[]) {
 	if (!DEBUG) return;
+	const started = performance.now();
 	const ts = new Date().toISOString();
 	const fmt = (a: unknown): string => {
 		if (typeof a === "string") return a;
@@ -184,6 +205,9 @@ export function debug(...args: unknown[]) {
 		rotateDebugLog(DEBUG_LOG_PATH);
 	}
 	try { appendFileSync(DEBUG_LOG_PATH, line, { mode: 0o600 }); } catch { /* debug is best effort */ }
+	const writes = debugWrites();
+	writes.lines += 1;
+	writes.ms += performance.now() - started;
 }
 
 // Per-query CLI debug capture. When CLAUDE_BRIDGE_DEBUG=1, ask the Claude Code

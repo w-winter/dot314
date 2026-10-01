@@ -3,12 +3,13 @@ import { createSession, deleteSession, openSession, repairToolPairing } from "cc
 import { createHash } from "crypto";
 import { realpathSync, statSync } from "fs";
 import { resolve as pathResolve } from "path";
-import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.ts";
+import { REBUILD_MARKS, getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type RebuildMark, type SessionState } from "./bridge-state.ts";
 import { displayPath } from "./config.ts";
 import { convertPiMessages } from "./convert.ts";
 import { debug, diagDump, diagGuidance } from "./debug.ts";
 import { noteAnomaly } from "./agent-notice.ts";
-import { historyDigest, sharedHistoryMatches } from "./history-digest.ts";
+import { UNVERIFIED_HISTORY_DIGEST, historyDigest, sharedHistoryMatches } from "./history-digest.ts";
+import { stepEnd, stepStart, type SyncTiming } from "./request-timing.ts";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.ts";
 import {
 	findUnpairedToolUses,
@@ -120,6 +121,7 @@ export function isForeignConversation(record: SessionState | null, messages: Con
 }
 
 function fingerprintMessages(messages: Context["messages"]): string {
+	const started = stepStart();
 	const normalized = messages.map((message) => {
 		if (message.role === "assistant") {
 			return {
@@ -131,7 +133,9 @@ function fingerprintMessages(messages: Context["messages"]): string {
 		}
 		return message;
 	});
-	return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+	const fingerprint = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+	stepEnd("fingerprint", started);
+	return fingerprint;
 }
 
 function readBuiltSessionContext(sessionManager: unknown): { messages: Context["messages"] } | undefined {
@@ -235,7 +239,10 @@ export function restoreSharedSessionFromPi(ctx: { sessionManager?: unknown; cwd?
 		...(typeof persisted.trailingAssistantDigest === "string" ? { trailingAssistantDigest: persisted.trailingAssistantDigest } : {}),
 		// A rebuild the record still owed must survive the restart: without it
 		// the next turn would resume a transcript known to differ from Pi's.
-		...(persisted.needsRebuild === true ? { needsRebuild: true } : {}),
+		...(persisted.needsRebuild === true ? {
+			needsRebuild: true,
+			...(REBUILD_MARKS.includes(persisted.rebuildReason as RebuildMark) ? { rebuildReason: persisted.rebuildReason } : {}),
+		} : {}),
 		...(persisted.forceRotate === true ? { forceRotate: true } : {}),
 		...(accountProfileId ? { accountProfileId, claudeConfigDir } : {}),
 	});
@@ -294,6 +301,7 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 	if (superseded !== undefined) clearTimeout(superseded);
 	const timer = setTimeout(() => {
 		if (timers.get(sessionManager) === timer) timers.delete(sessionManager);
+		const started = stepStart();
 		try {
 			const built = readBuiltSessionContext(sessionManager);
 			if (!built) return;
@@ -318,6 +326,8 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 				error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
 			});
 			noteAnomaly("persist_shared_session_failed");
+		} finally {
+			stepEnd("persist", started);
 		}
 	}, 0);
 	timers.set(sessionManager, timer);
@@ -400,6 +410,8 @@ interface SyncResult {
 	// completion must NOT persist over the module-level record — the caller
 	// gates its persistSession/markRebuild on it.
 	foreignContext?: boolean;
+	// The path taken and, when it is not REUSE, why (request-timing.ts).
+	sync: SyncTiming;
 }
 
 export interface IncrementalPromptBatchPlan {
@@ -559,6 +571,8 @@ export function syncSharedSession(
 		sharedSession.claudeConfigDir === scopeConfigDir,
 	);
 	const incomingFingerprint = conversationFingerprint(messages);
+	// The reason the record was marked for rebuild, if it was (bridge-state.ts).
+	const mark = sharedSession?.needsRebuild ? sharedSession.rebuildReason ?? "unrecorded" : undefined;
 
 	// FOREIGN-CONVERSATION guard. A subagent-shaped query
 	// arriving while the parent is IDLE finds no running query to join, so it
@@ -591,10 +605,12 @@ export function syncSharedSession(
 			`Case 6 foreign-conversation: fingerprint ${incomingFingerprint.slice(0, 8)} != record ${sharedSession.conversationFingerprint?.slice(0, 8)} ` +
 			`(cursor=${sharedSession.cursor}, priors=${priorMessages.length}) — clean one-shot, record untouched`,
 		);
-		debug(`syncResult: path=foreign-one-shot`);
-		return { sessionId: null, promptStart: messages.length - 1, foreignContext: true };
+		debug(`syncResult: path=foreign-one-shot cause=foreign-conversation`);
+		return { sessionId: null, promptStart: messages.length - 1, foreignContext: true, sync: { path: "foreign-one-shot", cause: "foreign-conversation" } };
 	}
 
+	// Why the REUSE check below failed, when it ran.
+	let digestCause: "digest-mismatch" | "unverified-digest" | undefined;
 	// REUSE path. A Claude session can only be resumed under the credential
 	// profile that created its JSONL and prompt cache.
 	if (sharedSession && sameAccount && !sharedSession.needsRebuild) {
@@ -607,6 +623,7 @@ export function syncSharedSession(
 		const prior = batch ? sharedHistoryMatches(sharedSession, messages, batch.promptStart) : undefined;
 		if (batch && prior && !prior.matches) {
 			debug(`Case 7 history-rewritten: Pi's history through prompt start ${batch.promptStart} no longer matches what session ${sharedSession.sessionId.slice(0, 8)} holds (cursor=${sharedSession.cursor}) — rebuilding`);
+			digestCause = sharedSession.historyDigest === UNVERIFIED_HISTORY_DIGEST || sharedSession.trailingAssistantDigest === UNVERIFIED_HISTORY_DIGEST ? "unverified-digest" : "digest-mismatch";
 		}
 		if (batch && prior?.matches) {
 			if (!prior.checked) debug(`Case 3: record had no history digest — accepting it once and stamping one`);
@@ -638,6 +655,7 @@ export function syncSharedSession(
 			return {
 				sessionId: sharedSession.sessionId,
 				promptStart: batch.promptStart,
+				sync: { path: "reuse" },
 			};
 		}
 	}
@@ -646,8 +664,8 @@ export function syncSharedSession(
 	// those messages do not represent prior Claude conversation history.
 	if (priorMessages.every((message) => message.role === "system")) {
 		debug(`Case 1: clean start, ${messages.length} total messages, account=${accountProfileId ?? "default"}`);
-		debug(`syncResult: path=clean-start`);
-		return { sessionId: null, promptStart: messages.length - 1 };
+		debug(`syncResult: path=clean-start cause=clean-start${mark ? ` mark=${mark}` : ""}`);
+		return { sessionId: null, promptStart: messages.length - 1, sync: { path: "clean-start", cause: "clean-start", ...(mark ? { mark } : {}) } };
 	}
 	const replacedSessionId = sharedSession?.sessionId;
 	// Preserve a UUID only within the same credential profile: reusing account
@@ -660,6 +678,13 @@ export function syncSharedSession(
 	// and for any tools that key off them. Skipped only when there's a
 	// concurrent writer we shouldn't race — see forceRotate docs above.
 	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
+	// The branch the debug lines below name, plus why REUSE did not apply.
+	const cause = replacedSessionId === undefined ? "first-turn-history"
+		: !sameAccount ? "account-rotation"
+		: !preserveId ? "post-abort-rotation"
+		: sharedSession?.needsRebuild ? "needs-rebuild"
+		: digestCause ?? "missed-messages";
+	const writeStarted = stepStart();
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, claudeDir);
@@ -673,6 +698,7 @@ export function syncSharedSession(
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk, cwd);
 	session.save();
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd, claudeDir);
+	stepEnd("rebuildWrite", writeStarted);
 	setSharedSession({
 		sessionId: session.sessionId,
 		cursor: priorMessages.length,
@@ -695,6 +721,11 @@ export function syncSharedSession(
 		debug(`Case 4 post-abort: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId!.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.messages.length} records`);
 	}
 	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath, claudeDir);
-	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${replacedSessionId === undefined ? "first" : !sameAccount ? "account-rotated" : preserveId ? "preserved" : "rotated-post-abort"}`);
-	return { sessionId: session.sessionId, promptStart: messages.length - 1 };
+	const missed = priorMessages.length - previousCursor;
+	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${replacedSessionId === undefined ? "first" : !sameAccount ? "account-rotated" : preserveId ? "preserved" : "rotated-post-abort"} cause=${cause}${mark ? ` mark=${mark}` : ""} missed=${missed}`);
+	return {
+		sessionId: session.sessionId,
+		promptStart: messages.length - 1,
+		sync: { path: "rebuild", cause, ...(mark ? { mark } : {}), priors: priorMessages.length, missed },
+	};
 }

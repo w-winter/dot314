@@ -15,6 +15,7 @@ import type { McpResult } from "./extract-tool-results.ts";
 import { currentRequestLaneId } from "./request-lane.ts";
 import { debug, diagDump } from "./debug.ts";
 import { noteAnomaly } from "./agent-notice.ts";
+import type { RequestTiming, StepTotals } from "./request-timing.ts";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.ts";
 import { UserMessageLedger } from "./user-message-ledger.ts";
 
@@ -32,6 +33,8 @@ export interface QueryRestartRequest {
 	context: Context;
 	options: SimpleStreamOptions | undefined;
 	stream: AssistantMessageEventStream;
+	/** The debug timing record of the callback whose stream the restart answers. */
+	timing?: RequestTiming;
 }
 
 /** Diag payload for a deferred-message drop: counts, sites, and lengths only.
@@ -693,6 +696,10 @@ export class QueryContext {
 	 * the callback that follows, while a later run's new prompt is not.
 	 */
 	undeliveredFailure: { errorMessage: string; fields?: Record<string, unknown>; toolCallIds: Set<string>; runSignals: Set<AbortSignal> } | null = null;
+	/** Debug only (request-timing.ts): the timing record of this context's
+	 *  current or latest Pi request, and steps that ran while none was live. */
+	timing: RequestTiming | undefined = undefined;
+	timingCarry: StepTotals | undefined = undefined;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
@@ -1073,6 +1080,9 @@ function lane(): QueryLaneState {
 }
 
 export function ctx(): QueryContext { return lane().current; }
+
+/** The current lane's context, without creating the lane. */
+export function peekCtx(): QueryContext | undefined { return peekQueryContext(currentRequestLaneId()); }
 
 /** Take `target` out of its lane NOW instead of when its SDK iterator settles,
  *  so the next provider call starts a fresh query rather than being routed

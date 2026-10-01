@@ -182,6 +182,7 @@ export async function consumeQuery(
 		}
 		if (next.done) break;
 		const message = next.value as SDKMessage;
+		queryCtx.timing?.phase("firstSdkMessage");
 		if (wasAborted()) {
 			await Promise.race([iterator.return?.(undefined), abandoned]);
 			break;
@@ -209,6 +210,7 @@ export async function consumeQuery(
 
 		switch (message.type) {
 			case "stream_event":
+				queryCtx.timing?.phase("firstStreamEvent");
 				if (!streamLive) break;
 				processStreamEvent(message, customToolNameToPi, model, queryCtx);
 				break;
@@ -229,6 +231,7 @@ export async function consumeQuery(
 				break;
 			}
 			case "result":
+				queryCtx.timing?.phase("sdkResult");
 				// A failure signal followed by a result whose visible output already
 				// committed (e.g. the SDK's fallback-model reroute recovering after a
 				// rejected rate limit) means the query ultimately SUCCEEDED: the
@@ -286,7 +289,10 @@ export async function consumeQuery(
 				}
 				break;
 			case "system":
-				if ((message as any).subtype === "init") logClaudeCodeVersion((message as any).claude_code_version);
+				if ((message as any).subtype === "init") {
+					queryCtx.timing?.phase("init");
+					logClaudeCodeVersion((message as any).claude_code_version);
+				}
 				if (!streamLive) break;
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;

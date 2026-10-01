@@ -29,7 +29,7 @@ import { contentShape, debug, diagDump, makeCliDebugOptions, moduleInstanceId } 
 import { logVersions } from "./versions.ts";
 import { noteAnomaly, takeAgentNotice } from "./agent-notice.ts";
 import { preflightClaudeExecutable, resolveClaudeExecutable } from "./claude-executable.ts";
-import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type SessionState } from "./bridge-state.ts";
+import { appendIntegrityEntry, argKeyCount, argKeys, deleteSharedSessionLane, getExtensionApi, getSharedSession, markSessionForRebuild, recordStartedLane, reportToolResultMismatch, safeNotify, safeToolCallSummary, setExtensionApi, setPiUI, setSharedSession, takeStartedLane, type RebuildMark, type SessionState } from "./bridge-state.ts";
 import { connectorsEnabledFor, isChildExecutedTool } from "./connectors.ts";
 import { primeConnectorServers } from "./connector-runtime.ts";
 import { cancelScheduledSessionPersistence, conversationFingerprint, isForeignConversation, restoreSharedSessionFromPi, schedulePersistSharedSession, syncSharedSession } from "./session-persistence.ts";
@@ -58,6 +58,7 @@ import { buildClaudeQueryOptions } from "./query-options.ts";
 import { sdkQuery as startSdkQuery } from "./sdk-query.ts";
 import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.ts";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.ts";
+import { attachRequestTiming, startRequestTiming, type RequestTiming } from "./request-timing.ts";
 
 // Re-exports: the module decomposition must not change the entry's public
 // surface — unit tests and downstream consumers import these from index.ts.
@@ -430,6 +431,7 @@ function mcpToolHandler(tool: Tool, queryCtx: QueryContext): ServedToolHandler {
 		const earlyResult = toolCallId ? takeQueuedOrParkedResult(queryCtx, toolCallId) : undefined;
 		if (earlyResult !== undefined) {
 			queryCtx.markToolResultResolved(toolCallId);
+			queryCtx.timing?.phase("resultReleased");
 			debug(`mcp handler: ${tool.name} [${toolCallId}] → resolved from queue/parked (${queryCtx.pendingResults.size} queued, ${queryCtx.reapedResults.size} parked remaining)`);
 			const settling = queryCtx.servedToolsSettling;
 			if (!settling) return earlyResult;
@@ -664,7 +666,7 @@ export function onPiHistoryReplaced(event: "session_compact" | "session_tree"): 
 		queryCtx.undeliveredFailure = null;
 	}
 	debug(event + ": marking Claude session for rebuild");
-	markSessionForRebuild({ forceRotate: restarts });
+	markSessionForRebuild({ reason: "history-replaced", forceRotate: restarts });
 }
 
 /** Restart the query of `queryCtx` on the history of `request` after Pi
@@ -723,7 +725,9 @@ export function streamClaudeAgentSdk(model: Model<any>, context: Context, option
 	return runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, options));
 }
 
-function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
+/** `inherited`: a re-entry (restart, account retry) answers on another
+ *  request's Pi stream, so its phases go to that request's timing record. */
+function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options?: SimpleStreamOptions, inherited?: RequestTiming): AssistantMessageEventStream {
 	// The lane this request runs in, for callbacks that fire OUTSIDE it: an
 	// AbortSignal listener runs in the aborter's async context, not ours.
 	const laneId = currentRequestLaneId();
@@ -754,10 +758,13 @@ function streamClaudeAgentSdkInLane(model: Model<any>, context: Context, options
 	// no .finally will ask. Ask here, under the same rule, and rethrow the
 	// error unchanged: a lane whose query or its replacement still runs, or
 	// that holds a failure for a later callback, is kept.
+	const stream = newAssistantMessageEventStream();
+	const timing = inherited ?? startRequestTiming(stream, laneId, model.id, context.messages.length);
 	try {
-		return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane);
+		return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane, stream, timing);
 	} catch (error) {
 		releaseEphemeralLane();
+		if (!inherited) timing?.settle("threw");
 		throw error;
 	}
 }
@@ -768,9 +775,9 @@ function streamRequestInLane(
 	options: SimpleStreamOptions | undefined,
 	laneId: string | undefined,
 	releaseEphemeralLane: () => void,
+	stream: AssistantMessageEventStream,
+	timing: RequestTiming | undefined,
 ): AssistantMessageEventStream {
-	const stream = newAssistantMessageEventStream();
-
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
@@ -782,7 +789,11 @@ function streamRequestInLane(
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (ctx().activeQuery) {
 		const queryCtx = ctx();
-		if (queryCtx.piHistoryReplaced && restartOnReplacedHistory(queryCtx, { model, context, options, stream })) return stream;
+		if (timing) {
+			timing.kind = "tool-result";
+			attachRequestTiming(queryCtx, timing);
+		}
+		if (queryCtx.piHistoryReplaced && restartOnReplacedHistory(queryCtx, { model, context, options, stream, timing })) return stream;
 		queryCtx.currentPiStream = stream;
 		queryCtx.resetTurnState(model);
 		// Pi hands every provider call of one agent run the same signal, but
@@ -921,7 +932,7 @@ function streamRequestInLane(
 				messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 			});
 			noteAnomaly("user_message_identity_unresolved");
-			if (!queryCtx.detachedFromSharedSession) markSessionForRebuild();
+			if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ reason: "user-unresolved" });
 		}
 
 		// Cursor may only ADVANCE, and only for a query that holds the record's
@@ -963,7 +974,7 @@ function streamRequestInLane(
 				historyDigest: rewritten || activeSession.needsRebuild
 					? UNVERIFIED_HISTORY_DIGEST
 					: cursor === capturedThrough ? capturedDigest : activeSession.historyDigest,
-				...(rewritten ? { needsRebuild: true } : {}),
+				...(rewritten ? { needsRebuild: true, rebuildReason: (claimed.needsRebuild && claimed.rebuildReason) || "history-rewritten" } : {}),
 			});
 		}
 		if (capturedThrough >= queryCtx.latestCursor) {
@@ -981,7 +992,7 @@ function streamRequestInLane(
 				resultCount: deliveredResultIds.length,
 				release: releaseResults,
 				signal: options?.signal,
-				restartOnReplacedHistory: () => restartOnReplacedHistory(queryCtx, { model, context, options, stream }),
+				restartOnReplacedHistory: () => restartOnReplacedHistory(queryCtx, { model, context, options, stream, timing }),
 			});
 		}
 		return stream;
@@ -1001,6 +1012,10 @@ function streamRequestInLane(
 		? extractAllToolResults(context).map((result) => result.toolCallId).find((id) => id !== undefined && heldForRun.toolCallIds.has(id))
 		: undefined;
 	if (lastMsg?.role === "toolResult" || steeredResultId !== undefined) {
+		if (timing) {
+			timing.kind = "continuation";
+			attachRequestTiming(ctx(), timing);
+		}
 		const resultId = steeredResultId ?? (lastMsg as { toolCallId: string }).toolCallId;
 		// Taken whatever happens: only the callback that directly follows the
 		// failed query may report it.
@@ -1034,7 +1049,7 @@ function streamRequestInLane(
 				...claimed,
 				cursor: context.messages.length,
 				historyDigest: verified ? historyDigest(context.messages) : UNVERIFIED_HISTORY_DIGEST,
-				...(verified ? {} : { needsRebuild: true }),
+				...(verified ? {} : { needsRebuild: true, rebuildReason: (claimed.needsRebuild && claimed.rebuildReason) || "orphan-unverified" }),
 			});
 		}
 		const c = ctx();  // capture current context for the microtask
@@ -1088,6 +1103,7 @@ function streamRequestInLane(
 	// The tool-result path above returns whenever a query runs in this lane,
 	// so the lane is idle here. Its context may still hold the previous
 	// query's state; reset it.
+	if (timing) attachRequestTiming(ctx(), timing);
 	ctx().currentPiStream = stream;
 	ctx().pendingToolCalls.clear();
 	ctx().pendingResults.clear();
@@ -1239,6 +1255,7 @@ function streamRequestInLane(
 	const cursorBeforeSync = getSharedSession()?.cursor ?? null;
 	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, queryModel.id, accountScope);
 	const { sessionId: resumeSessionId, promptStart } = syncResult;
+	timing?.noteSync(syncResult.sync, Boolean(resumeSessionId));
 	// A FOREIGN-conversation query (conversation-fingerprint mismatch against
 	// the shared record — a subagent-shaped request arriving while the parent
 	// is IDLE,) runs as a clean one-shot (no resume, prompt is the trailing
@@ -1286,7 +1303,10 @@ function streamRequestInLane(
 	const servedTools = mcpTools.length > 0
 		? new ServedToolServer(MCP_SERVER_NAME, mcpTools, (tool) => mcpToolHandler(tool, attemptCtx), {
 			redefinitionBlocked: (name) => attemptCtx.awaitsInvocation(name),
-			callFinished: (toolUseId) => attemptCtx.settleInvocations([toolUseId]),
+			callFinished: (toolUseId) => {
+				attemptCtx.timing?.phase("handlerAnswered");
+				return attemptCtx.settleInvocations([toolUseId]);
+			},
 		})
 		: null;
 	attemptCtx.servedTools = servedTools;
@@ -1330,6 +1350,7 @@ function streamRequestInLane(
 	let retryFailure: ClaudeAttemptFailure | undefined;
 	const sdkQuery = startSdkQuery({ prompt, options: queryOptions });
 	ctx().activeQuery = sdkQuery;
+	timing?.noteQuery();
 
 	// 4. Capture context for abort handling
 	const abortCtx = ctx();
@@ -1369,7 +1390,9 @@ function streamRequestInLane(
 		// the rebuild, as is history rewritten under Claude mid-query; a
 		// completed query's fresh record must not erase either mark.
 		if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending || abortCtx.userInputNeedsRebuild || abortCtx.priorHistoryRewritten)) {
-			replaced = { ...next, needsRebuild: true };
+			const rebuildReason: RebuildMark = (next?.needsRebuild && next.rebuildReason) ||
+				(abortCtx.piHistoryReplaced || restartPending ? "history-replaced" : abortCtx.userInputNeedsRebuild ? "user-unresolved" : "history-rewritten");
+			replaced = { ...next, needsRebuild: true, rebuildReason };
 			if (restartPending) replaced.forceRotate = true;
 		}
 		if (replaced && replaced.historyDigest === undefined) {
@@ -1384,7 +1407,7 @@ function streamRequestInLane(
 		}
 		setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
 	};
-	const markRebuildForThisQuery = (opts: { forceRotate?: boolean } = {}): void => {
+	const markRebuildForThisQuery = (opts: { reason: RebuildMark; forceRotate?: boolean }): void => {
 		if (foreignContext || abortCtx.detachedFromSharedSession) return;
 		markSessionForRebuild(opts);
 	};
@@ -1394,8 +1417,8 @@ function streamRequestInLane(
 	// now. The rotation mark comes first because the next prompt syncs the
 	// session synchronously; after the hand-off this query's late teardown must
 	// not touch the record the replacement owns.
-	const quarantine = (): void => {
-		markRebuildForThisQuery({ forceRotate: true });
+	const quarantine = (reason: "abort" | "idle-timeout"): void => {
+		markRebuildForThisQuery({ reason, forceRotate: true });
 		detachContext(abortCtx);
 		abortCtx.detachedFromSharedSession = true;
 	};
@@ -1474,7 +1497,7 @@ function streamRequestInLane(
 				if (streamIdleTimedOut || wasAborted || options?.signal?.aborted || !abortCtx.activeQuery) return;
 				streamIdleTimedOut = true;
 				dropDeferredUserMessages("stream-idle-timeout");
-				quarantine();
+				quarantine("idle-timeout");
 				const errorMessage = buildStreamIdleTimeoutErrorMessage(timeoutMs);
 				debug("provider: stream idle timeout", `model=${queryModel.id}`, `timeout=${timeoutMs}`, `idle=${idleMs}`);
 				const idleFailure: ClaudeAttemptFailure = { kind: "network", message: errorMessage };
@@ -1540,7 +1563,7 @@ function streamRequestInLane(
 		if (drained > 0) debug(`provider: abort drained ${drained} waiting MCP handler(s) as errors`);
 		abortCtx.pendingResults.clear();
 		requestAbort();
-		quarantine();
+		quarantine("abort");
 	});
 	// This request's signal, and (in the tool-result path) the signal of every
 	// later provider call that joins this query, cancel it.
@@ -1589,7 +1612,7 @@ function streamRequestInLane(
 
 			// --- Abort detection in normal completion path ---
 			if (wasAborted || options?.signal?.aborted) {
-				markRebuildForThisQuery({ forceRotate: true });
+				markRebuildForThisQuery({ reason: "abort", forceRotate: true });
 				dropDeferredUserMessages("abort-completion");
 				debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
 				surfaceFailure({ message: ABORTED_MESSAGE });
@@ -1617,7 +1640,7 @@ function streamRequestInLane(
 				if (failedSessionId) {
 					const cursor = Math.max(context.messages.length, abortCtx.latestCursor, activeSession?.cursor ?? 0);
 					debug(`provider: terminal failure, persisting session=${failedSessionId.slice(0, 8)}, cursor=${cursor}, account=${account?.label ?? "legacy"}, droppedSteers=${droppedSteers.length}`);
-					persistSession({ sessionId: failedSessionId, cursor, cwd, ...accountScope, ...(droppedSteers.length > 0 ? { needsRebuild: true } : {}) });
+					persistSession({ sessionId: failedSessionId, cursor, cwd, ...accountScope, ...(droppedSteers.length > 0 ? { needsRebuild: true, rebuildReason: "dropped-steers" } : {}) });
 				}
 				return;
 			}
@@ -1663,6 +1686,7 @@ function streamRequestInLane(
 					// the images survive; text-only runs stay plain strings.
 					const contQuery = startSdkQuery({ prompt: steer.blocks ? wrapPromptStream(steer.blocks) : steer.text, options: contOptions });
 					abortCtx.activeQuery = contQuery;
+					abortCtx.timing?.noteQuery();
 
 					debug(`provider: continuation query, model=${queryModel.id}, resume=${resumeId.slice(0, 8)}, account=${account?.label ?? "legacy"}, prompt=${steerShape}`);
 
@@ -1678,7 +1702,7 @@ function streamRequestInLane(
 							// remaining ones certainly did not — the record must rebuild so
 							// they re-import from Pi history.
 							if (dropDeferredUserMessages("continuation-failure", steer).length > 0) {
-								markRebuildForThisQuery();
+								markRebuildForThisQuery({ reason: "dropped-steers" });
 							}
 							break;
 						}
@@ -1698,7 +1722,7 @@ function streamRequestInLane(
 						if (!abortCtx.handledTerminalError) surfaceFailure(continuationFailure);
 						// Apply the same rebuild rule as the failure branch above.
 						if (dropDeferredUserMessages("continuation-error", steer).length > 0) {
-							markRebuildForThisQuery();
+							markRebuildForThisQuery({ reason: "dropped-steers" });
 						}
 						break;
 					} finally {
@@ -1723,13 +1747,13 @@ function streamRequestInLane(
 			debug(`provider: query error, model=${queryModel.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error);
 			const suppressDuplicateError = abortCtx.handledTerminalError || (streamIdleTimedOut && !retryRequested);
 			if (wasAborted || options?.signal?.aborted) {
-				markRebuildForThisQuery({ forceRotate: true });
+				markRebuildForThisQuery({ reason: "abort", forceRotate: true });
 			}
 			// a record kept past this error with steers behind its cursor
 			// must rebuild so they re-import from Pi history. (The non-abort
 			// surface path below replaces the record with null, which rebuilds too.)
 			if (dropDeferredUserMessages("query-error").length > 0) {
-				markRebuildForThisQuery();
+				markRebuildForThisQuery({ reason: "dropped-steers" });
 			}
 			if (suppressDuplicateError || retryRequested) {
 				debug("provider: suppressing duplicate query error after terminal handling");
@@ -1781,7 +1805,7 @@ function streamRequestInLane(
 				}
 				// Re-entries continue THIS lane's conversation: never re-select it
 				// (requestLaneFor), which could move a fork's retry elsewhere.
-				for await (const event of runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(restart.model, restartContext(restart), restart.options))) reentryStream.push(event);
+				for await (const event of runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(restart.model, restartContext(restart), restart.options, restart.timing))) reentryStream.push(event);
 				reentryStream.end();
 				return;
 			}
@@ -1810,7 +1834,7 @@ function streamRequestInLane(
 			const retryStream = runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, {
 				...(options ?? {}),
 				[ROTATION_STATE_KEY]: rotationState,
-			} as BridgeStreamOptions));
+			} as BridgeStreamOptions, timing));
 			// End exactly once per outcome. Ending in a `finally` ran on
 			// the throw path too, BEFORE the .catch below could push its error
 			// event — and EventStream.push is a silent no-op after end, so a failed
