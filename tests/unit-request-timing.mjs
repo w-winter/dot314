@@ -1,6 +1,7 @@
 // With CLAUDE_BRIDGE_DEBUG=1 every provider request writes one `timing:` line
 // when it settles, with its lane, kind, phases in the order they happened and
 // why its session sync did not reuse; with debug off nothing is collected.
+// A `usage:` line that repeats the request's previous counters is not logged.
 import "./lib/debug-env.mjs";
 
 import assert from "node:assert/strict";
@@ -166,6 +167,30 @@ it("a rebuild after an abort records its cause and the rebuild mark", async () =
 	assert.equal(rebuilt.sync.cause, "post-abort-rotation");
 	assert.equal(rebuilt.sync.mark, "abort");
 	assert.ok(rebuilt.steps.rebuildWrite.n === 1, "the rebuild's write is timed");
+});
+
+it("a usage line repeating the request's previous counters is logged once", async () => {
+	__testSetSdkQueryFactory(() => ({
+		async *[Symbol.asyncIterator]() {
+			yield { type: "system", subtype: "init", session_id: "usage-session" };
+			yield { type: "stream_event", event: { type: "message_start", message: { id: "m-usage", model: model.id, usage: { input_tokens: 3, output_tokens: 7 } } } };
+			yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } };
+			yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } } };
+			yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+			yield { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } } };
+			yield { type: "stream_event", event: { type: "message_delta", delta: {}, usage: { output_tokens: 9 } } };
+			yield { type: "stream_event", event: { type: "message_stop" } };
+			yield { type: "result", subtype: "success" };
+		},
+		async streamInput() {},
+		close() {},
+		async interrupt() {},
+	}));
+	const events = await collect(streamClaudeAgentSdk(model, { messages: [system, user("count")] }, { sessionId: LANE }));
+	assert.equal(events.at(-1).reason, "stop");
+	assert.equal(events.at(-1).message.usage.output, 9, "usage processing is unchanged");
+	const usage = [...logSince().matchAll(/usage: in=(\d+) out=(\d+) /g)].map((match) => `${match[1]}/${match[2]}`);
+	assert.deepEqual(usage, ["3/7", "3/9"]);
 });
 
 it("with debug off nothing is collected or written, while the same request with debug on writes one timing line", () => {

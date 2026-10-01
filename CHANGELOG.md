@@ -13,6 +13,12 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
   - When a turn does not resume the session, the `timing:` line and the `syncResult:` line say why, as a short cause, plus the reason the session was marked for rebuild when it was (an abort, an idle timeout, Pi replacing the history, and so on).
   - Without the debug setting nothing is measured.
 
+### Changed
+
+- **Fewer repeated usage lines in the debug log.**
+  - **Before:** about half of the `usage:` lines repeated the counters of the line before, because Anthropic reports a message's usage again when nothing changed.
+  - **Now:** a `usage:` line that repeats the previous one of the same request is left out, and the request's `timing:` line counts how many were. Usage itself is counted as before.
+
 ## 2026-09-30
 
 ### Highlights

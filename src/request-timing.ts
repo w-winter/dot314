@@ -68,6 +68,9 @@ export class RequestTiming {
 	resumed?: boolean;
 	queries = 0;
 	settled = false;
+	/** The request's last `usage:` line, so a repeat is not logged again. */
+	lastUsageLine?: string;
+	usageRepeats = 0;
 	readonly steps: StepTotals = {};
 	private readonly t0 = performance.now();
 	private readonly phases: Partial<Record<TimingPhase, number>> = {};
@@ -150,6 +153,7 @@ export class RequestTiming {
 			},
 			cpu: { userMs: ms(cpu.user / 1000), systemMs: ms(cpu.system / 1000) },
 			rssMb: { start: ms(this.rssStart / 1048576), end: ms(process.memoryUsage.rss() / 1048576) },
+			usageRepeats: this.usageRepeats,
 		})}`);
 		if (--loop.live === 0) monitor.disable();
 	}
