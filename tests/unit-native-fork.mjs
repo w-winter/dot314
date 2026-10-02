@@ -137,6 +137,29 @@ describe("a same-account rebuild forks Claude Code's transcript", () => {
 		assert.equal(chain[kept.length + 1].message.content[0].content, "uno\n", "the differing result is Pi's");
 	});
 
+	it("forks past signed thinking whose trailing whitespace Pi's copy lacks, and carries Claude Code's text", async () => {
+		const old = writeOldTranscript(claudeDir, { thinkingTail: "\n\n" });
+		setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });
+
+		const result = await syncSharedSession([...piPriors(), user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+		assert.equal(result.sync.forked, 7, "each thinking block's signature names the one Pi holds");
+		const chain = mainChain(sessionRecords(result.sessionId));
+		const kept = nativeThrough(old.records, old.coveredEnd);
+		assert.deepEqual(chain.slice(0, kept.length).map(rendered), kept.map(rendered), "the prefix is Claude Code's records, its thinking whitespace included");
+	});
+
+	for (const [what, nativeSignature, piSignature] of [["another signature", "sig-a1", "sig-other"], ["no signature", "", ""]]) {
+		it(`ends the prefix before thinking that differs from Pi's only in trailing whitespace but has ${what}`, async () => {
+			writeOldTranscript(claudeDir, { thinkingTail: "\n\n", signature1: nativeSignature });
+			setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });
+
+			const result = await syncSharedSession([...piPriors({ signature1: piSignature }), user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+			assert.equal(result.sync.forked, 1, "only the first prompt is Claude Code's own");
+		});
+	}
+
 	it("forks past a parallel batch, the results Claude Code wrote off the main chain included", async () => {
 		const old = writeOldTranscript(claudeDir, { parallel: true });
 		setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });

@@ -28,13 +28,14 @@ const read = (id, path) => ({ type: "toolCall", id, name: "read", arguments: { p
 const result = (toolCallId, toolName, text, isError = false) => ({ role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError, timestamp: 0 });
 
 /** Pi's history before the prompt that follows the abort. `result1` replaces
- *  the first tool result's text; `parallel` adds the turn with two parallel
- *  calls, whose first result's text `result4` replaces; `steer` adds the
- *  user message Pi sent while that turn's calls ran, after their results. */
-export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", parallel = false, result4 = "two\n", steer } = {}) {
+ *  the first tool result's text, and `signature1` the first thinking block's
+ *  signature; `parallel` adds the turn with two parallel calls, whose first
+ *  result's text `result4` replaces; `steer` adds the user message Pi sent
+ *  while that turn's calls ran, after their results. */
+export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", signature1 = "sig-a1", parallel = false, result4 = "two\n", steer } = {}) {
 	return [
 		user(prompt1),
-		claude("toolUse", [thinking("Run it.", "sig-a1"), bash("toolu_fixture_1", "echo one")]),
+		claude("toolUse", [thinking("Run it.", signature1), bash("toolu_fixture_1", "echo one")]),
 		result("toolu_fixture_1", "bash", result1),
 		claude("toolUse", [read("toolu_fixture_2", "notes.md")]),
 		result("toolu_fixture_2", "read", "File not found: notes.md", true),
@@ -63,8 +64,11 @@ export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", parallel = fal
  *  queued_command attachment, off the main chain beneath the last call
  *  (`under: "call"`) or beneath the first, off-chain result
  *  (`under: "result"`). `tiedResult` parents the off-chain result on the
- *  record before the turn instead, so only its call's id ties it to it. */
-export function nativeTranscript(sessionId, cwd, { offChainText, parallel = false, steer, tiedResult = false } = {}) {
+ *  record before the turn instead, so only its call's id ties it to it.
+ *  `thinkingTail` ends every thinking block's text, as Claude often ends one
+ *  with "\n\n" that Pi's copy can lack; `signature1` replaces the first
+ *  thinking block's signature. */
+export function nativeTranscript(sessionId, cwd, { offChainText, parallel = false, steer, tiedResult = false, thinkingTail = "", signature1 = "sig-a1" } = {}) {
 	const records = [];
 	let next = 0;
 	let parent = null;
@@ -83,6 +87,7 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 		requestId: `req_${id}`,
 		message: { model: "claude-haiku-4-5-20251001", id, type: "message", role: "assistant", content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } },
 	});
+	const think = (text, signature) => ({ type: "thinking", thinking: text + thinkingTail, signature });
 	const toolResult = (block, extra) => chain({ type: "user", promptId: "prompt-fixture", message: { role: "user", content: [block] }, ...extra });
 	// A record off the main chain: the chain's next record does not follow it.
 	const sibling = (record) => {
@@ -104,7 +109,7 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 			message: { model: "claude-haiku-4-5-20251001", id: "msg_fixture_a1", type: "message", role: "assistant", content: [{ type: "text", text: offChainText }], stop_reason: "tool_use", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } },
 		});
 	}
-	assistant("msg_fixture_a1", { type: "thinking", thinking: "Run it.", signature: "sig-a1" }, "tool_use");
+	assistant("msg_fixture_a1", think("Run it.", signature1), "tool_use");
 	const a1 = assistant("msg_fixture_a1", { type: "tool_use", id: "toolu_fixture_1", name: "mcp__custom-tools__bash", input: { command: "echo one" }, caller: { type: "direct" } }, "tool_use");
 	toolResult({ tool_use_id: "toolu_fixture_1", type: "tool_result", content: [{ type: "text", text: "one\n" }] }, { toolUseResult: [{ type: "text", text: "one\n" }], sourceToolAssistantUUID: a1 });
 	reminder({ type: "total_tokens_reminder", text: "<total_tokens>900 tokens left</total_tokens>" }, "<total_tokens>900 tokens left</total_tokens>");
@@ -113,7 +118,7 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 	reminder({ type: "total_tokens_reminder", text: "<total_tokens>850 tokens left</total_tokens>" }, "<total_tokens>850 tokens left</total_tokens>");
 	if (parallel) {
 		const beforeTurn = parent;
-		assistant("msg_fixture_p1", { type: "thinking", thinking: "Both.", signature: "sig-p1" }, "tool_use");
+		assistant("msg_fixture_p1", think("Both.", "sig-p1"), "tool_use");
 		const p1 = assistant("msg_fixture_p1", { type: "tool_use", id: "toolu_fixture_4", name: "mcp__custom-tools__bash", input: { command: "echo two" }, caller: { type: "direct" } }, "tool_use");
 		const p2 = assistant("msg_fixture_p1", { type: "tool_use", id: "toolu_fixture_5", name: "mcp__custom-tools__read", input: { file_path: "a.md" }, caller: { type: "direct" } }, "tool_use");
 		const queued = (parentUuid) => sibling({
@@ -131,13 +136,13 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 		toolResult({ tool_use_id: "toolu_fixture_5", type: "tool_result", content: [{ type: "text", text: "alpha\n" }] }, { toolUseResult: [{ type: "text", text: "alpha\n" }], sourceToolAssistantUUID: p2 });
 		reminder({ type: "total_tokens_reminder", text: "<total_tokens>825 tokens left</total_tokens>" }, "<total_tokens>825 tokens left</total_tokens>");
 	}
-	assistant("msg_fixture_a2", { type: "thinking", thinking: "Done.", signature: "sig-a2" }, "end_turn");
+	assistant("msg_fixture_a2", think("Done.", "sig-a2"), "end_turn");
 	assistant("msg_fixture_a2", { type: "text", text: "DONE" }, "end_turn");
 	meta({ type: "last-prompt", lastPrompt: PROMPT_1, leafUuid: parent });
 	meta({ type: "queue-operation", operation: "enqueue", timestamp: "2026-01-01T00:01:00.000Z" });
 	prompt(PROMPT_2);
 	const coveredEnd = reminder({ type: "total_tokens_reminder", text: "<total_tokens>800 tokens left</total_tokens>" }, "<total_tokens>800 tokens left</total_tokens>");
-	assistant("msg_fixture_a3", { type: "thinking", thinking: "Sleep.", signature: "sig-a3" }, "tool_use");
+	assistant("msg_fixture_a3", think("Sleep.", "sig-a3"), "tool_use");
 	const a3 = assistant("msg_fixture_a3", { type: "tool_use", id: "toolu_fixture_3", name: "mcp__custom-tools__bash", input: { command: "sleep 40" }, caller: { type: "direct" } }, "tool_use");
 	toolResult(
 		{ type: "tool_result", content: "The user doesn't want to proceed with this tool use. The tool use was rejected.", is_error: true, tool_use_id: "toolu_fixture_3" },

@@ -2,6 +2,14 @@
 
 Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
+## 2026-10-02
+
+### Fixed
+
+- **A rebuild after Esc kept less of Claude Code's session than it could.**
+  - **Before:** the rebuild copies Claude Code's own records for the start of the conversation that matches Pi's history, and stopped at the first thinking block that ended in whitespace. Claude often ends a thinking block with a blank line, and Pi can keep the block without it: a Pi extension that labels thinking for display trims the text. In one real session the copy stopped after 78 of 305 messages, and the next request read 19% from the prompt cache.
+  - **Now:** a thinking block matches when its signature is the same and Pi's text differs only by that trailing whitespace. The signature is the API's identity for the block, and the copy keeps Claude Code's text, which is what Claude saw. Replayed on that session, the copy reaches 98 of 305 messages. A block without a signature still has to match exactly.
+
 ## 2026-10-01
 
 ### Added

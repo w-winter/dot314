@@ -193,6 +193,22 @@ function storedPiBlock(block: unknown): unknown {
 	}
 }
 
+/**
+ * Whether Pi holds Claude Code's signed thinking block without its trailing
+ * whitespace. Claude often ends a thinking block with "\n\n", and a Pi
+ * extension may trim the text of the message Pi keeps (one that labels
+ * thinking for display does, at `message_end`). The signature is the API's
+ * identity for the block, so the block is the same one; the fork then
+ * carries Claude Code's bytes, which are what Claude saw. Without a
+ * signature nothing identifies the block, so it never matches this way.
+ */
+function trimmedSignedThinking(native: unknown, stored: unknown): boolean {
+	if (!isObject(native) || !isObject(stored) || native.type !== "thinking" || stored.type !== "thinking" || stored.redacted === true) return false;
+	const signature = native.signature;
+	if (typeof signature !== "string" || signature === "" || stored.thinkingSignature !== signature) return false;
+	return typeof native.thinking === "string" && stored.thinking === native.thinking.trimEnd();
+}
+
 /** Whether Pi's assistant message is what the bridge's stream recorded for
  *  Claude Code's message made of `blocks`. */
 function streamedMatches(blocks: unknown[], message: PiMessage, customToolNameToPi: Map<string, string> | undefined): boolean {
@@ -202,7 +218,7 @@ function streamedMatches(blocks: unknown[], message: PiMessage, customToolNameTo
 	if (!Array.isArray(content) || content.length !== blocks.length) return false;
 	return blocks.every((block, n) => {
 		const streamed = streamedPiBlock(block, customToolNameToPi);
-		return streamed !== undefined && isDeepStrictEqual(streamed, storedPiBlock(content[n]));
+		return streamed !== undefined && (isDeepStrictEqual(streamed, storedPiBlock(content[n])) || trimmedSignedThinking(block, content[n]));
 	});
 }
 
