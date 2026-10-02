@@ -128,14 +128,13 @@ function sameContent(native: unknown, candidates: unknown[]): boolean {
 	});
 }
 
-/** A Pi user message as the bridge sends it as a query's prompt
- *  (user-prompt.ts, as index.ts startFreshQuery calls it, for one message). */
-function promptForm(message: PiMessage): unknown {
-	const content = message.content as unknown;
-	const blocks = Array.isArray(content) && content.some((block) => isObject(block) && block.type === "image")
-		? extractUserPromptBlocks([message])
+/** Pi user messages as the bridge sends them as one query's prompt
+ *  (user-prompt.ts, as index.ts startFreshQuery calls it). */
+function promptForm(messages: PiMessage[]): unknown {
+	const blocks = messages.some((message) => Array.isArray(message.content) && (message.content as unknown[]).some((block) => isObject(block) && block.type === "image"))
+		? extractUserPromptBlocks(messages)
 		: null;
-	return blocks ?? extractUserPrompt([message]);
+	return blocks ?? extractUserPrompt(messages);
 }
 
 /** A Pi tool result as the MCP handler delivered it to Claude Code
@@ -159,7 +158,7 @@ function deliveredResultForm(message: PiMessage, toolName: string | undefined): 
 // A prompt either came from Claude Code's query (the prompt form) or from an
 // earlier rebuild's import (the import form).
 function promptMatches(record: TranscriptRecord, message: PiMessage): boolean {
-	return sameContent(recordMessage(record).content, [promptForm(message), userMessageToAnthropic(message).content]);
+	return sameContent(recordMessage(record).content, [promptForm([message]), userMessageToAnthropic(message).content]);
 }
 
 // Claude Code stores a successful MCP result as its content blocks and a
@@ -368,8 +367,15 @@ export function planNativePrefix(
 		if (!record || record.type !== "user" || record.isMeta === true) return undefined;
 		const content = recordMessage(record).content;
 		if (Array.isArray(content) && content.some((block) => isObject(block) && block.type === "tool_result")) return undefined;
-		if (!promptMatches(record, priors[index])) return undefined;
-		return trailing(at + 1, at, index + 1);
+		if (promptMatches(record, priors[index])) return trailing(at + 1, at, index + 1);
+		// A prompt the bridge built from several of Pi's user messages in a
+		// row (session-persistence.ts planIncrementalPromptBatch): the batch
+		// runs from the prompt's start to the end of Pi's context, so it is
+		// the whole run of user messages, and Pi's next message is the reply.
+		let end = index;
+		while (end < priors.length && priors[end].role === "user") end++;
+		if (end - index < 2 || end === priors.length || !sameContent(content, [promptForm(priors.slice(index, end))])) return undefined;
+		return trailing(at + 1, at, end);
 	};
 
 	// An assistant message: its records sharing one message id, then every

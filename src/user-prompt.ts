@@ -15,8 +15,10 @@ import { debug } from "./debug.ts";
  *  (convertPiMessages in convert.ts) imports the same pi history as N separate
  *  user records. Streaming N SDKUserMessages instead would collapse N pi turns
  *  into one Pi reply with double-counted usage, so the join stays. The merged
- *  form is only ever a query's live prompt — it is never re-imported, so the
- *  two representations never meet in one session file. */
+ *  form is only ever a query's live prompt — it is never re-imported. A
+ *  rebuild that forks Claude Code's own transcript (native-fork.ts) keeps
+ *  the merged record when it equals this join of Pi's whole run of user
+ *  messages, and imports Pi's messages after it as separate records. */
 export function extractUserPrompt(messages: Context["messages"]): string | null {
 	if (messages.length === 0 || messages.some((message) => message.role !== "user")) return null;
 	return messages.map((message) =>

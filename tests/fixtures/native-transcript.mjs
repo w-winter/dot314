@@ -31,8 +31,10 @@ const result = (toolCallId, toolName, text, isError = false) => ({ role: "toolRe
  *  the first tool result's text, and `signature1` the first thinking block's
  *  signature; `parallel` adds the turn with two parallel calls, whose first
  *  result's text `result4` replaces; `steer` adds the user message Pi sent
- *  while that turn's calls ran, after their results. */
-export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", signature1 = "sig-a1", parallel = false, result4 = "two\n", steer } = {}) {
+ *  while that turn's calls ran, after their results. `prompt2` lists the
+ *  texts of the user messages in a row that Pi holds for the second prompt,
+ *  each a text block as Pi's convertToLlm makes of an extension's message. */
+export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", signature1 = "sig-a1", parallel = false, result4 = "two\n", steer, prompt2 } = {}) {
 	return [
 		user(prompt1),
 		claude("toolUse", [thinking("Run it.", signature1), bash("toolu_fixture_1", "echo one")]),
@@ -46,7 +48,7 @@ export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", signature1 = "
 			...(steer ? [user(steer)] : []),
 		] : []),
 		claude("stop", [thinking("Done.", "sig-a2"), { type: "text", text: "DONE" }]),
-		user(PROMPT_2),
+		...(prompt2 ? prompt2.map((text) => user([{ type: "text", text }])) : [user(PROMPT_2)]),
 		claude("toolUse", [thinking("Sleep.", "sig-a3"), bash("toolu_fixture_3", "sleep 40")]),
 		result("toolu_fixture_3", "bash", "Command aborted", true),
 	];
@@ -69,8 +71,9 @@ export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", signature1 = "
  *  with "\n\n" that Pi's copy can lack; `signature1` replaces the first
  *  thinking block's signature. `emptyResult1` makes the first tool's output
  *  that text of only whitespace, which Claude Code stores as its note that
- *  the call had no output. */
-export function nativeTranscript(sessionId, cwd, { offChainText, parallel = false, steer, tiedResult = false, thinkingTail = "", signature1 = "sig-a1", emptyResult1 } = {}) {
+ *  the call had no output. `prompt2` replaces the second prompt's text, as
+ *  when the bridge joined several of Pi's user messages into it. */
+export function nativeTranscript(sessionId, cwd, { offChainText, parallel = false, steer, tiedResult = false, thinkingTail = "", signature1 = "sig-a1", emptyResult1, prompt2 = PROMPT_2 } = {}) {
 	const records = [];
 	let next = 0;
 	let parent = null;
@@ -145,7 +148,7 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 	assistant("msg_fixture_a2", { type: "text", text: "DONE" }, "end_turn");
 	meta({ type: "last-prompt", lastPrompt: PROMPT_1, leafUuid: parent });
 	meta({ type: "queue-operation", operation: "enqueue", timestamp: "2026-01-01T00:01:00.000Z" });
-	prompt(PROMPT_2);
+	prompt(prompt2);
 	const coveredEnd = reminder({ type: "total_tokens_reminder", text: "<total_tokens>800 tokens left</total_tokens>" }, "<total_tokens>800 tokens left</total_tokens>");
 	assistant("msg_fixture_a3", think("Sleep.", "sig-a3"), "tool_use");
 	const a3 = assistant("msg_fixture_a3", { type: "tool_use", id: "toolu_fixture_3", name: "mcp__custom-tools__bash", input: { command: "sleep 40" }, caller: { type: "direct" } }, "tool_use");
@@ -154,7 +157,7 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 		{ toolUseResult: "User rejected tool use", toolDenialKind: "user-rejected", sourceToolAssistantUUID: a3 },
 	);
 	chain({ type: "user", promptId: "prompt-fixture", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] } });
-	meta({ type: "last-prompt", lastPrompt: PROMPT_2, leafUuid: parent });
+	meta({ type: "last-prompt", lastPrompt: prompt2, leafUuid: parent });
 	meta({ type: "mode", mode: "normal" });
 	return { records, coveredEnd, firstPromptEnd };
 }

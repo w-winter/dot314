@@ -12,6 +12,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 - **The same copy also stopped at a tool call that printed nothing.**
   - **Before:** when a Pi tool returned only whitespace, Claude Code stored the result as `(<tool> completed with no output)`, and the rebuild compared that note with Pi's whitespace, so the copy stopped there. In the same session it stopped after 98 of 305 messages.
   - **Now:** the rebuild applies Claude Code's own rule to Pi's result before it compares them: a successful result that is empty or only whitespace becomes that note, named after the call. A failed result, or one with an image, is compared as before. Replayed on that session, the copy reaches 182 of 305 messages.
+- **The same copy also stopped at a prompt the bridge built from several Pi messages.**
+  - **Before:** when Pi holds several user messages in a row, such as two notices from an extension, the bridge sends them to Claude Code as one prompt joined with a blank line, and Claude Code stores one record. The rebuild compared that record with each Pi message alone, so the copy stopped there. In the same session it stopped after 182 of 305 messages.
+  - **Now:** one prompt record also matches Pi's whole run of user messages when it equals them joined the way the bridge joins them. Messages in another order, a missing one, or only part of the run still end the copy. Replayed on that session, the copy reaches 304 of 305 messages; the last one is the reply that Esc cut off, for which a rebuild writes nothing.
 
 ## 2026-10-01
 

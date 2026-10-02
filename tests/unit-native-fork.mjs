@@ -25,6 +25,9 @@ import { syncSharedSession } from "../src/session-persistence.ts";
 import { BASH_TOOL, PI_TOOL_NAMES, READ_TOOL, TOOL_NAMES, mainChain, nativeTranscript, piPriors, rendered, shape, user } from "./fixtures/native-transcript.mjs";
 
 const OLD = "11111111-2222-4333-8444-555555555555";
+// Two extension messages Pi held in a row, as the bridge joined them into one prompt.
+const NOTICE_1 = "Background task 1 finished: build passed.";
+const NOTICE_2 = "Background task 1 exited with code 0.";
 const MODEL_ID = "claude-haiku-4-5";
 const MODEL = { id: MODEL_ID, api: "claude-bridge", provider: "pi-claude", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 
@@ -180,6 +183,38 @@ describe("a same-account rebuild forks Claude Code's transcript", () => {
 
 		assert.equal(result.sync.forked, 1, "only the first prompt is Claude Code's own");
 	});
+
+	it("forks past a prompt the bridge joined from two of Pi's messages in a row", async () => {
+		const old = writeOldTranscript(claudeDir, { prompt2: `${NOTICE_1}\n\n${NOTICE_2}` });
+		setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });
+
+		const result = await syncSharedSession([...piPriors({ prompt2: [NOTICE_1, NOTICE_2] }), user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+		assert.equal(result.sync.forked, 8, "Claude Code's one prompt record covers both of Pi's messages");
+		const chain = mainChain(sessionRecords(result.sessionId));
+		const kept = nativeThrough(old.records, old.coveredEnd);
+		assert.deepEqual(chain.slice(0, kept.length).map(rendered), kept.map(rendered), "the prefix carries Claude Code's joined prompt");
+		assert.deepEqual(chain.slice(kept.length).map(shape), [
+			["assistant", ["thinking", "tool_use:toolu_fixture_3"]],
+			["user", ["tool_result:toolu_fixture_3"]],
+		], "then only Pi's aborted turn");
+	});
+
+	for (const [what, priors] of [
+		["in another order", piPriors({ prompt2: [NOTICE_2, NOTICE_1] })],
+		["without one of them", piPriors({ prompt2: [NOTICE_1] })],
+		["followed by another of Pi's messages", piPriors({ prompt2: [NOTICE_1, NOTICE_2, "A third notice."] })],
+		["last, so the run goes on into the prompt", piPriors({ prompt2: [NOTICE_1, NOTICE_2] }).slice(0, -2)],
+	]) {
+		it(`ends the prefix before a joined prompt when Pi holds its messages ${what}`, async () => {
+			writeOldTranscript(claudeDir, { prompt2: `${NOTICE_1}\n\n${NOTICE_2}` });
+			setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });
+
+			const result = await syncSharedSession([...priors, user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+			assert.equal(result.sync.forked, 6, "the first prompt and its three turns are Claude Code's own");
+		});
+	}
 
 	it("forks past a parallel batch, the results Claude Code wrote off the main chain included", async () => {
 		const old = writeOldTranscript(claudeDir, { parallel: true });
