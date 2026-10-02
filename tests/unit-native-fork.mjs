@@ -160,6 +160,27 @@ describe("a same-account rebuild forks Claude Code's transcript", () => {
 		});
 	}
 
+	it("forks past a tool result Claude Code stored as its no-output note for Pi's whitespace-only output", async () => {
+		const old = writeOldTranscript(claudeDir, { emptyResult1: "\n" });
+		setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });
+
+		const result = await syncSharedSession([...piPriors({ result1: "\n" }), user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+		assert.equal(result.sync.forked, 7, "the note is what Claude Code made of Pi's result");
+		const chain = mainChain(sessionRecords(result.sessionId));
+		const kept = nativeThrough(old.records, old.coveredEnd);
+		assert.deepEqual(chain.slice(0, kept.length).map(rendered), kept.map(rendered), "the prefix carries Claude Code's note");
+	});
+
+	it("ends the prefix before Claude Code's no-output note when Pi's result has output", async () => {
+		writeOldTranscript(claudeDir, { emptyResult1: "\n" });
+		setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });
+
+		const result = await syncSharedSession([...piPriors({ result1: "one\n" }), user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+		assert.equal(result.sync.forked, 1, "only the first prompt is Claude Code's own");
+	});
+
 	it("forks past a parallel batch, the results Claude Code wrote off the main chain included", async () => {
 		const old = writeOldTranscript(claudeDir, { parallel: true });
 		setSharedSession({ sessionId: OLD, cursor: 5, cwd, needsRebuild: true, rebuildReason: "abort", forceRotate: true });

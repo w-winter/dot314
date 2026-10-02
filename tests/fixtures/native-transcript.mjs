@@ -67,8 +67,10 @@ export function piPriors({ prompt1 = PROMPT_1, result1 = "one\n", signature1 = "
  *  record before the turn instead, so only its call's id ties it to it.
  *  `thinkingTail` ends every thinking block's text, as Claude often ends one
  *  with "\n\n" that Pi's copy can lack; `signature1` replaces the first
- *  thinking block's signature. */
-export function nativeTranscript(sessionId, cwd, { offChainText, parallel = false, steer, tiedResult = false, thinkingTail = "", signature1 = "sig-a1" } = {}) {
+ *  thinking block's signature. `emptyResult1` makes the first tool's output
+ *  that text of only whitespace, which Claude Code stores as its note that
+ *  the call had no output. */
+export function nativeTranscript(sessionId, cwd, { offChainText, parallel = false, steer, tiedResult = false, thinkingTail = "", signature1 = "sig-a1", emptyResult1 } = {}) {
 	const records = [];
 	let next = 0;
 	let parent = null;
@@ -111,7 +113,10 @@ export function nativeTranscript(sessionId, cwd, { offChainText, parallel = fals
 	}
 	assistant("msg_fixture_a1", think("Run it.", signature1), "tool_use");
 	const a1 = assistant("msg_fixture_a1", { type: "tool_use", id: "toolu_fixture_1", name: "mcp__custom-tools__bash", input: { command: "echo one" }, caller: { type: "direct" } }, "tool_use");
-	toolResult({ tool_use_id: "toolu_fixture_1", type: "tool_result", content: [{ type: "text", text: "one\n" }] }, { toolUseResult: [{ type: "text", text: "one\n" }], sourceToolAssistantUUID: a1 });
+	toolResult(
+		{ tool_use_id: "toolu_fixture_1", type: "tool_result", content: emptyResult1 === undefined ? [{ type: "text", text: "one\n" }] : "(mcp__custom-tools__bash completed with no output)" },
+		{ toolUseResult: [{ type: "text", text: emptyResult1 ?? "one\n" }], sourceToolAssistantUUID: a1 },
+	);
 	reminder({ type: "total_tokens_reminder", text: "<total_tokens>900 tokens left</total_tokens>" }, "<total_tokens>900 tokens left</total_tokens>");
 	const r1 = assistant("msg_fixture_r1", { type: "tool_use", id: "toolu_fixture_2", name: "mcp__custom-tools__read", input: { file_path: "notes.md" }, caller: { type: "direct" } }, "tool_use");
 	toolResult({ type: "tool_result", content: "File not found: notes.md", is_error: true, tool_use_id: "toolu_fixture_2" }, { toolUseResult: "Error: File not found: notes.md", sourceToolAssistantUUID: r1 });

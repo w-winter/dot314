@@ -141,9 +141,16 @@ function promptForm(message: PiMessage): unknown {
 /** A Pi tool result as the MCP handler delivered it to Claude Code
  *  (extract-tool-results.ts toolResultToMcpContent, as index.ts
  *  extractAllToolResults hands it to the handler), with an MCP image in the
- *  form Claude Code stores it. */
-function deliveredResultForm(message: PiMessage): unknown {
-	return toolResultToMcpContent(message.content as Parameters<typeof toolResultToMcpContent>[0]).map((block) =>
+ *  form Claude Code stores it. Before it stores a successful result, Claude
+ *  Code replaces one with no content, an empty array or only text blocks of
+ *  whitespace with "(<tool> completed with no output)", naming the tool as
+ *  its call does. A failed result is stored as its error text instead, and a
+ *  result with an image is output. */
+function deliveredResultForm(message: PiMessage, toolName: string | undefined): unknown {
+	const blocks = toolResultToMcpContent(message.content as Parameters<typeof toolResultToMcpContent>[0]);
+	const failed = (message as { isError?: boolean }).isError === true;
+	if (toolName !== undefined && !failed && blocks.every((block) => block.type === "text" && block.text.trim() === "")) return `(${toolName} completed with no output)`;
+	return blocks.map((block) =>
 		block.type === "text"
 			? { type: "text", text: block.text }
 			: { type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } });
@@ -157,10 +164,12 @@ function promptMatches(record: TranscriptRecord, message: PiMessage): boolean {
 
 // Claude Code stores a successful MCP result as its content blocks and a
 // failed one as its text; sameContent reads a string as one text block.
-function toolResultMatches(block: Record<string, unknown>, message: PiMessage): boolean {
+// `toolName` is the name of the call the result answers, in Claude Code's
+// transcript.
+function toolResultMatches(block: Record<string, unknown>, message: PiMessage, toolName: string | undefined): boolean {
 	if ((block.is_error === true) !== ((message as { isError?: boolean }).isError === true)) return false;
 	const content = message.content as Parameters<typeof toolResultContentToAnthropic>[0];
-	return sameContent(block.content, [deliveredResultForm(message), toolResultContentToAnthropic(content) || ""]);
+	return sameContent(block.content, [deliveredResultForm(message, toolName), toolResultContentToAnthropic(content) || ""]);
 }
 
 /** The block the bridge's stream records in Pi for a block of Claude Code's
@@ -382,7 +391,9 @@ export function planNativePrefix(
 		let last = position - 1;
 		let next = index + 1;
 		const verified: string[] = [];
-		const callIds = blocks.filter((block) => isObject(block) && block.type === "tool_use").map((block) => (block as { id: string }).id);
+		const calls = blocks.filter((block) => isObject(block) && block.type === "tool_use") as Array<{ id: string; name: string }>;
+		const callIds = calls.map((call) => call.id);
+		const callNames = new Map(calls.map((call) => [call.id, call.name]));
 		if (callIds.length > 0) {
 			// Pi's results follow the assistant directly and answer exactly its
 			// calls; anything else (a steer between them, a split batch) ends
@@ -408,7 +419,7 @@ export function planNativePrefix(
 				for (const block of content as Array<Record<string, unknown>>) {
 					const id = block.tool_use_id;
 					const result = typeof id === "string" ? results.get(id) : undefined;
-					if (!result || answered.has(id as string) || !toolResultMatches(block, result)) return false;
+					if (!result || answered.has(id as string) || !toolResultMatches(block, result, callNames.get(id as string))) return false;
 					answered.add(id as string);
 				}
 				return true;

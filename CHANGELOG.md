@@ -9,6 +9,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 - **A rebuild after Esc kept less of Claude Code's session than it could.**
   - **Before:** the rebuild copies Claude Code's own records for the start of the conversation that matches Pi's history, and stopped at the first thinking block that ended in whitespace. Claude often ends a thinking block with a blank line, and Pi can keep the block without it: a Pi extension that labels thinking for display trims the text. In one real session the copy stopped after 78 of 305 messages, and the next request read 19% from the prompt cache.
   - **Now:** a thinking block matches when its signature is the same and Pi's text differs only by that trailing whitespace. The signature is the API's identity for the block, and the copy keeps Claude Code's text, which is what Claude saw. Replayed on that session, the copy reaches 98 of 305 messages. A block without a signature still has to match exactly.
+- **The same copy also stopped at a tool call that printed nothing.**
+  - **Before:** when a Pi tool returned only whitespace, Claude Code stored the result as `(<tool> completed with no output)`, and the rebuild compared that note with Pi's whitespace, so the copy stopped there. In the same session it stopped after 98 of 305 messages.
+  - **Now:** the rebuild applies Claude Code's own rule to Pi's result before it compares them: a successful result that is empty or only whitespace becomes that note, named after the call. A failed result, or one with an image, is compared as before. Replayed on that session, the copy reaches 182 of 305 messages.
 
 ## 2026-10-01
 
