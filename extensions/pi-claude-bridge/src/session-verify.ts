@@ -4,7 +4,7 @@
 
 import { closeSync, openSync, readSync, statSync } from "fs";
 import { StringDecoder } from "node:string_decoder";
-import { parseErrorShape } from "./debug.js";
+import { parseErrorShape } from "./debug.ts";
 
 interface JsonlSummary {
 	count: number;

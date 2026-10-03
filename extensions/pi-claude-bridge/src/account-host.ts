@@ -2,12 +2,12 @@
 // manager calls to read a profile's identity and usage figures under that
 // profile's credential scope. Extracted from index.ts (pure move).
 
-import { claudeChildEnv, type ClaudeAccountRoute, type ClaudeBridgeAccountHostV1 } from "./account-router.js";
-import { preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
-import { loadConfig } from "./config.js";
-import { CLAUDE_BRIDGE_TOOL_ISOLATION, denyAllToolsHook } from "./connectors.js";
-import { debug, makeCliDebugOptions } from "./debug.js";
-import { sdkQuery } from "./sdk-query.js";
+import { claudeChildEnv, type ClaudeAccountRoute, type ClaudeBridgeAccountHostV1 } from "./account-router.ts";
+import { preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics } from "./claude-executable.ts";
+import { loadConfig } from "./config.ts";
+import { CLAUDE_BRIDGE_TOOL_ISOLATION, denyAllToolsHook } from "./connectors.ts";
+import { debug, makeCliDebugOptions } from "./debug.ts";
+import { sdkQuery } from "./sdk-query.ts";
 
 /** Local /usage probe for the reciprocal account-host service: the companion
  *  account manager asks the bridge (the SDK owner) to read a profile's identity

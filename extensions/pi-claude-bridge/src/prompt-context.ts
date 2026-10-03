@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { isolatedFromEnv, piUserDir } from "./config.js";
-import { debug } from "./debug.js";
+import { isolatedFromEnv, piUserDir } from "./config.ts";
+import { debug } from "./debug.ts";
 
 export interface PromptContextSettings {
 	includeAppendSystemPromptMd?: boolean;

@@ -1,5 +1,5 @@
 import { type AssistantMessage, type AssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { type QueryContext } from "./query-state.js";
+import { type QueryContext } from "./query-state.ts";
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 90_000;
 export const STREAM_IDLE_BACKOFF_HINT_MS = 60_000;

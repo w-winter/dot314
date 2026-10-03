@@ -1,7 +1,7 @@
 import { type HookCallback, type query, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { normalizeConnectorWriteMode, type Config, type ConnectorWriteMode } from "./config.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.js";
-import { connectorProxyUrl, connectorServerName, type ConnectorInventory } from "./connector-inventory.js";
+import { normalizeConnectorWriteMode, type Config, type ConnectorWriteMode } from "./config.ts";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.ts";
+import { connectorProxyUrl, connectorServerName, type ConnectorInventory } from "./connector-inventory.ts";
 
 // Disable Claude Code built-ins in the provider path. Pi owns tool execution;
 // Claude reaches Pi tools through the bridged MCP server instead.

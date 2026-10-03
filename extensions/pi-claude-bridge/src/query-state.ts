@@ -10,13 +10,14 @@ import { randomUUID } from "node:crypto";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import type { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { isConnectorTool } from "./connectors.js";
-import type { McpResult } from "./extract-tool-results.js";
-import { currentRequestLaneId } from "./request-lane.js";
-import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import type { ServedToolServer, ServedToolUpdate } from "./served-tools.js";
-import { UserMessageLedger } from "./user-message-ledger.js";
+import { isConnectorTool } from "./connectors.ts";
+import type { McpResult } from "./extract-tool-results.ts";
+import { currentRequestLaneId } from "./request-lane.ts";
+import { debug, diagDump } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import type { RequestTiming, StepTotals } from "./request-timing.ts";
+import type { ServedToolServer, ServedToolUpdate } from "./served-tools.ts";
+import { UserMessageLedger } from "./user-message-ledger.ts";
 
 /** A mid-query user run captured for replay after the active query ends.
  *  `text` is the joined text form (previews, and the replay prompt when no
@@ -32,6 +33,8 @@ export interface QueryRestartRequest {
 	context: Context;
 	options: SimpleStreamOptions | undefined;
 	stream: AssistantMessageEventStream;
+	/** The debug timing record of the callback whose stream the restart answers. */
+	timing?: RequestTiming;
 }
 
 /** Diag payload for a deferred-message drop: counts, sites, and lengths only.
@@ -693,6 +696,14 @@ export class QueryContext {
 	 * the callback that follows, while a later run's new prompt is not.
 	 */
 	undeliveredFailure: { errorMessage: string; fields?: Record<string, unknown>; toolCallIds: Set<string>; runSignals: Set<AbortSignal> } | null = null;
+	/** A fresh request is waiting for its forked rebuild (session-persistence.ts
+	 *  rebuildFromNativePrefix) before it starts its query. The lane is in use
+	 *  meanwhile, though no query runs yet. */
+	forkSyncPending = false;
+	/** Debug only (request-timing.ts): the timing record of this context's
+	 *  current or latest Pi request, and steps that ran while none was live. */
+	timing: RequestTiming | undefined = undefined;
+	timingCarry: StepTotals | undefined = undefined;
 
 	get turnBlocks(): Array<any> {
 		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
@@ -1074,6 +1085,9 @@ function lane(): QueryLaneState {
 
 export function ctx(): QueryContext { return lane().current; }
 
+/** The current lane's context, without creating the lane. */
+export function peekCtx(): QueryContext | undefined { return peekQueryContext(currentRequestLaneId()); }
+
 /** Take `target` out of its lane NOW instead of when its SDK iterator settles,
  *  so the next provider call starts a fresh query rather than being routed
  *  into a query that is shutting down as a tool-result/steer callback. No-op
@@ -1204,7 +1218,7 @@ export function requestLaneFor(
 			if (forkCtx && handedToPi(forkCtx, ids)) return forkId;
 		}
 	}
-	const reason = own?.activeQuery || own?.undeliveredFailure ? "its lane is busy"
+	const reason = contextInUse(own) ? "its lane is busy"
 		: (messages.at(-1) as { role?: unknown } | undefined)?.role === "toolResult" ? "its tool result answers no call of its lane"
 		: otherConversation(sessionId) ? "its lane holds another conversation"
 		: undefined;
@@ -1231,14 +1245,21 @@ export function releaseForkLane(laneId: string): void {
 }
 
 /** Whether lane `laneId` is still in use: a query in it is running (the
- *  original one, or a restart or account retry that replaced it), or its
- *  ended query holds a terminal failure for a tool-result callback that has
- *  not arrived yet (QueryContext.undeliveredFailure). A lane's lifetime
+ *  original one, or a restart or account retry that replaced it), a fresh
+ *  request waits for its forked rebuild before starting one
+ *  (QueryContext.forkSyncPending), or its ended query holds a terminal
+ *  failure for a tool-result callback that has not arrived yet
+ *  (QueryContext.undeliveredFailure). A lane's lifetime
  *  belongs to the query that owns it, never to whichever provider call's
  *  Pi stream happens to end first. */
 export function laneInUse(laneId: string | undefined): boolean {
-	const queryCtx = peekQueryContext(laneId);
-	return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.undeliveredFailure));
+	return contextInUse(peekQueryContext(laneId));
+}
+
+/** laneInUse for a lane's context: routing (requestLaneFor) and lane release
+ *  ask the same question. */
+function contextInUse(queryCtx: QueryContext | undefined): boolean {
+	return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.forkSyncPending || queryCtx.undeliveredFailure));
 }
 
 export function __testForkLaneCount(): number {

@@ -2,6 +2,67 @@
 
 Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
+## 2026-10-03
+
+### Fixed
+
+- **A prompt that started with a slash ran as a Claude Code command.**
+  - **Before:** Pi runs its own slash commands and passes anything else on as text, but Claude Code then read text like `/review this` as one of its own commands: it ran that command, and the message never reached Claude. The fix for a mid-turn message that starts with a slash added a "(Sent while you were working.)" line to get it through.
+  - **Now:** the bridge marks any message with a text part that starts with `/` as written by the client (`client_composed`), and Claude Code passes it to Claude as written, for a new prompt and for a message sent mid-turn alike. The added line is gone. Other messages go out as before, because the mark also skips Claude Code's per-turn reminders for that turn.
+- **A rebuild could replay a reply whose thinking was cut off.**
+  - **Before:** the API rejects a request whose latest reply has thinking that differs from what it returned, so a rebuild replaces such a reply with a note when it is the latest. Since rebuilds started copying Claude Code's own records, that check could be skipped: an earlier rebuild had imported the reply with its cut-off thinking dropped (allowed while a later reply followed it), and after `/tree` made it the latest reply, the next rebuild copied that version as it was.
+  - **Now:** the copy stops before the trailing replies the import has to replace, so they always get the note.
+
+## 2026-10-02
+
+### Fixed
+
+- **Claude Code added its own instruction files to Pi's.**
+  - **Before:** with connectors on, the bridge loads Claude Code's user settings, and Claude Code then also added `~/.claude/CLAUDE.md` to every request: a file written for Claude Code, not for Pi, on top of the context files Pi already sends. Opting into project settings with `provider.settingSources` also added the checkout's `CLAUDE.md`, `CLAUDE.local.md` and `.claude/rules`, repeating what Pi sends.
+  - **Now:** the bridge tells Claude Code to skip those files (`claudeMdExcludes`), so Pi's system prompt is the only source of instructions whatever settings load. Settings such as connectors still load as before.
+- **A message sent while Claude worked was held back when it started with a slash.**
+  - **Before:** Claude Code reads a queued message whose last part is text starting with `/` as a slash command and holds it until the turn ends. A file path pasted mid-turn, such as `/tmp/screenshot.png`, never reached the turn it was sent into.
+  - **Now:** the bridge adds a short "(Sent while you were working.)" line after such a message, so Claude sees it at the next tool result like any other. Other messages go through unchanged.
+- **A large write looked stuck for minutes.**
+  - **Before:** the API held back each tool argument until Claude finished writing it. A write showed only its path while the file content was generated, with nothing arriving but keepalive pings, and then the whole content landed at once. A 130 KB file meant about five minutes of no visible progress, long enough that it looked hung and got cancelled.
+  - **Now:** the bridge starts Claude Code with `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1`, so arguments stream as they are written and Pi's tool display shows the file grow. In a 4 KB test write with Opus, the longest gap between pieces of content dropped from 10 seconds to about one.
+- **A rebuild after Esc kept less of Claude Code's session than it could.**
+  - **Before:** the rebuild copies Claude Code's own records for the start of the conversation that matches Pi's history, and stopped at the first thinking block that ended in whitespace. Claude often ends a thinking block with a blank line, and Pi can keep the block without it: a Pi extension that labels thinking for display trims the text. In one real session the copy stopped after 78 of 305 messages, and the next request read 19% from the prompt cache.
+  - **Now:** a thinking block matches when its signature is the same and Pi's text differs only by that trailing whitespace. The signature is the API's identity for the block, and the copy keeps Claude Code's text, which is what Claude saw. Replayed on that session, the copy reaches 98 of 305 messages. A block without a signature still has to match exactly.
+- **The same copy also stopped at a tool call that printed nothing.**
+  - **Before:** when a Pi tool returned only whitespace, Claude Code stored the result as `(<tool> completed with no output)`, and the rebuild compared that note with Pi's whitespace, so the copy stopped there. In the same session it stopped after 98 of 305 messages.
+  - **Now:** the rebuild applies Claude Code's own rule to Pi's result before it compares them: a successful result that is empty or only whitespace becomes that note, named after the call. A failed result, or one with an image, is compared as before. Replayed on that session, the copy reaches 182 of 305 messages.
+- **The same copy also stopped at a prompt the bridge built from several Pi messages.**
+  - **Before:** when Pi holds several user messages in a row, such as two notices from an extension, the bridge sends them to Claude Code as one prompt joined with a blank line, and Claude Code stores one record. The rebuild compared that record with each Pi message alone, so the copy stopped there. In the same session it stopped after 182 of 305 messages.
+  - **Now:** one prompt record also matches Pi's whole run of user messages when it equals them joined the way the bridge joins them. Messages in another order, a missing one, or only part of the run still end the copy. Replayed on that session, the copy reaches 304 of 305 messages; the last one is the reply that Esc cut off, for which a rebuild writes nothing.
+
+## 2026-10-01
+
+### Added
+
+- **Request timing in the debug log.**
+  - **Before:** the debug log could not say where a slow turn spent its time. Its lines name the module copy, not the request, so concurrent requests mixed; it recorded no durations; and it did not say why a turn rebuilt the Claude session instead of resuming it.
+  - **Now:** with `CLAUDE_BRIDGE_DEBUG=1`, each Pi request writes one `timing:` JSON line when it ends. The line names the request's lane, kind (a new query, tool results for a live query, or tool results after the query ended), model, message count and outcome. It gives the time from the request's start to each step that happened: the session sync, starting the query, Claude Code's first message and first stream event, the first text Pi received, and the end of the turn. For tool results it also times their release to Claude Code, its answer and its next message.
+  - It also records the event-loop delay, CPU and memory around the request, and the time spent writing a rebuilt session, saving the session marker, computing history digests and writing the debug log.
+  - When a turn does not resume the session, the `timing:` line and the `syncResult:` line say why, as a short cause, plus the reason the session was marked for rebuild when it was (an abort, an idle timeout, Pi replacing the history, and so on).
+  - Without the debug setting nothing is measured.
+
+### Changed
+
+- **Fewer repeated usage lines in the debug log.**
+  - **Before:** about half of the `usage:` lines repeated the counters of the line before, because Anthropic reports a message's usage again when nothing changed.
+  - **Now:** a `usage:` line that repeats the previous one of the same request is left out, and the request's `timing:` line counts how many were. Usage itself is counted as before.
+
+### Fixed
+
+- **A rebuild after Esc re-sent the whole conversation to the prompt cache.**
+  - **Before:** the prompt after an Esc (and any other rebuild of the same account's Claude session) wrote Pi's history out as a new Claude Code transcript. Claude Code's own requests had carried content that never reaches Pi: attachments rendered as system reminders in the first message, after prompts and inside tool results, plus tool results in the form the tool call returned them. The rebuilt session's first request therefore differed from the previous one at its first message, and the prompt cache covered only the system prompt and tools. In real sessions that was 31% cache with 98k tokens written at 182 messages, and 16% with 246k written at 359 messages, where a resumed turn reads 99-100% from cache. It also made the API drop earlier thinking.
+  - **Now:** the bridge finds the longest start of Pi's history that Claude Code's old transcript holds with the same content. It copies those records into the new session as Claude Code wrote them, using the SDK's session fork, and imports from Pi only the messages after them. After an Esc during a tool call, that copied part reaches the end of the last request Claude Code sent, so the next request reads it from the cache. When nothing matches, or the old transcript is missing or unreadable, the rebuild imports all of Pi's history as before. The debug log's `Case 4` and `syncResult:` lines, and the `timing:` line's `sync.forked`, show how many of Pi's messages came from the fork.
+
+- **`/reload` threw away the warm Claude session.**
+  - **Before:** the prompt after a `/reload` rebuilt Claude's session from scratch under a new session id, with a cold prompt cache. The bridge restored its session record from Pi's saved marker only when Pi started or resumed a session, and a reload drops the record. In one real session that wrote 192k tokens to the prompt cache and took about 10 s to the first token.
+  - **Now:** after a `/reload` the bridge restores the record from the marker, as after a Pi restart, and the next prompt resumes the warm session when Pi's history still matches it. It still rebuilds into a new session when the checks fail, and when a Claude Code process may still be writing the session at the reload: a query was still running (RPC and print mode can reload mid-response), or one was just stopped (Esc, an idle timeout) and its process had not exited yet.
+
 ## 2026-09-30
 
 ### Highlights
@@ -31,6 +92,10 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Changed
 
+- **The bridge loads about six times faster.**
+  - **Before:** loading the bridge took about 0.45 s on every Pi start, every `/reload` and every subagent child. Nearly all of that went to Pi's loader trying each of the bridge's 166 internal imports as a `.js` file before falling back to the `.ts` file.
+  - **Now:** the internal imports name the `.ts` file, and the load takes about 0.07 s. On Pi 0.99.2, a warm start went from 442 ms to 71 ms and a `/reload` from 423 ms to 14 ms. The first start after a pull that changes every file went from 848 ms to 441 ms. These are medians measured while other work kept the machine busy, so absolute times on an idle machine are lower.
+  - `npm run check:imports` keeps a `.js` internal import from coming back.
 - **Three TUI warnings removed:** they needed nothing from you.
   - The three were parked early tool results, the stream idle timeout (Pi already shows the turn's error), and tool calls that never reached Pi.
   - With agent notices on, the agent is told about each one instead. (`45bd6c7`)

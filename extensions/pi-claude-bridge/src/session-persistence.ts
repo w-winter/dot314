@@ -1,21 +1,23 @@
 import { type AssistantMessage, type Context } from "@earendil-works/pi-ai";
-import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
+import { createSession, deleteSession, openSession, repairToolPairing, serializeRecord, type JsonlRecord } from "cc-session-io";
 import { createHash } from "crypto";
-import { realpathSync, statSync } from "fs";
-import { resolve as pathResolve } from "path";
-import { getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type SessionState } from "./bridge-state.js";
-import { displayPath } from "./config.js";
-import { convertPiMessages } from "./convert.js";
-import { debug, diagDump, diagGuidance } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { historyDigest, sharedHistoryMatches } from "./history-digest.js";
-import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
+import { closeSync, mkdirSync, openSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { dirname, resolve as pathResolve } from "path";
+import { REBUILD_MARKS, getExtensionApi, getSharedSession, reportSyntheticToolResultRepair, safeNotify, setSharedSession, type RebuildMark, type SessionState } from "./bridge-state.ts";
+import { displayPath } from "./config.ts";
+import { convertPiMessages } from "./convert.ts";
+import { debug, diagDump, diagGuidance, parseErrorShape } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { UNVERIFIED_HISTORY_DIGEST, historyDigest, sharedHistoryMatches } from "./history-digest.ts";
+import { forkNativePrefix, planNativePrefix, type ForkedPrefix, type NativePrefix } from "./native-fork.ts";
+import { stepEnd, stepStart, type SyncTiming } from "./request-timing.ts";
+import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.ts";
 import {
 	findUnpairedToolUses,
 	insertLostToolResultPlaceholders,
 	recoverLaterToolResults,
-} from "./tool-pairing-audit.js";
-import { claudeDirForProfile, resolveClaudeAccountRouter, type AccountSessionScope } from "./account-router.js";
+} from "./tool-pairing-audit.ts";
+import { claudeDirForProfile, resolveClaudeAccountRouter, type AccountSessionScope } from "./account-router.ts";
 
 // --- Session persistence ---
 
@@ -120,6 +122,7 @@ export function isForeignConversation(record: SessionState | null, messages: Con
 }
 
 function fingerprintMessages(messages: Context["messages"]): string {
+	const started = stepStart();
 	const normalized = messages.map((message) => {
 		if (message.role === "assistant") {
 			return {
@@ -131,7 +134,9 @@ function fingerprintMessages(messages: Context["messages"]): string {
 		}
 		return message;
 	});
-	return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+	const fingerprint = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+	stepEnd("fingerprint", started);
+	return fingerprint;
 }
 
 function readBuiltSessionContext(sessionManager: unknown): { messages: Context["messages"] } | undefined {
@@ -235,7 +240,10 @@ export function restoreSharedSessionFromPi(ctx: { sessionManager?: unknown; cwd?
 		...(typeof persisted.trailingAssistantDigest === "string" ? { trailingAssistantDigest: persisted.trailingAssistantDigest } : {}),
 		// A rebuild the record still owed must survive the restart: without it
 		// the next turn would resume a transcript known to differ from Pi's.
-		...(persisted.needsRebuild === true ? { needsRebuild: true } : {}),
+		...(persisted.needsRebuild === true ? {
+			needsRebuild: true,
+			...(REBUILD_MARKS.includes(persisted.rebuildReason as RebuildMark) ? { rebuildReason: persisted.rebuildReason } : {}),
+		} : {}),
 		...(persisted.forceRotate === true ? { forceRotate: true } : {}),
 		...(accountProfileId ? { accountProfileId, claudeConfigDir } : {}),
 	});
@@ -294,6 +302,7 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 	if (superseded !== undefined) clearTimeout(superseded);
 	const timer = setTimeout(() => {
 		if (timers.get(sessionManager) === timer) timers.delete(sessionManager);
+		const started = stepStart();
 		try {
 			const built = readBuiltSessionContext(sessionManager);
 			if (!built) return;
@@ -318,6 +327,8 @@ export function schedulePersistSharedSession(ctxLike?: { sessionManager?: unknow
 				error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
 			});
 			noteAnomaly("persist_shared_session_failed");
+		} finally {
+			stepEnd("persist", started);
 		}
 	}, 0);
 	timers.set(sessionManager, timer);
@@ -389,7 +400,7 @@ function convertAndImportMessages(
 	if (repaired.length) session.importMessages(repaired);
 }
 
-interface SyncResult {
+export interface SyncResult {
 	sessionId: string | null;
 	// Index into the caller's messages array where this query's prompt begins.
 	// Everything from promptStart to the end is user input Claude has not seen;
@@ -400,6 +411,26 @@ interface SyncResult {
 	// completion must NOT persist over the module-level record — the caller
 	// gates its persistSession/markRebuild on it.
 	foreignContext?: boolean;
+	// The request was cancelled while a forked rebuild awaited the SDK. Nothing
+	// was written and the record is untouched; the caller must not start a
+	// query.
+	cancelled?: boolean;
+	// The path taken and, when it is not REUSE, why (request-timing.ts).
+	sync: SyncTiming;
+}
+
+export interface SyncOptions {
+	// Asked once a forked rebuild's fork has settled: true when the request
+	// was cancelled or its lane ended meanwhile. The rebuild then writes
+	// nothing and returns `cancelled`.
+	cancelled?: () => boolean;
+	// false: never fork, import Pi's whole history (the re-plan after a fork
+	// could not be used).
+	fork?: boolean;
+	// The query's map from served tool names to Pi's (index.ts
+	// resolveMcpTools), the one its stream names Pi's tool calls with. A
+	// forked rebuild compares Claude Code's tool calls to Pi's through it.
+	customToolNameToPi?: Map<string, string>;
 }
 
 export interface IncrementalPromptBatchPlan {
@@ -523,18 +554,29 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string, claude
 //     session file (if any) and writes a fresh one containing all prior
 //     messages, reusing the same sessionId across rebuilds so UUIDs stay
 //     stable for the lifetime of pi's session.
+//   FORKED REBUILD — a same-account rebuild (Case 4) whose old transcript
+//     still holds a prefix of Pi's history with equal content. The new
+//     session starts as Claude Code's own records for that prefix (forked
+//     with the SDK under a new id, native-fork.ts) and only Pi's messages
+//     after it are imported, so the next request repeats the bytes Claude
+//     Code sent before and reads them from the prompt cache. A full import
+//     cannot: Claude Code's requests carry attachments and result forms that
+//     never reach Pi. Forking awaits the SDK, so this path alone returns a
+//     promise; every other path stays synchronous.
 //
 // Why a full rebuild rather than patching:
 //   Injecting deltas into an existing session creates a branch that CC's
 //   --resume doesn't follow (documented attempt prior to this). A complete
 //   overwrite at the same path is simpler and correct.
 //
-// Why reuse the sessionId across rebuilds:
+// Why reuse the sessionId across full rebuilds:
 //   CC re-reads the JSONL on every --resume call — no in-process UUID
 //   caching. Validated in tests/exp-session-clear.mjs, including the case
 //   where CC had appended its own tool_use/tool_result records between
 //   rebuilds. Preserving the UUID means stable log correlation across
 //   provider switches and no orphaned session files.
+//   A forked rebuild takes the fork's new id instead; on the preserved-id
+//   path it deletes the old file once the new one is written and verified.
 //
 // Log strings still say "Case 1/2/3/4" so existing diagnostics (int-cache.sh,
 // int-session-resume.mjs) keep grepping the same anchors.
@@ -544,7 +586,8 @@ export function syncSharedSession(
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
 	account?: AccountSessionScope,
-): SyncResult {
+	options: SyncOptions = {},
+): SyncResult | Promise<SyncResult> {
 	const sharedSession = getSharedSession();
 	const priorMessages = messages.slice(0, -1); // everything before the current user prompt
 	const accountProfileId = account?.accountProfileId;
@@ -559,6 +602,8 @@ export function syncSharedSession(
 		sharedSession.claudeConfigDir === scopeConfigDir,
 	);
 	const incomingFingerprint = conversationFingerprint(messages);
+	// The reason the record was marked for rebuild, if it was (bridge-state.ts).
+	const mark = sharedSession?.needsRebuild ? sharedSession.rebuildReason ?? "unrecorded" : undefined;
 
 	// FOREIGN-CONVERSATION guard. A subagent-shaped query
 	// arriving while the parent is IDLE finds no running query to join, so it
@@ -591,10 +636,12 @@ export function syncSharedSession(
 			`Case 6 foreign-conversation: fingerprint ${incomingFingerprint.slice(0, 8)} != record ${sharedSession.conversationFingerprint?.slice(0, 8)} ` +
 			`(cursor=${sharedSession.cursor}, priors=${priorMessages.length}) — clean one-shot, record untouched`,
 		);
-		debug(`syncResult: path=foreign-one-shot`);
-		return { sessionId: null, promptStart: messages.length - 1, foreignContext: true };
+		debug(`syncResult: path=foreign-one-shot cause=foreign-conversation`);
+		return { sessionId: null, promptStart: messages.length - 1, foreignContext: true, sync: { path: "foreign-one-shot", cause: "foreign-conversation" } };
 	}
 
+	// Why the REUSE check below failed, when it ran.
+	let digestCause: "digest-mismatch" | "unverified-digest" | undefined;
 	// REUSE path. A Claude session can only be resumed under the credential
 	// profile that created its JSONL and prompt cache.
 	if (sharedSession && sameAccount && !sharedSession.needsRebuild) {
@@ -607,6 +654,7 @@ export function syncSharedSession(
 		const prior = batch ? sharedHistoryMatches(sharedSession, messages, batch.promptStart) : undefined;
 		if (batch && prior && !prior.matches) {
 			debug(`Case 7 history-rewritten: Pi's history through prompt start ${batch.promptStart} no longer matches what session ${sharedSession.sessionId.slice(0, 8)} holds (cursor=${sharedSession.cursor}) — rebuilding`);
+			digestCause = sharedSession.historyDigest === UNVERIFIED_HISTORY_DIGEST || sharedSession.trailingAssistantDigest === UNVERIFIED_HISTORY_DIGEST ? "unverified-digest" : "digest-mismatch";
 		}
 		if (batch && prior?.matches) {
 			if (!prior.checked) debug(`Case 3: record had no history digest — accepting it once and stamping one`);
@@ -638,6 +686,7 @@ export function syncSharedSession(
 			return {
 				sessionId: sharedSession.sessionId,
 				promptStart: batch.promptStart,
+				sync: { path: "reuse" },
 			};
 		}
 	}
@@ -646,8 +695,8 @@ export function syncSharedSession(
 	// those messages do not represent prior Claude conversation history.
 	if (priorMessages.every((message) => message.role === "system")) {
 		debug(`Case 1: clean start, ${messages.length} total messages, account=${accountProfileId ?? "default"}`);
-		debug(`syncResult: path=clean-start`);
-		return { sessionId: null, promptStart: messages.length - 1 };
+		debug(`syncResult: path=clean-start cause=clean-start${mark ? ` mark=${mark}` : ""}`);
+		return { sessionId: null, promptStart: messages.length - 1, sync: { path: "clean-start", cause: "clean-start", ...(mark ? { mark } : {}) } };
 	}
 	const replacedSessionId = sharedSession?.sessionId;
 	// Preserve a UUID only within the same credential profile: reusing account
@@ -660,6 +709,23 @@ export function syncSharedSession(
 	// and for any tools that key off them. Skipped only when there's a
 	// concurrent writer we shouldn't race — see forceRotate docs above.
 	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
+	// The branch the debug lines below name, plus why REUSE did not apply.
+	const cause = replacedSessionId === undefined ? "first-turn-history"
+		: !sameAccount ? "account-rotation"
+		: !preserveId ? "post-abort-rotation"
+		: sharedSession?.needsRebuild ? "needs-rebuild"
+		: digestCause ?? "missed-messages";
+	if (previousSessionId !== undefined && options.fork !== false) {
+		const plan = planNativePrefix(priorMessages, previousSessionId, cwd, claudeDir, customToolNameToSdk, options.customToolNameToPi);
+		if ("prefix" in plan) {
+			return rebuildFromNativePrefix(plan.prefix, {
+				messages, cwd, customToolNameToSdk, modelId, account, options,
+				sharedSession: sharedSession!, claudeDir, preserveId, cause, mark, previousCursor, incomingFingerprint,
+			});
+		}
+		debug(`Case 4: no native prefix to fork from ${previousSessionId.slice(0, 8)} (${plan.reason}) — importing all ${priorMessages.length} pi msgs`);
+	}
+	const writeStarted = stepStart();
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, claudeDir);
@@ -673,6 +739,7 @@ export function syncSharedSession(
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk, cwd);
 	session.save();
 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd, claudeDir);
+	stepEnd("rebuildWrite", writeStarted);
 	setSharedSession({
 		sessionId: session.sessionId,
 		cursor: priorMessages.length,
@@ -695,6 +762,146 @@ export function syncSharedSession(
 		debug(`Case 4 post-abort: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId!.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.messages.length} records`);
 	}
 	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath, claudeDir);
-	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${replacedSessionId === undefined ? "first" : !sameAccount ? "account-rotated" : preserveId ? "preserved" : "rotated-post-abort"}`);
-	return { sessionId: session.sessionId, promptStart: messages.length - 1 };
+	const missed = priorMessages.length - previousCursor;
+	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${replacedSessionId === undefined ? "first" : !sameAccount ? "account-rotated" : preserveId ? "preserved" : "rotated-post-abort"} cause=${cause}${mark ? ` mark=${mark}` : ""} missed=${missed}`);
+	return {
+		sessionId: session.sessionId,
+		promptStart: messages.length - 1,
+		sync: { path: "rebuild", cause, ...(mark ? { mark } : {}), priors: priorMessages.length, missed },
+	};
+}
+
+/** Writes a session file that must not exist yet: the fork's id is new, and
+ *  an existing file is never appended to or replaced. A write that fails after
+ *  creating the file removes it, so no partial session is left behind; a
+ *  failed create (EEXIST) leaves the existing file alone. */
+function writeNewSessionFile(path: string, data: string): void {
+	const fd = openSync(path, "wx");
+	try {
+		try {
+			writeFileSync(fd, data, "utf8");
+		} finally {
+			closeSync(fd);
+		}
+	} catch (error) {
+		rmSync(path, { force: true });
+		throw error;
+	}
+}
+
+/** What a forked rebuild needs from the syncSharedSession call that planned it. */
+interface ForkRebuildContext {
+	messages: Context["messages"];
+	cwd: string;
+	customToolNameToSdk?: Map<string, string>;
+	modelId?: string;
+	account?: AccountSessionScope;
+	options: SyncOptions;
+	// The record the rebuild was planned against.
+	sharedSession: SessionState;
+	claudeDir: string | undefined;
+	preserveId: boolean;
+	cause: string;
+	mark?: string;
+	previousCursor: number;
+	incomingFingerprint?: string;
+}
+
+/**
+ * Case 4 from Claude Code's own records: fork the verified prefix of the old
+ * transcript into a new session and import only Pi's messages after it.
+ *
+ * Nothing reaches the disk until the fork has settled and the shared record
+ * is still the one this rebuild was planned against. While the SDK runs, the
+ * request may be cancelled (nothing is written; the caller ends the request),
+ * or the record may change: a session shutdown cleared it, a reload restored
+ * another, a late mark replaced it. Then the plan is stale and the sync runs
+ * again, synchronously and without a fork, against the record as it is now.
+ * A fork that fails falls back the same way: the old transcript is written
+ * by another program, and a full import is today's correct result.
+ */
+async function rebuildFromNativePrefix(prefix: NativePrefix, c: ForkRebuildContext): Promise<SyncResult> {
+	const priorMessages = c.messages.slice(0, -1);
+	const oldId = prefix.oldSessionId.slice(0, 8);
+	const replan = (why: string): SyncResult => {
+		debug(`Case 4: ${why} — syncing again without a fork`);
+		return syncSharedSession(c.messages, c.cwd, c.customToolNameToSdk, c.modelId, c.account, { ...c.options, fork: false }) as SyncResult;
+	};
+	let forked: ForkedPrefix | undefined;
+	let failure: string | undefined;
+	try {
+		forked = await forkNativePrefix(prefix, c.cwd);
+	} catch (error) {
+		failure = parseErrorShape(error);
+	}
+	if (c.options.cancelled?.()) {
+		debug(`Case 4: request cancelled while forking ${oldId}; nothing written, record untouched`);
+		debug(`syncResult: path=rebuild cancelled cause=${c.cause}${c.mark ? ` mark=${c.mark}` : ""}`);
+		return {
+			sessionId: null,
+			promptStart: c.messages.length - 1,
+			cancelled: true,
+			sync: { path: "rebuild", cause: c.cause, ...(c.mark ? { mark: c.mark } : {}), priors: priorMessages.length },
+		};
+	}
+	if (getSharedSession() !== c.sharedSession) return replan(`the shared record changed while forking ${oldId}`);
+	if (!forked) return replan(`forking ${oldId} failed (${failure})`);
+
+	const writeStarted = stepStart();
+	const tail = priorMessages.slice(prefix.piCount);
+	// planNativePrefix advances over whole groups only.
+	if (tail[0]?.role === "toolResult") throw new Error(`native fork: the tail after ${prefix.piCount} pi msgs starts with a tool result`);
+	const session = createSession({
+		projectPath: c.cwd,
+		claudeDir: c.claudeDir,
+		sessionId: forked.sessionId,
+		...(c.modelId ? { model: c.modelId } : {}),
+	});
+	if (tail.length > 0) convertAndImportMessages(session, tail, c.customToolNameToSdk, c.cwd);
+	// The import starts a chain of its own. It must hang off the fork's leaf,
+	// which is often an attachment: chained from the last message instead, the
+	// attachments after it would fall off the chain and out of the request.
+	const tailRecords = session.records.map((record, n) => n === 0 ? { ...record, parentUuid: forked.leafUuid } : record);
+	const lines = [...forked.entries, ...tailRecords].map((record) => `${serializeRecord(record as JsonlRecord)}\n`).join("");
+	mkdirSync(dirname(session.jsonlPath), { recursive: true });
+	writeNewSessionFile(session.jsonlPath, lines);
+	const recordCount = forked.entries.length + tailRecords.length;
+	const warnings = _verifyWrittenSession(session.jsonlPath, forked.sessionId, recordCount);
+	if (warnings.length > 0) {
+		rmSync(session.jsonlPath, { force: true });
+		stepEnd("rebuildWrite", writeStarted);
+		return replan(`the forked session ${forked.sessionId.slice(0, 8)} failed verification (${warnings.length} warning(s))`);
+	}
+	stepEnd("rebuildWrite", writeStarted);
+	// The old file goes only now that its replacement is written and verified.
+	// After an abort it stays: the killed child may still be writing to it.
+	if (c.preserveId) deleteSession(prefix.oldSessionId, c.cwd, c.claudeDir);
+	const accountProfileId = c.account?.accountProfileId;
+	const scopeConfigDir = c.account?.claudeConfigDir;
+	setSharedSession({
+		sessionId: forked.sessionId,
+		cursor: priorMessages.length,
+		historyDigest: historyDigest(priorMessages),
+		cwd: c.cwd,
+		...(c.incomingFingerprint ? { conversationFingerprint: c.incomingFingerprint } : {}),
+		...(accountProfileId ? { accountProfileId } : {}),
+		...(scopeConfigDir ? { claudeConfigDir: scopeConfigDir } : {}),
+	});
+	const newId = forked.sessionId.slice(0, 8);
+	const appended = priorMessages.length - prefix.piCount;
+	const missed = priorMessages.length - c.previousCursor;
+	const forkedLine = `forked ${oldId} up to ${prefix.cutUuid.slice(0, 8)}: ${prefix.piCount}/${priorMessages.length} pi msgs native, appended ${appended}`;
+	const records = `${forked.entries.length} forked + ${tailRecords.length} imported records`;
+	if (c.preserveId) {
+		debug(`Case 4: ${missed} missed messages, ${forkedLine} → new session ${newId} (deleted ${oldId}), ${records}`);
+	} else {
+		debug(`Case 4 post-abort: ${forkedLine} → new session ${newId} (old file left to its orphan writer), ${records}`);
+	}
+	debugSessionPaths(newId, c.cwd, session.jsonlPath, c.claudeDir);
+	debug(`syncResult: path=rebuild sessionId=${forked.sessionId} priors=${priorMessages.length} ${c.preserveId ? "preserved" : "rotated-post-abort"} cause=${c.cause}${c.mark ? ` mark=${c.mark}` : ""} missed=${missed} forked=${prefix.piCount} from=${oldId} forkedRecords=${forked.entries.length} appended=${appended}`);
+	return {
+		sessionId: forked.sessionId,
+		promptStart: c.messages.length - 1,
+		sync: { path: "rebuild", cause: c.cause, ...(c.mark ? { mark: c.mark } : {}), priors: priorMessages.length, missed, forked: prefix.piCount },
+	};
 }

@@ -6,10 +6,10 @@
 // clear, which leaks handlers.
 
 import type { query } from "@anthropic-ai/claude-agent-sdk";
-import { reportToolResultMismatch } from "./bridge-state.js";
-import { flushConnectorCallAudit } from "./connector-audit.js";
-import { debug } from "./debug.js";
-import { drainPendingToolCalls, type QueryContext, type ToolCallDrainCause } from "./query-state.js";
+import { reportToolResultMismatch } from "./bridge-state.ts";
+import { flushConnectorCallAudit } from "./connector-audit.ts";
+import { debug } from "./debug.ts";
+import { drainPendingToolCalls, type QueryContext, type ToolCallDrainCause } from "./query-state.ts";
 
 /** A child transport may throw during close; teardown must still reach its
  *  replacement query or report an error on the stream Pi is waiting for. */

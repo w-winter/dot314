@@ -95,6 +95,8 @@ Claude Code's own file, shell and web tools are turned off. The bridge serves Pi
                                     when another model took turns
 ```
 
+A rebuild keeps as much of Claude Code's own transcript as it can. When that transcript still holds the start of Pi's history with the same content, as it does after you press Esc, the bridge copies those records as they are into the new session and writes only the rest from Pi's history. Claude Code then sends the same request bytes as before, and the prompt cache still covers that part.
+
 The bridge saves which Claude Code session belongs to the Pi session in the Pi session file, so reopening a Pi session resumes the same Claude Code conversation. When Pi compacts or rewrites the history during a Pi tool call, the bridge restarts from Pi's new history with the completed tool results. A query that used one of Claude Code's own connectors finishes first, and the next turn uses Pi's new history.
 
 ## Install
@@ -155,7 +157,7 @@ Example `claude-bridge.json`:
 Environment variables:
 
 - `CLAUDE_BRIDGE_STREAM_IDLE_TIMEOUT` (default 90s): how long Claude Code may stay silent during a turn, before or after its first output, while no Pi tool call is outstanding; bare numbers are seconds, `ms`, `s` and `m` suffixes are accepted, `0` disables.
-- `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. Without it, the bridge writes no log. It still writes what it needs to run: the Claude Code session files it builds from Pi history, its own entries in the Pi session file, and, with connectors on, the connector inventory cache in the Pi agent directory.
+- `CLAUDE_BRIDGE_DEBUG=1`: write the bridge log, the integrity diagnostics and per-query Claude Code CLI logs under the Pi agent directory; `CLAUDE_BRIDGE_DEBUG_PATH` and `CLAUDE_BRIDGE_DIAG_PATH` move the two log files. The bridge log ends each request with one `timing:` JSON line: where the request spent its time, and why it rebuilt the Claude session when it did. Without it, the bridge writes no log and measures nothing. It still writes what it needs to run: the Claude Code session files it builds from Pi history, its own entries in the Pi session file, and, with connectors on, the connector inventory cache in the Pi agent directory.
 
 Tool-result integrity problems add a metadata-only `claude-bridge-integrity` entry to the Pi session file, so a lost tool result can be analysed from the session alone. Only some also show a TUI warning: a repaired or interrupted tool result, a tool call Claude Code stopped waiting for, and a failed answer to a mid-turn message.
 

@@ -6,7 +6,7 @@ import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve, sep } from "path";
-import { debug, parseErrorShape } from "./debug.js";
+import { debug, parseErrorShape } from "./debug.ts";
 
 export type BridgeEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 

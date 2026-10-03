@@ -1,6 +1,7 @@
 import { type AssistantMessage, type Context } from "@earendil-works/pi-ai";
 import { createHash } from "crypto";
-import { convertPiMessages } from "./convert.js";
+import { convertPiMessages } from "./convert.ts";
+import { stepEnd, stepStart } from "./request-timing.ts";
 
 // Digest of the history Claude Code already holds, so warm reuse of its
 // session can check that Pi's copy still matches. A message count cannot show
@@ -56,6 +57,7 @@ function coveredBlock(block: ProjectedBlock): unknown {
 /** Versioned digest of `messages` as the bridge would import them into Claude
  *  Code (see the coverage note above). Pass exactly the slice Claude holds. */
 export function historyDigest(messages: Context["messages"]): string {
+	const started = stepStart();
 	// Identity name map: every tool call keeps its exact Pi name.
 	const exactToolNames = new Map<string, string>();
 	for (const message of messages) {
@@ -71,7 +73,9 @@ export function historyDigest(messages: Context["messages"]): string {
 		hash.update(JSON.stringify([message.role, content]));
 		hash.update("\n");
 	}
-	return `${HISTORY_DIGEST_VERSION}:${hash.digest("hex")}`;
+	const digest = `${HISTORY_DIGEST_VERSION}:${hash.digest("hex")}`;
+	stepEnd("digest", started);
+	return digest;
 }
 
 /** Whether the history Claude holds (`recorded`, stamped when the cursor last

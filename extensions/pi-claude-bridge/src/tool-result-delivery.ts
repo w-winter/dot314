@@ -8,14 +8,15 @@
 
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources";
-import { endStreamForFailure } from "./assistant-stream.js";
-import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.js";
-import { contentShape, debug, diagDump } from "./debug.js";
-import { currentPiSession, noteAnomaly } from "./agent-notice.js";
-import type { McpResult } from "./extract-tool-results.js";
-import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.js";
-import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.js";
-import { abortSdkQuery } from "./query-teardown.js";
+import { endStreamForFailure } from "./assistant-stream.ts";
+import { appendIntegrityEntry, getSharedSession, markSessionForRebuild, reportToolResultMismatch, safeNotify } from "./bridge-state.ts";
+import { contentShape, debug, diagDump } from "./debug.ts";
+import { currentPiSession, noteAnomaly } from "./agent-notice.ts";
+import type { McpResult } from "./extract-tool-results.ts";
+import { UNVERIFIED_HISTORY_DIGEST } from "./history-digest.ts";
+import { slashLed } from "./user-prompt.ts";
+import { drainStrandedToolCalls, type DeferredUserMessage, type QueryContext } from "./query-state.ts";
+import { abortSdkQuery } from "./query-teardown.ts";
 
 export const STEERING_DELIVERY_FAILED_MESSAGE = "Claude bridge could not deliver steering to Claude Code. Retry to rebuild from Pi history.";
 
@@ -54,8 +55,15 @@ export function resolveToolResults(queryCtx: QueryContext, allResults: McpResult
 				appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id, toolName: pending.toolName });
 			}
 			debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""} content: ${contentShape(result.content)}`);
-			if (toolsSettling) void toolsSettling.then(() => pending.resolve(result));
-			else pending.resolve(result);
+			if (toolsSettling) {
+				void toolsSettling.then(() => {
+					queryCtx.timing?.phase("resultReleased");
+					pending.resolve(result);
+				});
+			} else {
+				queryCtx.timing?.phase("resultReleased");
+				pending.resolve(result);
+			}
 		} else if (id) {
 			queryCtx.pendingResults.set(id, result);
 			debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
@@ -139,12 +147,14 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 	const writeSettled = (): void => {
 		if (queryCtx.steeringWriteQuery === sdkQuery) queryCtx.steeringWriteQuery = null;
 	};
+	const content = live.steer.blocks ?? live.steer.text;
 	const message: SDKUserMessage = {
 		type: "user",
-		message: { role: "user", content: live.steer.blocks ?? live.steer.text } as MessageParam,
+		message: { role: "user", content } as MessageParam,
 		parent_tool_use_id: null,
 		// "now" makes Claude Code 2.1.283 interrupt the pending MCP call and discard its result; "next" keeps it.
 		priority: "next",
+		...(slashLed(content) ? { client_composed: true as const } : {}),
 	};
 	async function* input(): AsyncGenerator<SDKUserMessage> {
 		yield message;
@@ -171,7 +181,7 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 				queryCtx.queryGeneration === writtenInto.generation &&
 				record !== null && writtenInto.sessionId !== undefined && record.sessionId === writtenInto.sessionId &&
 				!record.needsRebuild
-			) markSessionForRebuild({ forceRotate: true });
+			) markSessionForRebuild({ reason: "steering-write", forceRotate: true });
 			return;
 		}
 		if (queryCtx.restartRequest) {
@@ -217,7 +227,7 @@ function failSteeringDelivery(queryCtx: QueryContext, sdkQuery: NonNullable<Quer
 	queryCtx.handledTerminalError = true;
 	queryCtx.priorHistoryRewritten = true;
 	queryCtx.latestCursorDigest = UNVERIFIED_HISTORY_DIGEST;
-	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
+	if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ reason: "steering-failed", forceRotate: true });
 	const detail = { resultCount: live.resultCount, userMessageCount: live.userMessageCount, detached: queryCtx.detachedFromSharedSession };
 	diagDump("steering_delivery_failed", { ...detail, error: error instanceof Error ? error.message : String(error) });
 	noteAnomaly("steering_delivery_failed", piSession);

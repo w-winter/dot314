@@ -7,7 +7,7 @@ import { afterEach, describe, it } from "node:test";
 import { buildClaudeQueryOptions } from "../src/query-options.ts";
 
 const ROUTING_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
-const SENTINEL_KEYS = [...ROUTING_KEYS, "ANTHROPIC_MODEL", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"];
+const SENTINEL_KEYS = [...ROUTING_KEYS, "ANTHROPIC_MODEL", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"];
 const saved = new Map(SENTINEL_KEYS.map((key) => [key, process.env[key]]));
 
 afterEach(() => {
@@ -61,5 +61,10 @@ describe("Claude Code child environment", () => {
 		// resume the turn and inject its own continuation prompt.
 		process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS = "3600000";
 		assert.equal(childEnv({}).CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "1");
+	});
+
+	it("streams tool arguments as Claude writes them", () => {
+		process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING = "0";
+		assert.equal(childEnv({}).CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING, "1");
 	});
 });

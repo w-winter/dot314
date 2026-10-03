@@ -4,7 +4,7 @@
 import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai";
 import type { ContentBlock, Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
-import { isChildExecutedTool } from "./connectors.js";
+import { isChildExecutedTool } from "./connectors.ts";
 
 export const PROVIDER_ID = "pi-claude";
 
@@ -63,7 +63,7 @@ function imageBlockToAnthropic(block: { data?: string; mimeType?: string }): Con
 	return { type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } } as ContentBlock;
 }
 
-function toolResultContentToAnthropic(
+export function toolResultContentToAnthropic(
 	content: string | Array<{ type: string; text?: string; data?: string; mimeType?: string }>,
 ): string | ContentBlock[] {
 	if (typeof content === "string") return content;
@@ -94,7 +94,7 @@ function assistantProvenancePrefix(msg: PiMessage): string | undefined {
 	return `[Prior Pi assistant response from ${provider ?? api ?? "unknown-provider"}${model ? `/${model}` : ""}]\n`;
 }
 
-function userMessageToAnthropic(msg: PiMessage): SessionMessage {
+export function userMessageToAnthropic(msg: PiMessage): SessionMessage {
 	if (typeof msg.content === "string") return { role: "user", content: msg.content || "[empty]" };
 	if (Array.isArray(msg.content)) {
 		const parts = [];
@@ -152,7 +152,7 @@ function hasUnreplayableThinking(msg: PiMessage): boolean {
  *  the latest assistant back, each one with unreplayable thinking, so that the
  *  latest assistant left in the import replays as returned. Error and aborted
  *  turns are never imported and are passed over. */
-function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
+export function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
 	const turns = new Set<number>();
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -279,7 +279,7 @@ export function convertPiMessages(
 		const msg = messages[i];
 		if (msg.role === "user") {
 			// Rebuild imports each pi user message as its OWN record. The REUSE path
-			// (extractUserPrompt/extractUserPromptBlocks in index.ts) instead merges a
+			// (extractUserPrompt/extractUserPromptBlocks in user-prompt.ts) instead merges a
 			// trailing user run into one "\n\n"-joined prompt — accepted divergence,
 			// see the comment there; the merged form is never re-imported here.
 			anthropicMessages.push(userMessageToAnthropic(msg));

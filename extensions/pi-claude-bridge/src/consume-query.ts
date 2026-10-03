@@ -13,18 +13,18 @@ import {
 	type ClaudeAccountFailureKind,
 	type ClaudeAccountRoute,
 	type ClaudeAccountRouterV1,
-} from "./account-router.js";
-import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.js";
-import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.js";
-import { type Config } from "./config.js";
-import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { modelDisplayName } from "./models.js";
-import { type QueryContext } from "./query-state.js";
-import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.js";
-import { sdkQueryAbandoned } from "./query-teardown.js";
-import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.js";
-import { logClaudeCodeVersion } from "./versions.js";
+} from "./account-router.ts";
+import { endStreamForFailure, ensureTurnStarted, noteChildExecutedToolResults, processAssistantMessage, processStreamEvent, queryBlocks, updateTurnResponseModel } from "./assistant-stream.ts";
+import { appendIntegrityEntry, getExtensionApi, safeNotify } from "./bridge-state.ts";
+import { type Config } from "./config.ts";
+import { debug, diagDump } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { modelDisplayName } from "./models.ts";
+import { type QueryContext } from "./query-state.ts";
+import { RATE_LIMIT_AUTO_RESUME_EVENT, RATE_LIMIT_TOKEN, formatAllowedRateLimitWarning, formatResetTimestamp, isUsageLimitMessage, uniqueNonEmptyLines } from "./rate-limit.ts";
+import { sdkQueryAbandoned } from "./query-teardown.ts";
+import { activeStreamIdleWatchdogs } from "./stream-idle-watchdog.ts";
+import { logClaudeCodeVersion } from "./versions.ts";
 
 const ABANDONED: unique symbol = Symbol("sdk-query-abandoned");
 
@@ -182,6 +182,7 @@ export async function consumeQuery(
 		}
 		if (next.done) break;
 		const message = next.value as SDKMessage;
+		queryCtx.timing?.phase("firstSdkMessage");
 		if (wasAborted()) {
 			await Promise.race([iterator.return?.(undefined), abandoned]);
 			break;
@@ -209,6 +210,7 @@ export async function consumeQuery(
 
 		switch (message.type) {
 			case "stream_event":
+				queryCtx.timing?.phase("firstStreamEvent");
 				if (!streamLive) break;
 				processStreamEvent(message, customToolNameToPi, model, queryCtx);
 				break;
@@ -229,6 +231,7 @@ export async function consumeQuery(
 				break;
 			}
 			case "result":
+				queryCtx.timing?.phase("sdkResult");
 				// A failure signal followed by a result whose visible output already
 				// committed (e.g. the SDK's fallback-model reroute recovering after a
 				// rejected rate limit) means the query ultimately SUCCEEDED: the
@@ -286,7 +289,10 @@ export async function consumeQuery(
 				}
 				break;
 			case "system":
-				if ((message as any).subtype === "init") logClaudeCodeVersion((message as any).claude_code_version);
+				if ((message as any).subtype === "init") {
+					queryCtx.timing?.phase("init");
+					logClaudeCodeVersion((message as any).claude_code_version);
+				}
 				if (!streamLive) break;
 				if ((message as any).subtype === "init" && (message as any).session_id) {
 					capturedSessionId = (message as any).session_id;

@@ -35,9 +35,9 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { piUserDir } from "./config.js";
-import { debug } from "./debug.js";
-import type { ConnectorEntry } from "./connector-inventory.js";
+import { piUserDir } from "./config.ts";
+import { debug } from "./debug.ts";
+import type { ConnectorEntry } from "./connector-inventory.ts";
 
 const CACHE_VERSION = 2;
 /** Long enough to be useful across a machine's lifetime, short enough that a

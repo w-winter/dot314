@@ -62,10 +62,10 @@
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@earendil-works/pi-ai";
 import { z } from "zod";
-import { debug } from "./debug.js";
-import type { McpResult } from "./extract-tool-results.js";
-import { isDraft2020Schema } from "./json-schema-2020.js";
-import { mcpToolAliases } from "./tool-mapping.js";
+import { debug } from "./debug.ts";
+import type { McpResult } from "./extract-tool-results.ts";
+import { isDraft2020Schema } from "./json-schema-2020.ts";
+import { mcpToolAliases } from "./tool-mapping.ts";
 
 export const RELIST_TIMEOUT_MS = 2_000;
 /** Claude Code's per-call wall-clock limit for this server. CC applies

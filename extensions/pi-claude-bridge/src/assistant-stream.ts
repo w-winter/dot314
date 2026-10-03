@@ -1,15 +1,15 @@
 import { calculateCost, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { appendIntegrityEntry, safeNotify } from "./bridge-state.js";
-import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.js";
-import { isChildExecutedTool } from "./connectors.js";
-import { debug, diagDump } from "./debug.js";
-import { noteAnomaly } from "./agent-notice.js";
-import { deliveredAssistantDigest } from "./history-digest.js";
-import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.js";
-import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.js";
-import { thirdPartyAppHintFor, withThirdPartyAppHint, withoutThirdPartyAppHint } from "./third-party-rejection.js";
-import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.js";
+import { appendIntegrityEntry, safeNotify } from "./bridge-state.ts";
+import { connectorResultByteSize, recordConnectorCallResult } from "./connector-audit.ts";
+import { isChildExecutedTool } from "./connectors.ts";
+import { DEBUG, debug, diagDump } from "./debug.ts";
+import { noteAnomaly } from "./agent-notice.ts";
+import { deliveredAssistantDigest } from "./history-digest.ts";
+import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.ts";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.ts";
+import { thirdPartyAppHintFor, withThirdPartyAppHint, withoutThirdPartyAppHint } from "./third-party-rejection.ts";
+import { isForeignMcpTool, isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.ts";
 
 // --- Usage helpers ---
 
@@ -45,9 +45,21 @@ function updateUsage(output: AssistantMessage, usage: SdkUsage, model: Model<any
 	}
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	calculateCost(model, output.usage);
+	if (!DEBUG) return;
 	const promptTokens = output.usage.input + output.usage.cacheRead + output.usage.cacheWrite;
 	const cachePct = promptTokens > 0 ? Math.round(output.usage.cacheRead / promptTokens * 100) : 0;
-	debug(`usage: in=${output.usage.input} out=${output.usage.output} reasoning=${output.usage.reasoning ?? "-"} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens} cachePct=${cachePct}% model=${model.id}`);
+	const line = `usage: in=${output.usage.input} out=${output.usage.output} reasoning=${output.usage.reasoning ?? "-"} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens} cachePct=${cachePct}% model=${model.id}`;
+	// Anthropic re-reports unchanged counters; a repeat of the request's last
+	// line says nothing new (request-timing.ts counts it instead).
+	const timing = c.timing;
+	if (timing) {
+		if (timing.lastUsageLine === line) {
+			timing.usageRepeats += 1;
+			return;
+		}
+		timing.lastUsageLine = line;
+	}
+	debug(line);
 }
 
 // --- Provider helpers: misc ---

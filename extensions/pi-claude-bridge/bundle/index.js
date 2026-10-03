@@ -194,8 +194,23 @@ function parseErrorShape(error51) {
   return `${error51.name}${typeof code === "string" ? ` ${code}` : ""}${position === void 0 ? "" : ` at position ${position}`}`;
 }
 var debugBytesSinceCheck = 0;
+var DEBUG_WRITES_SYMBOL = /* @__PURE__ */ Symbol.for("kendex.pi.claude-bridge.debug-writes.v1");
+function debugWrites() {
+  const host = globalThis;
+  let store2 = host[DEBUG_WRITES_SYMBOL];
+  if (!store2) {
+    store2 = { lines: 0, ms: 0 };
+    host[DEBUG_WRITES_SYMBOL] = store2;
+  }
+  return store2;
+}
+function debugWriteTotals() {
+  const { lines, ms: ms2 } = debugWrites();
+  return { lines, ms: ms2 };
+}
 function debug(...args) {
   if (!DEBUG) return;
+  const started = performance.now();
   const ts2 = (/* @__PURE__ */ new Date()).toISOString();
   const fmt = (a) => {
     if (typeof a === "string") return a;
@@ -235,6 +250,9 @@ function debug(...args) {
     appendFileSync(DEBUG_LOG_PATH, line, { mode: 384 });
   } catch {
   }
+  const writes = debugWrites();
+  writes.lines += 1;
+  writes.ms += performance.now() - started;
 }
 var nextCliDebugSeq = 1;
 function makeCliDebugOptions(tag) {
@@ -1293,6 +1311,53 @@ function convertPiMessages(messages, customToolNameToSdk, opts = {}) {
   return { anthropicMessages, sanitizedIds, notedTurns };
 }
 
+// src/user-prompt.ts
+function slashLed(content) {
+  const texts = typeof content === "string" ? [content] : content.flatMap((block) => block.type === "text" ? [block.text] : []);
+  return texts.some((text) => text.trimStart().startsWith("/"));
+}
+function extractUserPrompt(messages) {
+  if (messages.length === 0 || messages.some((message) => message.role !== "user")) return null;
+  return messages.map(
+    (message) => typeof message.content === "string" ? message.content : messageContentToText(message.content) || ""
+  ).join("\n\n");
+}
+function extractUserPromptBlocks(messages) {
+  if (messages.length === 0 || messages.some((message) => message.role !== "user")) return null;
+  let hasImage = false;
+  const blocks = [];
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const content = messages[messageIndex].content;
+    if (messageIndex > 0) blocks.push({ type: "text", text: "\n\n" });
+    if (typeof content === "string") {
+      if (content) blocks.push({ type: "text", text: content });
+      continue;
+    }
+    if (!Array.isArray(content)) {
+      debug(`extractUserPromptBlocks: content is ${typeof content}`);
+      continue;
+    }
+    debug(`extractUserPromptBlocks: ${content.length} blocks, types=${content.map((b) => b.type).join(",")}`);
+    for (const block of content) {
+      if (block.type === "text" && block.text) {
+        blocks.push({ type: "text", text: block.text });
+      } else if (block.type === "image") {
+        debug(`image block: mimeType=${block.mimeType}, data length=${(block.data ?? "").length}, keys=${Object.keys(block).join(",")}`);
+        if (!block.data || !block.mimeType) {
+          debug(`image block missing data or mimeType, skipping`);
+          continue;
+        }
+        hasImage = true;
+        blocks.push({
+          type: "image",
+          source: { type: "base64", media_type: block.mimeType, data: block.data }
+        });
+      }
+    }
+  }
+  return hasImage ? blocks : null;
+}
+
 // src/models.ts
 var FABLE_MODEL_ID = "claude-fable-5-1";
 var FABLE_FALLBACK_MODEL_ID = "claude-opus-4-8";
@@ -2138,6 +2203,14 @@ var QueryContext = class {
    * the callback that follows, while a later run's new prompt is not.
    */
   undeliveredFailure = null;
+  /** A fresh request is waiting for its forked rebuild (session-persistence.ts
+   *  rebuildFromNativePrefix) before it starts its query. The lane is in use
+   *  meanwhile, though no query runs yet. */
+  forkSyncPending = false;
+  /** Debug only (request-timing.ts): the timing record of this context's
+   *  current or latest Pi request, and steps that ran while none was live. */
+  timing = void 0;
+  timingCarry = void 0;
   get turnBlocks() {
     if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
     return this.turnOutput.content;
@@ -2433,6 +2506,9 @@ function lane() {
 function ctx() {
   return lane().current;
 }
+function peekCtx() {
+  return peekQueryContext(currentRequestLaneId());
+}
 function detachContext(target) {
   const state = lane();
   if (state.current !== target) return;
@@ -2487,7 +2563,7 @@ function requestLaneFor(sessionId, messages, otherConversation = () => false) {
       if (forkCtx && handedToPi(forkCtx, ids)) return forkId2;
     }
   }
-  const reason = own?.activeQuery || own?.undeliveredFailure ? "its lane is busy" : messages.at(-1)?.role === "toolResult" ? "its tool result answers no call of its lane" : otherConversation(sessionId) ? "its lane holds another conversation" : void 0;
+  const reason = contextInUse(own) ? "its lane is busy" : messages.at(-1)?.role === "toolResult" ? "its tool result answers no call of its lane" : otherConversation(sessionId) ? "its lane holds another conversation" : void 0;
   if (reason === void 0) return sessionId;
   const forkId = `${FORK_LANE_PREFIX}${randomUUID()}`;
   forkLaneStore().set(forkId, { base: sessionId });
@@ -2505,8 +2581,10 @@ function releaseForkLane(laneId) {
   forkLaneStore().delete(laneId);
 }
 function laneInUse(laneId) {
-  const queryCtx = peekQueryContext(laneId);
-  return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.undeliveredFailure));
+  return contextInUse(peekQueryContext(laneId));
+}
+function contextInUse(queryCtx) {
+  return Boolean(queryCtx && (queryCtx.activeQuery !== null || queryCtx.forkSyncPending || queryCtx.undeliveredFailure));
 }
 
 // src/assistant-stream.ts
@@ -2514,6 +2592,157 @@ import { calculateCost } from "@earendil-works/pi-ai";
 
 // src/history-digest.ts
 import { createHash as createHash2 } from "crypto";
+
+// src/request-timing.ts
+import { monitorEventLoopDelay } from "node:perf_hooks";
+var DELTA_EVENTS = /* @__PURE__ */ new Set(["text_delta", "thinking_delta", "toolcall_delta"]);
+var nextSeq = 1;
+var LOOP_STORE_SYMBOL = /* @__PURE__ */ Symbol.for("kendex.pi.claude-bridge.request-timing-loop.v1");
+function loopStore() {
+  const host = globalThis;
+  let store2 = host[LOOP_STORE_SYMBOL];
+  if (!store2) {
+    store2 = { monitor: void 0, live: 0, started: 0 };
+    host[LOOP_STORE_SYMBOL] = store2;
+  }
+  return store2;
+}
+var ms = (value) => Math.round(value * 10) / 10;
+var RequestTiming = class {
+  constructor(lane2, model, msgs) {
+    this.lane = lane2;
+    this.model = model;
+    this.msgs = msgs;
+    const loop = loopStore();
+    this.startedAt = ++loop.started;
+    if (loop.live++ === 0) {
+      loop.monitor ??= monitorEventLoopDelay();
+      loop.monitor.reset();
+      loop.monitor.enable();
+    }
+    this.sharedAtStart = loop.live > 1;
+  }
+  lane;
+  model;
+  msgs;
+  seq = nextSeq++;
+  kind = "fresh";
+  sync;
+  resumed;
+  queries = 0;
+  settled = false;
+  /** The request's last `usage:` line, so a repeat is not logged again. */
+  lastUsageLine;
+  usageRepeats = 0;
+  steps = {};
+  t0 = performance.now();
+  phases = {};
+  cpuStart = process.cpuUsage();
+  rssStart = process.memoryUsage.rss();
+  debugStart = debugWriteTotals();
+  startedAt;
+  sharedAtStart;
+  /** Records the first time `name` happens in this request. */
+  phase(name) {
+    if (this.settled || this.phases[name] !== void 0) return;
+    this.phases[name] = ms(performance.now() - this.t0);
+  }
+  noteSync(sync, resumed) {
+    this.sync = sync;
+    this.resumed = resumed;
+    this.phase("sync");
+  }
+  noteQuery() {
+    this.queries += 1;
+    this.phase("query");
+  }
+  addStep(step, duration3, count = 1) {
+    addStep(this.steps, step, duration3, count);
+  }
+  /** Every event pushed to the request's Pi stream passes here. */
+  observe(event) {
+    if (DELTA_EVENTS.has(event.type)) this.phase("firstDelta");
+    else if (event.type === "done" || event.type === "error") {
+      this.phase("turnEnd");
+      this.settle(event.type === "done" ? event.reason : event.error.rateLimitType === "stream_idle" ? "idle-timeout" : event.reason);
+    }
+  }
+  settle(outcome) {
+    if (this.settled) return;
+    this.phase("settled");
+    this.settled = true;
+    const cpu = process.cpuUsage(this.cpuStart);
+    const debugNow = debugWriteTotals();
+    const steps = {};
+    for (const [step, total] of Object.entries(this.steps)) steps[step] = { n: total.n, ms: ms(total.ms) };
+    steps.debugWrite = { n: debugNow.lines - this.debugStart.lines, ms: ms(debugNow.ms - this.debugStart.ms) };
+    const loop = loopStore();
+    const monitor = loop.monitor;
+    debug(`timing: ${JSON.stringify({
+      lane: this.lane ?? null,
+      seq: this.seq,
+      kind: this.kind,
+      model: this.model,
+      msgs: this.msgs,
+      outcome,
+      ...this.sync ? { sync: this.sync } : {},
+      ...this.resumed !== void 0 ? { resumed: this.resumed } : {},
+      queries: this.queries,
+      phases: this.phases,
+      steps,
+      // The monitor covers every request live since it was last reset;
+      // `shared` says another request overlapped this one.
+      loop: {
+        maxMs: ms(monitor.max / 1e6),
+        p99Ms: ms(monitor.percentile(99) / 1e6),
+        shared: this.sharedAtStart || loop.started !== this.startedAt
+      },
+      cpu: { userMs: ms(cpu.user / 1e3), systemMs: ms(cpu.system / 1e3) },
+      rssMb: { start: ms(this.rssStart / 1048576), end: ms(process.memoryUsage.rss() / 1048576) },
+      usageRepeats: this.usageRepeats
+    })}`);
+    if (--loop.live === 0) monitor.disable();
+  }
+};
+function addStep(steps, step, duration3, count) {
+  const total = steps[step] ??= { n: 0, ms: 0 };
+  total.n += count;
+  total.ms += duration3;
+}
+function startRequestTiming(stream, lane2, model, msgs) {
+  if (!DEBUG) return void 0;
+  const timing = new RequestTiming(lane2, model, msgs);
+  const push = stream.push.bind(stream);
+  const end = stream.end.bind(stream);
+  stream.push = (event) => {
+    push(event);
+    timing.observe(event);
+  };
+  stream.end = (result) => {
+    end(result);
+    timing.settle("ended");
+  };
+  return timing;
+}
+function attachRequestTiming(c, timing) {
+  c.timing = timing;
+  const carried = c.timingCarry;
+  c.timingCarry = void 0;
+  if (carried) for (const [step, total] of Object.entries(carried)) timing.addStep(step, total.ms, total.n);
+}
+function stepStart() {
+  return DEBUG ? performance.now() : 0;
+}
+function stepEnd(step, started) {
+  if (!DEBUG) return;
+  const duration3 = performance.now() - started;
+  const c = peekCtx();
+  if (!c) return;
+  if (c.timing && !c.timing.settled) c.timing.addStep(step, duration3);
+  else addStep(c.timingCarry ??= {}, step, duration3, 1);
+}
+
+// src/history-digest.ts
 var HISTORY_DIGEST_VERSION = "h1";
 var UNVERIFIED_HISTORY_DIGEST = "unverified";
 function coveredBlock(block) {
@@ -2534,6 +2763,7 @@ function coveredBlock(block) {
   }
 }
 function historyDigest(messages) {
+  const started = stepStart();
   const exactToolNames = /* @__PURE__ */ new Map();
   for (const message of messages) {
     if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
@@ -2546,7 +2776,9 @@ function historyDigest(messages) {
     hash2.update(JSON.stringify([message.role, content]));
     hash2.update("\n");
   }
-  return `${HISTORY_DIGEST_VERSION}:${hash2.digest("hex")}`;
+  const digest = `${HISTORY_DIGEST_VERSION}:${hash2.digest("hex")}`;
+  stepEnd("digest", started);
+  return digest;
 }
 function historyDigestMatches(recorded, prior) {
   if (recorded === UNVERIFIED_HISTORY_DIGEST) return { matches: false, checked: true };
@@ -2715,6 +2947,18 @@ function summarizeMissingToolNames(missing) {
 }
 
 // src/bridge-state.ts
+var REBUILD_MARKS = [
+  "abort",
+  "idle-timeout",
+  "history-replaced",
+  "history-rewritten",
+  "user-unresolved",
+  "dropped-steers",
+  "steering-write",
+  "steering-failed",
+  "tool-results-outstanding",
+  "orphan-unverified"
+];
 var SHARED_SESSION_LANES_SYMBOL = /* @__PURE__ */ Symbol.for("kendex.pi.claude-bridge.shared-session-lanes.v1");
 function sharedSessionLaneStore() {
   const host = globalThis;
@@ -2772,10 +3016,27 @@ function takeStartedLane(sessionManager) {
   if (sessionId !== void 0) notePiSessionEnded(sessionId);
   return sessionId;
 }
-function markSessionForRebuild(opts = {}) {
+var RELOADED_WITH_LIVE_WRITER_SYMBOL = /* @__PURE__ */ Symbol.for("kendex.pi.claude-bridge.reloaded-with-live-writer.v1");
+function reloadedWithLiveWriterStore() {
+  const host = globalThis;
+  let store2 = host[RELOADED_WITH_LIVE_WRITER_SYMBOL];
+  if (!store2) {
+    store2 = /* @__PURE__ */ new WeakSet();
+    host[RELOADED_WITH_LIVE_WRITER_SYMBOL] = store2;
+  }
+  return store2;
+}
+function noteReloadWithLiveWriter(sessionManager) {
+  reloadedWithLiveWriterStore().add(sessionManager);
+}
+function takeReloadWithLiveWriter(sessionManager) {
+  return reloadedWithLiveWriterStore().delete(sessionManager);
+}
+function markSessionForRebuild(opts) {
   const sharedSession = getSharedSession();
   if (!sharedSession) return;
-  setSharedSession({ ...sharedSession, needsRebuild: true, historyDigest: UNVERIFIED_HISTORY_DIGEST, ...opts.forceRotate ? { forceRotate: true } : {} });
+  const rebuildReason = sharedSession.needsRebuild && sharedSession.rebuildReason || opts.reason;
+  setSharedSession({ ...sharedSession, needsRebuild: true, rebuildReason, historyDigest: UNVERIFIED_HISTORY_DIGEST, ...opts.forceRotate ? { forceRotate: true } : {} });
 }
 function setExtensionApi(next) {
   extensionApi = next;
@@ -2849,7 +3110,12 @@ function reportToolResultMismatch(queryCtx, reason, cwd, opts = {}) {
     const hasMismatch = progress.expectedCount > 0 ? progress.unresolvedIds.length > 0 || progress.waitingCount > 0 || progress.queuedCount > 0 || progress.unmatchedResultCount > 0 : progress.waitingCount > 0 || progress.queuedCount > 0 || progress.unmatchedResultCount > 0;
     if (!hasMismatch) return false;
     queryCtx.reportedToolResultMismatch = true;
-    if (!queryCtx.detachedFromSharedSession) markSessionForRebuild(opts);
+    if (!queryCtx.detachedFromSharedSession) {
+      markSessionForRebuild({
+        reason: reason === "abort" ? "abort" : reason === "session_compact" || reason === "session_tree" ? "history-replaced" : "tool-results-outstanding",
+        forceRotate: opts.forceRotate
+      });
+    }
     if (opts.expectedInterruption) {
       debug(
         `tool result delivery interrupted as expected during ${reason}; delivered=${progress.deliveredCount}/${progress.expectedCount} resolved=${progress.resolvedCount}/${progress.expectedCount} waiting=${progress.waitingCount} queued=${progress.queuedCount}`
@@ -2989,19 +3255,19 @@ function parseDurationLiteralMs(value, defaultUnit = "s") {
   const unit = (match[2] ?? defaultUnit).toLowerCase();
   const multiplier = ["ms", "msec", "msecs", "millisecond", "milliseconds"].includes(unit) ? 1 : ["s", "sec", "secs", "second", "seconds"].includes(unit) ? 1e3 : ["m", "min", "mins", "minute", "minutes"].includes(unit) ? 6e4 : void 0;
   if (multiplier === void 0) return void 0;
-  const ms = Math.round(amount * multiplier);
-  return Number.isFinite(ms) ? ms : void 0;
+  const ms2 = Math.round(amount * multiplier);
+  return Number.isFinite(ms2) ? ms2 : void 0;
 }
 function streamIdleTimeoutMsFromEnv(env = process.env) {
   const raw = env[STREAM_IDLE_TIMEOUT_ENV]?.trim();
   if (!raw) return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   return parseDurationLiteralMs(raw, "s") ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 }
-function formatDurationShort(ms) {
-  if (ms < 18e4 && ms % 1e3 === 0) return `${ms / 1e3}s`;
-  if (ms % 6e4 === 0) return `${ms / 6e4}m`;
-  if (ms % 1e3 === 0) return `${ms / 1e3}s`;
-  return `${ms}ms`;
+function formatDurationShort(ms2) {
+  if (ms2 < 18e4 && ms2 % 1e3 === 0) return `${ms2 / 1e3}s`;
+  if (ms2 % 6e4 === 0) return `${ms2 / 6e4}m`;
+  if (ms2 % 1e3 === 0) return `${ms2 / 1e3}s`;
+  return `${ms2}ms`;
 }
 function buildStreamIdleTimeoutErrorMessage(timeoutMs) {
   return `Claude Code stream idle timeout after ${formatDurationShort(timeoutMs)} with no output from Claude Code; treating stalled stream as retryable 529 overloaded/rate limit condition. Retry after ${formatDurationShort(STREAM_IDLE_BACKOFF_HINT_MS)}.`;
@@ -3212,9 +3478,19 @@ function updateUsage(output, usage, model, c) {
   }
   output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
   calculateCost(model, output.usage);
+  if (!DEBUG) return;
   const promptTokens = output.usage.input + output.usage.cacheRead + output.usage.cacheWrite;
   const cachePct = promptTokens > 0 ? Math.round(output.usage.cacheRead / promptTokens * 100) : 0;
-  debug(`usage: in=${output.usage.input} out=${output.usage.output} reasoning=${output.usage.reasoning ?? "-"} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens} cachePct=${cachePct}% model=${model.id}`);
+  const line = `usage: in=${output.usage.input} out=${output.usage.output} reasoning=${output.usage.reasoning ?? "-"} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens} cachePct=${cachePct}% model=${model.id}`;
+  const timing = c.timing;
+  if (timing) {
+    if (timing.lastUsageLine === line) {
+      timing.usageRepeats += 1;
+      return;
+    }
+    timing.lastUsageLine = line;
+  }
+  debug(line);
 }
 function mapStopReason(reason) {
   switch (reason) {
@@ -4000,8 +4276,15 @@ function resolveToolResults(queryCtx, allResults, toolsSettling, cwd) {
         appendIntegrityEntry("late_tool_result_after_claude_gave_up", { id, toolName: pending.toolName });
       }
       debug(`provider: resolving ${pending.toolName} [${id}]${result.isError ? " (error)" : ""} content: ${contentShape(result.content)}`);
-      if (toolsSettling) void toolsSettling.then(() => pending.resolve(result));
-      else pending.resolve(result);
+      if (toolsSettling) {
+        void toolsSettling.then(() => {
+          queryCtx.timing?.phase("resultReleased");
+          pending.resolve(result);
+        });
+      } else {
+        queryCtx.timing?.phase("resultReleased");
+        pending.resolve(result);
+      }
     } else if (id) {
       queryCtx.pendingResults.set(id, result);
       debug(`provider: queued result [${id}] (${queryCtx.pendingResults.size} pending)`);
@@ -4048,12 +4331,14 @@ function deliverSteerBeforeResults(queryCtx, sdkQuery2, live) {
   const writeSettled = () => {
     if (queryCtx.steeringWriteQuery === sdkQuery2) queryCtx.steeringWriteQuery = null;
   };
+  const content = live.steer.blocks ?? live.steer.text;
   const message = {
     type: "user",
-    message: { role: "user", content: live.steer.blocks ?? live.steer.text },
+    message: { role: "user", content },
     parent_tool_use_id: null,
     // "now" makes Claude Code 2.1.283 interrupt the pending MCP call and discard its result; "next" keeps it.
-    priority: "next"
+    priority: "next",
+    ...slashLed(content) ? { client_composed: true } : {}
   };
   async function* input() {
     yield message;
@@ -4068,7 +4353,7 @@ function deliverSteerBeforeResults(queryCtx, sdkQuery2, live) {
       diagDump("steering_query_ended_during_write", { resultCount: live.resultCount, detached: queryCtx.detachedFromSharedSession });
       noteAnomaly("steering_query_ended_during_write", piSession);
       const record2 = getSharedSession();
-      if (writtenInto !== null && !queryCtx.detachedFromSharedSession && queryCtx.queryGeneration === writtenInto.generation && record2 !== null && writtenInto.sessionId !== void 0 && record2.sessionId === writtenInto.sessionId && !record2.needsRebuild) markSessionForRebuild({ forceRotate: true });
+      if (writtenInto !== null && !queryCtx.detachedFromSharedSession && queryCtx.queryGeneration === writtenInto.generation && record2 !== null && writtenInto.sessionId !== void 0 && record2.sessionId === writtenInto.sessionId && !record2.needsRebuild) markSessionForRebuild({ reason: "steering-write", forceRotate: true });
       return;
     }
     if (queryCtx.restartRequest) {
@@ -4105,7 +4390,7 @@ function failSteeringDelivery(queryCtx, sdkQuery2, error51, live, piSession) {
   queryCtx.handledTerminalError = true;
   queryCtx.priorHistoryRewritten = true;
   queryCtx.latestCursorDigest = UNVERIFIED_HISTORY_DIGEST;
-  if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ forceRotate: true });
+  if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ reason: "steering-failed", forceRotate: true });
   const detail = { resultCount: live.resultCount, userMessageCount: live.userMessageCount, detached: queryCtx.detachedFromSharedSession };
   diagDump("steering_delivery_failed", { ...detail, error: error51 instanceof Error ? error51.message : String(error51) });
   noteAnomaly("steering_delivery_failed", piSession);
@@ -4191,10 +4476,22 @@ import yy from "node:process";
 import { delimiter as ZYe, isAbsolute as A6 } from "path";
 import { once as JO } from "events";
 import { constants as bc, createWriteStream as Dfe } from "fs";
+import { lstat as Lfe, open as ik, lstat as iJe, readdir as Cc, realpath as ak, rename as aJe, stat as Mfe } from "fs/promises";
+import { basename as Nfe, dirname as Ufe, isAbsolute as cJe, join as ir } from "path";
 import { execFile as kfe } from "child_process";
 import { promisify as Pfe } from "util";
+import { execFileSync as Efe } from "child_process";
+import { lstatSync as bfe } from "fs";
+import { join as Cfe } from "path";
+import { basename as FD, dirname as zD, isAbsolute as G3e, join as r_e, relative as W3e, sep as V3e } from "path";
 import { createHash as ihe } from "crypto";
 import { constants as dD } from "fs";
+import { isAbsolute as t_e, sep as UD } from "path";
+import { readFile as v_e } from "fs/promises";
+import { dirname as x_e, join as A_e } from "path";
+import { basename as JD, dirname as XD } from "path";
+import { randomUUID as nu } from "crypto";
+import { basename as Dye, join as ri } from "path";
 import { AsyncLocalStorage as xye } from "async_hooks";
 import { constants as Aye } from "fs";
 import { appendFile as Rye, copyFile as Tye, lstat as wye, mkdir as Oye, open as gL, readdir as hL, readFile as _L, stat as kye, unlink as Pye, writeFile as vb } from "fs/promises";
@@ -7352,25 +7649,25 @@ var LC = X(function(uF) {
 var MC = X(function(mF) {
   Object.defineProperty(mF, "__esModule", { value: true });
   mF.validateTuple = void 0;
-  var Im = we(), ms = Me(), pF = Wn(), NRe = { keyword: "items", type: "array", schemaType: ["object", "array", "boolean"], before: "uniqueItems", code(e) {
+  var Im = we(), ms2 = Me(), pF = Wn(), NRe = { keyword: "items", type: "array", schemaType: ["object", "array", "boolean"], before: "uniqueItems", code(e) {
     let { schema: t, it: n } = e;
     if (Array.isArray(t)) return fF(e, "additionalItems", t);
-    if (n.items = true, ms.alwaysValidSchema(n, t)) return;
+    if (n.items = true, ms2.alwaysValidSchema(n, t)) return;
     e.ok(pF.validateArray(e));
   } };
   function fF(e, t, n = e.schema) {
     let { gen: r, parentSchema: o, data: s, keyword: i, it: a } = e;
-    if (d(o), a.opts.unevaluated && n.length && a.items !== true) a.items = ms.mergeEvaluated.items(r, n.length, a.items);
+    if (d(o), a.opts.unevaluated && n.length && a.items !== true) a.items = ms2.mergeEvaluated.items(r, n.length, a.items);
     let l = r.name("valid"), c = r.const("len", Im._`${s}.length`);
     n.forEach((p, f) => {
-      if (ms.alwaysValidSchema(a, p)) return;
+      if (ms2.alwaysValidSchema(a, p)) return;
       r.if(Im._`${c} > ${f}`, () => e.subschema({ keyword: i, schemaProp: f, dataProp: f }, l)), e.ok(l);
     });
     function d(p) {
       let { opts: f, errSchemaPath: m } = a, h = n.length, y = h === p.minItems && (h === p.maxItems || p[t] === false);
       if (f.strictTuples && !y) {
         let _ = `"${i}" is ${h}-tuple, but minItems or maxItems/${t} are not specified or different at path "${m}"`;
-        ms.checkStrictMode(a, _, f.strictTuples);
+        ms2.checkStrictMode(a, _, f.strictTuples);
       }
     }
   }
@@ -12459,6 +12756,9 @@ function pw() {
   return M_().host.launchOptions.diskless();
 }
 var G2e = new Fe(() => Qe());
+function V(e, t) {
+  return { code: "InvalidArgument", argument: e, ...t !== void 0 && { reason: t } };
+}
 var op = { home: (e) => ({ space: "home", path: e }), workspace: (e) => ({ space: "workspace", path: e }), system: (e) => ({ space: "system", path: e }), userNamed: (e) => ({ space: "userNamed", path: e }) };
 var U_ = globalThis.process?.getBuiltinModule?.("async_hooks");
 var gw = U_ !== void 0;
@@ -15982,6 +16282,49 @@ function by(e) {
   return t;
 }
 var rYe = Ey("claude-cli");
+function h6(e) {
+  return `</pasted_content id="${e}">
+`;
+}
+function _6(e) {
+  if (e.length !== 4) return false;
+  for (let t = 0; t < e.length; t++) {
+    let n = e.charCodeAt(t);
+    if (!(n >= 48 && n <= 57 || n >= 97 && n <= 102)) return false;
+  }
+  return true;
+}
+function y6(e) {
+  let t = [], n = 0, r = 0;
+  for (; ; ) {
+    let o = e.indexOf('<pasted_content id="', r);
+    if (o === -1) break;
+    let s = o + 20, i = e.slice(s, s + 4);
+    if (!_6(i) || !e.startsWith(`">
+`, s + 4)) {
+      r = s;
+      continue;
+    }
+    let a = s + 4 + 3, c = h6(i).slice(0, -1), d = e.indexOf(`
+${c}`, a - 1) + 1;
+    if (d === 0) break;
+    let p = o;
+    for (let f = 0; f < 2 && p > n && e[p - 1] === `
+`; f++) p--;
+    if (p > n) t.push({ kind: "text", text: e.slice(n, p) });
+    n = d + c.length;
+    for (let f = 0; f < 2 && e[n] === `
+`; f++) n++;
+    t.push({ kind: "block", id: i, body: e.slice(a, d - 1), raw: e.slice(p, n) }), r = n;
+  }
+  if (n < e.length) t.push({ kind: "text", text: e.slice(n) });
+  return t;
+}
+function Cy(e) {
+  let t = y6(e);
+  if (t.length === 1 && t[0].kind === "text") return e;
+  return t.map((n) => n.kind === "text" ? n.text : n.body).join("");
+}
 function S6() {
   if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) return "essential-traffic";
   if (process.env.DISABLE_TELEMETRY) return "no-telemetry";
@@ -17430,6 +17773,54 @@ var hfe = {};
 var M9e = ky(hfe, null);
 var _fe = {};
 var N9e = ky(_fe, null);
+async function sr(e, t, n) {
+  let r = Math.max(1, Math.floor(n?.maxPages ?? 1e4)), o;
+  for (let s = 0; s < r; s++) {
+    if (n?.budget !== void 0) {
+      if (n.budget.pagesLeft < 1) return { status: "capped" };
+      n.budget.pagesLeft--;
+    }
+    let i = await e(o);
+    if (!i.ok) return { status: "error", error: i.error };
+    if (await t(i.value.items), n?.until?.()) return { status: "done" };
+    if (o = i.value.cursor, !o) return { status: "done" };
+  }
+  return { status: "capped" };
+}
+var yfe = /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/;
+var Sfe = /<command-name>(.*?)<\/command-name>/;
+function Ks(e, t) {
+  if (e.type !== "user") return;
+  if (e.isMeta === true || e.isCompactSummary === true) return;
+  let n = e.message;
+  if (!n) return;
+  let r = n.content, o = [];
+  if (typeof r === "string") o.push(r);
+  else if (Array.isArray(r)) for (let s of r) {
+    if (!s || typeof s !== "object") continue;
+    if (s.type === "tool_result") return;
+    if (s.type === "text" && typeof s.text === "string") o.push(s.text);
+  }
+  for (let s of o) {
+    let i = Cy(s).replaceAll(`
+`, " ").trim();
+    if (!i) continue;
+    let a = Sfe.exec(i);
+    if (a) {
+      if (!t.commandFallback) t.commandFallback = a[1];
+      continue;
+    }
+    let l = /<bash-input>([\s\S]*?)<\/bash-input>/.exec(i);
+    if (l) return `! ${l[1].trim()}`;
+    if (yfe.test(i)) continue;
+    if (i.length > 200) i = Ho(i, 200).trim() + "\u2026";
+    return i;
+  }
+  return;
+}
+function vfe() {
+  return process.platform === "win32";
+}
 var ZO = class {
   resolved = /* @__PURE__ */ new Map();
   lookup(e) {
@@ -17443,11 +17834,143 @@ var ZO = class {
   }
 };
 var xfe = new Fe(() => new ZO());
+var Afe = 5e3;
+function qO(e) {
+  try {
+    return bfe(e, { throwIfNoEntry: false }) === void 0;
+  } catch {
+    return false;
+  }
+}
+var Rfe = /* @__PURE__ */ new Set([".com", ".exe", ".bat", ".cmd"]);
+function Tfe(e) {
+  let t = e.toLowerCase().replace(/.*[\\/]/, "").replace(/[. ]+$/, ""), n = t.lastIndexOf(".");
+  return n > 0 && Rfe.has(t.slice(n));
+}
+function wfe(e, t = false) {
+  let n = xfe.of(Yt().host), r = n.lookup(e);
+  if (r !== void 0) if (r !== null) {
+    if (!qO(r)) return r;
+    n.forget(e);
+  } else {
+    if (!t) return r;
+    n.forget(e);
+  }
+  let o = ip("SYSTEMROOT") || "C:\\Windows", s = Cfe(o, "System32", "where.exe");
+  try {
+    let a = Efe(s, [e], { stdio: "pipe", encoding: "utf8", timeout: Afe, windowsHide: true, env: process.env }).trim().split(/\r?\n/).filter(Boolean), l = process.cwd(), c = false;
+    for (let d of a) {
+      if (qO(d)) continue;
+      if (ep(d, l)) {
+        c = true;
+        continue;
+      }
+      if (!Tfe(d)) continue;
+      return n.remember(e, d), d;
+    }
+    if (a.length > 0 && !c) n.remember(e, null);
+    return null;
+  } catch (i) {
+    if (Ofe(i)) n.remember(e, null);
+    return null;
+  }
+}
+function Ofe(e) {
+  if (e === null || typeof e !== "object") return false;
+  let t = "status" in e ? e.status : void 0, n = "signal" in e ? e.signal : void 0, r = "code" in e ? e.code : void 0;
+  return t === 1 && !n && !r;
+}
+function YO(e, t = false) {
+  if (!vfe()) return e;
+  if (e.includes("/") || e.includes("\\")) return e;
+  return wfe(e, t);
+}
 var Ife = Pfe(kfe);
+async function io(e) {
+  let t = YO("git");
+  if (t === null) return [];
+  try {
+    let { stdout: n } = await Ife(t, ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "worktree", "list", "--porcelain"], { cwd: e, timeout: 5e3, windowsHide: true });
+    if (!n) return [];
+    return n.split(`
+`).filter((r) => r.startsWith("worktree ")).map((r) => je(r.slice(9)));
+  } catch {
+    return [];
+  }
+}
+var tn = 65536;
 var zfe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function ze(e) {
   if (typeof e !== "string") return null;
   return zfe.test(e) ? e : null;
+}
+function ck(e) {
+  if (!e.includes("\\")) return e;
+  try {
+    return JSON.parse(`"${e}"`);
+  } catch {
+    return e;
+  }
+}
+function Dt(e, t) {
+  let n = [`"${t}":"`, `"${t}": "`], r, o = -1;
+  for (let s of n) {
+    let i = 0;
+    while (true) {
+      let a = e.indexOf(s, i);
+      if (a < 0) break;
+      let l = a + s.length, c = l;
+      while (c < e.length) {
+        if (e[c] === "\\") {
+          c += 2;
+          continue;
+        }
+        if (e[c] === '"') {
+          if (a > o) r = ck(e.slice(l, c)), o = a;
+          break;
+        }
+        c++;
+      }
+      i = c + 1;
+    }
+  }
+  return r;
+}
+function Up(e, t, n) {
+  return $fe(e, n, t);
+}
+function $fe(e, t, n) {
+  let r = n === void 0 ? void 0 : `"type":"${n}"`, o = `"${t}":`, s = e.length;
+  while (s > 0) {
+    let i = e.lastIndexOf(`
+`, s - 1), a = e.slice(i + 1, s);
+    if (s = i, a.includes(o) && (r === void 0 || a.includes(r))) try {
+      let l = JSON.parse(a);
+      if (typeof l === "object" && l !== null && (n === void 0 || l.type === n)) {
+        let c = l[t];
+        if (typeof c === "string") return c;
+      }
+    } catch {
+    }
+    if (i < 0) break;
+  }
+  return;
+}
+function Iy(e, t) {
+  let n = `"${t}":`, r = 0;
+  while (r < e.length) {
+    let o = e.indexOf(`
+`, r), s = o < 0 ? e.slice(r) : e.slice(r, o);
+    if (r = o < 0 ? e.length : o + 1, s.includes(n)) try {
+      let i = JSON.parse(s);
+      if (typeof i === "object" && i !== null) {
+        let a = i[t];
+        if (typeof a === "string") return a;
+      }
+    } catch {
+    }
+  }
+  return;
 }
 async function xc(e, t, n) {
   return jfe(e, t, "w", n);
@@ -17474,9 +17997,89 @@ async function Hfe(e, t, n) {
   let i = await r.append(o, s);
   if (!i.ok) throw Error("transcript stream append failed", { cause: i.error });
 }
+function zp(e) {
+  let t = 0, n = { commandFallback: "" };
+  while (t < e.length) {
+    let r = e.indexOf(`
+`, t), o = r >= 0 ? e.slice(t, r) : e.slice(t);
+    if (t = r >= 0 ? r + 1 : e.length, !o.includes('"type":"user"') && !o.includes('"type": "user"')) continue;
+    if (o.includes('"tool_result"')) continue;
+    if (o.includes('"isMeta":true') || o.includes('"isMeta": true')) continue;
+    if (o.includes('"isCompactSummary":true') || o.includes('"isCompactSummary": true')) continue;
+    try {
+      let s = JSON.parse(o), i = Ks(s, n);
+      if (i !== void 0) return i;
+    } catch {
+      continue;
+    }
+  }
+  return n.commandFallback;
+}
+function dk(e) {
+  let t = { commandFallback: "" };
+  for (let n of e) {
+    if (typeof n !== "object" || n === null) continue;
+    let r = Ks(n, t);
+    if (r !== void 0) return r;
+  }
+  return t.commandFallback;
+}
 var XO = process.platform === "win32" ? bc.O_RDONLY : bc.O_RDONLY | bc.O_NOFOLLOW | bc.O_NONBLOCK;
+async function Bfe(e) {
+  let { backend: t, key: n } = e;
+  try {
+    let r = await t.read([{ key: n, offset: 0, length: tn }, { key: n, tail: tn }]);
+    if (!r.ok) return null;
+    let [o, s] = r.value.items;
+    if (!o.found || o.value.length === 0) return null;
+    let i = QO(o.value), a = s.found && s.value.length > 0 ? QO(s.value) : i;
+    return { head: i, tail: a, mtimeMs: o.mtimeMs, totalBytes: o.totalBytes };
+  } catch {
+    return null;
+  }
+}
+function QO(e) {
+  return Buffer.from(e.buffer, e.byteOffset, e.byteLength).toString("utf8");
+}
 var _Je = Buffer.from('"type":"user"');
 var yJe = Buffer.from('"type":"assistant"');
+function $p(e, t) {
+  if (e.kind !== "scope" || e.scope.namespace !== "transcript" || e.scope.projectKey === void 0 || e.scope.sessionId !== void 0 || !t(e.scope.projectKey)) return;
+  return e.scope.projectKey;
+}
+function pk(e) {
+  return { skipScopeStats: true, skipKeyStats: true, ...e !== void 0 && { cursor: e } };
+}
+async function Ws(e, t) {
+  if (t !== void 0 && t.hoverRestOn) return fk(t.source);
+  try {
+    if (XO === bc.O_RDONLY) {
+      if (!(await Lfe(e)).isFile()) return null;
+    }
+    let n = await ik(e, XO);
+    try {
+      let r = await n.stat();
+      if (!r.isFile()) return null;
+      let o = Buffer.allocUnsafe(tn), s = await n.read(o, 0, tn, 0);
+      if (s.bytesRead === 0) return null;
+      let i = o.toString("utf8", 0, s.bytesRead), a = Math.max(0, r.size - tn), l = i;
+      if (a > 0) {
+        let c = await n.read(o, 0, tn, a);
+        l = o.toString("utf8", 0, c.bytesRead);
+      }
+      return { mtime: r.mtime.getTime(), size: r.size, head: i, tail: l };
+    } finally {
+      await n.close();
+    }
+  } catch {
+    return null;
+  }
+}
+async function fk(e) {
+  let t = await Bfe(e);
+  if (t === null) return null;
+  return { mtime: Math.trunc(t.mtimeMs), size: t.totalBytes, head: t.head, tail: t.tail };
+}
 var ao = 200;
 function Kfe(e) {
   return Math.abs(by(e)).toString(36);
@@ -17489,14 +18092,155 @@ function Ac(e) {
   if (t.length <= ao) return t;
   return `${t.slice(0, ao)}-${Kfe(e)}`;
 }
+function ct() {
+  return ir(at(), "projects");
+}
 function Rr(e) {
   return Aw() ?? Ac(e);
+}
+function My(e) {
+  let t = Ac(e);
+  return t === Rr(e) ? void 0 : t;
+}
+function xa(e, t = ct()) {
+  return ir(t, Rr(e));
+}
+function Vs(e, t) {
+  let n = Nfe(e);
+  return Ufe(e) === ct() && t(n) ? n : void 0;
+}
+async function lo(e, t) {
+  try {
+    if (t !== void 0 && t.hoverRestOn) {
+      let n = await t.realPath(e);
+      return je(n.ok && n.value.found ? n.value.path : e);
+    }
+    return je(await ak(e));
+  } catch {
+    return je(e);
+  }
+}
+async function Aa(e, t, n, r) {
+  let o = r !== void 0 && r.hoverRestOn ? r.source : void 0, s = o === void 0 ? void 0 : Vs(e, o.isKeySegment);
+  if (o !== void 0 && s !== void 0) {
+    let l = await Gfe(s, t, n, o);
+    if (l !== void 0) return l;
+  }
+  let i = va(t), a;
+  try {
+    a = await Cc(e, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (let l of a) {
+    if (!l.isFile() || !l.name.endsWith(".jsonl")) continue;
+    let c = await Ws(ir(e, l.name));
+    if (c === null) continue;
+    if (hk(c, i, n)) return true;
+  }
+  return false;
+}
+function hk(e, t, n) {
+  let r = Up(e.tail, "relocated", "relocatedCwd") ?? Iy(e.head, "cwd");
+  if (r === void 0) return false;
+  let o = va(je(r));
+  return n ? o.toLowerCase() === t.toLowerCase() : o === t;
+}
+async function Gfe(e, t, n, r) {
+  let { backend: o, transcriptKey: s, isKeySegment: i } = r, a = va(t), l = false, c = /* @__PURE__ */ new Set();
+  try {
+    let d = await sr((p) => o.listEntries({ namespace: "transcript", projectKey: e }, pk(p)), async (p) => {
+      for (let f of p) {
+        if (f.kind !== "key" || f.key.namespace !== "transcript" || f.key.projectKey !== e || f.key.agentId !== void 0 || !i(f.key.sessionId) || c.has(f.key.sessionId)) continue;
+        let m = f.key.sessionId, h = await fk({ backend: o, key: s(e, m) });
+        if (h === null) continue;
+        if (c.add(m), hk(h, a, n)) {
+          l = true;
+          return;
+        }
+      }
+    }, { until: () => l });
+    if (l) return true;
+    if (d.status !== "done") return;
+  } catch {
+    return;
+  }
+  return false;
+}
+async function kn(e, t, n = ct()) {
+  if (t !== void 0 && t.hoverRestOn) return Wfe(e, t);
+  let r = xa(e, n), o = [];
+  try {
+    await Cc(r), o.push(r);
+  } catch {
+  }
+  let s = My(e);
+  if (s !== void 0) {
+    let p = ir(n, s);
+    try {
+      await Cc(p), o.push(p);
+    } catch {
+    }
+    return o;
+  }
+  let i = Ac(e);
+  if (i.length <= ao) return o;
+  let a = process.platform === "win32", l = (p) => a ? p.toLowerCase() : p, c = l(i.slice(0, ao) + "-"), d = l(r);
+  try {
+    for (let p of await Cc(n, { withFileTypes: true })) {
+      if (!p.isDirectory() || !l(p.name).startsWith(c)) continue;
+      let f = ir(n, p.name);
+      if (l(f) !== d && await Aa(f, e, a)) o.push(f);
+    }
+  } catch {
+  }
+  return o;
+}
+async function Wfe(e, t) {
+  let n = await Ra(t.source);
+  if (n === null) {
+    let r = My(e);
+    return [xa(e), ...r !== void 0 ? [ir(ct(), r)] : []];
+  }
+  return Uy(e, n, process.platform === "win32", t);
+}
+async function Ra(e) {
+  let { backend: t, isKeySegment: n } = e, r = [], o = /* @__PURE__ */ new Set(), s = 0;
+  try {
+    if ((await sr((a) => t.listEntries({ namespace: "transcript" }, pk(a)), (a) => {
+      for (let l of a) {
+        let c = $p(l, n);
+        if (c !== void 0 && !o.has(c)) o.add(c), r.push(c);
+      }
+      s++;
+    })).status === "error") return s === 0 ? null : r;
+  } catch {
+    return s === 0 ? null : r;
+  }
+  return r;
+}
+async function Uy(e, t, n, r) {
+  let o = Rr(e), s = xa(e), i = My(e), a = i === void 0 && o.length > ao ? o.slice(0, ao) + "-" : void 0, l = ct(), c = (S) => n ? S.toLowerCase() : S, d = a !== void 0 ? c(a) : void 0, p = c(o), f = false, m, h = [], y = /* @__PURE__ */ new Set();
+  for (let S of t) if (S === o) f = true;
+  else if (i !== void 0) {
+    if (m === void 0 && c(S) === c(i)) m = ir(l, S);
+  } else if (d !== void 0 && c(S).startsWith(d) && c(S) !== p && !y.has(c(S))) y.add(c(S)), h.push(S);
+  let _ = [];
+  for (let S of h) {
+    let C = ir(l, S);
+    if (await Aa(C, e, n, r)) _.push(C);
+  }
+  return [...f ? [s] : [], ...m !== void 0 ? [m] : [], ..._];
 }
 var qfe = Buffer.from('"compact_boundary"');
 var Np = Buffer.from('{"type":"attribution-snapshot"');
 var Zfe = Buffer.from('{"type":"system"');
 var vc = 10;
 var Yfe = Buffer.from([vc]);
+var bk = /^[0-9a-f]{16}(?:[0-9a-f]{48})?@v\d+$/;
+function Ck(e, t, n) {
+  return { type: "history-suppression", sessionId: e, cause: t, ...n && { vetoedAgainstAccountUuid: n }, ts: (/* @__PURE__ */ new Date()).toISOString() };
+}
 var Ak;
 function P(e, t, n) {
   function r(a, l) {
@@ -20203,6 +20947,45 @@ fn($S());
 var qge = w(() => A({ lineage: g().min(1), source: ue().optional() }));
 var Xge = [[`<${my}>`, "record"], [`<${gy}>`, "output"], [`<${hy}>`, "output"], [`<${_y}>`, "caveat"]];
 var Qge = String.fromCharCode(0);
+var ehe = /^\.[0-9a-f]{16}\.aside$/;
+function the(e) {
+  if (e.charCodeAt(0) !== 46) return false;
+  return po(e).some((t) => ehe.test(t));
+}
+function uD(e) {
+  return typeof e === "string" && /^[. ]+$/.test(e);
+}
+function Mt(e) {
+  return !(typeof e !== "string" || e.length === 0 || uD(e) || e.includes("/") || e.includes("\\") || e.includes(Qge) || the(e));
+}
+function hn(e) {
+  return e.length > 0 && e.every(Mt);
+}
+function Wc(e) {
+  return po(e).some((t) => t.endsWith(".jsonl"));
+}
+function po(e) {
+  let t = mf.get(e);
+  if (t !== void 0) return t;
+  let n = Object.freeze(nhe(e));
+  if (mf.size >= rhe) mf.clear();
+  return mf.set(e, n), n;
+}
+function nhe(e) {
+  let t = e.toLowerCase(), n = t.indexOf(":");
+  return n === -1 ? [ub(t)] : [ub(t), ub(t.slice(0, n))];
+}
+var mf = /* @__PURE__ */ new Map();
+var rhe = 32768;
+function ub(e) {
+  let t = e.length;
+  while (t > 0) {
+    let n = e.charCodeAt(t - 1);
+    if (n !== 46 && n !== 32) break;
+    t -= 1;
+  }
+  return t === e.length ? e : e.slice(0, t);
+}
 function gf(e, t, n) {
   return n === void 0 ? e : { ...e, [t]: n };
 }
@@ -20226,6 +21009,31 @@ var pD = class {
   procUnreadableLogged = false;
 };
 var A3e = new Fe(() => new pD());
+function dhe(e) {
+  return V(e, "expected a segment that is not empty or made only of dots and spaces, with no path separator, NUL or set-aside shape");
+}
+function fo(e) {
+  if (typeof e !== "object" || e === null) return V("key", "expected a key object");
+  let t = bhe(e);
+  if (t !== void 0) return t;
+  let n = Yhe(e);
+  if (n === void 0) return V("key", `${e.namespace} is not a storage namespace`);
+  return mD("key", n);
+}
+function mD(e, t) {
+  for (let [n, r, o] of t) {
+    let s = `${e}.${n}`;
+    if (r === void 0) {
+      if (o !== "optional") return V(s, "required");
+    } else if (phe(n)) {
+      if (!(e === "scope" && n === "agentRelPath" && Array.isArray(r) && r.length === 0) && (!Array.isArray(r) || !hn(r))) return V(s, "expected a non-empty array of segments, none empty or made only of dots and spaces, with no path separator, NUL or set-aside shape");
+    } else if (typeof r !== "string" || !Mt(r)) return dhe(s);
+  }
+  return;
+}
+function phe(e) {
+  return e === "relPath" || e === "agentRelPath";
+}
 var gD = ["commands", "agents", "output-styles", "skills", "workflows", "routines", "themes", "rules", "session-env", "uploads", "mcp-skill-archives", "usage-data", "mcp-discovery-cache"];
 var hD = new Set(gD);
 var _D = `must be one of the userConfigDir directory names (${gD.join(", ")})`;
@@ -20238,20 +21046,465 @@ var hhe = `must be one of the marketplaceCache forms (${SD.join(", ")})`;
 var ED = ["world"];
 var _he = new Set(ED);
 var yhe = `must be one of the session journal names (${ED.join(", ")})`;
+function She(e) {
+  return _he.has(e);
+}
+function Ehe(e) {
+  return typeof e === "string" && /^[0-9a-f]{64}$/.test(e);
+}
+function bhe(e) {
+  if (e.namespace === "transcript") return xhe(e);
+  if (e.namespace === "pluginAssetCache" && !Ehe(e.digest)) return V("key.digest", "must be a SHA-256 digest: 64 lowercase hexadecimal characters");
+  if (e.namespace === "globalConfig" && "kind" in e) {
+    if (!xD(e.kind)) return V("key.kind", vD);
+    if (typeof e.stamp !== "string") return V("key.stamp", "a recovery copy key carries its stamp");
+  }
+  if (e.namespace === "task") return jhe(e);
+  if (e.namespace === "sidecar") {
+    let t = _f("key.sessionId", e.sessionId);
+    if (t !== void 0) return t;
+    if (yf(e.relPath)) return V("key.relPath", qc);
+    return wD(e.relPath) ? V("key.relPath", RD) : void 0;
+  }
+  if (e.namespace === "recording") return _f("key.sessionId", e.sessionId) ?? (TD(e.stamp) ? void 0 : V("key.stamp", The));
+  if (e.namespace === "jobsRoot") return Hhe(e);
+  if (e.namespace === "userConfigDir" && !hD.has(e.dir)) return V("key.dir", _D);
+  if (e.namespace === "fileHistory") return Che(e);
+  if (e.namespace === "settings" && !zhe(e.layer)) return V("key.layer", "must be user, project or local");
+  if (e.namespace === "log") return $he(e);
+  if (e.namespace === "job" && MD(e.relPath)) return V("key.relPath", LD);
+  if (e.namespace === "sessionLog") return ND("key", e) ?? (Vhe(e.logName) ? void 0 : V("key.logName", "must be the session-log stem <sessionId8>[-<title-slug>]: up to eight word characters, then lower-case a-z / 0-9 runs joined by single hyphens; not a bare device name"));
+  if (e.namespace === "pluginRegistry" && !fhe.has(e.file)) return V("key.file", mhe);
+  if (e.namespace === "marketplaceCache") {
+    if (!("relPath" in e)) return ghe.has(e.form) ? void 0 : V("key.form", hhe);
+    return e.form === void 0 ? void 0 : V("key.form", "a tree file key carries relPath, not form");
+  }
+  if (e.namespace !== "agentMemory") return;
+  if (!bD(e.layer)) return V("key.layer", "must be user, project or local");
+  if (e.layer === "user" && "projectKey" in e) return V("key.projectKey", "the user layer is not keyed by project");
+  if (e.layer !== "user" && typeof e.projectKey !== "string") return V("key.projectKey", "required for the project and local layers");
+  return typeof e.agentType === "string" ? void 0 : V("key.agentType", "an agent memory key names its agent");
+}
+function Che(e) {
+  return typeof e.backupFileName !== "string" || !bk.test(e.backupFileName) ? V("key.backupFileName", "must be a backup file name the engine has ever written (hex hash @v version)") : void 0;
+}
+function bD(e) {
+  return e === "user" || e === "project" || e === "local";
+}
 var CD = ["backup", "corrupted"];
 var vhe = new Set(CD);
 var vD = `must be one of the global-config copy kinds (${CD.join(", ")})`;
+function xD(e) {
+  return vhe.has(e);
+}
+function xhe(e) {
+  let t = _f("key.sessionId", e.sessionId);
+  if (t !== void 0) return t;
+  if (yf(e.agentRelPath)) return V("key.agentRelPath", qc);
+  if ("sessionJournal" in e) {
+    if (typeof e.sessionJournal !== "string" || !She(e.sessionJournal)) return V("key.sessionJournal", yhe);
+    return e.agentId === void 0 && e.agentRelPath === void 0 && !("journal" in e) ? void 0 : V("key.sessionJournal", "a session journal key names the session's own journal: no agentId, agentRelPath or run journal");
+  }
+  if ("journal" in e) {
+    if (e.journal !== true) return V("key.journal", "must be true");
+    if (!Array.isArray(e.agentRelPath)) return V("key.agentRelPath", "a run journal key carries its run directory");
+    return e.agentId === void 0 ? void 0 : V("key.agentId", "a transcript key names an agent transcript or the run journal, never both");
+  }
+  return e.agentRelPath !== void 0 && e.agentId === void 0 ? V("key.agentRelPath", "requires agentId or journal") : void 0;
+}
 var Ahe = "cloud-snapshots";
 var AD = /* @__PURE__ */ new Set(["memory", "tiny_memory", "bagel", Ahe, "bridge-pointer.json", ".session-aliases"]);
+var Rhe = /^[0-9]{1,16}$/;
+var The = "must be the recording stamp: 1 to 16 decimal digits (epoch milliseconds)";
 var hf = ".cast";
 var RD = `<stamp>${hf} inside a session's folder is that session's terminal recording stream: address it as keys.recording(projectKey, sessionId, stamp)`;
+function TD(e) {
+  return typeof e === "string" && Rhe.test(e);
+}
+function wD(e) {
+  return Array.isArray(e) && typeof e[0] === "string" && po(e[0]).some((t) => whe(t) !== void 0);
+}
+function whe(e) {
+  if (!e.endsWith(hf)) return;
+  let t = e.slice(0, -hf.length);
+  return TD(t) ? t : void 0;
+}
 var OD = [".ccr-tip.json", ".precompact.json", hf];
 var Ohe = `must not end with ${OD.join(", ")}: those name a session's project-level sibling files`;
+function khe(e) {
+  return po(e).some((t) => OD.some((n) => t.endsWith(n)));
+}
 var kD = ".dir-sync.json";
 var Phe = `must not end with ${kD}: that names a cloud session's directory-sync record at the project level`;
+function Ihe(e) {
+  return po(e).some((t) => t.endsWith(kD));
+}
 var Dhe = `${[...AD].join(", ")} are reserved: they name project-level entries, not sessions`;
+function Lhe(e) {
+  return po(e).some((t) => AD.has(t));
+}
+function _f(e, t) {
+  if (typeof t !== "string") return;
+  if (Lhe(t)) return V(e, Dhe);
+  if (khe(t)) return V(e, Ohe);
+  if (Ihe(t)) return V(e, Phe);
+  return Wc(t) ? V(e, qc) : void 0;
+}
+var Mhe = ".meta.json";
+var Nhe = ".meta is reserved for the list metadata key, under every spelling that opens its file";
+function Uhe(e) {
+  return Fhe(`${e}.json`);
+}
+function Fhe(e) {
+  return po(e).includes(Mhe);
+}
+var qc = "names a .jsonl stream, which only a transcript key addresses";
+function yf(e) {
+  return Array.isArray(e) && e.some((t) => typeof t === "string" && Wc(t));
+}
+function zhe(e) {
+  return e === "user" || e === "project" || e === "local";
+}
+var PD = "must be debug, telemetry or apiDump";
+function ID(e) {
+  return e === "debug" || e === "telemetry" || e === "apiDump";
+}
+function $he(e) {
+  if (!ID(e.channel)) return V("key.channel", PD);
+  if (e.channel !== "apiDump") return;
+  for (let t of ["agentId", "runId"]) if (t in e && e[t] !== void 0) return V(`key.${t}`, "an apiDump key names its dump by one id \u2014 the agent's for a subagent's requests, else the session's (today's dump-prompts/<id>.jsonl); agentId and runId nest nothing on this channel");
+  return;
+}
+function jhe(e) {
+  if ("taskId" in e && ("meta" in e || "highWaterMark" in e)) return V("key.taskId", "a task key names an item, the list metadata or the list high-water mark, never more than one");
+  if ("meta" in e && "highWaterMark" in e) return V("key.highWaterMark", "a task key names an item, the list metadata or the list high-water mark, never more than one");
+  if ("meta" in e && e.meta !== true) return V("key.meta", "must be true");
+  if ("highWaterMark" in e && e.highWaterMark !== true) return V("key.highWaterMark", "must be true");
+  if (typeof e.listId !== "string") return V("key.listId", "a task key carries its listId");
+  if ("meta" in e || "highWaterMark" in e) return;
+  if (typeof e.taskId !== "string") return V("key.taskId", "a task item key carries its taskId");
+  if (Uhe(e.taskId)) return V("key.taskId", Nhe);
+  return;
+}
+function Hhe(e) {
+  if ("file" in e && "draftKey" in e) return V("key.draftKey", "a jobs-root key names the pins file or one draft, never both");
+  if ("file" in e) return e.file === "pins" ? void 0 : V("key.file", "must be pins");
+  if (typeof e.draftKey !== "string") return V("key.draftKey", "a jobs-root draft key carries its draftKey");
+  return Zhe.test(e.draftKey) ? void 0 : V("key.draftKey", "must be 8 lowercase hex characters");
+}
 var DD = "timeline.jsonl";
 var LD = `${DD} is the job's timeline stream: address it as keys.jobTimeline(jobId)`;
+function MD(e) {
+  return Array.isArray(e) && typeof e[0] === "string" && po(e[0]).includes(DD);
+}
+var Bhe = /^\d{4}$/;
+var fD = /^\d{2}$/;
+var Khe = /^[A-Za-z0-9_-]{1,8}(?:-[a-z0-9]+)*$/;
+var Ghe = 128;
+var Whe = /^(?:con|prn|aux|nul|com\d|lpt\d)$/i;
+function Vhe(e) {
+  return typeof e === "string" && e.length <= Ghe && Khe.test(e) && !Whe.test(e);
+}
+function ND(e, t) {
+  if (t.year !== void 0 && !pb(Bhe, t.year)) return V(`${e}.year`, "must be four digits (YYYY)");
+  if (t.month !== void 0 && !pb(fD, t.month)) return V(`${e}.month`, "must be two digits (MM)");
+  if (t.day !== void 0 && !pb(fD, t.day)) return V(`${e}.day`, "must be two digits (DD)");
+  return;
+}
+function pb(e, t) {
+  return typeof t === "string" && e.test(t);
+}
+var Zhe = /^[0-9a-f]{8}$/;
+function Yhe(e) {
+  switch (e.namespace) {
+    case "transcript":
+      return [["projectKey", e.projectKey], ["sessionId", e.sessionId], ["agentId", e.agentId, "optional"], ["agentRelPath", e.agentRelPath, "optional"]];
+    case "history":
+    case "identity":
+      return [];
+    case "globalConfig":
+      return "kind" in e ? [["stamp", e.stamp]] : [];
+    case "settings":
+      return e.layer === "user" ? [] : e.layer === "project" ? [["projectKey", e.projectKey]] : [["consentRootKey", e.consentRootKey]];
+    case "task":
+      return "taskId" in e ? [["listId", e.listId], ["taskId", e.taskId]] : [["listId", e.listId]];
+    case "memory":
+      return [["projectKey", e.projectKey], ["relPath", e.relPath]];
+    case "pluginRegistry":
+      return [];
+    case "marketplaceCache":
+      return "relPath" in e ? [["marketplace", e.marketplace], ["relPath", e.relPath]] : [["marketplace", e.marketplace]];
+    case "pluginCache":
+      return [["marketplace", e.marketplace], ["plugin", e.plugin], ["version", e.version], ["relPath", e.relPath]];
+    case "cache":
+      return [["store", e.store], ["id", e.id]];
+    case "paste":
+      return [["id", e.id]];
+    case "pluginAssetCache":
+      return [["digest", e.digest]];
+    case "state":
+      return [["id", e.id]];
+    case "plan":
+      return [["name", e.name]];
+    case "feedbackDraft":
+      return [["draftId", e.draftId]];
+    case "agentMemory":
+      return [...e.layer === "user" ? [] : [["projectKey", e.projectKey]], ["agentType", e.agentType], ["relPath", e.relPath]];
+    case "team":
+      return [["team", e.team]];
+    case "sidecar":
+      return [["projectKey", e.projectKey], ["sessionId", e.sessionId], ["relPath", e.relPath]];
+    case "scratch":
+      return [["sessionId", e.sessionId], ["relPath", e.relPath]];
+    case "userConfigDir":
+      return [["relPath", e.relPath]];
+    case "fileHistory":
+      return [["sessionId", e.sessionId], ["backupFileName", e.backupFileName]];
+    case "job":
+      return [["jobId", e.jobId], ["relPath", e.relPath]];
+    case "daemon":
+      return [["relPath", e.relPath]];
+    case "jobsRoot":
+      return "file" in e ? [] : [["draftKey", e.draftKey]];
+    case "session":
+      return [["file", e.file]];
+    case "bridgePointer":
+    case "sessionAliases":
+      return [["projectKey", e.projectKey]];
+    case "dirSyncRecord":
+      return [["projectKey", e.projectKey], ["sessionId", e.sessionId]];
+    case "mailbox":
+      return [["team", e.team], ["teammate", e.teammate]];
+    case "log":
+      return [["sessionId", e.sessionId], ["agentId", e.agentId, "optional"], ["runId", e.runId, "optional"]];
+    case "jobTimeline":
+      return [["jobId", e.jobId]];
+    case "recording":
+      return [["projectKey", e.projectKey], ["sessionId", e.sessionId], ["stamp", e.stamp]];
+    case "sessionLog":
+      return [["projectKey", e.projectKey], ["year", e.year], ["month", e.month], ["day", e.day], ["logName", e.logName]];
+  }
+  return;
+}
+function n_e(e) {
+  let t = process.cwd();
+  return t.endsWith(UD) ? t + e : t + UD + e;
+}
+function mb(e) {
+  return (t) => e.hostFiles.realPath(op.workspace(t === "" || t_e(t) ? t : n_e(t)), { native: true });
+}
+function Zc(e) {
+  return e === void 0 ? void 0 : { hoverRestOn: _e(), realPath: mb(e) };
+}
+function cr(e, t) {
+  if (!_e() || t === void 0) return;
+  if (!e.endsWith(".jsonl")) return;
+  let n = zD(e);
+  if (zD(n) !== ct()) return;
+  let r = FD(n), o = FD(e, ".jsonl");
+  if (e !== r_e(ct(), r, `${o}.jsonl`)) return;
+  let s = xt.transcript(r, o);
+  return fo(s) === void 0 ? { backend: t, key: s } : void 0;
+}
+function _n(e) {
+  if (!_e() || e === void 0) return;
+  return { backend: e, transcriptKey: xt.transcript, isKeySegment: Mt, realWorkspacePath: mb(e) };
+}
+function Ht(e) {
+  return e === void 0 ? void 0 : { source: e, hoverRestOn: _e() };
+}
+var jD = 8192;
+async function Jc(e, t) {
+  let n = /* @__PURE__ */ new Map();
+  for (let S of e) n.set(S.uuid, S);
+  let r = 0;
+  for (let S of n.values()) {
+    if (S.type !== "system" || S.subtype !== "compact_boundary") continue;
+    let C = S.compactMetadata?.preservedMessages, E = S.compactMetadata?.preservedSegment;
+    if (C) {
+      if (C.uuids.length === 0 || C.uuids.some((M) => !n.has(M))) continue;
+      let b = C.anchorUuid;
+      for (let M of C.uuids) {
+        let z10 = n.get(M);
+        n.set(M, { ...z10, parentUuid: b }), b = M;
+      }
+      let v = C.uuids[0], L = C.uuids.at(-1);
+      for (let [M, z10] of n) {
+        if (++r % jD === 0) await new Promise((K) => setImmediate(K));
+        if (z10.parentUuid === C.anchorUuid && M !== v) n.set(M, { ...z10, parentUuid: L });
+      }
+    } else if (E) {
+      let b = n.get(E.headUuid);
+      if (b) n.set(E.headUuid, { ...b, parentUuid: E.anchorUuid });
+      for (let [v, L] of n) {
+        if (++r % jD === 0) await new Promise((M) => setImmediate(M));
+        if (L.parentUuid === E.anchorUuid && v !== E.headUuid) n.set(v, { ...L, parentUuid: E.tailUuid });
+      }
+    }
+  }
+  let o = /* @__PURE__ */ new Map();
+  for (let S = 0; S < e.length; S++) o.set(e[S].uuid, S);
+  let s = /* @__PURE__ */ new Set();
+  for (let S of n.values()) if (S.parentUuid) s.add(S.parentUuid);
+  let i = [...n.values()].filter((S) => !s.has(S.uuid)), a = (S) => !S.isSidechain && !S.teamName && S.type !== "progress" && !(S.type === "attachment" && S.attachment?.type === "fork_briefing"), l = /* @__PURE__ */ new Set();
+  for (let S of n.values()) if (S.parentUuid && a(S)) l.add(S.parentUuid);
+  let c = [...n.values()].filter((S) => a(S) && !l.has(S.uuid)).sort((S, C) => (o.get(C.uuid) ?? -1) - (o.get(S.uuid) ?? -1)), d = /* @__PURE__ */ new Set(), p, f;
+  for (let S of c) {
+    let C = [], E = /* @__PURE__ */ new Set(), b = S;
+    while (b && !d.has(b.uuid) && !E.has(b.uuid)) {
+      if (b.type === "user" || b.type === "assistant") {
+        p = b, f = S;
+        break;
+      }
+      E.add(b.uuid), C.push(b.uuid), b = b.parentUuid ? n.get(b.parentUuid) : void 0;
+    }
+    if (p) break;
+    for (let v of C) d.add(v);
+  }
+  let m = p;
+  if (!m) {
+    let S = [];
+    for (let b of i) {
+      let v = b, L = /* @__PURE__ */ new Set();
+      while (v) {
+        if (L.has(v.uuid)) break;
+        if (L.add(v.uuid), v.type === "user" || v.type === "assistant") {
+          S.push(v);
+          break;
+        }
+        v = v.parentUuid ? n.get(v.parentUuid) : void 0;
+      }
+    }
+    if (S.length === 0) return [];
+    let C = S.filter((b) => !b.isSidechain && !b.teamName && !b.isMeta), E = (b) => b.reduce((v, L) => (o.get(L.uuid) ?? -1) > (o.get(v.uuid) ?? -1) ? L : v);
+    m = C.length > 0 ? E(C) : E(S);
+  }
+  let h = [], y = /* @__PURE__ */ new Set(), _ = n.get(m.uuid);
+  while (_) {
+    if (y.has(_.uuid)) break;
+    y.add(_.uuid), h.push(_), _ = _.parentUuid ? n.get(_.parentUuid) : void 0;
+  }
+  if (h.reverse(), await new Promise((S) => setImmediate(S)), t?.found) t.found.terminal = m === p ? f : void 0;
+  return a_e(n, h, y);
+}
+function Sf(e) {
+  if (e.type !== "assistant") return;
+  let t = e.message;
+  if (typeof t !== "object" || t === null) return;
+  let n = t.id;
+  return typeof n === "string" ? n : void 0;
+}
+function HD(e) {
+  if (e.type !== "user" || !e.parentUuid) return false;
+  let t = e.message;
+  if (typeof t !== "object" || t === null) return false;
+  let n = t.content;
+  if (!Array.isArray(n)) return false;
+  return n.some((r) => typeof r === "object" && r !== null && r.type === "tool_result");
+}
+function a_e(e, t, n) {
+  let r = t.filter((E) => E.type === "assistant");
+  if (r.length === 0) return t;
+  let o = /* @__PURE__ */ new Map();
+  for (let E of r) {
+    let b = Sf(E);
+    if (b) o.set(b, E);
+  }
+  let s = /* @__PURE__ */ new Map(), i = /* @__PURE__ */ new Map(), a = /* @__PURE__ */ new Map(), l = [];
+  for (let E of e.values()) {
+    let b = Sf(E);
+    if (b) {
+      let v = s.get(b);
+      if (v) v.push(E);
+      else s.set(b, [E]);
+      for (let L of Yc(E, "tool_use", "id")) {
+        let M = a.get(L);
+        a.set(L, M === void 0 || M !== null && Sf(M) === b ? E : null);
+      }
+    } else if (HD(E)) l.push(E);
+  }
+  let c = /* @__PURE__ */ new Set(), d = (E, b) => {
+    if (c.has(E + `
+` + b.uuid)) return;
+    c.add(E + `
+` + b.uuid);
+    let v = i.get(E);
+    if (v) v.push(b);
+    else i.set(E, [b]);
+  }, p = (E, b) => (E.isSidechain ?? false) === (b.isSidechain ?? false) && E.agentId === b.agentId;
+  for (let E of l) {
+    d(E.parentUuid, E);
+    let b = typeof E.sourceToolAssistantUUID === "string" && E.sourceToolAssistantUUID !== E.parentUuid ? e.get(E.sourceToolAssistantUUID) : void 0;
+    if (b && p(E, b)) d(b.uuid, E);
+    for (let v of Yc(E, "tool_result", "tool_use_id")) {
+      let L = a.get(v);
+      if (L && p(E, L)) d(L.uuid, E);
+    }
+  }
+  let f = /* @__PURE__ */ new Set();
+  for (let E of t) for (let b of Yc(E, "tool_result", "tool_use_id")) f.add(b);
+  let m, h = (E) => {
+    if (m === void 0) {
+      m = /* @__PURE__ */ new Map();
+      let b = 0;
+      for (let v of e.keys()) m.set(v, b++);
+    }
+    return m.get(E.uuid) ?? Number.MAX_SAFE_INTEGER;
+  }, y = /* @__PURE__ */ new Set(), _ = /* @__PURE__ */ new Map(), S = 0;
+  for (let E of r) {
+    let b = Sf(E);
+    if (!b || y.has(b)) continue;
+    y.add(b);
+    let v = s.get(b) ?? [E], L = new Set(v.map((I) => I.uuid)), M = v.filter((I) => !n.has(I.uuid)), z10 = [], K = [], Ee = /* @__PURE__ */ new Set();
+    for (let I of v) for (let G of i.get(I.uuid) ?? []) {
+      if (n.has(G.uuid) || Ee.has(G.uuid)) continue;
+      if (Ee.add(G.uuid), L.has(G.parentUuid)) z10.push(G);
+      else K.push(G);
+    }
+    if (K.length > 0) {
+      let I = new Set(f);
+      for (let G of z10) for (let re of Yc(G, "tool_result", "tool_use_id")) I.add(re);
+      K.sort((G, re) => h(G) - h(re));
+      for (let G of K) {
+        let re = Yc(G, "tool_result", "tool_use_id");
+        if (!re.some((J) => {
+          let H = a.get(J);
+          return !I.has(J) && !!H && L.has(H.uuid);
+        })) continue;
+        for (let J of re) I.add(J);
+        z10.push(G);
+      }
+    }
+    if (M.length === 0 && z10.length === 0) continue;
+    let x = (I, G) => (I.timestamp ?? "").localeCompare(G.timestamp ?? "");
+    M.sort(x), z10.sort(x);
+    let R = o.get(b), k = [...M, ...z10];
+    for (let I of k) n.add(I.uuid);
+    S += k.length, _.set(R.uuid, k);
+  }
+  if (S === 0) return t;
+  let C = [];
+  for (let E of t) {
+    C.push(E);
+    let b = _.get(E.uuid);
+    if (b) C.push(...b);
+  }
+  return C;
+}
+function Yc(e, t, n) {
+  let r = e.message;
+  if (typeof r !== "object" || r === null) return [];
+  let o = r.content;
+  if (!Array.isArray(o)) return [];
+  let s = [];
+  for (let i of o) {
+    if (typeof i !== "object" || i === null) continue;
+    if (i.type !== t) continue;
+    let a = i[n];
+    if (typeof a === "string") s.push(a);
+  }
+  return s;
+}
 var VD = class {
   projectDirCache = /* @__PURE__ */ new Map();
   agentTranscriptSubdirs = /* @__PURE__ */ new Map();
@@ -20269,6 +21522,7 @@ var VD = class {
   }
 };
 var x6e = new Fe(() => new VD());
+var qD = 200;
 var ZD = "\\p{Default_Ignorable_Code_Point}\\u2800";
 var Ia = `\\p{Cc}\\p{Cf}\\p{Cs}\\p{Co}\\p{Cn}\\u2028\\u2029${ZD}`;
 var P6e = new RegExp(`[${Ia}]+`, "gu");
@@ -20280,7 +21534,63 @@ var M6e = new RegExp(`[\\p{Cf}\\p{Co}\\p{Cn}\\u2028\\u2029\\u007F-\\u009F${ZD}]`
 function Ef(e) {
   return e.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ");
 }
+function b_e(e) {
+  return [...e.replace(/[\x00-\x1f\x7f-\x9f]/g, "")].slice(0, qD).join("");
+}
+function YD(e) {
+  return b_e(Ef(e.trim())).trim();
+}
+var C_e = 6;
+function QD(e) {
+  let t = JD(e);
+  if (Wc(t)) return;
+  let n = ct(), r = [t], o = XD(e);
+  while (o !== n && r.length <= C_e + 1) {
+    let c = XD(o);
+    if (c === o) return;
+    r.unshift(JD(o)), o = c;
+  }
+  if (o !== n || r.length < 3) return;
+  let [s, i, ...a] = r;
+  if (!Mt(s) || !Mt(i) || a.length === 0 || !a.every(Mt)) return;
+  let l = xt.sidecar(s, i, a);
+  return fo(l) === void 0 ? l : void 0;
+}
 var R_e = w(() => A({ customTitle: g() }));
+function T_e(e, t) {
+  return A_e(x_e(e), t, "custom-title.json");
+}
+async function Da(e, t, n) {
+  let r = await w_e(T_e(e, t), n);
+  if (r === void 0) return;
+  let o;
+  try {
+    o = JSON.parse(r);
+  } catch {
+    return;
+  }
+  let s = R_e().safeParse(o);
+  if (!s.success) return;
+  return YD(s.data.customTitle) || void 0;
+}
+async function w_e(e, t) {
+  if (_e() && t !== void 0) try {
+    let n = QD(e);
+    if (n !== void 0) {
+      let r = await t.readText([n]);
+      if (!r.ok) return;
+      let o = r.value.items[0];
+      return o.found ? o.value : void 0;
+    }
+  } catch {
+    return;
+  }
+  try {
+    return await v_e(e, "utf8");
+  } catch {
+    return;
+  }
+}
 function ye(e) {
   return typeof e === "object" && e !== null && !Array.isArray(e);
 }
@@ -20677,6 +21987,265 @@ async function yL(e, t, n) {
 var Iye = new xye();
 function Ma() {
   return Iye.getStore() ?? new SL();
+}
+function EL(e) {
+  let t = e.type === "attachment" ? e.attachment : void 0;
+  return typeof t === "object" && t !== null && "type" in t && t.type === "queued_command" && "source_uuid" in t && typeof t.source_uuid === "string" && t.source_uuid ? t.source_uuid : void 0;
+}
+function Ab(e, t) {
+  let n = e.findIndex((r) => r.uuid === t);
+  return n !== -1 ? n : e.findIndex((r) => EL(r) === t);
+}
+function bL(e, t) {
+  let n = EL(e);
+  return n === void 0 ? void 0 : t.get(n);
+}
+async function Lye(e, t, n) {
+  let r = `${e}.jsonl`, o = Ht(_n(n));
+  async function s(l) {
+    let c = Ht(cr(ri(l, r), n));
+    if (c !== void 0 && c.hoverRestOn) try {
+      let d = await c.source.backend.read([c.source.key]);
+      if (!d.ok) return null;
+      let p = d.value.items[0];
+      if (!p?.found) return null;
+      if (p.value.byteLength === 0) {
+        let f = await c.source.backend.statMeta(c.source.key);
+        if (!f.ok || (f.value.storedBytes ?? f.value.size) === 0) return null;
+      }
+      return { buf: Buffer.from(p.value), projectDir: l };
+    } catch {
+      return null;
+    }
+    try {
+      let d = await Ma().readBytes(ri(l, r));
+      if (d.length === 0) return null;
+      return { buf: d, projectDir: l };
+    } catch {
+      return null;
+    }
+  }
+  if (t) {
+    let l = await lo(t, Zc(n));
+    for (let d of await kn(l, o)) {
+      let p = await s(d);
+      if (p) return p;
+    }
+    let c;
+    try {
+      c = await io(l);
+    } catch {
+      c = [];
+    }
+    for (let d of c) {
+      if (d === l) continue;
+      for (let p of await kn(d, o)) {
+        let f = await s(p);
+        if (f) return f;
+      }
+    }
+    return null;
+  }
+  let i = ct();
+  if (o !== void 0 && o.hoverRestOn) {
+    let l = await Ra(o.source);
+    if (l !== null) {
+      for (let c of l) {
+        let d = await s(ri(i, c));
+        if (d) return d;
+      }
+      return null;
+    }
+  }
+  let a;
+  try {
+    a = await Ma().list(i);
+  } catch {
+    return null;
+  }
+  for (let l of a) {
+    let c = await s(ri(i, l));
+    if (c) return c;
+  }
+  return null;
+}
+var Mye = /* @__PURE__ */ new Set(["user", "assistant", "attachment", "system", "progress"]);
+function Nye(e, t) {
+  let n = [], r = [], o, s = { historySuppressed: false }, i = 10, a = e.length, l = 0;
+  while (l < a) {
+    let d = e.indexOf(10, l);
+    if (d === -1) d = a;
+    let p = l;
+    while (p < d && e[p] <= 32) p++;
+    if (l = d + 1, p >= d) continue;
+    let f = e.toString("utf-8", p, d);
+    try {
+      o = vL(Ge(f), t, n, r, s) ?? o;
+    } catch {
+    }
+  }
+  return { transcript: n, contentReplacements: r, relocatedCwd: o, historySuppressed: s.historySuppressed, atisLatch: s.atisLatch };
+}
+function Uye(e, t) {
+  let n = [], r = [], o, s = { historySuppressed: false };
+  for (let a of e) {
+    if (typeof a !== "object" || a === null) continue;
+    o = vL(a, t, n, r, s) ?? o;
+  }
+  return { transcript: n, contentReplacements: r, relocatedCwd: o, historySuppressed: s.historySuppressed, atisLatch: s.atisLatch };
+}
+function vL(e, t, n, r, o) {
+  if (Mye.has(e.type) && typeof e.uuid === "string") n.push(e);
+  else if (e.type === "history-suppression") {
+    if (o) o.historySuppressed = true;
+  } else if (e.type === "atis-latch" && e.sessionId === t && typeof e.atis === "string" && /^[\x21-\x7e]*$/.test(e.atis)) {
+    if (o) o.atisLatch = e.atis;
+  } else if (e.type === "content-replacement" && e.sessionId === t && Array.isArray(e.replacements)) r.push(...e.replacements);
+  else if (e.type === "relocated" && e.sessionId === t && typeof e.relocatedCwd === "string" && e.relocatedCwd !== "") return e.relocatedCwd;
+  return;
+}
+async function xL(e, t = {}, n) {
+  let r = _e() ? n : void 0;
+  if (!ze(e)) throw new Oe(`Invalid sessionId: ${e}`, "forkSession: invalid sessionId (not a UUID)");
+  let o = await Lye(e, t.dir, r);
+  if (!o) throw Error(t.dir ? `Session ${e} not found in project directory for ${t.dir}` : `Session ${e} not found`);
+  let s = await Da(ri(o.projectDir, `${e}.jsonl`), e, r), { entries: i, forkedSessionId: a } = await zye(o.buf, e, t, s);
+  return await xc(ri(o.projectDir, `${a}.jsonl`), i, Ht(Fye(o.projectDir, a, _n(r)))), { sessionId: a };
+}
+function Fye(e, t, n) {
+  if (n === void 0) return;
+  let r = Dye(e);
+  if (ri(ct(), r) !== e || !n.isKeySegment(r) || !n.isKeySegment(t)) return;
+  return { backend: n.backend, key: n.transcriptKey(r, t) };
+}
+async function zye(e, t, n, r) {
+  let o = Nye(e, t);
+  return TL(o, t, n, () => {
+    let i = e.length, a = e.toString("utf-8", 0, Math.min(i, tn)), l = e.toString("utf-8", Math.max(0, i - tn)), c = Dt(l, "customTitle");
+    return (c !== void 0 ? c : r ?? Dt(a, "customTitle")) || Dt(l, "aiTitle") || Dt(a, "aiTitle") || zp(a);
+  });
+}
+async function AL(e, t, n) {
+  let r = Uye(e, t);
+  return TL(r, t, n, () => $ye(e));
+}
+function $ye(e) {
+  let t, n;
+  for (let r of e) {
+    if (typeof r !== "object" || r === null) continue;
+    let o = r;
+    if (typeof o.customTitle === "string" && o.customTitle) t = o.customTitle;
+    if (typeof o.aiTitle === "string" && o.aiTitle) n = o.aiTitle;
+  }
+  return t || n || dk(e) || void 0;
+}
+function jye(e) {
+  let t = e.compactMetadata;
+  if (typeof t !== "object" || t === null) return [];
+  let n = "preservedMessages" in t ? t.preservedMessages : void 0, r = "preservedSegment" in t ? t.preservedSegment : void 0;
+  return [...typeof n === "object" && n !== null && "uuids" in n && Array.isArray(n.uuids) ? n.uuids : [], ...typeof r === "object" && r !== null ? ["headUuid" in r ? r.headUuid : void 0, "tailUuid" in r ? r.tailUuid : void 0] : []];
+}
+var RL = { isSidechain: false, teamName: void 0, agentName: void 0, sessionKind: void 0, slug: void 0, sourceToolAssistantUUID: void 0 };
+async function TL(e, t, n, r) {
+  let o = e.transcript.filter((h) => !h.isSidechain);
+  if (o.length === 0) throw Error(`Session ${t} has no messages to fork`);
+  let s = n.upToMessageId;
+  if (s) {
+    let h = await Jc(o), y = /* @__PURE__ */ new Map();
+    o.forEach((b, v) => {
+      if (!y.has(b.uuid)) y.set(b.uuid, v);
+    });
+    let _ = -1;
+    for (let b of h) _ = Math.max(_, y.get(b.uuid) ?? -1);
+    let S = h.concat(o.slice(_ + 1)), C = S[Ab(S, s)], E = C ? y.get(C.uuid) ?? -1 : Ab(o, s);
+    if (E === -1) throw new Oe(`Message ${s} not found in session ${t}`, "forkSession: upToMessageId not found in session");
+    o = await Hye(o.slice(0, E + 1));
+  }
+  let i = /* @__PURE__ */ new Map();
+  for (let h of o) i.set(h.uuid, nu());
+  let a = o.filter((h) => h.type !== "progress"), l = new Map(a.map((h) => [h.uuid, i.get(h.uuid)]));
+  if (a.length === 0) throw Error(`Session ${t} has no messages to fork`);
+  let c = /* @__PURE__ */ new Map();
+  for (let h of o) c.set(h.uuid, h);
+  let d = nu(), p = (/* @__PURE__ */ new Date()).toISOString(), f = [];
+  if (e.historySuppressed) f.push(Ck(d, "fork_inherit"));
+  for (let h = 0; h < a.length; h++) {
+    let y = a[h], _ = i.get(y.uuid), S = null, C = y.parentUuid, E;
+    while (C) {
+      let x = c.get(C);
+      if (!x) break;
+      if (x.type !== "progress") {
+        S = i.get(C) ?? null;
+        break;
+      }
+      if (E ??= /* @__PURE__ */ new Set(), E.has(x.uuid)) {
+        S = i.get(x.uuid) ?? null;
+        break;
+      }
+      E.add(x.uuid), C = x.parentUuid;
+    }
+    let b = h === a.length - 1 ? p : y.timestamp, v = y.logicalParentUuid == null ? y.logicalParentUuid : i.get(y.logicalParentUuid) ?? null, L = y.type === "system" && y.subtype === "model_refusal_fallback" ? { neutralizedByFork: true } : void 0, M = Kye(y, i), z10 = Bye(y, l), K = bL(y, i), Ee = { ...y, ...L, ...M, ...z10, ...K !== void 0 && { attachment: Object.assign({}, y.attachment, { source_uuid: K }) }, uuid: _, parentUuid: S, logicalParentUuid: v, sessionId: d, timestamp: b, ...RL, forkedFrom: { sessionId: t, messageUuid: y.uuid } };
+    f.push(Ee);
+  }
+  if (e.contentReplacements.length > 0) f.push({ type: "content-replacement", sessionId: d, replacements: e.contentReplacements, uuid: nu(), timestamp: p });
+  if (e.atisLatch !== void 0) f.push({ type: "atis-latch", sessionId: d, atis: e.atisLatch });
+  if (e.relocatedCwd) f.push({ type: "relocated", sessionId: d, relocatedCwd: e.relocatedCwd });
+  let m = n.title?.trim();
+  if (!m) m = `${r() || "Forked session"} (fork)`;
+  return f.push({ type: "custom-title", sessionId: d, customTitle: m, uuid: nu(), timestamp: p }), { entries: f, forkedSessionId: d };
+}
+async function Hye(e) {
+  let t = e.at(-1);
+  if (!t) return e;
+  let n = e.map((p) => ({ ...p, ...RL })), r = await Jc([...n, { type: "system", uuid: nu(), parentUuid: t.uuid, sessionId: t.sessionId, timestamp: t.timestamp }]), o = /* @__PURE__ */ new Map();
+  e.forEach((p, f) => {
+    if (!o.has(p.uuid)) o.set(p.uuid, f);
+  });
+  let s = r[0] && o.get(r[0].uuid);
+  if (s === void 0) return e;
+  let i = new Set(r.map((p) => p.uuid)), a = new Map(e.map((p) => [p.uuid, p])), l = /* @__PURE__ */ new Set();
+  for (let p of [t.uuid, ...i]) for (let f = a.get(p); f && !l.has(f.uuid); f = f.parentUuid ? a.get(f.parentUuid) : void 0) l.add(f.uuid);
+  let c = { slice: e, byUuid: a, live: l, index: o, start: s, leftOut: /* @__PURE__ */ new Set() };
+  for (let p of e) if (p.type === "system" && p.subtype === "compact_boundary" && Rb(c, p) && !jye(p).some((f) => typeof f === "string" && l.has(f))) CL(c, p);
+  let { leftOut: d } = c;
+  for (; ; ) {
+    let p = {}, f = await Jc(n.filter((m) => !d.has(m.uuid)), { found: p });
+    if (f.length === i.size && f.every((m) => i.has(m.uuid))) break;
+    if (!p.terminal || !Rb(c, p.terminal)) break;
+    CL(c, p.terminal);
+  }
+  return d.size === 0 ? e : e.filter((p) => !d.has(p.uuid));
+}
+function Rb({ live: e, index: t, start: n }, r) {
+  return !e.has(r.uuid) && (t.get(r.uuid) ?? n) >= n;
+}
+function CL(e, t) {
+  let { slice: n, byUuid: r, leftOut: o } = e;
+  for (let s = r.get(t.uuid); s && Rb(e, s) && !o.has(s.uuid); s = s.parentUuid ? r.get(s.parentUuid) : void 0) o.add(s.uuid);
+  for (let s of n) if (s.parentUuid && o.has(s.parentUuid)) o.add(s.uuid);
+}
+function Bye(e, t) {
+  let n = e.compactMetadata;
+  if (e.type !== "system" || typeof n !== "object" || n === null || Array.isArray(n)) return;
+  let { preservedMessages: r, preservedSegment: o } = n;
+  if (r === void 0 && o === void 0) return;
+  let s = (a) => typeof a === "string" ? t.get(a) ?? a : a, i = (a, l) => {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) return a;
+    let c = { ...a };
+    for (let d of l) {
+      let p = c[d];
+      if (d in c) c[d] = Array.isArray(p) ? p.map(s) : s(p);
+    }
+    return c;
+  };
+  return { compactMetadata: { ...n, ...r !== void 0 && { preservedMessages: i(r, ["anchorUuid", "uuids", "allUuids"]) }, ...o !== void 0 && { preservedSegment: i(o, ["headUuid", "anchorUuid", "tailUuid"]) } } };
+}
+function Kye(e, t) {
+  let n = e.attachment;
+  if (e.type !== "attachment" || typeof n !== "object" || n === null || n.type !== "deferred_tools_record") return;
+  let r = n.nameOnlyAnnouncements;
+  if (!Array.isArray(r)) return;
+  return { attachment: { ...n, nameOnlyAnnouncements: r.flatMap((o) => typeof o === "string" && t.has(o) ? [t.get(o)] : []) } };
 }
 var cSe = P("ZodMiniType", (e, t) => {
   if (!e._zod) throw Error("Uninitialized schema in ZodMiniType.");
@@ -30340,6 +31909,17 @@ function Gze(e, t) {
     r.spawnAbort(m), n.setError(m);
   }), CA(n, e, o, i), n;
 }
+async function jbt(e, t) {
+  if (t?.sessionStore) return y$e(t.sessionStore, e, t);
+  return xL(e, t);
+}
+async function y$e(e, t, n) {
+  if (!ze(t)) throw new Oe(`Invalid sessionId: ${t}`, "forkSession: invalid sessionId (must be a UUID)");
+  let r = cn(n.dir), o = await e.load({ projectKey: r, sessionId: t });
+  if (!o || o.length === 0) throw Error(`Session ${t} not found`);
+  let { entries: s, forkedSessionId: i } = await AL(o, t, n);
+  return await e.append({ projectKey: r, sessionId: i }, s), { sessionId: i };
+}
 
 // src/rate-limit.ts
 var RATE_LIMIT_AUTO_RESUME_EVENT = "pi-claude:rate-limit";
@@ -33001,7 +34581,7 @@ var $ZodString = /* @__PURE__ */ $constructor("$ZodString", (inst, def) => {
     if (def.coerce)
       try {
         payload.value = String(payload.value);
-      } catch (_6) {
+      } catch (_10) {
       }
     if (typeof payload.value === "string")
       return payload;
@@ -33648,13 +35228,13 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject3 = isObject;
+  const isObject4 = isObject;
   const catchall = def.catchall;
   let value;
   inst._zod.parse = (payload, ctx2) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject3(input)) {
+    if (!isObject4(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -33781,7 +35361,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return (payload, ctx2) => fn2(shape, payload, ctx2);
   };
   let fastpass;
-  const isObject3 = isObject;
+  const isObject4 = isObject;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -33790,7 +35370,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx2) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject3(input)) {
+    if (!isObject4(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -42370,9 +43950,9 @@ var createToJSONSchemaMethod = (schema2, processors = {}) => (params) => {
   extractDefs(ctx2, schema2);
   return finalize(ctx2, schema2);
 };
-var createStandardJSONSchemaMethod = (schema2, io, processors = {}) => (params) => {
+var createStandardJSONSchemaMethod = (schema2, io2, processors = {}) => (params) => {
   const { libraryOptions, target } = params ?? {};
-  const ctx2 = initializeContext({ ...libraryOptions ?? {}, target, io, processors });
+  const ctx2 = initializeContext({ ...libraryOptions ?? {}, target, io: io2, processors });
   process2(schema2, ctx2);
   extractDefs(ctx2, schema2);
   return finalize(ctx2, schema2);
@@ -46320,8 +47900,505 @@ function readSession(jsonlPath, projectPath) {
 
 // src/session-persistence.ts
 import { createHash as createHash5 } from "crypto";
-import { realpathSync as realpathSync5, statSync as statSync5 } from "fs";
-import { resolve as pathResolve } from "path";
+import { closeSync as closeSync4, mkdirSync as mkdirSync5, openSync as openSync4, realpathSync as realpathSync5, rmSync as rmSync3, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname7, resolve as pathResolve } from "path";
+
+// src/native-fork.ts
+import { readFileSync as readFileSync7 } from "fs";
+import { isDeepStrictEqual } from "node:util";
+var CHAIN_TYPES = /* @__PURE__ */ new Set(["user", "assistant", "attachment", "system", "progress"]);
+var isObject3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var recordMessage = (record2) => record2.message;
+function isQueuedCommand(record2) {
+  return record2.type === "attachment" && isObject3(record2.attachment) && record2.attachment.type === "queued_command";
+}
+function isSyntheticAssistant(record2) {
+  return record2.type === "assistant" && recordMessage(record2).model === "<synthetic>";
+}
+function isTrailingCarry(record2) {
+  if (isQueuedCommand(record2)) return false;
+  return record2.type === "attachment" || record2.type === "system" || record2.type === "progress" || record2.type === "user" && record2.isMeta === true;
+}
+function isLeadingCarry(record2) {
+  return isTrailingCarry(record2) || isSyntheticAssistant(record2);
+}
+function normalizeBlocks(content) {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return void 0;
+  const blocks = [];
+  for (const block of content) {
+    if (!isObject3(block)) return void 0;
+    if (block.type === "text" && typeof block.text === "string") {
+      blocks.push({ type: "text", text: block.text });
+    } else if (block.type === "image" && isObject3(block.source) && block.source.type === "base64") {
+      blocks.push({ type: "image", source: { type: "base64", media_type: block.source.media_type, data: block.source.data } });
+    } else {
+      return void 0;
+    }
+  }
+  return blocks;
+}
+function sameContent(native, candidates) {
+  const normalized = normalizeBlocks(native);
+  if (!normalized) return false;
+  return candidates.some((candidate) => {
+    const expected = normalizeBlocks(candidate);
+    return expected !== void 0 && isDeepStrictEqual(normalized, expected);
+  });
+}
+function promptForm(messages) {
+  const blocks = messages.some((message) => Array.isArray(message.content) && message.content.some((block) => isObject3(block) && block.type === "image")) ? extractUserPromptBlocks(messages) : null;
+  return blocks ?? extractUserPrompt(messages);
+}
+function deliveredResultForm(message, toolName) {
+  const blocks = toolResultToMcpContent(message.content);
+  const failed = message.isError === true;
+  if (toolName !== void 0 && !failed && blocks.every((block) => block.type === "text" && block.text.trim() === "")) return `(${toolName} completed with no output)`;
+  return blocks.map((block) => block.type === "text" ? { type: "text", text: block.text } : { type: "image", source: { type: "base64", media_type: block.mimeType, data: block.data } });
+}
+function promptMatches(record2, message) {
+  return sameContent(recordMessage(record2).content, [promptForm([message]), userMessageToAnthropic(message).content]);
+}
+function toolResultMatches(block, message, toolName) {
+  if (block.is_error === true !== (message.isError === true)) return false;
+  const content = message.content;
+  return sameContent(block.content, [deliveredResultForm(message, toolName), toolResultContentToAnthropic(content) || ""]);
+}
+function streamedPiBlock(block, customToolNameToPi) {
+  if (!isObject3(block)) return void 0;
+  if (block.type === "text" && typeof block.text === "string") return { type: "text", text: block.text };
+  if (block.type === "thinking" && typeof block.thinking === "string") {
+    return { type: "thinking", thinking: block.thinking, thinkingSignature: block.signature };
+  }
+  if (block.type !== "tool_use" || typeof block.id !== "string" || typeof block.name !== "string") return void 0;
+  if (isChildExecutedTool(block.name) || !isPiDispatchable(block.name, customToolNameToPi)) return void 0;
+  const name = mapToolName(block.name, customToolNameToPi);
+  return { type: "toolCall", id: block.id, name, arguments: mapToolArgs(name, block.input) };
+}
+function storedPiBlock(block) {
+  if (!isObject3(block)) return block;
+  switch (block.type) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "thinking":
+      return block.redacted === true ? block : { type: "thinking", thinking: block.thinking, thinkingSignature: block.thinkingSignature };
+    case "toolCall":
+      return { type: "toolCall", id: block.id, name: block.name, arguments: block.arguments };
+    default:
+      return block;
+  }
+}
+function trimmedSignedThinking(native, stored) {
+  if (!isObject3(native) || !isObject3(stored) || native.type !== "thinking" || stored.type !== "thinking" || stored.redacted === true) return false;
+  const signature = native.signature;
+  if (typeof signature !== "string" || signature === "" || stored.thinkingSignature !== signature) return false;
+  return typeof native.thinking === "string" && stored.thinking === native.thinking.trimEnd();
+}
+function streamedMatches(blocks, message, customToolNameToPi) {
+  const assistant = message;
+  if (assistant.provider !== PROVIDER_ID && assistant.api !== "anthropic") return false;
+  const content = assistant.content;
+  if (!Array.isArray(content) || content.length !== blocks.length) return false;
+  return blocks.every((block, n) => {
+    const streamed = streamedPiBlock(block, customToolNameToPi);
+    return streamed !== void 0 && (isDeepStrictEqual(streamed, storedPiBlock(content[n])) || trimmedSignedThinking(block, content[n]));
+  });
+}
+function importedMatches(blocks, message, customToolNameToSdk) {
+  const expected = convertPiMessages([message], customToolNameToSdk).anthropicMessages[0]?.content;
+  if (!Array.isArray(expected) || expected.length !== blocks.length) return false;
+  return expected.every((block, n) => importedBlockMatches(blocks[n], block));
+}
+function importedBlockMatches(native, expected) {
+  if (!isObject3(native) || native.type !== expected.type) return false;
+  switch (expected.type) {
+    case "text":
+      return native.text === expected.text;
+    case "thinking":
+      return native.thinking === expected.thinking && native.signature === expected.signature;
+    case "redacted_thinking":
+      return native.data === expected.data;
+    case "tool_use":
+      return native.id === expected.id && native.name === expected.name && isDeepStrictEqual(native.input, expected.input);
+    default:
+      return false;
+  }
+}
+function isSkippedAssistant2(message) {
+  return message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted");
+}
+function readTranscript(path) {
+  let text;
+  try {
+    text = readFileSync7(path, "utf8");
+  } catch (error51) {
+    return { reason: error51.code === "ENOENT" ? "old-session-missing" : "old-session-unreadable" };
+  }
+  const records = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      return { reason: "unparseable-line" };
+    }
+    if (!isObject3(value) || typeof value.type !== "string") return { reason: "unknown-record-shape" };
+    records.push(value);
+  }
+  return { records };
+}
+function mainChain(records) {
+  const byUuid = /* @__PURE__ */ new Map();
+  let leaf;
+  for (const record2 of records) {
+    if (!CHAIN_TYPES.has(record2.type) || record2.isSidechain === true) continue;
+    if (typeof record2.uuid !== "string") return { reason: "unknown-record-shape" };
+    if ((record2.type === "user" || record2.type === "assistant") && !(isObject3(record2.message) && (typeof record2.message.content === "string" || Array.isArray(record2.message.content)))) {
+      return { reason: "unknown-record-shape" };
+    }
+    if (!byUuid.has(record2.uuid)) byUuid.set(record2.uuid, record2);
+    leaf = record2;
+  }
+  if (!leaf) return { reason: "no-native-history" };
+  const chain = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let record2 = leaf; record2; ) {
+    if (seen.has(record2.uuid)) return { reason: "broken-chain" };
+    seen.add(record2.uuid);
+    if (record2.type === "system" && record2.subtype === "compact_boundary") return { reason: "compacted" };
+    chain.push(record2);
+    const parent = record2.parentUuid;
+    if (parent === null || parent === void 0) break;
+    if (typeof parent !== "string") return { reason: "unknown-record-shape" };
+    record2 = byUuid.get(parent);
+    if (!record2) return { reason: "broken-chain" };
+  }
+  return { chain: chain.reverse() };
+}
+function planNativePrefix(priors, oldSessionId, cwd, claudeDir, customToolNameToSdk, customToolNameToPi) {
+  const read = readTranscript(getSessionPath(oldSessionId, cwd, claudeDir));
+  if ("reason" in read) return { reason: read.reason };
+  const walked = mainChain(read.records);
+  if ("reason" in walked) return { reason: walked.reason };
+  const { chain } = walked;
+  const transcript = forkSlice(read.records);
+  const stitched = stitchedRecords(transcript, chain);
+  const trailing = (from, last, next, verified = []) => {
+    let end2 = from;
+    let cut2 = last;
+    while (end2 < chain.length && isTrailingCarry(chain[end2])) {
+      if (chain[end2].type !== "progress") cut2 = end2;
+      end2++;
+    }
+    return { next, last: cut2, end: end2, stop: end2 < chain.length && isQueuedCommand(chain[end2]), stitched: verified };
+  };
+  const matchPrompt = (at2, index2) => {
+    const record2 = chain[at2];
+    if (!record2 || record2.type !== "user" || record2.isMeta === true) return void 0;
+    const content = recordMessage(record2).content;
+    if (Array.isArray(content) && content.some((block) => isObject3(block) && block.type === "tool_result")) return void 0;
+    if (promptMatches(record2, priors[index2])) return trailing(at2 + 1, at2, index2 + 1);
+    let end2 = index2;
+    while (end2 < priors.length && priors[end2].role === "user") end2++;
+    if (end2 - index2 < 2 || end2 === priors.length || !sameContent(content, [promptForm(priors.slice(index2, end2))])) return void 0;
+    return trailing(at2 + 1, at2, end2);
+  };
+  const matchTurn = (at2, index2) => {
+    const first = chain[at2];
+    if (!first || first.type !== "assistant" || isSyntheticAssistant(first)) return void 0;
+    const messageId = recordMessage(first).id;
+    if (typeof messageId !== "string") return void 0;
+    let position2 = at2;
+    const blocks = [];
+    while (position2 < chain.length && chain[position2].type === "assistant" && recordMessage(chain[position2]).id === messageId) {
+      const content = recordMessage(chain[position2]).content;
+      if (!Array.isArray(content)) return void 0;
+      blocks.push(...content);
+      position2++;
+    }
+    if (!streamedMatches(blocks, priors[index2], customToolNameToPi) && !importedMatches(blocks, priors[index2], customToolNameToSdk)) return void 0;
+    let last = position2 - 1;
+    let next = index2 + 1;
+    const verified = [];
+    const calls = blocks.filter((block) => isObject3(block) && block.type === "tool_use");
+    const callIds = calls.map((call) => call.id);
+    const callNames = new Map(calls.map((call) => [call.id, call.name]));
+    if (callIds.length > 0) {
+      const ids = /* @__PURE__ */ new Map();
+      const results = /* @__PURE__ */ new Map();
+      while (next < priors.length && priors[next].role === "toolResult") {
+        const raw = priors[next].toolCallId;
+        const clean = sanitizeToolId(raw, ids);
+        if (results.has(raw) || results.has(clean)) return void 0;
+        results.set(raw, priors[next]);
+        if (clean !== raw) results.set(clean, priors[next]);
+        next++;
+      }
+      if (next - (index2 + 1) !== callIds.length || new Set(callIds.map((id) => results.get(id))).size !== callIds.length || callIds.some((id) => !results.has(id))) return void 0;
+      const answered = /* @__PURE__ */ new Set();
+      const answers = (record2) => {
+        const content = record2.type === "user" ? recordMessage(record2).content : void 0;
+        if (!Array.isArray(content) || content.length === 0 || !content.every((block) => isObject3(block) && block.type === "tool_result")) return false;
+        for (const block of content) {
+          const id = block.tool_use_id;
+          const result = typeof id === "string" ? results.get(id) : void 0;
+          if (!result || answered.has(id) || !toolResultMatches(block, result, callNames.get(id))) return false;
+          answered.add(id);
+        }
+        return true;
+      };
+      const key = chain[position2 - 1].uuid;
+      for (const record2 of stitched.records.get(key) ?? []) {
+        if (record2.type !== "user") continue;
+        if (stitched.tied.has(record2.uuid) || !answers(record2)) return void 0;
+        verified.push(`${key}
+${record2.uuid}`);
+      }
+      while (answered.size < callIds.length) {
+        const record2 = chain[position2];
+        if (!record2) return void 0;
+        if (isTrailingCarry(record2)) {
+          position2++;
+          continue;
+        }
+        if (!answers(record2)) return void 0;
+        last = position2;
+        position2++;
+      }
+    }
+    return trailing(position2, last, next, verified);
+  };
+  let position = 0;
+  let index = 0;
+  const ends = [];
+  const unreplayable = unreplayableTrailingTurns(priors);
+  const limit = unreplayable.size > 0 ? Math.min(...unreplayable) : priors.length;
+  while (index < limit) {
+    const message = priors[index];
+    if (isSkippedAssistant2(message)) {
+      index++;
+      while (index < priors.length && priors[index].role === "toolResult") index++;
+      continue;
+    }
+    if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") {
+      index++;
+      continue;
+    }
+    let start = position;
+    while (start < chain.length && isLeadingCarry(chain[start])) start++;
+    const group = message.role === "user" ? matchPrompt(start, index) : message.role === "assistant" ? matchTurn(start, index) : void 0;
+    if (!group) break;
+    index = group.next;
+    ends.push({ piCount: group.next, cut: group.last, stitched: group.stitched });
+    position = group.end;
+    if (group.stop) break;
+  }
+  if (ends.length === 0) return { reason: "no-verified-prefix" };
+  const { end, steered } = lastCarriedExactly(transcript, chain, ends);
+  const old8 = oldSessionId.slice(0, 8);
+  const steer = `${old8} copies a queued_command, which Claude Code renders as a user message Pi holds too`;
+  if (!end) {
+    debug(steered ? `native prefix: ${steer}, before its first matched group's end` : `native prefix: ${old8} has unverified user or assistant records off its main chain before its first matched group's end`);
+    return { reason: steered ? "queued-command" : "off-chain-records" };
+  }
+  if (end !== ends.at(-1)) {
+    debug(steered ? `native prefix: ${steer}; prefix ends at ${end.piCount} of ${ends.at(-1).piCount} matched pi msgs, before it` : `native prefix: ${old8} has unverified user or assistant records off its main chain; prefix ends at ${end.piCount} of ${ends.at(-1).piCount} matched pi msgs, before the first of them`);
+  }
+  const { piCount, cut } = end;
+  let title;
+  for (const record2 of read.records) {
+    if (record2.type === "custom-title" && typeof record2.customTitle === "string" && record2.customTitle.trim()) title = record2.customTitle;
+  }
+  return {
+    prefix: {
+      oldSessionId,
+      records: read.records,
+      cutUuid: chain[cut].uuid,
+      piCount,
+      ...title ? { title } : {}
+    }
+  };
+}
+function lastCarriedExactly(transcript, chain, ends) {
+  const isMessage = (record2) => record2.type === "user" || record2.type === "assistant";
+  const position = /* @__PURE__ */ new Map();
+  const messagesThrough = [];
+  let messages = 0;
+  for (const record2 of transcript) {
+    if (!position.has(record2.uuid)) position.set(record2.uuid, messagesThrough.length);
+    if (isMessage(record2)) messages++;
+    messagesThrough.push(messages);
+  }
+  const chainMessagesThrough = [];
+  let onChain = 0;
+  for (const record2 of chain) chainMessagesThrough.push(onChain += isMessage(record2) ? 1 : 0);
+  const verifiedThrough = [];
+  let verified = 0;
+  for (const end of ends) verifiedThrough.push(verified += end.stitched.length);
+  const steer = transcript.findIndex(isQueuedCommand);
+  let steered = false;
+  for (let n = ends.length - 1; n >= 0; n--) {
+    const { cut } = ends[n];
+    const at2 = position.get(chain[cut].uuid);
+    if (steer !== -1 && at2 >= steer) {
+      steered = true;
+      continue;
+    }
+    const through = chain.slice(0, cut + 1);
+    if (through.some((record2) => position.get(record2.uuid) > at2)) continue;
+    if (messagesThrough[at2] !== chainMessagesThrough[cut] + verifiedThrough[n]) continue;
+    const expected = new Set(ends.slice(0, n + 1).flatMap((end) => end.stitched));
+    const carried = [];
+    for (const [key, records] of stitchedRecords(transcript.slice(0, at2 + 1), through).records) {
+      for (const record2 of records) carried.push(record2.type === "user" ? `${key}
+${record2.uuid}` : `assistant
+${record2.uuid}`);
+    }
+    if (carried.length === expected.size && carried.every((entry) => expected.has(entry))) return { end: ends[n], steered };
+  }
+  return { steered };
+}
+function forkSlice(records) {
+  return records.filter((record2) => CHAIN_TYPES.has(record2.type) && record2.isSidechain !== true && typeof record2.uuid === "string");
+}
+var messageIdOf = (record2) => {
+  if (record2.type !== "assistant" || !isObject3(record2.message)) return void 0;
+  return typeof record2.message.id === "string" ? record2.message.id : void 0;
+};
+function blockIds(record2, type, key) {
+  const content = isObject3(record2.message) ? record2.message.content : void 0;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block) => isObject3(block) && block.type === type && typeof block[key] === "string" ? [block[key]] : []);
+}
+function stitchedRecords(slice, chain) {
+  const added = /* @__PURE__ */ new Map();
+  const tiedOnly = /* @__PURE__ */ new Set();
+  const assistants = chain.filter((record2) => record2.type === "assistant");
+  if (assistants.length === 0) return { records: added, tied: tiedOnly };
+  const byUuid = /* @__PURE__ */ new Map();
+  for (const record2 of slice) if (!byUuid.has(record2.uuid)) byUuid.set(record2.uuid, record2);
+  const parentOf = (record2) => {
+    const seen = /* @__PURE__ */ new Set();
+    for (let parent = record2.parentUuid; typeof parent === "string"; ) {
+      const found = byUuid.get(parent);
+      if (!found) return void 0;
+      if (found.type !== "progress" || seen.has(parent)) return parent;
+      seen.add(parent);
+      parent = found.parentUuid;
+    }
+    return void 0;
+  };
+  const kept = [...byUuid.values()].filter((record2) => record2.type !== "progress");
+  const lastOnChain = /* @__PURE__ */ new Map();
+  for (const record2 of assistants) {
+    const id = messageIdOf(record2);
+    if (id) lastOnChain.set(id, record2);
+  }
+  const push = (map2, key, record2) => {
+    const list = map2.get(key);
+    if (list) list.push(record2);
+    else map2.set(key, [record2]);
+  };
+  const sameMessage = /* @__PURE__ */ new Map();
+  const callRecord = /* @__PURE__ */ new Map();
+  const results = [];
+  for (const record2 of kept) {
+    const id = messageIdOf(record2);
+    if (id) {
+      push(sameMessage, id, record2);
+      for (const call of blockIds(record2, "tool_use", "id")) {
+        const holder = callRecord.get(call);
+        callRecord.set(call, holder === void 0 || holder !== null && messageIdOf(holder) === id ? record2 : null);
+      }
+    } else if (record2.type === "user" && parentOf(record2) !== void 0 && blockIds(record2, "tool_result", "tool_use_id").length > 0) {
+      results.push(record2);
+    }
+  }
+  const filed = /* @__PURE__ */ new Map();
+  const filedKeys = /* @__PURE__ */ new Set();
+  const file2 = (key, record2) => {
+    if (filedKeys.has(`${key}
+${record2.uuid}`)) return;
+    filedKeys.add(`${key}
+${record2.uuid}`);
+    push(filed, key, record2);
+  };
+  const agentOf = (record2) => record2.agentId;
+  for (const record2 of results) {
+    file2(parentOf(record2), record2);
+    for (const call of blockIds(record2, "tool_result", "tool_use_id")) {
+      const holder = callRecord.get(call);
+      if (holder && agentOf(holder) === agentOf(record2)) file2(holder.uuid, record2);
+    }
+  }
+  const answeredOnChain = new Set(chain.flatMap((record2) => blockIds(record2, "tool_result", "tool_use_id")));
+  const filePosition = /* @__PURE__ */ new Map();
+  kept.forEach((record2, at2) => {
+    if (!filePosition.has(record2.uuid)) filePosition.set(record2.uuid, at2);
+  });
+  const taken = new Set(chain.map((record2) => record2.uuid));
+  const done = /* @__PURE__ */ new Set();
+  const byTime = (a, b) => String(a.timestamp ?? "").localeCompare(String(b.timestamp ?? ""));
+  for (const record2 of assistants) {
+    const id = messageIdOf(record2);
+    if (!id || done.has(id)) continue;
+    done.add(id);
+    const siblings = sameMessage.get(id) ?? [record2];
+    const own = new Set(siblings.map((sibling) => sibling.uuid));
+    const offChain = siblings.filter((sibling) => !taken.has(sibling.uuid));
+    const parented = [];
+    const tied = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const sibling of siblings) {
+      for (const result of filed.get(sibling.uuid) ?? []) {
+        if (taken.has(result.uuid) || seen.has(result.uuid)) continue;
+        seen.add(result.uuid);
+        (own.has(parentOf(result)) ? parented : tied).push(result);
+      }
+    }
+    if (tied.length > 0) {
+      const answered = new Set(answeredOnChain);
+      for (const result of parented) for (const call of blockIds(result, "tool_result", "tool_use_id")) answered.add(call);
+      tied.sort((a, b) => filePosition.get(a.uuid) - filePosition.get(b.uuid));
+      for (const result of tied) {
+        const calls = blockIds(result, "tool_result", "tool_use_id");
+        if (!calls.some((call) => !answered.has(call) && own.has(callRecord.get(call)?.uuid ?? ""))) continue;
+        for (const call of calls) answered.add(call);
+        tiedOnly.add(result.uuid);
+        parented.push(result);
+      }
+    }
+    if (offChain.length === 0 && parented.length === 0) continue;
+    offChain.sort(byTime);
+    parented.sort(byTime);
+    const records = [...offChain, ...parented];
+    for (const stitched of records) taken.add(stitched.uuid);
+    added.set(lastOnChain.get(id).uuid, records);
+  }
+  return { records: added, tied: tiedOnly };
+}
+var forkSessionImpl = jbt;
+async function forkNativePrefix(prefix, cwd) {
+  const appended = [];
+  const store2 = {
+    load: async (key) => key.sessionId === prefix.oldSessionId && key.subpath === void 0 ? prefix.records : null,
+    append: async (_key, entries2) => {
+      appended.push(...entries2);
+    }
+  };
+  const { sessionId } = await forkSessionImpl(prefix.oldSessionId, {
+    dir: cwd,
+    upToMessageId: prefix.cutUuid,
+    sessionStore: store2,
+    ...prefix.title ? { title: prefix.title } : {}
+  });
+  const entries = prefix.title ? appended : appended.filter((entry) => entry.type !== "custom-title");
+  const leaf = entries.find((entry) => isObject3(entry.forkedFrom) && entry.forkedFrom.messageUuid === prefix.cutUuid);
+  if (!leaf || typeof leaf.uuid !== "string") throw new Error("the fork has no copy of the cut record");
+  if (entries.some((entry) => entry.sessionId !== sessionId)) throw new Error("the fork wrote records for another session id");
+  return { sessionId, entries, leafUuid: leaf.uuid };
+}
 
 // src/session-verify.ts
 import { closeSync as closeSync3, openSync as openSync3, readSync as readSync3, statSync as statSync4 } from "fs";
@@ -46448,6 +48525,7 @@ function isForeignConversation(record2, messages) {
   return incoming !== void 0 && !conversationFingerprintsMatch(record2.conversationFingerprint, incoming) && messages.length - 1 <= record2.cursor;
 }
 function fingerprintMessages(messages) {
+  const started = stepStart();
   const normalized = messages.map((message) => {
     if (message.role === "assistant") {
       return {
@@ -46459,7 +48537,9 @@ function fingerprintMessages(messages) {
     }
     return message;
   });
-  return createHash5("sha256").update(JSON.stringify(normalized)).digest("hex");
+  const fingerprint = createHash5("sha256").update(JSON.stringify(normalized)).digest("hex");
+  stepEnd("fingerprint", started);
+  return fingerprint;
 }
 function readBuiltSessionContext(sessionManager) {
   const built = typeof sessionManager?.buildSessionContext === "function" ? sessionManager.buildSessionContext() : void 0;
@@ -46541,7 +48621,10 @@ function restoreSharedSessionFromPi(ctx2) {
     ...typeof persisted.trailingAssistantDigest === "string" ? { trailingAssistantDigest: persisted.trailingAssistantDigest } : {},
     // A rebuild the record still owed must survive the restart: without it
     // the next turn would resume a transcript known to differ from Pi's.
-    ...persisted.needsRebuild === true ? { needsRebuild: true } : {},
+    ...persisted.needsRebuild === true ? {
+      needsRebuild: true,
+      ...REBUILD_MARKS.includes(persisted.rebuildReason) ? { rebuildReason: persisted.rebuildReason } : {}
+    } : {},
     ...persisted.forceRotate === true ? { forceRotate: true } : {},
     ...accountProfileId ? { accountProfileId, claudeConfigDir } : {}
   });
@@ -46575,6 +48658,7 @@ function schedulePersistSharedSession(ctxLike) {
   if (superseded !== void 0) clearTimeout(superseded);
   const timer = setTimeout(() => {
     if (timers.get(sessionManager) === timer) timers.delete(sessionManager);
+    const started = stepStart();
     try {
       const built = readBuiltSessionContext(sessionManager);
       if (!built) return;
@@ -46595,6 +48679,8 @@ function schedulePersistSharedSession(ctxLike) {
         error: error51 instanceof Error ? `${error51.name}: ${error51.message}` : String(error51)
       });
       noteAnomaly("persist_shared_session_failed");
+    } finally {
+      stepEnd("persist", started);
     }
   }, 0);
   timers.set(sessionManager, timer);
@@ -46702,7 +48788,7 @@ function debugSessionPaths(label, cwd, jsonlPath, claudeDir) {
   debug(`${label}: fileExists=${fileExists}${fileSize != null ? ` size=${fileSize}` : ""}`);
   debug(`${label}: selected.CLAUDE_CONFIG_DIR=${claudeDir ?? "(unset)"} HOME=${process.env.HOME ?? "(unset)"}`);
 }
-function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account) {
+function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account, options = {}) {
   const sharedSession = getSharedSession();
   const priorMessages = messages.slice(0, -1);
   const accountProfileId = account?.accountProfileId;
@@ -46712,18 +48798,21 @@ function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account)
     sharedSession && sharedSession.accountProfileId === accountProfileId && sharedSession.claudeConfigDir === scopeConfigDir
   );
   const incomingFingerprint = conversationFingerprint(messages);
+  const mark = sharedSession?.needsRebuild ? sharedSession.rebuildReason ?? "unrecorded" : void 0;
   if (sharedSession && incomingFingerprint && isForeignConversation(sharedSession, messages)) {
     debug(
       `Case 6 foreign-conversation: fingerprint ${incomingFingerprint.slice(0, 8)} != record ${sharedSession.conversationFingerprint?.slice(0, 8)} (cursor=${sharedSession.cursor}, priors=${priorMessages.length}) \u2014 clean one-shot, record untouched`
     );
-    debug(`syncResult: path=foreign-one-shot`);
-    return { sessionId: null, promptStart: messages.length - 1, foreignContext: true };
+    debug(`syncResult: path=foreign-one-shot cause=foreign-conversation`);
+    return { sessionId: null, promptStart: messages.length - 1, foreignContext: true, sync: { path: "foreign-one-shot", cause: "foreign-conversation" } };
   }
+  let digestCause;
   if (sharedSession && sameAccount && !sharedSession.needsRebuild) {
     const batch = planIncrementalPromptBatch(messages, sharedSession.cursor);
     const prior = batch ? sharedHistoryMatches(sharedSession, messages, batch.promptStart) : void 0;
     if (batch && prior && !prior.matches) {
       debug(`Case 7 history-rewritten: Pi's history through prompt start ${batch.promptStart} no longer matches what session ${sharedSession.sessionId.slice(0, 8)} holds (cursor=${sharedSession.cursor}) \u2014 rebuilding`);
+      digestCause = sharedSession.historyDigest === UNVERIFIED_HISTORY_DIGEST || sharedSession.trailingAssistantDigest === UNVERIFIED_HISTORY_DIGEST ? "unverified-digest" : "digest-mismatch";
     }
     if (batch && prior?.matches) {
       if (!prior.checked) debug(`Case 3: record had no history digest \u2014 accepting it once and stamping one`);
@@ -46742,19 +48831,43 @@ function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account)
       debug(`syncResult: path=reuse sessionId=${sharedSession.sessionId} cursor=${batch.promptStart} promptUsers=${batch.userMessageCount}`);
       return {
         sessionId: sharedSession.sessionId,
-        promptStart: batch.promptStart
+        promptStart: batch.promptStart,
+        sync: { path: "reuse" }
       };
     }
   }
   if (priorMessages.every((message) => message.role === "system")) {
     debug(`Case 1: clean start, ${messages.length} total messages, account=${accountProfileId ?? "default"}`);
-    debug(`syncResult: path=clean-start`);
-    return { sessionId: null, promptStart: messages.length - 1 };
+    debug(`syncResult: path=clean-start cause=clean-start${mark ? ` mark=${mark}` : ""}`);
+    return { sessionId: null, promptStart: messages.length - 1, sync: { path: "clean-start", cause: "clean-start", ...mark ? { mark } : {} } };
   }
   const replacedSessionId = sharedSession?.sessionId;
   const previousSessionId = sameAccount ? sharedSession?.sessionId : void 0;
   const previousCursor = sameAccount ? sharedSession?.cursor ?? 0 : 0;
   const preserveId = previousSessionId !== void 0 && !sharedSession?.forceRotate;
+  const cause = replacedSessionId === void 0 ? "first-turn-history" : !sameAccount ? "account-rotation" : !preserveId ? "post-abort-rotation" : sharedSession?.needsRebuild ? "needs-rebuild" : digestCause ?? "missed-messages";
+  if (previousSessionId !== void 0 && options.fork !== false) {
+    const plan = planNativePrefix(priorMessages, previousSessionId, cwd, claudeDir, customToolNameToSdk, options.customToolNameToPi);
+    if ("prefix" in plan) {
+      return rebuildFromNativePrefix(plan.prefix, {
+        messages,
+        cwd,
+        customToolNameToSdk,
+        modelId,
+        account,
+        options,
+        sharedSession,
+        claudeDir,
+        preserveId,
+        cause,
+        mark,
+        previousCursor,
+        incomingFingerprint
+      });
+    }
+    debug(`Case 4: no native prefix to fork from ${previousSessionId.slice(0, 8)} (${plan.reason}) \u2014 importing all ${priorMessages.length} pi msgs`);
+  }
+  const writeStarted = stepStart();
   if (preserveId) {
     deleteSession(previousSessionId, cwd, claudeDir);
   }
@@ -46767,6 +48880,7 @@ function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account)
   convertAndImportMessages(session, priorMessages, customToolNameToSdk, cwd);
   session.save();
   verifyWrittenSession2(session.jsonlPath, session.sessionId, session.messages.length, cwd, claudeDir);
+  stepEnd("rebuildWrite", writeStarted);
   setSharedSession({
     sessionId: session.sessionId,
     cursor: priorMessages.length,
@@ -46789,8 +48903,105 @@ function syncSharedSession(messages, cwd, customToolNameToSdk, modelId, account)
     debug(`Case 4 post-abort: ${priorMessages.length} total \u2192 new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.messages.length} records`);
   }
   debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath, claudeDir);
-  debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${replacedSessionId === void 0 ? "first" : !sameAccount ? "account-rotated" : preserveId ? "preserved" : "rotated-post-abort"}`);
-  return { sessionId: session.sessionId, promptStart: messages.length - 1 };
+  const missed = priorMessages.length - previousCursor;
+  debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${replacedSessionId === void 0 ? "first" : !sameAccount ? "account-rotated" : preserveId ? "preserved" : "rotated-post-abort"} cause=${cause}${mark ? ` mark=${mark}` : ""} missed=${missed}`);
+  return {
+    sessionId: session.sessionId,
+    promptStart: messages.length - 1,
+    sync: { path: "rebuild", cause, ...mark ? { mark } : {}, priors: priorMessages.length, missed }
+  };
+}
+function writeNewSessionFile(path, data) {
+  const fd2 = openSync4(path, "wx");
+  try {
+    try {
+      writeFileSync3(fd2, data, "utf8");
+    } finally {
+      closeSync4(fd2);
+    }
+  } catch (error51) {
+    rmSync3(path, { force: true });
+    throw error51;
+  }
+}
+async function rebuildFromNativePrefix(prefix, c) {
+  const priorMessages = c.messages.slice(0, -1);
+  const oldId = prefix.oldSessionId.slice(0, 8);
+  const replan = (why) => {
+    debug(`Case 4: ${why} \u2014 syncing again without a fork`);
+    return syncSharedSession(c.messages, c.cwd, c.customToolNameToSdk, c.modelId, c.account, { ...c.options, fork: false });
+  };
+  let forked;
+  let failure;
+  try {
+    forked = await forkNativePrefix(prefix, c.cwd);
+  } catch (error51) {
+    failure = parseErrorShape(error51);
+  }
+  if (c.options.cancelled?.()) {
+    debug(`Case 4: request cancelled while forking ${oldId}; nothing written, record untouched`);
+    debug(`syncResult: path=rebuild cancelled cause=${c.cause}${c.mark ? ` mark=${c.mark}` : ""}`);
+    return {
+      sessionId: null,
+      promptStart: c.messages.length - 1,
+      cancelled: true,
+      sync: { path: "rebuild", cause: c.cause, ...c.mark ? { mark: c.mark } : {}, priors: priorMessages.length }
+    };
+  }
+  if (getSharedSession() !== c.sharedSession) return replan(`the shared record changed while forking ${oldId}`);
+  if (!forked) return replan(`forking ${oldId} failed (${failure})`);
+  const writeStarted = stepStart();
+  const tail = priorMessages.slice(prefix.piCount);
+  if (tail[0]?.role === "toolResult") throw new Error(`native fork: the tail after ${prefix.piCount} pi msgs starts with a tool result`);
+  const session = createSession({
+    projectPath: c.cwd,
+    claudeDir: c.claudeDir,
+    sessionId: forked.sessionId,
+    ...c.modelId ? { model: c.modelId } : {}
+  });
+  if (tail.length > 0) convertAndImportMessages(session, tail, c.customToolNameToSdk, c.cwd);
+  const tailRecords = session.records.map((record2, n) => n === 0 ? { ...record2, parentUuid: forked.leafUuid } : record2);
+  const lines = [...forked.entries, ...tailRecords].map((record2) => `${serializeRecord(record2)}
+`).join("");
+  mkdirSync5(dirname7(session.jsonlPath), { recursive: true });
+  writeNewSessionFile(session.jsonlPath, lines);
+  const recordCount = forked.entries.length + tailRecords.length;
+  const warnings = verifyWrittenSession(session.jsonlPath, forked.sessionId, recordCount);
+  if (warnings.length > 0) {
+    rmSync3(session.jsonlPath, { force: true });
+    stepEnd("rebuildWrite", writeStarted);
+    return replan(`the forked session ${forked.sessionId.slice(0, 8)} failed verification (${warnings.length} warning(s))`);
+  }
+  stepEnd("rebuildWrite", writeStarted);
+  if (c.preserveId) deleteSession(prefix.oldSessionId, c.cwd, c.claudeDir);
+  const accountProfileId = c.account?.accountProfileId;
+  const scopeConfigDir = c.account?.claudeConfigDir;
+  setSharedSession({
+    sessionId: forked.sessionId,
+    cursor: priorMessages.length,
+    historyDigest: historyDigest(priorMessages),
+    cwd: c.cwd,
+    ...c.incomingFingerprint ? { conversationFingerprint: c.incomingFingerprint } : {},
+    ...accountProfileId ? { accountProfileId } : {},
+    ...scopeConfigDir ? { claudeConfigDir: scopeConfigDir } : {}
+  });
+  const newId = forked.sessionId.slice(0, 8);
+  const appended = priorMessages.length - prefix.piCount;
+  const missed = priorMessages.length - c.previousCursor;
+  const forkedLine = `forked ${oldId} up to ${prefix.cutUuid.slice(0, 8)}: ${prefix.piCount}/${priorMessages.length} pi msgs native, appended ${appended}`;
+  const records = `${forked.entries.length} forked + ${tailRecords.length} imported records`;
+  if (c.preserveId) {
+    debug(`Case 4: ${missed} missed messages, ${forkedLine} \u2192 new session ${newId} (deleted ${oldId}), ${records}`);
+  } else {
+    debug(`Case 4 post-abort: ${forkedLine} \u2192 new session ${newId} (old file left to its orphan writer), ${records}`);
+  }
+  debugSessionPaths(newId, c.cwd, session.jsonlPath, c.claudeDir);
+  debug(`syncResult: path=rebuild sessionId=${forked.sessionId} priors=${priorMessages.length} ${c.preserveId ? "preserved" : "rotated-post-abort"} cause=${c.cause}${c.mark ? ` mark=${c.mark}` : ""} missed=${missed} forked=${prefix.piCount} from=${oldId} forkedRecords=${forked.entries.length} appended=${appended}`);
+  return {
+    sessionId: forked.sessionId,
+    promptStart: c.messages.length - 1,
+    sync: { path: "rebuild", cause: c.cause, ...c.mark ? { mark: c.mark } : {}, priors: priorMessages.length, missed, forked: prefix.piCount }
+  };
 }
 
 // src/sdk-query.ts
@@ -47015,6 +49226,7 @@ async function consumeQuery(sdkQuery2, queryCtx, customToolNameToPi, model, brid
     }
     if (next.done) break;
     const message = next.value;
+    queryCtx.timing?.phase("firstSdkMessage");
     if (wasAborted()) {
       await Promise.race([iterator.return?.(void 0), abandoned]);
       break;
@@ -47034,6 +49246,7 @@ async function consumeQuery(sdkQuery2, queryCtx, customToolNameToPi, model, brid
     const streamLive = Boolean(queryCtx.currentPiStream);
     switch (message.type) {
       case "stream_event":
+        queryCtx.timing?.phase("firstStreamEvent");
         if (!streamLive) break;
         processStreamEvent(message, customToolNameToPi, model, queryCtx);
         break;
@@ -47048,6 +49261,7 @@ async function consumeQuery(sdkQuery2, queryCtx, customToolNameToPi, model, brid
         break;
       }
       case "result":
+        queryCtx.timing?.phase("sdkResult");
         if (failure && message.subtype === "success" && queryCtx.committedOutput) {
           debug(`consumeQuery: clearing informational ${failure.kind ?? "unclassified"} failure \u2014 query recovered with committed output`);
           holdFailure(void 0);
@@ -47082,7 +49296,10 @@ async function consumeQuery(sdkQuery2, queryCtx, customToolNameToPi, model, brid
         }
         break;
       case "system":
-        if (message.subtype === "init") logClaudeCodeVersion(message.claude_code_version);
+        if (message.subtype === "init") {
+          queryCtx.timing?.phase("init");
+          logClaudeCodeVersion(message.claude_code_version);
+        }
         if (!streamLive) break;
         if (message.subtype === "init" && message.session_id) {
           capturedSessionId = message.session_id;
@@ -47214,6 +49431,7 @@ function buildClaudeQueryOptions(input) {
     enableCloudMcp,
     providerSettings.settingSources
   );
+  const claudeMdExcludes = ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/rules/**"];
   const mapped = reasoning ? queryModel.thinkingLevelMap?.[reasoning] : void 0;
   const requestedEffort = reasoning ? mapped === void 0 ? REASONING_TO_EFFORT[reasoning] : normalizeEffortLevel(mapped) : void 0;
   const effort = resolveConfiguredEffort(queryModel.id, requestedEffort, providerSettings);
@@ -47226,7 +49444,8 @@ function buildClaudeQueryOptions(input) {
     ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
     DISABLE_AUTO_COMPACT: "1",
     CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
-    CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1"
+    CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
+    CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1"
   };
   const queryOptions = {
     cwd,
@@ -47236,7 +49455,7 @@ function buildClaudeQueryOptions(input) {
     permissionMode: "bypassPermissions",
     includePartialMessages: true,
     ...fallbackModel ? { fallbackModel } : {},
-    ...providerSettings.fastMode ? { settings: { fastMode: true } } : {},
+    settings: { claudeMdExcludes, ...providerSettings.fastMode ? { fastMode: true } : {} },
     systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
     extraArgs,
     strictMcpConfig: true,
@@ -47276,47 +49495,6 @@ function extractAllToolResults2(context) {
   }
   return results;
 }
-function extractUserPrompt(messages) {
-  if (messages.length === 0 || messages.some((message) => message.role !== "user")) return null;
-  return messages.map(
-    (message) => typeof message.content === "string" ? message.content : messageContentToText(message.content) || ""
-  ).join("\n\n");
-}
-function extractUserPromptBlocks(messages) {
-  if (messages.length === 0 || messages.some((message) => message.role !== "user")) return null;
-  let hasImage = false;
-  const blocks = [];
-  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
-    const content = messages[messageIndex].content;
-    if (messageIndex > 0) blocks.push({ type: "text", text: "\n\n" });
-    if (typeof content === "string") {
-      if (content) blocks.push({ type: "text", text: content });
-      continue;
-    }
-    if (!Array.isArray(content)) {
-      debug(`extractUserPromptBlocks: content is ${typeof content}`);
-      continue;
-    }
-    debug(`extractUserPromptBlocks: ${content.length} blocks, types=${content.map((b) => b.type).join(",")}`);
-    for (const block of content) {
-      if (block.type === "text" && block.text) {
-        blocks.push({ type: "text", text: block.text });
-      } else if (block.type === "image") {
-        debug(`image block: mimeType=${block.mimeType}, data length=${(block.data ?? "").length}, keys=${Object.keys(block).join(",")}`);
-        if (!block.data || !block.mimeType) {
-          debug(`image block missing data or mimeType, skipping`);
-          continue;
-        }
-        hasImage = true;
-        blocks.push({
-          type: "image",
-          source: { type: "base64", media_type: block.mimeType, data: block.data }
-        });
-      }
-    }
-  }
-  return hasImage ? blocks : null;
-}
 function planDeferredUserReplay(messages, owned, options = {}) {
   const { fresh, unresolved, anchor, missingOwned } = owned ? owned.classify(messages, options) : { fresh: messages.flatMap((message, index) => message?.role === "user" ? [index] : []), unresolved: [], anchor: -1, missingOwned: 0 };
   const users = fresh.map((index) => messages[index]);
@@ -47334,12 +49512,16 @@ function planDeferredUserReplay(messages, owned, options = {}) {
     missingOwned
   };
 }
-async function* wrapPromptStream(blocks) {
+async function* wrapPromptStream(content) {
   yield {
     type: "user",
-    message: { role: "user", content: blocks },
-    parent_tool_use_id: null
+    message: { role: "user", content },
+    parent_tool_use_id: null,
+    ...slashLed(content) ? { client_composed: true } : {}
   };
+}
+function queryPrompt(text, blocks) {
+  return blocks || slashLed(text) ? wrapPromptStream(blocks ?? text) : text;
 }
 function resolveMcpTools(context, excludeToolName) {
   const mcpTools = [];
@@ -47428,6 +49610,7 @@ function mcpToolHandler(tool, queryCtx) {
     const earlyResult = toolCallId ? takeQueuedOrParkedResult(queryCtx, toolCallId) : void 0;
     if (earlyResult !== void 0) {
       queryCtx.markToolResultResolved(toolCallId);
+      queryCtx.timing?.phase("resultReleased");
       debug(`mcp handler: ${tool.name} [${toolCallId}] \u2192 resolved from queue/parked (${queryCtx.pendingResults.size} queued, ${queryCtx.reapedResults.size} parked remaining)`);
       const settling = queryCtx.servedToolsSettling;
       if (!settling) return earlyResult;
@@ -47582,7 +49765,7 @@ function onPiHistoryReplaced(event) {
     queryCtx.undeliveredFailure = null;
   }
   debug(event + ": marking Claude session for rebuild");
-  markSessionForRebuild({ forceRotate: restarts });
+  markSessionForRebuild({ reason: "history-replaced", forceRotate: restarts });
 }
 function restartOnReplacedHistory(queryCtx, request) {
   if (queryCtx.connectorCallAudit.size > 0 || queryCtx.foreignMcpCalls.size > 0) {
@@ -47617,7 +49800,7 @@ function streamClaudeAgentSdk(model, context, options) {
   const laneId = requestLaneFor(options?.sessionId, context.messages, (lane2) => runInRequestLane(lane2, () => isForeignConversation(getSharedSession(), context.messages)));
   return runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, options));
 }
-function streamClaudeAgentSdkInLane(model, context, options) {
+function streamClaudeAgentSdkInLane(model, context, options, inherited) {
   const laneId = currentRequestLaneId();
   const ephemeralLane = laneId !== void 0 && (options?.cacheRetention === "none" || isForkLane(laneId));
   const releaseLane = () => {
@@ -47629,21 +49812,27 @@ function streamClaudeAgentSdkInLane(model, context, options) {
     if (!ephemeralLane || laneInUse(laneId)) return;
     releaseLane();
   };
+  const stream = newAssistantMessageEventStream();
+  const timing = inherited ?? startRequestTiming(stream, laneId, model.id, context.messages.length);
   try {
-    return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane);
+    return streamRequestInLane(model, context, options, laneId, releaseEphemeralLane, stream, timing);
   } catch (error51) {
     releaseEphemeralLane();
+    if (!inherited) timing?.settle("threw");
     throw error51;
   }
 }
-function streamRequestInLane(model, context, options, laneId, releaseEphemeralLane) {
-  const stream = newAssistantMessageEventStream();
+function streamRequestInLane(model, context, options, laneId, releaseEphemeralLane, stream, timing) {
   const lastMsgRole = context.messages[context.messages.length - 1]?.role;
   const cwd = options?.cwd ?? process.cwd();
   debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}`);
   if (ctx().activeQuery) {
     const queryCtx = ctx();
-    if (queryCtx.piHistoryReplaced && restartOnReplacedHistory(queryCtx, { model, context, options, stream })) return stream;
+    if (timing) {
+      timing.kind = "tool-result";
+      attachRequestTiming(queryCtx, timing);
+    }
+    if (queryCtx.piHistoryReplaced && restartOnReplacedHistory(queryCtx, { model, context, options, stream, timing })) return stream;
     queryCtx.currentPiStream = stream;
     queryCtx.resetTurnState(model);
     queryCtx.listenForAbort(options?.signal);
@@ -47715,7 +49904,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
         messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" ")
       });
       noteAnomaly("user_message_identity_unresolved");
-      if (!queryCtx.detachedFromSharedSession) markSessionForRebuild();
+      if (!queryCtx.detachedFromSharedSession) markSessionForRebuild({ reason: "user-unresolved" });
     }
     const activeSession = getSharedSession();
     const holdsRecord = activeSession !== null && !queryCtx.detachedFromSharedSession;
@@ -47736,7 +49925,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
         ...claimed,
         cursor,
         historyDigest: rewritten || activeSession.needsRebuild ? UNVERIFIED_HISTORY_DIGEST : cursor === capturedThrough ? capturedDigest : activeSession.historyDigest,
-        ...rewritten ? { needsRebuild: true } : {}
+        ...rewritten ? { needsRebuild: true, rebuildReason: claimed.needsRebuild && claimed.rebuildReason || "history-rewritten" } : {}
       });
     }
     if (capturedThrough >= queryCtx.latestCursor) {
@@ -47754,7 +49943,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
         resultCount: deliveredResultIds.length,
         release: releaseResults,
         signal: options?.signal,
-        restartOnReplacedHistory: () => restartOnReplacedHistory(queryCtx, { model, context, options, stream })
+        restartOnReplacedHistory: () => restartOnReplacedHistory(queryCtx, { model, context, options, stream, timing })
       });
     }
     return stream;
@@ -47763,6 +49952,10 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
   const heldForRun = ctx().undeliveredFailure;
   const steeredResultId = lastMsg?.role !== "toolResult" && heldForRun && options?.signal && !options.signal.aborted && heldForRun.runSignals.has(options.signal) ? extractAllToolResults2(context).map((result) => result.toolCallId).find((id) => id !== void 0 && heldForRun.toolCallIds.has(id)) : void 0;
   if (lastMsg?.role === "toolResult" || steeredResultId !== void 0) {
+    if (timing) {
+      timing.kind = "continuation";
+      attachRequestTiming(ctx(), timing);
+    }
     const resultId = steeredResultId ?? lastMsg.toolCallId;
     const held = ctx().undeliveredFailure;
     ctx().undeliveredFailure = null;
@@ -47786,7 +49979,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
         ...claimed,
         cursor: context.messages.length,
         historyDigest: verified ? historyDigest(context.messages) : UNVERIFIED_HISTORY_DIGEST,
-        ...verified ? {} : { needsRebuild: true }
+        ...verified ? {} : { needsRebuild: true, rebuildReason: claimed.needsRebuild && claimed.rebuildReason || "orphan-unverified" }
       });
     }
     const c = ctx();
@@ -47836,6 +50029,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     });
     return stream;
   }
+  if (timing) attachRequestTiming(ctx(), timing);
   ctx().currentPiStream = stream;
   ctx().pendingToolCalls.clear();
   ctx().pendingResults.clear();
@@ -47944,8 +50138,99 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
   const claudeExecutablePreflight = claudeExecutable ? preflightClaudeExecutable(claudeExecutable, cwd) : void 0;
   const accountScope = accountSessionScope(account);
   const cursorBeforeSync = getSharedSession()?.cursor ?? null;
-  const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, queryModel.id, accountScope);
+  const fresh = {
+    model,
+    context,
+    options,
+    laneId,
+    releaseEphemeralLane,
+    stream,
+    timing,
+    cwd,
+    lastMsg,
+    router,
+    rotationState,
+    account,
+    queryModel,
+    attemptCtx,
+    attemptBuffer,
+    mcpTools,
+    customToolNameToPi,
+    bridgeConfig,
+    providerSettings,
+    claudeExecutable,
+    claudeExecutablePreflight,
+    accountScope,
+    cursorBeforeSync
+  };
+  const requestEnded = () => options?.signal?.aborted === true || peekCtx() !== attemptCtx;
+  const synced = syncSharedSession(context.messages, cwd, customToolNameToSdk, queryModel.id, accountScope, {
+    cancelled: requestEnded,
+    customToolNameToPi
+  });
+  if (!(synced instanceof Promise)) return startFreshQuery(fresh, synced);
+  awaitForkedRebuild(fresh, synced, requestEnded);
+  return stream;
+}
+function awaitForkedRebuild(fresh, synced, requestEnded) {
+  const { attemptCtx, attemptBuffer, laneId, releaseEphemeralLane } = fresh;
+  attemptCtx.forkSyncPending = true;
+  const endRequest = (errorMessage) => {
+    attemptBuffer?.commit();
+    endStreamForFailure(attemptCtx, { errorMessage });
+    releaseEphemeralLane();
+  };
+  void synced.then((syncResult) => runInRequestLane(laneId, () => {
+    attemptCtx.forkSyncPending = false;
+    if (!syncResult.cancelled && !requestEnded()) {
+      startFreshQuery(fresh, syncResult);
+      return;
+    }
+    const when = syncResult.cancelled ? "during" : "after";
+    if (peekCtx() !== attemptCtx) {
+      debug(`provider: the lane ended ${when} the forked rebuild; no query started`);
+      endRequest("Claude bridge: the Pi session ended before its Claude session was ready.");
+      return;
+    }
+    debug(`provider: request cancelled ${when} the forked rebuild; no query started`);
+    fresh.timing?.noteSync(syncResult.sync, false);
+    attemptCtx.abortRequested = true;
+    markSessionForRebuild({ reason: "abort", forceRotate: true });
+    endRequest(ABORTED_MESSAGE);
+  })).catch((error51) => runInRequestLane(laneId, () => {
+    attemptCtx.forkSyncPending = false;
+    debug(`provider: forked rebuild or query setup failed: ${parseErrorShape(error51)}`);
+    endRequest(error51 instanceof Error ? error51.message : String(error51));
+  }));
+}
+function startFreshQuery(fresh, syncResult) {
+  const {
+    model,
+    context,
+    options,
+    laneId,
+    releaseEphemeralLane,
+    stream,
+    timing,
+    cwd,
+    lastMsg,
+    router,
+    rotationState,
+    account,
+    queryModel,
+    attemptCtx,
+    attemptBuffer,
+    mcpTools,
+    customToolNameToPi,
+    bridgeConfig,
+    providerSettings,
+    claudeExecutable,
+    claudeExecutablePreflight,
+    accountScope,
+    cursorBeforeSync
+  } = fresh;
   const { sessionId: resumeSessionId, promptStart } = syncResult;
+  timing?.noteSync(syncResult.sync, Boolean(resumeSessionId));
   const foreignContext = syncResult.foreignContext === true;
   if (foreignContext) ctx().detachedFromSharedSession = true;
   const conversationFp = foreignContext ? void 0 : conversationFingerprint(context.messages);
@@ -47969,10 +50254,13 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     noteAnomaly("empty_prompt");
     promptText = "[continue]";
   }
-  const prompt = promptBlocks ? wrapPromptStream(promptBlocks) : promptText;
+  const prompt = queryPrompt(promptText, promptBlocks);
   const servedTools = mcpTools.length > 0 ? new ServedToolServer(MCP_SERVER_NAME, mcpTools, (tool) => mcpToolHandler(tool, attemptCtx), {
     redefinitionBlocked: (name) => attemptCtx.awaitsInvocation(name),
-    callFinished: (toolUseId) => attemptCtx.settleInvocations([toolUseId])
+    callFinished: (toolUseId) => {
+      attemptCtx.timing?.phase("handlerAnswered");
+      return attemptCtx.settleInvocations([toolUseId]);
+    }
   }) : null;
   attemptCtx.servedTools = servedTools;
   attemptCtx.servedToolNameToPi = customToolNameToPi;
@@ -48012,6 +50300,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
   let retryFailure;
   const sdkQuery2 = sdkQuery({ prompt, options: queryOptions });
   ctx().activeQuery = sdkQuery2;
+  timing?.noteQuery();
   const abortCtx = ctx();
   const attemptFailure = {};
   const persistedHistoryDigest = (cursor) => {
@@ -48031,7 +50320,8 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     const restartPending = Boolean(abortCtx.restartRequest);
     let replaced = next;
     if (Boolean(next) && (abortCtx.piHistoryReplaced || restartPending || abortCtx.userInputNeedsRebuild || abortCtx.priorHistoryRewritten)) {
-      replaced = { ...next, needsRebuild: true };
+      const rebuildReason = next?.needsRebuild && next.rebuildReason || (abortCtx.piHistoryReplaced || restartPending ? "history-replaced" : abortCtx.userInputNeedsRebuild ? "user-unresolved" : "history-rewritten");
+      replaced = { ...next, needsRebuild: true, rebuildReason };
       if (restartPending) replaced.forceRotate = true;
     }
     if (replaced && replaced.historyDigest === void 0) {
@@ -48044,12 +50334,12 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     }
     setSharedSession(Boolean(replaced) && Boolean(conversationFp) ? { conversationFingerprint: conversationFp, ...replaced } : replaced);
   };
-  const markRebuildForThisQuery = (opts = {}) => {
+  const markRebuildForThisQuery = (opts) => {
     if (foreignContext || abortCtx.detachedFromSharedSession) return;
     markSessionForRebuild(opts);
   };
-  const quarantine = () => {
-    markRebuildForThisQuery({ forceRotate: true });
+  const quarantine = (reason) => {
+    markRebuildForThisQuery({ reason, forceRotate: true });
     detachContext(abortCtx);
     abortCtx.detachedFromSharedSession = true;
   };
@@ -48105,7 +50395,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
       if (streamIdleTimedOut || wasAborted || options?.signal?.aborted || !abortCtx.activeQuery) return;
       streamIdleTimedOut = true;
       dropDeferredUserMessages("stream-idle-timeout");
-      quarantine();
+      quarantine("idle-timeout");
       const errorMessage = buildStreamIdleTimeoutErrorMessage(timeoutMs);
       debug("provider: stream idle timeout", `model=${queryModel.id}`, `timeout=${timeoutMs}`, `idle=${idleMs}`);
       const idleFailure = { kind: "network", message: errorMessage };
@@ -48156,7 +50446,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     if (drained > 0) debug(`provider: abort drained ${drained} waiting MCP handler(s) as errors`);
     abortCtx.pendingResults.clear();
     requestAbort();
-    quarantine();
+    quarantine("abort");
   });
   abortCtx.onRequestAbort = onAbort;
   abortCtx.listenForAbort(options?.signal);
@@ -48190,7 +50480,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
       return;
     }
     if (wasAborted || options?.signal?.aborted) {
-      markRebuildForThisQuery({ forceRotate: true });
+      markRebuildForThisQuery({ reason: "abort", forceRotate: true });
       dropDeferredUserMessages("abort-completion");
       debug(`provider: abort detected, marked sharedSession needsRebuild + forceRotate`);
       surfaceFailure({ message: ABORTED_MESSAGE });
@@ -48205,7 +50495,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
       if (failedSessionId) {
         const cursor = Math.max(context.messages.length, abortCtx.latestCursor, activeSession2?.cursor ?? 0);
         debug(`provider: terminal failure, persisting session=${failedSessionId.slice(0, 8)}, cursor=${cursor}, account=${account?.label ?? "legacy"}, droppedSteers=${droppedSteers.length}`);
-        persistSession({ sessionId: failedSessionId, cursor, cwd, ...accountScope, ...droppedSteers.length > 0 ? { needsRebuild: true } : {} });
+        persistSession({ sessionId: failedSessionId, cursor, cwd, ...accountScope, ...droppedSteers.length > 0 ? { needsRebuild: true, rebuildReason: "dropped-steers" } : {} });
       }
       return;
     }
@@ -48231,8 +50521,9 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
           break;
         }
         const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
-        const contQuery = sdkQuery({ prompt: steer.blocks ? wrapPromptStream(steer.blocks) : steer.text, options: contOptions });
+        const contQuery = sdkQuery({ prompt: queryPrompt(steer.text, steer.blocks), options: contOptions });
         abortCtx.activeQuery = contQuery;
+        abortCtx.timing?.noteQuery();
         debug(`provider: continuation query, model=${queryModel.id}, resume=${resumeId.slice(0, 8)}, account=${account?.label ?? "legacy"}, prompt=${steerShape}`);
         try {
           const continuation = await consumeQuery(contQuery, abortCtx, customToolNameToPi, queryModel, bridgeConfig, () => wasAborted, account, router);
@@ -48241,7 +50532,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
             recordAttemptFailure(continuation.failure);
             if (!abortCtx.handledTerminalError) surfaceFailure(continuation.failure);
             if (dropDeferredUserMessages("continuation-failure", steer).length > 0) {
-              markRebuildForThisQuery();
+              markRebuildForThisQuery({ reason: "dropped-steers" });
             }
             break;
           }
@@ -48260,7 +50551,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
           recordAttemptFailure(continuationFailure);
           if (!abortCtx.handledTerminalError) surfaceFailure(continuationFailure);
           if (dropDeferredUserMessages("continuation-error", steer).length > 0) {
-            markRebuildForThisQuery();
+            markRebuildForThisQuery({ reason: "dropped-steers" });
           }
           break;
         } finally {
@@ -48281,10 +50572,10 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     debug(`provider: query error, model=${queryModel.id}, aborted=${Boolean(options?.signal?.aborted)}, error=`, error51);
     const suppressDuplicateError = abortCtx.handledTerminalError || streamIdleTimedOut && !retryRequested;
     if (wasAborted || options?.signal?.aborted) {
-      markRebuildForThisQuery({ forceRotate: true });
+      markRebuildForThisQuery({ reason: "abort", forceRotate: true });
     }
     if (dropDeferredUserMessages("query-error").length > 0) {
-      markRebuildForThisQuery();
+      markRebuildForThisQuery({ reason: "dropped-steers" });
     }
     if (suppressDuplicateError || retryRequested) {
       debug("provider: suppressing duplicate query error after terminal handling");
@@ -48320,7 +50611,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
         reentryStream.end();
         return;
       }
-      for await (const event of runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(restart.model, restartContext(restart), restart.options))) reentryStream.push(event);
+      for await (const event of runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(restart.model, restartContext(restart), restart.options, restart.timing))) reentryStream.push(event);
       reentryStream.end();
       return;
     }
@@ -48339,7 +50630,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     const retryStream = runInRequestLane(laneId, () => streamClaudeAgentSdkInLane(model, context, {
       ...options ?? {},
       [ROTATION_STATE_KEY]: rotationState
-    }));
+    }, timing));
     for await (const event of retryStream) reentryStream.push(event);
     reentryStream.end();
   }).catch((error51) => {
@@ -48388,12 +50679,19 @@ function index_default(pi2) {
     if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
       clearSession(`session_start:${event.reason}`);
     }
-    if (event.reason === "startup" || event.reason === "resume") restoreSharedSessionFromPi(ctx2);
+    if (event.reason === "reload" && takeReloadWithLiveWriter(ctx2.sessionManager)) {
+      debug("restoreSharedSession: a Claude Code child may still write the session at the reload \u2014 forcing rebuild");
+    } else if (event.reason === "startup" || event.reason === "resume" || event.reason === "reload") {
+      restoreSharedSessionFromPi(ctx2);
+    }
     applyProviderRegistration(`session_start:${event.reason}`);
   }));
-  pi2.on("session_shutdown", (_event, ctx2) => {
+  pi2.on("session_shutdown", (event, ctx2) => {
     const sessionId = takeStartedLane(ctx2.sessionManager) ?? ctx2.sessionManager.getSessionId();
     runInRequestLane(sessionId, () => {
+      if (event.reason === "reload" && (laneInUse(sessionId) || getSharedSession()?.forceRotate === true)) {
+        noteReloadWithLiveWriter(ctx2.sessionManager);
+      }
       cancelScheduledSessionPersistence(ctx2.sessionManager);
       clearSession("session_shutdown");
       releaseProviderTokens("session_shutdown");

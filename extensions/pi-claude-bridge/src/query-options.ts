@@ -4,15 +4,15 @@
 
 import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.js";
-import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.js";
-import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.js";
-import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.js";
-import { connectorServersSnapshot } from "./connector-runtime.js";
-import { PROVIDER_ID } from "./convert.js";
-import { makeCliDebugOptions } from "./debug.js";
-import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.js";
-import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.js";
+import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.ts";
+import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.ts";
+import { normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.ts";
+import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, settingSourcesForQuery } from "./connectors.ts";
+import { connectorServersSnapshot } from "./connector-runtime.ts";
+import { PROVIDER_ID } from "./convert.ts";
+import { makeCliDebugOptions } from "./debug.ts";
+import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.ts";
+import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.ts";
 
 // --- Effort level mapping ---
 // Pi reasoning levels → CC SDK effort levels
@@ -116,6 +116,12 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		enableCloudMcp,
 		providerSettings.settingSources,
 	);
+	// The same source gate loads Claude Code's own instruction files: with
+	// "user" (connector mode) ~/.claude/CLAUDE.md, with "project" the checkout's
+	// CLAUDE.md and AGENTS.md. Pi's system prompt already carries Pi's context
+	// files, so these would repeat them or add a persona written for another
+	// harness. Managed/policy memory cannot be excluded.
+	const claudeMdExcludes = ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/rules/**"];
 	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
 	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
 	// Fall back to our generic table only for an absent key. A null entry marks
@@ -177,12 +183,17 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// and a filler reply before the real one. Pi supplies every prompt, so the
 	// bridge never wants that; a 1 ms max age makes every stored turn too old.
 	// "0" would not do: Claude Code then falls back to its own limit (hours).
+	// CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1: without it the API
+	// holds each tool argument value until the model finishes writing it, so a
+	// large write shows only its path for minutes and then arrives in one burst.
+	// With it, the argument streams as it is written and Pi sees it grow.
 	const childEnv = {
 		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
 		CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
 		CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
+		CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1",
 	};
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
@@ -192,7 +203,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
 		...(fallbackModel ? { fallbackModel } : {}),
-		...(providerSettings.fastMode ? { settings: { fastMode: true } } : {}),
+		settings: { claudeMdExcludes, ...(providerSettings.fastMode ? { fastMode: true } : {}) },
 		systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,
