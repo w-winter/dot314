@@ -8,6 +8,18 @@ import type { Context } from "@earendil-works/pi-ai";
 import { messageContentToText } from "./convert.ts";
 import { debug } from "./debug.ts";
 
+/** Whether Claude Code would read `content` as one of its own slash commands:
+ *  a fresh prompt then runs the command and never reaches Claude, and a
+ *  message queued mid-turn is held until the turn ends. Pi has already run
+ *  its own commands, so whatever reaches the bridge is meant for Claude; the
+ *  bridge sends such a message with `client_composed: true`, which delivers
+ *  it as written. That also skips Claude Code's per-turn reminders on that
+ *  turn, so only messages with a text block that starts with "/" get it. */
+export function slashLed(content: string | ContentBlockParam[]): boolean {
+	const texts = typeof content === "string" ? [content] : content.flatMap((block) => block.type === "text" ? [block.text] : []);
+	return texts.some((text) => text.trimStart().startsWith("/"));
+}
+
 /** Combine one or more consecutive user messages into a single SDK prompt.
  *
  *  Representation divergence, accepted on purpose: this MERGES N pi user

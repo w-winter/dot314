@@ -237,13 +237,36 @@ it("sends an image steer as blocks", async () => {
 	assert.equal(observed.results.t1, "result t1");
 });
 
-it("follows a steer that starts with a slash with a note, so Claude Code does not hold it as a command", async () => {
+it("sends a steer that starts with a slash as client-composed, so Claude Code does not hold it as a command", async () => {
 	const observed = installFakeClaudeCode([["t1"]]);
 	const start = [system, user("start")];
 	const first = await startToolTurn(start);
 	await collect(streamClaudeAgentSdk(model, { messages: [...start, first, toolResult("t1"), user("  /tmp/shot.png")] }, { sessionId: LANE }));
-	assert.deepEqual(observed.inputs[0].message.content, [{ type: "text", text: "  /tmp/shot.png" }, { type: "text", text: "(Sent while you were working.)" }]);
+	assert.equal(observed.inputs[0].message.content, "  /tmp/shot.png");
+	assert.equal(observed.inputs[0].client_composed, true);
 	assert.equal(observed.results.t1, "result t1");
+});
+
+it("sends a prompt that starts with a slash as client-composed, so Claude Code does not run it as its own command", async () => {
+	const prompts = [];
+	__testSetSdkQueryFactory(({ prompt }) => ({
+		async *[Symbol.asyncIterator]() {
+			prompts.push(typeof prompt === "string" ? prompt : (await prompt[Symbol.asyncIterator]().next()).value);
+			yield { type: "system", subtype: "init", session_id: SESSION };
+			yield* textTurn("ok");
+			yield { type: "result", subtype: "success", session_id: SESSION };
+		},
+		async streamInput() {},
+		close() {},
+		async interrupt() {},
+	}));
+	const start = [system, user("/review this")];
+	const reply = terminals(await collect(streamClaudeAgentSdk(model, { messages: start }, { sessionId: LANE })))[0].message;
+	await collect(streamClaudeAgentSdk(model, { messages: [...start, reply, user("hello")] }, { sessionId: LANE }));
+	assert.deepEqual(prompts, [
+		{ type: "user", message: { role: "user", content: "/review this" }, parent_tool_use_id: null, client_composed: true },
+		"hello",
+	]);
 });
 
 it("gives every staggered parallel handler its result", async () => {

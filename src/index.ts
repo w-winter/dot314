@@ -14,7 +14,7 @@ import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { PROVIDER_ID } from "./convert.ts";
-import { extractUserPrompt, extractUserPromptBlocks } from "./user-prompt.ts";
+import { extractUserPrompt, extractUserPromptBlocks, slashLed } from "./user-prompt.ts";
 import { buildModels, modelDisplayName } from "./models.ts";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX } from "./skills.ts";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.ts";
@@ -228,12 +228,19 @@ export function planDeferredUserReplay(messages: Context["messages"], owned?: Us
 	};
 }
 
-async function* wrapPromptStream(blocks: ContentBlockParam[]): AsyncIterable<SDKUserMessage> {
+async function* wrapPromptStream(content: string | ContentBlockParam[]): AsyncIterable<SDKUserMessage> {
 	yield {
 		type: "user",
-		message: { role: "user", content: blocks } as MessageParam,
+		message: { role: "user", content } as MessageParam,
 		parent_tool_use_id: null,
+		...(slashLed(content) ? { client_composed: true as const } : {}),
 	};
+}
+
+/** A query's prompt: images need blocks, and a slash-led text needs a
+ *  streamed message to carry `client_composed` (slashLed). */
+function queryPrompt(text: string, blocks: ContentBlockParam[] | null | undefined): string | AsyncIterable<SDKUserMessage> {
+	return blocks || slashLed(text) ? wrapPromptStream(blocks ?? text) : text;
 }
 
 // --- Provider helpers: tool resolution ---
@@ -1343,9 +1350,7 @@ function startFreshQuery(fresh: FreshQuery, syncResult: SyncResult): AssistantMe
 		promptText = "[continue]";
 	}
 
-	const prompt: string | AsyncIterable<SDKUserMessage> = promptBlocks
-		? wrapPromptStream(promptBlocks)
-		: promptText;
+	const prompt = queryPrompt(promptText, promptBlocks);
 	const servedTools = mcpTools.length > 0
 		? new ServedToolServer(MCP_SERVER_NAME, mcpTools, (tool) => mcpToolHandler(tool, attemptCtx), {
 			redefinitionBlocked: (name) => attemptCtx.awaitsInvocation(name),
@@ -1728,9 +1733,7 @@ function startFreshQuery(fresh: FreshQuery, syncResult: SyncResult): AssistantMe
 					}
 
 					const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") };
-					// Runs carrying image blocks replay as blocks (wrapPromptStream) so
-					// the images survive; text-only runs stay plain strings.
-					const contQuery = startSdkQuery({ prompt: steer.blocks ? wrapPromptStream(steer.blocks) : steer.text, options: contOptions });
+					const contQuery = startSdkQuery({ prompt: queryPrompt(steer.text, steer.blocks), options: contOptions });
 					abortCtx.activeQuery = contQuery;
 					abortCtx.timing?.noteQuery();
 

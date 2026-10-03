@@ -6,6 +6,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Fixed
 
+- **A prompt that started with a slash ran as a Claude Code command.**
+  - **Before:** Pi runs its own slash commands and passes anything else on as text, but Claude Code then read text like `/review this` as one of its own commands: it ran that command, and the message never reached Claude. The fix for a mid-turn message that starts with a slash added a "(Sent while you were working.)" line to get it through.
+  - **Now:** the bridge marks any message with a text part that starts with `/` as written by the client (`client_composed`), and Claude Code passes it to Claude as written, for a new prompt and for a message sent mid-turn alike. The added line is gone. Other messages go out as before, because the mark also skips Claude Code's per-turn reminders for that turn.
 - **A rebuild could replay a reply whose thinking was cut off.**
   - **Before:** the API rejects a request whose latest reply has thinking that differs from what it returned, so a rebuild replaces such a reply with a note when it is the latest. Since rebuilds started copying Claude Code's own records, that check could be skipped: an earlier rebuild had imported the reply with its cut-off thinking dropped (allowed while a later reply followed it), and after `/tree` made it the latest reply, the next rebuild copied that version as it was.
   - **Now:** the copy stops before the trailing replies the import has to replace, so they always get the note.
