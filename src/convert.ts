@@ -152,7 +152,7 @@ function hasUnreplayableThinking(msg: PiMessage): boolean {
  *  the latest assistant back, each one with unreplayable thinking, so that the
  *  latest assistant left in the import replays as returned. Error and aborted
  *  turns are never imported and are passed over. */
-function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
+export function unreplayableTrailingTurns(messages: PiMessage[]): Set<number> {
 	const turns = new Set<number>();
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];

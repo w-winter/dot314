@@ -2,6 +2,14 @@
 
 Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
+## 2026-10-03
+
+### Fixed
+
+- **A rebuild could replay a reply whose thinking was cut off.**
+  - **Before:** the API rejects a request whose latest reply has thinking that differs from what it returned, so a rebuild replaces such a reply with a note when it is the latest. Since rebuilds started copying Claude Code's own records, that check could be skipped: an earlier rebuild had imported the reply with its cut-off thinking dropped (allowed while a later reply followed it), and after `/tree` made it the latest reply, the next rebuild copied that version as it was.
+  - **Now:** the copy stops before the trailing replies the import has to replace, so they always get the note.
+
 ## 2026-10-02
 
 ### Fixed

@@ -295,6 +295,23 @@ describe("a same-account rebuild forks Claude Code's transcript", () => {
 		});
 	}
 
+	it("leaves a reply with cut-off thinking to the import's note once /tree makes it the latest", async () => {
+		const claude = (content) => ({ role: "assistant", provider: "pi-claude", api: "anthropic", model: MODEL_ID, stopReason: "stop", content, timestamp: 0 });
+		const cutOff = claude([{ type: "thinking", thinking: "Partial", thinkingSignature: "" }, { type: "text", text: "First answer." }]);
+		// A rebuild imports the reply without its cut-off thinking while a later reply follows it.
+		const imported = await syncSharedSession([user("one"), cutOff, user("two"), claude([{ type: "text", text: "Second answer." }]), user("three")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+		assert.deepEqual(mainChain(sessionRecords(imported.sessionId)).map(shape).slice(0, 2), [["user", "one"], ["assistant", ["text"]]]);
+		// /tree back to that reply: it is now the latest one Pi holds.
+		setSharedSession({ sessionId: imported.sessionId, cursor: 4, cwd, needsRebuild: true, rebuildReason: "history-rewritten" });
+
+		const result = await syncSharedSession([user("one"), cutOff, user("next")], cwd, TOOL_NAMES, MODEL_ID, undefined, { customToolNameToPi: PI_TOOL_NAMES });
+
+		assert.equal(result.sync.forked, 1, "only the prompt before the reply is copied");
+		const chain = mainChain(sessionRecords(result.sessionId));
+		assert.equal(chain.some((record) => record.type === "assistant"), false, "the cut-off reply is not replayed");
+		assert.match(JSON.stringify(chain.at(-1).message.content), /could not be replayed as-is/);
+	});
+
 	it("imports all of Pi's history when the transcript shares no prefix with it or is gone", async () => {
 		const fullImport = (records) => {
 			assert.ok(records.every((record) => (record.type === "user" || record.type === "assistant") && record.forkedFrom === undefined), "nothing of Claude Code's transcript is kept");

@@ -23,7 +23,7 @@ import { getSessionPath } from "cc-session-io";
 import { readFileSync } from "fs";
 import { isDeepStrictEqual } from "node:util";
 import { isChildExecutedTool } from "./connectors.ts";
-import { PROVIDER_ID, convertPiMessages, sanitizeToolId, toolResultContentToAnthropic, userMessageToAnthropic } from "./convert.ts";
+import { PROVIDER_ID, convertPiMessages, sanitizeToolId, toolResultContentToAnthropic, unreplayableTrailingTurns, userMessageToAnthropic } from "./convert.ts";
 import { debug } from "./debug.ts";
 import { toolResultToMcpContent } from "./extract-tool-results.ts";
 import { isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.ts";
@@ -461,7 +461,13 @@ export function planNativePrefix(
 	let index = 0;
 	// Every matched group's end, in order: where the prefix may be cut.
 	const ends: PrefixEnd[] = [];
-	while (index < priors.length) {
+	// The import replaces the trailing turns it cannot replay with a note,
+	// and only for the messages it imports. An earlier rebuild may have
+	// imported such a turn with its thinking dropped while a later reply
+	// followed it, so the prefix ends before the first of them.
+	const unreplayable = unreplayableTrailingTurns(priors);
+	const limit = unreplayable.size > 0 ? Math.min(...unreplayable) : priors.length;
+	while (index < limit) {
 		const message = priors[index];
 		// What the import writes nothing for: a failed or aborted reply with its
 		// results, and anything that is not a conversation message. It counts
