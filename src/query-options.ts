@@ -177,12 +177,17 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// and a filler reply before the real one. Pi supplies every prompt, so the
 	// bridge never wants that; a 1 ms max age makes every stored turn too old.
 	// "0" would not do: Claude Code then falls back to its own limit (hours).
+	// CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1: without it the API
+	// holds each tool argument value until the model finishes writing it, so a
+	// large write shows only its path for minutes and then arrives in one burst.
+	// With it, the argument streams as it is written and Pi sees it grow.
 	const childEnv = {
 		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
 		CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
 		CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
+		CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1",
 	};
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,

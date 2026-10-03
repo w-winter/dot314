@@ -6,6 +6,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Fixed
 
+- **A large write looked stuck for minutes.**
+  - **Before:** the API held back each tool argument until Claude finished writing it. A write showed only its path while the file content was generated, with nothing arriving but keepalive pings, and then the whole content landed at once. A 130 KB file meant about five minutes of no visible progress, long enough that it looked hung and got cancelled.
+  - **Now:** the bridge starts Claude Code with `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1`, so arguments stream as they are written and Pi's tool display shows the file grow. In a 4 KB test write with Opus, the longest gap between pieces of content dropped from 10 seconds to about one.
 - **A rebuild after Esc kept less of Claude Code's session than it could.**
   - **Before:** the rebuild copies Claude Code's own records for the start of the conversation that matches Pi's history, and stopped at the first thinking block that ended in whitespace. Claude often ends a thinking block with a blank line, and Pi can keep the block without it: a Pi extension that labels thinking for display trims the text. In one real session the copy stopped after 78 of 305 messages, and the next request read 19% from the prompt cache.
   - **Now:** a thinking block matches when its signature is the same and Pi's text differs only by that trailing whitespace. The signature is the API's identity for the block, and the copy keeps Claude Code's text, which is what Claude saw. Replayed on that session, the copy reaches 98 of 305 messages. A block without a signature still has to match exactly.
