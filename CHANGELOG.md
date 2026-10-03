@@ -6,6 +6,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Fixed
 
+- **A message sent while Claude worked was held back when it started with a slash.**
+  - **Before:** Claude Code reads a queued message whose last part is text starting with `/` as a slash command and holds it until the turn ends. A file path pasted mid-turn, such as `/tmp/screenshot.png`, never reached the turn it was sent into.
+  - **Now:** the bridge adds a short "(Sent while you were working.)" line after such a message, so Claude sees it at the next tool result like any other. Other messages go through unchanged.
 - **A large write looked stuck for minutes.**
   - **Before:** the API held back each tool argument until Claude finished writing it. A write showed only its path while the file content was generated, with nothing arriving but keepalive pings, and then the whole content landed at once. A 130 KB file meant about five minutes of no visible progress, long enough that it looked hung and got cancelled.
   - **Now:** the bridge starts Claude Code with `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1`, so arguments stream as they are written and Pi's tool display shows the file grow. In a 4 KB test write with Opus, the longest gap between pieces of content dropped from 10 seconds to about one.

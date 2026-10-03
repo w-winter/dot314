@@ -146,9 +146,20 @@ export function deliverSteerBeforeResults(queryCtx: QueryContext, sdkQuery: NonN
 	const writeSettled = (): void => {
 		if (queryCtx.steeringWriteQuery === sdkQuery) queryCtx.steeringWriteQuery = null;
 	};
+	// Claude Code 2.1.287 reads a queued message whose last block is text
+	// starting with "/" as a slash command and holds it until the turn ends, so
+	// a pasted path would miss this turn. Any text block after it lets it through.
+	const content = live.steer.blocks ?? live.steer.text;
+	const last = typeof content === "string" ? { type: "text" as const, text: content } : content.at(-1);
+	const heldAsCommand = last?.type === "text" && last.text.trimStart().startsWith("/");
 	const message: SDKUserMessage = {
 		type: "user",
-		message: { role: "user", content: live.steer.blocks ?? live.steer.text } as MessageParam,
+		message: {
+			role: "user",
+			content: heldAsCommand
+				? [...(typeof content === "string" ? [last] : content), { type: "text", text: "(Sent while you were working.)" }]
+				: content,
+		} as MessageParam,
 		parent_tool_use_id: null,
 		// "now" makes Claude Code 2.1.283 interrupt the pending MCP call and discard its result; "next" keeps it.
 		priority: "next",

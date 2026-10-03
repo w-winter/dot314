@@ -237,6 +237,15 @@ it("sends an image steer as blocks", async () => {
 	assert.equal(observed.results.t1, "result t1");
 });
 
+it("follows a steer that starts with a slash with a note, so Claude Code does not hold it as a command", async () => {
+	const observed = installFakeClaudeCode([["t1"]]);
+	const start = [system, user("start")];
+	const first = await startToolTurn(start);
+	await collect(streamClaudeAgentSdk(model, { messages: [...start, first, toolResult("t1"), user("  /tmp/shot.png")] }, { sessionId: LANE }));
+	assert.deepEqual(observed.inputs[0].message.content, [{ type: "text", text: "  /tmp/shot.png" }, { type: "text", text: "(Sent while you were working.)" }]);
+	assert.equal(observed.results.t1, "result t1");
+});
+
 it("gives every staggered parallel handler its result", async () => {
 	const observed = installFakeClaudeCode([["t1", "t2"]]);
 	const start = [system, user("start")];
