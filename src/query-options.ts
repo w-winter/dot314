@@ -116,6 +116,12 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		enableCloudMcp,
 		providerSettings.settingSources,
 	);
+	// The same source gate loads Claude Code's own instruction files: with
+	// "user" (connector mode) ~/.claude/CLAUDE.md, with "project" the checkout's
+	// CLAUDE.md and AGENTS.md. Pi's system prompt already carries Pi's context
+	// files, so these would repeat them or add a persona written for another
+	// harness. Managed/policy memory cannot be excluded.
+	const claudeMdExcludes = ["**/CLAUDE.md", "**/CLAUDE.local.md", "**/AGENTS.md", "**/.claude/rules/**"];
 	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
 	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
 	// Fall back to our generic table only for an absent key. A null entry marks
@@ -197,7 +203,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
 		...(fallbackModel ? { fallbackModel } : {}),
-		...(providerSettings.fastMode ? { settings: { fastMode: true } } : {}),
+		settings: { claudeMdExcludes, ...(providerSettings.fastMode ? { fastMode: true } : {}) },
 		systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,

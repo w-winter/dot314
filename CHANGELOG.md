@@ -6,6 +6,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ### Fixed
 
+- **Claude Code added its own instruction files to Pi's.**
+  - **Before:** with connectors on, the bridge loads Claude Code's user settings, and Claude Code then also added `~/.claude/CLAUDE.md` to every request: a file written for Claude Code, not for Pi, on top of the context files Pi already sends. Opting into project settings with `provider.settingSources` also added the checkout's `CLAUDE.md`, `CLAUDE.local.md` and `.claude/rules`, repeating what Pi sends.
+  - **Now:** the bridge tells Claude Code to skip those files (`claudeMdExcludes`), so Pi's system prompt is the only source of instructions whatever settings load. Settings such as connectors still load as before.
 - **A message sent while Claude worked was held back when it started with a slash.**
   - **Before:** Claude Code reads a queued message whose last part is text starting with `/` as a slash command and holds it until the turn ends. A file path pasted mid-turn, such as `/tmp/screenshot.png`, never reached the turn it was sent into.
   - **Now:** the bridge adds a short "(Sent while you were working.)" line after such a message, so Claude sees it at the next tool result like any other. Other messages go through unchanged.
