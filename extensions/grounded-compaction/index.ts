@@ -292,7 +292,7 @@ What is done, what is in progress, what was agreed or designed but not started, 
 Unresolved problems, risky assumptions, and surprising findings. Distinguish observed facts from inferences.
 
 ## Immediate next steps
-Concrete next actions in execution order. Note dependencies between steps. If a step depends on git or file state, phrase it as verify-then-act rather than assuming the recorded state still holds.
+Concrete next actions in execution order. Note dependencies between steps. If the next action depends on uncertain or potentially outdated information, state what needs to be checked.
 
 ## Critical evidence & exact anchors
 Verbatim fragments whose exact wording or value is essential to continuation and is not already shown exactly elsewhere: key user requirements, acceptance criteria, error messages, consequential command invocations with observed output lines, version numbers, identifiers, and config/API values. If an exact anchor already appears in another section, leave it there rather than repeat it. Quote selectively: anchors, not transcript.

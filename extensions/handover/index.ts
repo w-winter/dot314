@@ -33,7 +33,7 @@ const DEFAULT_STYLE_GUIDE = `
 Use these section headings exactly. Omit a section only if it is truly empty. Prefer bullets under each heading.
 
 ## Brief
-Current objective, how it evolved from the original request, current state, immediate next action.
+The user's desired outcome, how the current task serves it, current state, and immediate next action. Preserve the user's stated acceptance conditions and note if the objective changed from the original request.
 
 ## Constraints & preferences
 Requirements, preferences, or constraints stated by the user that must be respected.
@@ -45,7 +45,7 @@ Decisions made with brief rationale, including approaches tried and ruled out. E
 What contradicted expectations about the codebase, task, or dependencies. Gotchas and edge cases discovered. What is believed but with low confidence. Distinguish observed facts from inferences.
 
 ## Status
-What is verified-done, what is implemented but unverified, what is in progress, what is blocked. Check the last several user messages for unresolved requests before marking anything done.
+What is verified-done, what is implemented but unverified, what is in progress, what is blocked. Record the exact commands or checks used to verify the work and their last observed results. Note relevant changes made after those checks. Check the last several user messages for unresolved requests before marking anything done.
 
 ## Continuation logistics
 - Mandatory reading: exact file paths the next agent should open first.
@@ -56,7 +56,7 @@ Rehydration targets (optional)
 If applicable: topics where the needed level of detail depends on unresolved questions. Note what would trigger the need to rehydrate from the parent session.
 
 ## Next steps
-Concrete next actions in execution order. Note dependencies between steps.
+Concrete next actions in execution order. Note dependencies between steps. If the next action depends on uncertain or potentially outdated information, state what needs to be checked.
 
 # Style
 - The new session starts with near-zero context; make the summary self-contained and high-density

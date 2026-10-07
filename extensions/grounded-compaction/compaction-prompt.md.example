@@ -19,7 +19,7 @@ Requirements, preferences, or constraints stated by the user that the next agent
 Decisions that materially affect continuation, with brief rationale. Also include approaches that were tried, rejected, or failed when that prevents repeating mistakes.
 
 ## Status
-What is done, what is in progress, what was agreed or designed but not started, what remains unverified, and what is blocked. Check the last several user messages for unresolved requests before marking anything done. If the agent orchestrated RP agents with `agent_run`, include for each completed or in-progress task/milestone:
+What is done, what is in progress, what was agreed or designed but not started, what remains unverified, and what is blocked. Record the exact commands or checks used to verify the work and their last observed results. Note relevant changes made after those checks. Check the last several user messages for unresolved requests before marking anything done. If the agent orchestrated RP agents with `agent_run`, include for each completed or in-progress task/milestone:
    - `RP child session ID: <session_id>` whenever it was mentioned
    - `Codex session JSONL: <path>` whenever it was mentioned
 Preserve these exact identifiers verbatim; if present, they are key rehydration breadcrumbs after compaction.
@@ -28,7 +28,7 @@ Preserve these exact identifiers verbatim; if present, they are key rehydration 
 Unresolved problems, risky assumptions, and surprising findings. Distinguish observed facts from inferences.
 
 ## Immediate next steps
-Concrete next actions in execution order. Note dependencies between steps. If a step depends on git or file state, phrase it as verify-then-act rather than assuming the recorded state still holds.
+Concrete next actions in execution order. Note dependencies between steps. If the next action depends on uncertain or potentially outdated information, state what needs to be checked.
 
 ## Critical evidence & exact anchors
 Verbatim fragments whose exact wording or value is essential to continuation and is not already shown exactly elsewhere: key user requirements, acceptance criteria, error messages, consequential command invocations with observed output lines, version numbers, identifiers, and config/API values. If an exact anchor already appears in another section, leave it there rather than repeat it. Quote selectively: anchors, not transcript.
