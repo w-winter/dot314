@@ -1,4 +1,5 @@
 ---
+extension: pi-interactive-subagents
 name: codex-session-investigator
 description: Answer questions about a Codex session JSONL by rendering it with session-view and inspecting the rendered transcript
 model: openai-codex/gpt-5.6-luna
