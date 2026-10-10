@@ -571,10 +571,15 @@ export default function (pi: ExtensionAPI) {
 				// Filtered out of LLM context by the context event handler above.
 				// triggerTurn: false is critical — without it, sendMessage mid-stream
 				// tries to start a new turn which corrupts conversation state.
+				// The text content carries the response too, so session-tree views and
+				// copy tools that read content (not details) see the full exchange.
 				const icon = result.exitCode === 0 ? "✓" : "✗";
+				const textParts = [`[btw ${icon}] ${task}`];
+				if (result.exitCode > 0 && result.errorMessage) textParts.push(`Error: ${result.errorMessage}`);
+				if (result.finalOutput.trim()) textParts.push(result.finalOutput.trim());
 				pi.sendMessage({
 					customType: BTW_MESSAGE_TYPE,
-					content: [{ type: "text", text: `[btw ${icon}] ${task}` }],
+					content: [{ type: "text", text: textParts.join("\n\n") }],
 					display: true,
 					details: { task, result } satisfies BtwMessageDetails,
 				}, { triggerTurn: false });

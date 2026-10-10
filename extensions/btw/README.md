@@ -27,6 +27,7 @@ This version adds:
 - Explicit forwarding of the selected model's resolved API key, headers, and environment through Pi's current `ModelRuntime` request path. If the OAuth token for OpenAI Codex is missing, the error tells the user to run `/login openai-codex`.
 - The complete projected parent-session context from Pi's session manager, including active compaction and branch-summary state, rather than only raw message entries.
 - AST-based handling of compound Bash commands with `just-bash`. Every simple command must resolve to `allow`; an unparseable command is blocked unless `permissions.mode` is `yolo`.
+- `/btw` saves the child's response with the prompt in the session entry it adds, so session-tree views such as `/tree` and anycopy show and copy both.
 - Focused tests for persisted child resources and lineage, request authentication, scoped model ranking, compaction completion, display helpers, and compound-command permissions.
 
 ## Child extensions

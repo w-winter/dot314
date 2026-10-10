@@ -107,7 +107,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2026 pasky
 - **Used in:**
-  - `extensions/btw/` (◐ modified — scoped fuzzy model selection, request-auth forwarding, projected session context, double-dash options, and AST-based compound Bash permission checks)
+  - `extensions/btw/` (◐ modified — scoped fuzzy model selection, request-auth forwarding, projected session context, double-dash options, AST-based compound Bash permission checks, and child responses saved in session-tree entries)
   - `extensions/handover/` (◐ borrows heavily from handoff extension)
 
 ### damianpdr/pi-thread-switcher

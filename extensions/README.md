@@ -244,6 +244,7 @@
   - Passes the selected model's resolved API key, headers, and environment through Pi's current `ModelRuntime` request path, with a direct reauthentication error for missing OpenAI Codex OAuth
   - Gives the child Pi's complete projected session context, including active compaction and branch-summary state, instead of serializing only raw message entries
   - Parses compound Bash commands with `just-bash`; every simple command must resolve to `allow`, and unparseable commands are blocked unless `permissions.mode` is `yolo`
+  - Saves the child's response with the prompt in the session entry that `/btw` adds, so session-tree views such as `/tree` and [`anycopy/`](anycopy/) show and copy both
 
 - ◐ [`pi-claude-bridge/`](pi-claude-bridge/) ([README](pi-claude-bridge/README.md)) (upstream: [Eli Dickinson's `vanillagreencom/kendex`](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge))
   - Routes `pi-claude/*` models through a logged-in Claude Code account while Pi retains its terminal interface, tools, session history, effort controls, and optional connector access
