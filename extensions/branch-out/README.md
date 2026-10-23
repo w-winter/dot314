@@ -83,11 +83,12 @@ Routing is automatic and tried in this order:
 2. Orca — detected via `ORCA_WORKTREE_ID` and either `ORCA_TERMINAL_HANDLE` or `ORCA_PANE_KEY`
 3. cmux — detected via `CMUX_SOCKET_PATH`
 4. tmux — detected via `TMUX`
-5. Warp — detected via `TERM_PROGRAM=WarpTerminal`
-6. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
-7. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
-8. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
-9. Alacritty window
+5. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
+6. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
+7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
+8. Warp — detected via `TERM_PROGRAM=WarpTerminal`
+
+If no backend is detected, macOS tries iTerm2 and Terminal.app before falling back to an Alacritty window; other platforms fall back to Alacritty. These fallbacks require `launchMode: "tab"`.
 
 The Orca backend opens the fork beside the terminal that ran `/branch` and uses Pi's current working directory. Orca supports `right` (horizontal) and `down` (vertical) splits and requires `launchMode: "split"`.
 
@@ -98,10 +99,10 @@ The Orca backend opens the fork beside the terminal that ran `/branch` and uses 
 | Orca | — | `right` `down` | Defaults to `right` |
 | cmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
 | tmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
-| Warp (macOS/Linux, stable) | ✓ | — (error) | — (error) |
 | iTerm2 | ✓ | `right` `down` | — (use fallback list) |
 | Terminal.app | ✓ | — (error) | — (error) |
 | Ghostty | — (new window) | — (error) | — (error) |
+| Warp (macOS/Linux, stable) | ✓ | — (error) | — (error) |
 
 Backends without a default for the requested `splitDirection` fail fast with an explicit error. Use a comma-separated preference list to select a supported direction across backends (e.g. `"counterclockwise,right"`).
 

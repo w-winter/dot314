@@ -26,7 +26,7 @@ type LaunchMode = "tab" | "split"
 type StaticSplitDirection = "left" | "right" | "up" | "down"
 type RotatingSplitDirection = "clockwise" | "counterclockwise"
 type SplitDirection = StaticSplitDirection | RotatingSplitDirection
-type TerminalBackend = "orca" | "cmux" | "tmux" | "warp" | "iterm" | "terminal" | "ghostty" | "unknown"
+type TerminalBackend = "orca" | "cmux" | "tmux" | "iterm" | "terminal" | "ghostty" | "unknown" | "warp"
 
 type ModelRef = {
 	provider: string
@@ -172,12 +172,12 @@ function detectTerminalBackend(): TerminalBackend {
 	if (process.env.ORCA_WORKTREE_ID && (process.env.ORCA_TERMINAL_HANDLE || process.env.ORCA_PANE_KEY)) return "orca"
 	if (process.env.CMUX_SOCKET_PATH) return "cmux"
 	if (process.env.TMUX) return "tmux"
-	if (process.env.TERM_PROGRAM === "WarpTerminal") return "warp"
 	if (process.env.TERM_PROGRAM === "iTerm.app") return "iterm"
 	if (process.env.TERM_PROGRAM === "Apple_Terminal") return "terminal"
 	if (process.env.GHOSTTY_RESOURCES_DIR || normalizeModelText(process.env.TERM_PROGRAM ?? "").includes("ghostty")) {
 		return "ghostty"
 	}
+	if (process.env.TERM_PROGRAM === "WarpTerminal") return "warp"
 	return "unknown"
 }
 
@@ -994,55 +994,6 @@ async function openInTmux(
 	return { opened: true }
 }
 
-async function openInWarp(
-	pi: ExtensionAPI,
-	forkFile: string,
-	config: ExtensionConfig,
-	cwd: string,
-): Promise<{ opened: boolean; error?: string }> {
-	if (config.launchMode !== "tab") {
-		return { opened: false, error: "Warp cannot split an existing pane; set launchMode to 'tab' (or use tmux inside Warp)" }
-	}
-	if (process.platform !== "darwin" && process.platform !== "linux") {
-		return { opened: false, error: "Warp branch launch is supported on macOS and Linux only" }
-	}
-
-	// Ordinary new_tab URIs cannot run commands. A unique Tab Config avoids
-	// concurrent launches racing over a shared file that Warp reads asynchronously.
-	const configDir = process.platform === "darwin"
-		? path.join(os.homedir(), ".warp", "tab_configs")
-		: path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "warp-terminal", "tab_configs")
-	const name = `tmp_pi_branch_${path.basename(forkFile, ".jsonl").replace(/[^a-zA-Z0-9_-]/g, "_")}`
-	const configFile = path.join(configDir, `${name}.toml`)
-	// JSON basic strings are valid TOML except for the form-feed escape.
-	const tomlString = (value: string) => JSON.stringify(value).replace(/\\(?:\\|f)/g, (escape) => escape === "\\f" ? "\\u000c" : escape)
-	// Remove only once Warp has read the config and started its shell, not when
-	// the URI opener returns. No startup command depends on the file afterward.
-	const command = `rm -f -- ${shellQuote(configFile)}; ${buildBranchCommand(forkFile)}`
-	fs.mkdirSync(configDir, { recursive: true, mode: 0o700 })
-	fs.writeFileSync(configFile, [
-		'name = "Pi branch"',
-		"",
-		"[[panes]]",
-		'id = "main"',
-		'type = "terminal"',
-		`directory = ${tomlString(cwd)}`,
-		`commands = [${tomlString(command)}]`,
-		"",
-	].join("\n"), { flag: "wx", mode: 0o600 })
-
-	let opened = false
-	try {
-		const result = await pi.exec(process.platform === "darwin" ? "open" : "xdg-open", [
-			`warp://tab_config/${encodeURIComponent(name)}`,
-		])
-		opened = result.code === 0
-		return { opened, error: opened ? undefined : result.stderr || result.stdout || "Warp URI launch failed" }
-	} finally {
-		if (!opened) fs.rmSync(configFile, { force: true })
-	}
-}
-
 async function resolveITermApp(pi: ExtensionAPI): Promise<string | undefined> {
 	for (const candidate of ["iTerm2", "iTerm"]) {
 		if (await isMacAppAvailable(pi, candidate)) return candidate
@@ -1158,6 +1109,55 @@ function openInGhostty(ctx: ExtensionCommandContext, forkFile: string): void {
 	})
 }
 
+async function openInWarp(
+	pi: ExtensionAPI,
+	forkFile: string,
+	config: ExtensionConfig,
+	cwd: string,
+): Promise<{ opened: boolean; error?: string }> {
+	if (config.launchMode !== "tab") {
+		return { opened: false, error: "Warp cannot split an existing pane; set launchMode to 'tab' (or use tmux inside Warp)" }
+	}
+	if (process.platform !== "darwin" && process.platform !== "linux") {
+		return { opened: false, error: "Warp branch launch is supported on macOS and Linux only" }
+	}
+
+	// Ordinary new_tab URIs cannot run commands. A unique Tab Config avoids
+	// concurrent launches racing over a shared file that Warp reads asynchronously.
+	const configDir = process.platform === "darwin"
+		? path.join(os.homedir(), ".warp", "tab_configs")
+		: path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "warp-terminal", "tab_configs")
+	const name = `tmp_pi_branch_${path.basename(forkFile, ".jsonl").replace(/[^a-zA-Z0-9_-]/g, "_")}`
+	const configFile = path.join(configDir, `${name}.toml`)
+	// JSON basic strings are valid TOML except for the form-feed escape.
+	const tomlString = (value: string) => JSON.stringify(value).replace(/\\(?:\\|f)/g, (escape) => escape === "\\f" ? "\\u000c" : escape)
+	// Remove only once Warp has read the config and started its shell, not when
+	// the URI opener returns. No startup command depends on the file afterward.
+	const command = `rm -f -- ${shellQuote(configFile)}; ${buildBranchCommand(forkFile)}`
+	fs.mkdirSync(configDir, { recursive: true, mode: 0o700 })
+	fs.writeFileSync(configFile, [
+		'name = "Pi branch"',
+		"",
+		"[[panes]]",
+		'id = "main"',
+		'type = "terminal"',
+		`directory = ${tomlString(cwd)}`,
+		`commands = [${tomlString(command)}]`,
+		"",
+	].join("\n"), { flag: "wx", mode: 0o600 })
+
+	let opened = false
+	try {
+		const result = await pi.exec(process.platform === "darwin" ? "open" : "xdg-open", [
+			`warp://tab_config/${encodeURIComponent(name)}`,
+		])
+		opened = result.code === 0
+		return { opened, error: opened ? undefined : result.stderr || result.stdout || "Warp URI launch failed" }
+	} finally {
+		if (!opened) fs.rmSync(configFile, { force: true })
+	}
+}
+
 async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext, forkFile: string): Promise<void> {
 	const terminalFlag = normalizeTerminalFlag(pi.getFlag(TERMINAL_FLAG))
 	if (terminalFlag) {
@@ -1189,12 +1189,6 @@ async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext
 		return
 	}
 
-	if (activeBackend === "warp") {
-		const warpAttempt = await openInWarp(pi, forkFile, config, ctx.cwd)
-		if (!warpAttempt.opened) throw new Error(warpAttempt.error || "Warp launch failed")
-		return
-	}
-
 	if (activeBackend === "iterm") {
 		const iTermAttempt = await openInITerm(pi, forkFile, config)
 		if (!iTermAttempt.opened) throw new Error(iTermAttempt.error || "iTerm failed to open")
@@ -1212,6 +1206,12 @@ async function openForkInTerminal(pi: ExtensionAPI, ctx: ExtensionCommandContext
 			throw new Error("Split launch is not supported in Ghostty")
 		}
 		openInGhostty(ctx, forkFile)
+		return
+	}
+
+	if (activeBackend === "warp") {
+		const warpAttempt = await openInWarp(pi, forkFile, config, ctx.cwd)
+		if (!warpAttempt.opened) throw new Error(warpAttempt.error || "Warp launch failed")
 		return
 	}
 

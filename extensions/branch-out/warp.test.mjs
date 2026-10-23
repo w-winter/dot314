@@ -152,6 +152,16 @@ for (const { backend, env, command } of [
   });
 }
 
+test('Ghostty environment retains routing precedence over Warp', async t => {
+  const f = fixture(t, { env: { GHOSTTY_RESOURCES_DIR: '/Applications/Ghostty.app/Contents/Resources' } });
+  await f.context.openForkInTerminal(f.pi, f.ctx, '/tmp/fork.jsonl');
+  assert.equal(f.spawns.length, 1);
+  assert.equal(f.spawns[0][0], 'ghostty');
+  assert.deepEqual(Array.from(f.spawns[0][1]), ['-e', 'pi', '--session', '/tmp/fork.jsonl']);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(fs.readdirSync(f.home), []);
+});
+
 test('explicit terminal override still wins over Warp detection', async t => {
   const f = fixture(t);
   f.pi.getFlag = () => 'custom-terminal {session}';
