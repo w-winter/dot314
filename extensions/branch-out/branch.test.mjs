@@ -33,7 +33,16 @@ for (const { args, launchFails } of [
       let handler;
       let forkFile;
       const context = vm.createContext({
-        fs, os, path, fileURLToPath, SessionManager,
+        fs: {
+          ...fs,
+          readFileSync(file, ...args) {
+            if (file === fileURLToPath(new URL('./config.json', url))) {
+              return JSON.stringify({ launchMode: 'split', preserveFocus: true });
+            }
+            return fs.readFileSync(file, ...args);
+          },
+        },
+        os, path, fileURLToPath, SessionManager,
         process: { env: {
           ORCA_WORKTREE_ID: 'test-worktree', ORCA_TERMINAL_HANDLE: 'term_parent',
           PI_CODING_AGENT_DIR: dir,

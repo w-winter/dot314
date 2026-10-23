@@ -107,10 +107,11 @@ Routing is automatic and tried in this order:
 2. Orca — detected via `ORCA_WORKTREE_ID` and either `ORCA_TERMINAL_HANDLE` or `ORCA_PANE_KEY`
 3. cmux — detected via `CMUX_SOCKET_PATH`
 4. tmux — detected via `TMUX`
-5. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
-6. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
-7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
-8. Alacritty window
+5. Warp — detected via `TERM_PROGRAM=WarpTerminal`
+6. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
+7. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
+8. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
+9. Alacritty window
 
 The Orca backend opens the fork beside the terminal that ran `/branch` and uses Pi's current working directory. Orca supports `right` (horizontal) and `down` (vertical) splits and requires `launchMode: "split"`.
 
@@ -121,11 +122,28 @@ The Orca backend opens the fork beside the terminal that ran `/branch` and uses 
 | Orca | — | `right` `down` | Defaults to `right` |
 | cmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
 | tmux | ✓ | `left` `right` `up` `down` | `clockwise` `counterclockwise` |
+| Warp (macOS/Linux, stable) | ✓ | — (error) | — (error) |
 | iTerm2 | ✓ | `right` `down` | — (use fallback list) |
 | Terminal.app | ✓ | — (error) | — (error) |
 | Ghostty | — (new window) | — (error) | — (error) |
 
 Backends without a default for the requested `splitDirection` fail fast with an explicit error. Use a comma-separated preference list to select a supported direction across backends (e.g. `"counterclockwise,right"`).
+
+### Warp
+
+Warp requires **`launchMode: "tab"`**; the default `"split"` mode produces an explicit error. Set this in the extension's `config.json`:
+
+```json
+{
+  "launchMode": "tab"
+}
+```
+
+The backend uses Warp's documented [Tab Configs](https://docs.warp.dev/terminal/windows/tab-configs/) and [URI scheme](https://docs.warp.dev/terminal/more-features/uri-scheme/), so it requires a stable Warp version supporting `warp://tab_config/<name>`. No extra CLI or dependencies are needed. macOS uses `open`; Linux uses `xdg-open`.
+
+Each fork gets a private, uniquely named `tmp_pi_branch_*.toml` config in `~/.warp/tab_configs/` on macOS, or `${XDG_DATA_HOME:-$HOME/.local/share}/warp-terminal/tab_configs/` on Linux. The tab starts in Pi's current working directory. Its POSIX-shell startup command removes the generated config before running `pi --session …`. Failed URI dispatch also removes the config; if Warp accepts the URI but never starts the tab, the unused config can be removed manually.
+
+Warp opens the tab in its active window. Its documented URI API cannot split an existing pane or preserve the caller's tab selection, so `splitDirection` and `preserveFocus` do not apply. For splits, run Pi inside tmux in Warp; tmux routing takes precedence. Warp Preview and Windows are not supported by this backend.
 
 ## Examples
 
