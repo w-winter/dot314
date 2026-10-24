@@ -86,9 +86,13 @@ Routing is automatic and tried in this order:
 5. iTerm2 — detected via `TERM_PROGRAM=iTerm.app`
 6. Terminal.app — detected via `TERM_PROGRAM=Apple_Terminal`
 7. Ghostty — detected via `GHOSTTY_RESOURCES_DIR` or `TERM_PROGRAM` containing `ghostty`
-8. Alacritty window
+8. Warp — detected via `TERM_PROGRAM=WarpTerminal`
+
+If no backend is detected, macOS tries iTerm2 and Terminal.app before falling back to an Alacritty window; other platforms fall back to Alacritty. These fallbacks require `launchMode: "tab"`.
 
 The Orca backend opens the fork beside the terminal that ran `/branch` and uses Pi's current working directory. Orca supports `right` (horizontal) and `down` (vertical) splits and requires `launchMode: "split"`.
+
+The Warp backend opens the fork in a new tab in Warp's active window and uses Pi's current working directory. It works with Warp Stable on macOS and Linux when Pi runs on the same machine as Warp, not in an SSH session. It requires `launchMode: "tab"`; for splits inside Warp, run Pi in tmux with `launchMode: "split"`. Each launch writes a temporary [Tab Config](https://docs.warp.dev/terminal/windows/tab-configs/) named `tmp_pi_branch_*.toml`, which the new tab deletes as it starts. If a launch never opens a tab, delete the leftover file from `~/.warp/tab_configs/` on macOS or `${XDG_DATA_HOME:-$HOME/.local/share}/warp-terminal/tab_configs/` on Linux.
 
 ### Backend capability matrix
 
@@ -100,6 +104,7 @@ The Orca backend opens the fork beside the terminal that ran `/branch` and uses 
 | iTerm2 | ✓ | `right` `down` | — (use fallback list) |
 | Terminal.app | ✓ | — (error) | — (error) |
 | Ghostty | — (new window) | — (error) | — (error) |
+| Warp | ✓ | — (error) | — (error) |
 
 Backends without a default for the requested `splitDirection` fail fast with an explicit error. Use a comma-separated preference list to select a supported direction across backends (e.g. `"counterclockwise,right"`).
 
