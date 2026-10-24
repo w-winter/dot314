@@ -63,10 +63,10 @@ for (const { platform, env, configRoot, opener } of [
   test(`Warp ${platform}${env.XDG_DATA_HOME ? ' with XDG_DATA_HOME' : ''}: launch a tab whose startup command resumes the exact fork`, async t => {
     const f = fixture(t, { platform });
     if (env.XDG_DATA_HOME) f.context.process.env.XDG_DATA_HOME = path.join(f.home, 'xdg');
-    const cwd = path.join(f.home, 'project\'s "quoted" $HOME & café\\folder');
+    const cwd = path.join(f.home, 'project\'s "quoted" $HOME & café\\folder\x7f');
     fs.mkdirSync(cwd);
     f.ctx.cwd = cwd;
-    const forkFile = path.join(f.home, 'fork\'s "quoted"; touch INJECTED #.jsonl');
+    const forkFile = path.join(f.home, 'fork\'s "quoted"; touch INJECTED #\x7f.jsonl');
     await f.context.openForkInTerminal(f.pi, f.ctx, forkFile);
 
     assert.equal(f.spawns.length, 0, 'must not fall through to Alacritty');
@@ -78,6 +78,8 @@ for (const { platform, env, configRoot, opener } of [
     assert.equal(uri.hostname, 'tab_config');
     const configFile = path.join(f.home, configRoot, 'tab_configs', `${decodeURIComponent(uri.pathname.slice(1))}.toml`);
     const text = fs.readFileSync(configFile, 'utf8');
+    // TOML rejects raw DEL, which the JSON.parse-based field() would accept.
+    assert.doesNotMatch(text, /\x7f/);
     assert.match(text, /\[\[panes\]\]/);
     assert.equal(field(text, 'type'), 'terminal');
     assert.equal(field(text, 'directory'), cwd);

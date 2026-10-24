@@ -1129,11 +1129,11 @@ async function openInWarp(
 		: path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "warp-terminal", "tab_configs")
 	const name = `tmp_pi_branch_${path.basename(forkFile, ".jsonl").replace(/[^a-zA-Z0-9_-]/g, "_")}`
 	const configFile = path.join(configDir, `${name}.toml`)
-	// JSON basic strings are valid TOML except for the form-feed escape.
-	const tomlString = (value: string) => JSON.stringify(value).replace(/\\(?:\\|f)/g, (escape) => escape === "\\f" ? "\\u000c" : escape)
 	// Remove only once Warp has read the config and started its shell, not when
 	// the URI opener returns. No startup command depends on the file afterward.
 	const command = `rm -f -- ${shellQuote(configFile)}; ${buildBranchCommand(forkFile)}`
+	// A JSON string literal is a valid TOML basic string once raw DEL (U+007F) is escaped.
+	const tomlString = (value: string) => JSON.stringify(value).replaceAll("\x7f", "\\u007f")
 	fs.mkdirSync(configDir, { recursive: true, mode: 0o700 })
 	fs.writeFileSync(configFile, [
 		'name = "Pi branch"',
