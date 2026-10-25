@@ -123,7 +123,7 @@ Note the staged-diff fallback only sees the current repo. Prompts and skills oft
 
    - **Source-aware pass**: use the available session and project context to identify local jargon, private-plan residue, authoring-process artifacts, and other information that leaked across the audience boundary.
 
-   - **Recipient-positioned pass**: use only the artifact and dependencies explicitly reachable by the named reader. Do not let source-only knowledge rescue an unclear referent, missing definition, absent constraint, or unreachable dependency. Explicitly identify assumptions the recipient would have to invent. If the harness can start a fresh-context reviewer, use it for this pass and give it only what the intended recipient will receive.
+   - **Recipient-positioned pass**: use only the artifact and dependencies explicitly reachable by the named reader. Do not let source-only knowledge rescue an unclear referent, missing definition, absent constraint, or unreachable dependency. Explicitly identify assumptions the recipient would have to invent.
 
 4. Identify lines that fail the criteria above, including leakage, omission, and misfit relative to that reader.
 

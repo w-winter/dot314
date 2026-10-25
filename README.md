@@ -200,12 +200,7 @@ The Pi package does not export skills.  See [skills/README.markdown](skills/READ
 
 | | Skill | Notes |
 |---|---|---|
-| ○ | `agent-browser/` | |
-| ○ | `deep-x-research/` | Requires [surf-cli](https://github.com/nicobailon/surf-cli) |
-| ○ | `gdcli/` | |
-| ● | `repoprompt-tool-guidance-refresh/` | Maintainer workflow |
-| ● | `rp/` | Agent guidance for using the `repoprompt-mcp` extension's `rp` tool |
+| ● | `prose-review/` | |
+| ● | `rp/` |  |
 | ● | `rp-deep-build/` | Requires [pi-codex-goal](https://github.com/fitchmultz/pi-codex-goal) |
-| ○ | `surf/` | Requires [surf-cli](https://github.com/nicobailon/surf-cli) |
 | ◐ | `text-search/` | |
-| ◐ | `xcodebuildmcp/` | |
