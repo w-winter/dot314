@@ -14,7 +14,6 @@ cache/
 auth.json
 oauth.json
 oauth.json.*
-extensions/notify/notify.json
 extensions/poly-notify/notify.json
 
 # Local settings (contain paths, preferences)
@@ -22,7 +21,6 @@ settings.json
 extensions/tools/tools.json
 extensions/rp-native-tools-lock/rp-native-tools-lock.json
 extensions/sandbox/sandbox.json
-extensions/vog/vog.json
 extensions/assistant-provenance/config.json
 extensions/command-center/config.json
 extensions/repoprompt-cli/config.json
@@ -35,12 +33,6 @@ node_modules/
 package-lock.json
 bun.lock
 *.tgz
-
-# dev-browser local profile data (large, machine-specific)
-skills/dev-browser/profiles/
-
-# dev-browser local dependencies (redundancy for the sake of explicit intent)
-skills/dev-browser/node_modules/
 
 # Build artifacts
 dist/
@@ -64,17 +56,6 @@ venv/
 *.temp
 .tmp/
 tmp/
-
-# RepoPrompt Prompts that are managed by the RP app
-prompts/rp-build.md
-prompts/rp-investigate.md
-prompts/rp-oracle-export.md
-prompts/rp-reminder.md
-prompts/rp-refactor.md
-prompts/rp-review.md
-
-# Version tracking ephemeral state (per-CLI baseline pointers; snapshots/diffs are committed)
-skills/repoprompt-tool-guidance-refresh/rp-tool-defs/.baseline_version*
 
 # Outputs from extensions
 extensions/brave-search/.clips/
