@@ -174,10 +174,10 @@
   - **Recommendation:** For general-purpose web search with agents, I now prefer [nicobailon/pi-web-access](https://github.com/nicobailon/pi-web-access) — it uses Gemini search which provides better indexing and returns an AI-synthesized overview alongside citations, which works better for agent workflows. `brave-search` remains useful when you specifically need individual search results with per-result previews
 
 - ● [`protect-paths/`](protect-paths/) - standalone directory and command protection hooks that complement upstream [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails)
-  - Hard blocks `.git/` and untrusted `node_modules/` access from file tools and Bash commands, plus Homebrew install and upgrade commands
+  - Hard blocks `.git/` access and `node_modules/` writes from file tools and Bash commands, plus Homebrew install and upgrade commands; read tools and read-only commands (`ls`, `grep`, `rg`, `find`) may inspect `node_modules/`
   - Uses just-bash AST analysis to inspect nested command structures, including substitutions, functions, and conditionals
-  - Confirms broad delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
-  - Allows known read-only commands to inspect roots listed in `trustedReadPaths`; copy [`config.json.example`](protect-paths/config.json.example) to `config.json` and edit the absolute paths
+  - Confirms delete commands (`rm`/`rmdir`/`unlink`) and piped shell execution (`... | sh`)
+  - Skips that confirmation when every target of a delete is a literal path inside `/tmp` whose folder resolves there, such as `rm -f /tmp/scratch.$$`; paths through links out of `/tmp`, `..`, wildcards, and variables other than `$$` still need confirmation
   - Pair with `pi install npm:@aliou/pi-guardrails` for `.env` file protection
 
 - ● `reverse-thinking.ts` - Adds backward (e.g. 'med' -> 'low') cycling movement through thinking levels via `shift+alt+tab`

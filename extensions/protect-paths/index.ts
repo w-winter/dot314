@@ -9,7 +9,7 @@
  * - node_modules/ directory contents against writes (use package manager instead);
  *   read tools and read-only bash commands (ls, grep, rg, find) may inspect them
  * - Homebrew install/upgrade commands (remind to use project package manager)
- * - Broad delete commands (rm/rmdir/unlink)
+ * - Delete commands (rm/rmdir/unlink), except cleanup of literal paths inside /tmp
  * - Piped shell execution (e.g. `curl ... | sh`)
  *
  * Bash command checks are AST-backed via just-bash parsing so nested
@@ -20,7 +20,8 @@
  * - If unavailable, this extension falls back to best-effort regex checks
  */
 
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -66,6 +67,7 @@ type BashInvocation = {
     commandNameRaw: string;
     commandName: string;
     args: string[];
+    argWords: any[];
     effectiveCommandNameRaw: string;
     effectiveCommandName: string;
     effectiveArgs: string[];
@@ -252,6 +254,7 @@ function analyzeBashScript(command: string): BashAnalysis {
                                 commandNameRaw,
                                 commandName,
                                 args,
+                                argWords: Array.isArray(commandNode.args) ? commandNode.args : [],
                                 effectiveCommandNameRaw: effective.effectiveCommandNameRaw,
                                 effectiveCommandName: effective.effectiveCommandName,
                                 effectiveArgs: effective.effectiveArgs,
@@ -303,6 +306,11 @@ function analyzeBashScript(command: string): BashAnalysis {
 
 const SHELL_EXECUTABLES = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const DELETE_EXECUTABLES = new Set(["rm", "rmdir", "unlink"]);
+const TMP_DIRECTORY = "/tmp";
+// `$$` (the shell's process ID) is the only expansion a scratch path may contain.
+const PROCESS_ID = "$$";
+const SCRATCH_FOLDER_NAME = /^(?!\.\.?$)[\w.@+=,-]+$/;
+const SCRATCH_FILE_NAME = /^(?!\.\.?$)(?:[\w.@+=,-]|\$\$)+$/;
 const BREW_ACTIONS = new Set(["install", "bundle", "upgrade", "reinstall"]);
 const READ_ONLY_BASH_COMMANDS = new Set(["find", "grep", "ls", "rg"]);
 const MUTATING_FIND_ACTIONS = new Set([
@@ -443,11 +451,85 @@ function isBrewInstallOrUpgrade(command: string): boolean {
     return BREW_INSTALL_PATTERNS.some((pattern) => pattern.test(command));
 }
 
+function scratchWordText(word: any): string | null {
+    if (!word || typeof word !== "object" || !Array.isArray(word.parts)) return null;
+
+    let text = "";
+    for (const part of word.parts) {
+        if (part?.type === "Literal" || part?.type === "SingleQuoted" || part?.type === "Escaped") {
+            text += typeof part.value === "string" ? part.value : "";
+        } else if (part?.type === "DoubleQuoted") {
+            const inner = scratchWordText(part);
+            if (inner === null) return null;
+            text += inner;
+        } else if (part?.type === "ParameterExpansion" && part.parameter === "$" && !part.operation) {
+            text += PROCESS_ID;
+        } else {
+            return null;
+        }
+    }
+    return text;
+}
+
+function resolvesInside(path: string, root: string): boolean {
+    let current = path;
+    for (;;) {
+        try {
+            const real = realpathSync(current);
+            return real === root || real.startsWith(`${root}/`);
+        } catch (error: any) {
+            const parent = dirname(current);
+            if (error?.code !== "ENOENT" || parent === current) return false;
+            current = parent;
+        }
+    }
+}
+
+function isScratchPath(path: string, tmpRoot: string): boolean {
+    const prefix = [TMP_DIRECTORY, tmpRoot].find((root) => path.startsWith(`${root}/`));
+    if (!prefix) return false;
+
+    const names = path.slice(prefix.length + 1).split("/");
+    const fileName = names.pop() ?? "";
+    if (!SCRATCH_FILE_NAME.test(fileName) || !names.every((name) => SCRATCH_FOLDER_NAME.test(name))) return false;
+    return resolvesInside(dirname(path), tmpRoot);
+}
+
+// Cleanup of literal paths inside /tmp needs no confirmation. The folder holding each target must resolve
+// inside /tmp, so links out of /tmp, `..`, trailing slashes and expansions other than `$$` still ask.
+function isScratchDelete(invocation: BashInvocation): boolean {
+    if (!DELETE_EXECUTABLES.has(invocation.commandName)) return false;
+
+    let tmpRoot: string;
+    try {
+        tmpRoot = realpathSync(TMP_DIRECTORY);
+    } catch {
+        return false;
+    }
+
+    const operands: string[] = [];
+    let optionsEnded = false;
+    for (const word of invocation.argWords) {
+        const text = scratchWordText(word);
+        if (text === null) return false;
+        if (!optionsEnded && text === "--") {
+            optionsEnded = true;
+            continue;
+        }
+        if (!optionsEnded && text.length > 1 && text.startsWith("-")) continue;
+        optionsEnded = true;
+        operands.push(text);
+    }
+    return operands.length > 0 && operands.every((operand) => isScratchPath(operand, tmpRoot));
+}
+
 function detectDangerousCommand(command: string): { kind: "delete" | "piped shell"; commandName?: string } | null {
     const analysis = analyzeBashScript(command);
 
     if (!analysis.parseError) {
-        const deleteMatch = analysis.invocations.find((invocation) => DELETE_EXECUTABLES.has(invocation.effectiveCommandName));
+        const deleteMatch = analysis.invocations.find(
+            (invocation) => DELETE_EXECUTABLES.has(invocation.effectiveCommandName) && !isScratchDelete(invocation),
+        );
         if (deleteMatch) {
             return {
                 kind: "delete",

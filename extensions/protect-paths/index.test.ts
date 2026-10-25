@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import test from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -21,7 +22,9 @@ const DEPENDENCY_PATH = "/tmp/project/node_modules/package";
 
 type ToolInput = { path: string } | { command: string };
 
-function createToolRunner(): (toolName: string, input: ToolInput) => Promise<ToolCallResult> {
+function createToolRunner(
+    confirm: () => Promise<boolean> = async () => true,
+): (toolName: string, input: ToolInput) => Promise<ToolCallResult> {
     const handlers: ToolCallHandler[] = [];
     const pi = {
         on(eventName: string, handler: ToolCallHandler) {
@@ -37,7 +40,7 @@ function createToolRunner(): (toolName: string, input: ToolInput) => Promise<Too
             hasUI: false,
             ui: {
                 notify: () => undefined,
-                confirm: async () => true,
+                confirm,
             },
         };
 
@@ -53,6 +56,20 @@ function createToolRunner(): (toolName: string, input: ToolInput) => Promise<Too
 function createBashRunner(): (command: string) => Promise<ToolCallResult> {
     const runTool = createToolRunner();
     return (command) => runTool("bash", { command });
+}
+
+// Reports whether a command reached the confirmation dialog.
+function createConfirmProbe(): (command: string) => Promise<boolean> {
+    let asked = false;
+    const runTool = createToolRunner(async () => {
+        asked = true;
+        return false;
+    });
+    return async (command) => {
+        asked = false;
+        await runTool("bash", { command });
+        return asked;
+    };
 }
 
 test("read tools can inspect node_modules but write tools cannot", async () => {
@@ -93,6 +110,54 @@ test("output redirection into node_modules remains blocked", async () => {
     const result = await runBash(`echo changed > ${DEPENDENCY_PATH}/generated.js`);
 
     assert.equal(result?.block, true);
+});
+
+test("deleting literal paths inside /tmp runs without confirmation", async () => {
+    const asks = createConfirmProbe();
+    const commands = [
+        "rm -f /tmp/.mm-paths.$$",
+        `rm -rf /tmp/run-a ${realpathSync("/tmp")}/run-b`,
+        "rmdir -- /tmp/empty && unlink /tmp/scratch.json",
+        "cd /tmp/run && jq -r '.paths[]' out.json > /tmp/.p.$$; grep -qxF a /tmp/.p.$$; rm -f /tmp/.p.$$",
+    ];
+
+    for (const command of commands) {
+        assert.equal(await asks(command), false, command);
+    }
+});
+
+test("deletions that can reach outside /tmp still ask", async () => {
+    const asks = createConfirmProbe();
+    const commands = [
+        "rm -rf /tmp",
+        "rm -rf /tmp/",
+        "rm -rf /tmp/run/",
+        "rm -rf /tmp/../Users/someone",
+        "rm -rf /tmp/run ~/project",
+        "rm -rf /tmp/run; rm -rf ~/project",
+        "rm -rf /tmp/$HOME",
+        "rm -rf /tmp/${$//1/..}",
+        "rm -rf /tmp/run$(echo /../..)",
+        "rm -rf /tmp/*",
+        "rm -rf run",
+    ];
+
+    for (const command of commands) {
+        assert.equal(await asks(command), true, command);
+    }
+});
+
+test("deleting through a link from /tmp to another folder still asks", async () => {
+    const asks = createConfirmProbe();
+    const folder = mkdtempSync("/tmp/protect-paths-test-");
+    try {
+        symlinkSync("/usr", `${folder}/link`);
+
+        assert.equal(await asks(`rm -rf ${folder}/link/share`), true);
+        assert.equal(await asks(`rm -f ${folder}/link`), false);
+    } finally {
+        rmSync(folder, { recursive: true });
+    }
 });
 
 test("mutating find actions in node_modules remain blocked", async () => {
