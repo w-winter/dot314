@@ -265,7 +265,7 @@
 
 - ◐ [`screenshots-picker/`](screenshots-picker/) ([README](screenshots-picker/README.md)) (upstream: [Graffioh/pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker))
   - Browses and stages screenshots from configurable sources, then attaches them to the next prompt
-  - Adds sent-screenshot previews that follow Pi's image visibility and resizing settings, plus metadata previews for Orca terminals
+  - Adds sent-screenshot previews that follow Pi's image visibility and resizing settings, and documents how to turn on inline thumbnails in Orca terminals
   - Keeps staged screenshots attached when `pi-queue-steer` queues steering or follow-ups
   - Uses `Ctrl+\`` to open the picker and `Ctrl+1` to clear staged screenshots, reports picker-based clears, opens files in the system image viewer, imports the current `@earendil-works` Pi packages, and updates `glob` to 13.0.6
 

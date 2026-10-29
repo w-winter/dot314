@@ -31,7 +31,7 @@ Enable `screenshots-picker` with `pi config`.
 
 ## Changes from upstream
 
-The upstream source is [Graffioh/pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker). This version adds sent-screenshot previews that follow Pi's image visibility and resizing settings, metadata previews for Orca terminals, `Ctrl+\`` and `Ctrl+1` shortcuts, picker-clear notifications, system image-viewer support, current `@earendil-works` Pi imports, and `glob` 13.0.6.
+The upstream source is [Graffioh/pi-screenshots-picker](https://github.com/Graffioh/pi-screenshots-picker). This version adds sent-screenshot previews that follow Pi's image visibility and resizing settings, `Ctrl+\`` and `Ctrl+1` shortcuts, picker-clear notifications, system image-viewer support, current `@earendil-works` Pi imports, and `glob` 13.0.6.
 
 ## Quick Start
 
@@ -45,9 +45,19 @@ Staged images also attach to steering and follow-up messages managed by `pi-queu
 
 ## Orca
 
-Run Pi in an [Orca](https://github.com/stablyai/orca) terminal pane and use `/ss` or `Ctrl+\`` normally. The picker uses a lightweight metadata preview in Orca's xterm.js terminal; press `o` to inspect the original in your system image viewer. Staged screenshots are attached directly to Pi's next prompt.
+Run Pi in an [Orca](https://github.com/stablyai/orca) terminal pane and use `/ss` or `Ctrl+\`` normally. Orca's terminal displays Kitty graphics, but Pi does not yet detect Orca as image-capable. Start Pi with `PI_IMAGE_PROTOCOL=kitty` to turn on thumbnails, the zoom inspector, and sent-screenshot previews:
 
-Use the terminal pane for this workflow because Pi extension commands and custom TUI components run inside the hosted terminal.
+```bash
+PI_IMAGE_PROTOCOL=kitty pi
+```
+
+To set this in every Orca pane, add this line to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+[[ $TERM_PROGRAM == Orca && $ORCA_IMAGE_PROTOCOL == kitty ]] && export PI_IMAGE_PROTOCOL=kitty
+```
+
+Use an Orca terminal pane, not Orca's native chat view, because Pi extension commands and custom TUI components run only in the terminal.
 
 ## Commands
 
@@ -86,7 +96,7 @@ Keyboard shortcut to clear all staged screenshots (same as `/ss-clear`).
 
 - **Multiple sources with tabs** - Configure multiple directories/patterns, switch with Ctrl+T
 - **Glob pattern support** - Use patterns like `**/*.png` to match files flexibly
-- **Thumbnail previews** - Native terminal images in Kitty/iTerm2/Ghostty/WezTerm and metadata previews in Orca
+- **Thumbnail previews** - Native terminal images in Kitty/iTerm2/Ghostty/WezTerm/[Orca](#orca)
 - **Zoom inspector mode** - Press `z`, then pan with arrows and zoom with +/-
 - **Multi-select** - Stage multiple screenshots, they all attach when you send
 - **Relative timestamps** - "2 minutes ago", "yesterday", etc.
@@ -243,7 +253,7 @@ Only PNG files matching these patterns are shown.
 ## Requirements
 
 - macOS or Linux
-- Terminal with image support for thumbnails (Kitty, iTerm2, Ghostty, WezTerm)
+- Terminal with image support for thumbnails (Kitty, iTerm2, Ghostty, WezTerm, Orca)
   - Falls back gracefully on unsupported terminals
 
 ## License

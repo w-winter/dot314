@@ -148,8 +148,6 @@ const QueueSteerAttachmentsEventSchema = Type.Object({
  */
 const isMacOS = process.platform === "darwin";
 const isLinux = process.platform === "linux";
-const isOrcaTerminal = [process.env.TERM_PROGRAM, process.env.ORCA_TERM_PROGRAM]
-	.some((program) => program?.toLowerCase() === "orca");
 
 /**
  * Expand ~ to home directory.
@@ -532,7 +530,6 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		activeContext = ctx;
-		if (isOrcaTerminal) return;
 
 		const previewPaths = new Set<string>();
 		for (const entry of ctx.sessionManager.getBranch()) {
@@ -628,9 +625,7 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 
 		const sentPaths = [...pendingSentPreviewPaths];
 		pendingSentPreviewPaths = [];
-		if (!isOrcaTerminal) {
-			await Promise.all(sentPaths.map((path) => prepareSentPreviewImage(path)));
-		}
+		await Promise.all(sentPaths.map((path) => prepareSentPreviewImage(path)));
 		return {
 			message: {
 				customType: SENT_PREVIEW_CUSTOM_TYPE,
@@ -1146,20 +1141,6 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 				previewLines: number
 			): string[] {
 				const name = screenshot.name.slice(-20);
-				if (isOrcaTerminal) {
-					const lines = [
-						theme.fg("accent", "  Orca terminal"),
-						"",
-						theme.fg("text", `  ${name}`),
-						theme.fg("dim", `  ${formatSize(screenshot.size)} • ${formatRelativeTime(screenshot.mtime)}`),
-						"",
-						theme.fg("dim", "  Press o to open this screenshot"),
-						theme.fg("dim", "  Stage with s/space, then send your prompt"),
-					];
-					for (let i = lines.length; i < previewLines; i++) lines.push("");
-					return lines;
-				}
-
 				const thumb = loadThumbnail(screenshot);
 				const frameKey = `${screenshot.path}:${maxPreviewWidthCells}:${previewLines}`;
 
@@ -1304,9 +1285,7 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 					const lines: string[] = [];
 					const border = theme.fg("accent", "\u2500".repeat(width));
 					const screenshots = getCurrentScreenshots();
-					if (!isOrcaTerminal) {
-						warmThumbnailsAroundCursor();
-					}
+					warmThumbnailsAroundCursor();
 					const previewLines = previewZoom ? getZoomPreviewLines() : PREVIEW_LINES;
 					const listVisibleItems = previewZoom ? 0 : LIST_VISIBLE_ITEMS;
 					const contentRows = Math.max(listVisibleItems, previewLines);

@@ -122,7 +122,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ◐ | `sandbox/` | | OS-level sandboxing |
 | ● | `session-ask/` | [`pi-session-ask`](https://www.npmjs.com/package/pi-session-ask) | Query "pre-historical" context (post-compaction, post-fork/handoff) via subagent |
 | ◐ | `session-switch/` | | `/resume`-style session picker with live preview, plus `pi --switch-session` startup relaunch |
-| ◐ | `screenshots-picker/` | | Screenshot picker with sent-image previews and Orca support |
+| ◐ | `screenshots-picker/` | | Screenshot picker with sent-image previews |
 | ● | `skill-templates/` | [`pi-skill-templates`](https://www.npmjs.com/package/pi-skill-templates) | Nunjucks-templated `SKILL.template.md` skills rendered from invocation args, options, and flags, and composed from other skills |
 | ◐ | `stash/` | | Shortcut-driven editor draft stash, restore, and swap |
 | ◐ | `tool-horizon/` | | Hides older tool activity before a chosen session-tree horizon while retaining file provenance |

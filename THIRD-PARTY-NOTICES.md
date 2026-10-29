@@ -72,7 +72,7 @@ text. This file provides a consolidated overview.
 - **License:** MIT
 - **Copyright:** © 2026 Umberto B.
 - **Used in:**
-  - `extensions/screenshots-picker/` (◐ modified — sent-image previews, Orca terminal support, custom shortcuts, clear notifications, current Pi imports, updated glob dependency, and staged-image handoff to `pi-queue-steer`)
+  - `extensions/screenshots-picker/` (◐ modified — sent-image previews, custom shortcuts, clear notifications, current Pi imports, updated glob dependency, and staged-image handoff to `pi-queue-steer`)
 
 ### saadjs/pi
 - **URL:** https://github.com/saadjs/pi
