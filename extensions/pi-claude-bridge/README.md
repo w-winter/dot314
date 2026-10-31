@@ -2,7 +2,7 @@
 
 A Pi provider that uses a logged-in Claude Code account through the Claude Agent SDK. You keep Pi's terminal interface and tools while Claude Code handles model requests.
 
-Requires Pi 0.86.0 or later and Node.js 22.19.0 or later.
+Requires Pi 1.2.0 or later and Node.js 22.19.0 or later.
 
 This is a fork of [vanillagreen's `@vanillagreen/pi-claude-bridge` in Kendex](https://github.com/vanillagreencom/kendex/tree/main/pi-extensions/pi-claude-bridge), which descends from [Eli Dickinson's `pi-claude-bridge`](https://github.com/elidickinson/pi-claude-bridge). Further tool, stream and session improvements are developed in collaboration with [nicobailon](https://github.com/nicobailon/). See [Differences from Kendex upstream](#differences-from-kendex-upstream) for the comparison.
 

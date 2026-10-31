@@ -29,7 +29,7 @@ pi -e git:github.com/w-winter/dot314
 
 ### Install as a Pi package
 
-**Requires Pi 0.86.0+** (see [packages.md](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md))
+**Requires Pi 1.2.0+** (see [packages.md](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/packages.md))
 
 Install from git:
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { ImageContent } from "@earendil-works/pi-ai";
+import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import screenshotsExtension from "../index.ts";
 
 interface TestComponent {
@@ -40,11 +41,21 @@ type InputResult = { action: "continue" } | {
 	images?: ImageContent[];
 };
 type InputHandler = (event: InputEvent, context: TestContext) => InputResult;
+type StartEvent = {
+	type: "before_agent_start";
+	systemPrompt: string;
+	systemPromptOptions: Record<string, never>;
+} & (
+	| { messageType: "user"; prompt: string; images: ImageContent[] | undefined }
+	| { messageType: "custom"; message: { role: "custom"; customType: string; content: string; display: boolean; timestamp: number } }
+);
+type StartHandler = (event: StartEvent) => Promise<BeforeAgentStartEventResult | undefined>;
 type CommandHandler = (args: string, context: TestContext) => Promise<void>;
 type ScreenshotsExtensionAPI = Parameters<typeof screenshotsExtension>[0];
 
 function createScreenshotsHarness() {
 	const inputHandlers: InputHandler[] = [];
+	const startHandlers: StartHandler[] = [];
 	const commands = new Map<string, CommandHandler>();
 
 	const context: TestContext = {
@@ -68,8 +79,9 @@ function createScreenshotsHarness() {
 	};
 
 	const pi = {
-		on(name: string, handler: InputHandler) {
+		on(name: string, handler: InputHandler & StartHandler) {
 			if (name === "input") inputHandlers.push(handler);
+			if (name === "before_agent_start") startHandlers.push(handler);
 		},
 		events: {
 			on() {
@@ -96,10 +108,13 @@ function createScreenshotsHarness() {
 		async emitInput(event: InputEvent): Promise<InputResult[]> {
 			return Promise.all(inputHandlers.map((handler) => handler(event, context)));
 		},
+		async emitStart(event: StartEvent): Promise<(BeforeAgentStartEventResult | undefined)[]> {
+			return Promise.all(startHandlers.map((handler) => handler(event)));
+		},
 	};
 }
 
-test("extension input leaves staged screenshots for the next interactive message", async () => {
+test("custom starts retain sent screenshot previews for the next user start", async () => {
 	const home = mkdtempSync(join(tmpdir(), "screenshots-picker-home-"));
 	const screenshots = join(home, "screenshots");
 	mkdirSync(screenshots);
@@ -119,6 +134,17 @@ test("extension input leaves staged screenshots for the next interactive message
 			text: "inspect this",
 			images: [{ type: "image", mimeType: "image/png", data: Buffer.from("test image").toString("base64") }],
 		}]);
+		const shared = { type: "before_agent_start" as const, systemPrompt: "BASE", systemPromptOptions: {} };
+		assert.deepEqual(await harness.emitStart({
+			...shared,
+			messageType: "custom",
+			message: { role: "custom", customType: "follow-up", content: "continue", display: false, timestamp: 0 },
+		}), [undefined]);
+		const userStart: StartEvent = { ...shared, messageType: "user", prompt: "inspect this", images: undefined };
+		const [preview] = await harness.emitStart(userStart);
+		assert.equal(preview?.message?.content, "Sent 1 screenshot");
+		assert.deepEqual(preview.message.details, { paths: [join(screenshots, "Screenshot test.png")], totalCount: 1 });
+		assert.deepEqual(await harness.emitStart(userStart), [undefined]);
 		assert.deepEqual(await harness.emitInput({ source: "interactive", text: "next message" }), [
 			{ action: "continue" },
 		]);

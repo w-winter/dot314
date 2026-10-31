@@ -23,6 +23,8 @@ Grounded-compaction's `toolResultChars` setting controls tool-result text before
 
 Interrupted summarization resumes from the last completed chunk. If a changed `toolResultChars` setting alters an unfinished checkpoint's input text, that checkpoint restarts from the preceding complete summary. The non-Codex request receives one complete cumulative summary followed by the exact visible messages after the latest checkpoint.
 
+Portable summary input includes recorded thinking, assistant text, tool calls, and tool results.
+
 Completed model-generated portable summaries appear in the transcript as expandable portable compaction cards. Only complete summaries are shown.
 
 Later requests reuse the saved summary without another summarizer call. A saved summary can also be reused after resuming a session or using `/tree` when the selected branch has the same checkpoint and summarized visible history. A later native checkpoint summarizes only newly covered visible history. Later portable summaries continue from the latest plaintext summary created by Pi or grounded-compaction when one exists.
@@ -70,4 +72,12 @@ Enable the coordinator from the dot314 git bundle:
     }
   ]
 }
+```
+
+## Tests
+
+Run the coordinator tests from the repository root:
+
+```bash
+node --experimental-test-module-mocks --test extensions/codex-compaction-coordinator/*.test.ts
 ```

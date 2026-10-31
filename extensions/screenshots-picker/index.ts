@@ -618,7 +618,8 @@ export default function screenshotsExtension(pi: ExtensionAPI) {
 		};
 	});
 
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (event) => {
+		if (event.messageType !== "user") return undefined;
 		if (pendingSentPreviewPaths.length === 0) {
 			return undefined;
 		}

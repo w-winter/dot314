@@ -81,7 +81,7 @@ function emit(pi, event, sessionId, payload = {}, hasUI = false) {
  *  before_agent_start handler, collecting the messages they return. */
 async function beforeAgentStart(pi, sessionId, prompt, { source = "interactive", hasUI = true } = {}) {
 	await emit(pi, "input", sessionId, { text: prompt, source }, hasUI);
-	const results = await emit(pi, "before_agent_start", sessionId, { prompt, images: undefined, systemPrompt: "", systemPromptOptions: {} }, hasUI);
+	const results = await emit(pi, "before_agent_start", sessionId, { messageType: "user", prompt, images: undefined, systemPrompt: "", systemPromptOptions: {} }, hasUI);
 	for (const result of results) assert.equal(result?.systemPrompt, undefined, "a notice never changes the system prompt");
 	return results.filter((result) => result?.message).map((result) => result.message);
 }
@@ -193,6 +193,26 @@ afterEach(() => {
 });
 
 describe("agent notices", () => {
+	it("keeps pending notices through custom starts until the next user start", async () => {
+		userConfig({ agentNotices: true });
+		const sessionId = "notice-custom-start";
+		const pi = fakePi();
+		debugBridge.default(pi);
+		assert.deepEqual(await beforeAgentStart(pi, sessionId, "first question"), []);
+		noteAnomaly("empty_prompt", sessionId);
+		const customResults = await emit(pi, "before_agent_start", sessionId, {
+			messageType: "custom",
+			message: { role: "custom", customType: "follow-up", content: "continue", display: false, timestamp: 0 },
+			systemPrompt: "",
+			systemPromptOptions: {},
+		}, true);
+		assert.ok(customResults.every((result) => result === undefined));
+		const notices = await beforeAgentStart(pi, sessionId, "next question");
+		assert.deepEqual(notices.map((message) => message.details), [{ kinds: ["empty_prompt"] }]);
+		assert.deepEqual(await beforeAgentStart(pi, sessionId, "another question"), []);
+		assert.deepEqual(pi.sent, []);
+	});
+
 	it("tells a told anomaly once with the next prompt, never expected cleanup, and keeps Claude's session, system prompt and tools", { timeout: 20_000 }, async () => {
 		userConfig({ agentNotices: true });
 		const logPath = process.env.CLAUDE_BRIDGE_DEBUG_PATH;

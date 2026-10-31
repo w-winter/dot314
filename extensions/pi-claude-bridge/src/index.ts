@@ -2167,7 +2167,10 @@ export default function (pi: ExtensionAPI) {
 	// session a person types into only (agent-notice.ts). Pi fires input
 	// before before_agent_start for the same prompt.
 	pi.on("input", (event, ctx) => notePromptSource(ctx.sessionManager.getSessionId(), event.source === "interactive" && ctx.hasUI));
-	pi.on("before_agent_start", (_event, ctx) => takeAgentNotice(ctx.sessionManager.getSessionId()));
+	pi.on("before_agent_start", (event, ctx) => {
+		if (event.messageType !== "user") return undefined;
+		return takeAgentNotice(ctx.sessionManager.getSessionId());
+	});
 	pi.on("message_end", (event, ctx) => runInRequestLane(ctx.sessionManager.getSessionId(), () => {
 		const message = (event as { message?: AssistantMessage }).message;
 		if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx);

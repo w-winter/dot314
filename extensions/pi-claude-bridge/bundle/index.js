@@ -51358,7 +51358,10 @@ function index_default(pi2) {
     deleteQueryLane(sessionId);
   });
   pi2.on("input", (event, ctx2) => notePromptSource(ctx2.sessionManager.getSessionId(), event.source === "interactive" && ctx2.hasUI));
-  pi2.on("before_agent_start", (_event, ctx2) => takeAgentNotice(ctx2.sessionManager.getSessionId()));
+  pi2.on("before_agent_start", (event, ctx2) => {
+    if (event.messageType !== "user") return void 0;
+    return takeAgentNotice(ctx2.sessionManager.getSessionId());
+  });
   pi2.on("message_end", (event, ctx2) => runInRequestLane(ctx2.sessionManager.getSessionId(), () => {
     const message = event.message;
     if (message?.role === "assistant" && message.provider === PROVIDER_ID) schedulePersistSharedSession(ctx2);

@@ -38,5 +38,11 @@
   },
   "dependencies": {
     "glob": "^13.0.6"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": ">=1.2.0",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   }
 }

@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { getCurrentSystemMessage, type Api, type Model } from "@earendil-works/pi-ai";
 import {
     convertToLlm,
-    serializeConversation,
     sessionEntryToContextMessages,
     type AgentMessage,
     type ExtensionAPI,
@@ -11,8 +10,8 @@ import {
     type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 
-import { serializeConversationForCompaction } from "../_shared/compaction-serialization.ts";
 import { isCoordinatorMetadataEntry } from "./portability-mode.ts";
+import { serializePortableConversation } from "./portable-serialization.ts";
 import {
     describeNativeEpoch,
     fingerprintConversionNativeCheckpointDetails,
@@ -427,7 +426,7 @@ export function derivePortablePlan(
         const identityPairs = projectionIdentityPairs(branch, entries);
         const identityEntries = identityPairs.map(({ projectedEntry }) => projectedEntry);
         const messages = convertToLlm(entries.flatMap((entry) => sessionEntryToContextMessages(entry)));
-        const sourceText = serializeConversation(messages);
+        const sourceText = serializePortableConversation(messages);
         const range: PortableRangeIdentity = {
             firstEntryId: identityPairs[0]?.entryId ?? null,
             lastEntryId: identityPairs.at(-1)?.entryId ?? null,
@@ -442,7 +441,7 @@ export function derivePortablePlan(
             range,
             sourceText,
             serializeSource: (toolResultChars: number | null) =>
-                serializeConversationForCompaction(messages, toolResultChars),
+                serializePortableConversation(messages, toolResultChars),
             coverageEntries,
         };
     });
