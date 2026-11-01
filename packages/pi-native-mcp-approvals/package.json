@@ -1,0 +1,37 @@
+{
+  "name": "pi-native-mcp-approvals",
+  "version": "0.1.0",
+  "description": "Configurable per-call approvals for Pi's native MCP tools, including scripted calls",
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "mcp", "permissions"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/w-winter/dot314.git",
+    "directory": "packages/pi-native-mcp-approvals"
+  },
+  "bugs": {
+    "url": "https://github.com/w-winter/dot314/issues"
+  },
+  "homepage": "https://github.com/w-winter/dot314/tree/main/packages/pi-native-mcp-approvals#readme",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": ["extensions/native-mcp-approvals/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/pi-package-prepack.mjs"
+  },
+  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "dot314Prepack": {
+    "copy": [
+      { "from": "../../extensions/native-mcp-approvals/index.ts", "to": "extensions/native-mcp-approvals/index.ts" },
+      { "from": "../../extensions/native-mcp-approvals/config.json.example", "to": "extensions/native-mcp-approvals/config.json.example" },
+      { "from": "../../LICENSE", "to": "LICENSE" }
+    ]
+  }
+}

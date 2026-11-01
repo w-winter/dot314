@@ -23,6 +23,7 @@ extensions/rp-native-tools-lock/rp-native-tools-lock.json
 extensions/sandbox/sandbox.json
 extensions/assistant-provenance/config.json
 extensions/command-center/config.json
+extensions/native-mcp-approvals/config.json
 extensions/repoprompt-cli/config.json
 
 # Binaries (downloaded per-machine)

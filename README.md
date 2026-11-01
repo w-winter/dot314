@@ -76,6 +76,7 @@ Use `!path` to exclude specific extensions, or list only the ones you want. See 
 Notes:
 - `pi install ...` runs `npm install` in the package root automatically
 - Some extensions store optional per-user config under `~/.pi/agent/extensions/<extension-name>/...` (e.g. `poly-notify`, `sandbox`, `tools`, `rp-native-tools-lock`).  These files are not part of the package install and are created on-demand or are optional.
+- Native MCP approvals require `<agent-dir>/extensions/native-mcp-approvals/config.json`, where the agent directory defaults to `~/.pi/agent`. Missing or invalid configuration blocks native MCP server-tool calls. See the [configuration guide](packages/pi-native-mcp-approvals/README.md#configuration) for the policy format and setup.
 
 ### Install individual extensions from npm
 
@@ -114,6 +115,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `model-aware-compaction/` | [`pi-model-aware-compaction`](https://www.npmjs.com/package/pi-model-aware-compaction) | Per-model compaction thresholds |
 | ● | `model-sysprompt-appendix/` | [`pi-model-sysprompt-appendix`](https://www.npmjs.com/package/pi-model-sysprompt-appendix) | Per-model system prompt additions |
 | ● | `move-session.ts` | [`pi-move-session`](https://www.npmjs.com/package/pi-move-session) | Move current active session to a new cwd |
+| ● | [`native-mcp-approvals/`](extensions/native-mcp-approvals/) | [`pi-native-mcp-approvals`](https://www.npmjs.com/package/pi-native-mcp-approvals) | Configurable per-call approval for native MCP tools, including scripted calls |
 | ◐ | `pi-claude-bridge/` | | Claude Agent SDK bridge for ToS-compliant Claude subscriptions usage in Pi |
 | ◐ | `pi-queue-steer/` | | Editable steering and follow-up queues with RepoPrompt-aware interruption events |
 | ● | `protect-paths/` | | Blocks `.git/` access and `node_modules/` writes (reads allowed), brew installs, and asks before deletes or piped shells. Pair with [`@aliou/pi-guardrails`](https://github.com/aliou/pi-guardrails) for `.env` protection |

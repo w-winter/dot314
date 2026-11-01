@@ -37,6 +37,13 @@
   - Optional minimal fork-lineage system prompt injection via `injectForkHintSystemPrompt` (see README)
   - Configurable model/prompt via `config.json`, optionally pointing at an agent definition under `~/.pi/agent/agents/`
 
+- ● [`native-mcp-approvals/`](native-mcp-approvals/) ([npm](https://www.npmjs.com/package/pi-native-mcp-approvals), [README](../packages/pi-native-mcp-approvals/README.md))
+  - Asks for approval before direct and scripted Pi-native MCP calls that match the configured tool patterns; each approval permits one call
+  - Install with `pi install npm:pi-native-mcp-approvals`. Copy [`config.json.example`](native-mcp-approvals/config.json.example) to `<agent-dir>/extensions/native-mcp-approvals/config.json`, where `<agent-dir>` is `~/.pi/agent` or `PI_CODING_AGENT_DIR`. Set `approveTools` to tool-name patterns and `exemptServers` to server names from `mcp.json`; calls to exempt servers and unmatched tools proceed without this extension's approval
+  - Patterns match the tool-name suffix shown in Pi's catalog, excluding `mcp__<server>__`. Matching is case-sensitive: `*` matches any characters, and other punctuation is converted to underscores as Pi does for tool names
+  - The extension reads the gitignored `config.json` before each server-tool call. Missing or invalid configuration blocks those calls; calls requiring approval are blocked when no approval UI is available, when dismissed, or when cancelled
+  - Use native MCP's `toolExposure` settings to hide tools from discovery and execution
+
 - ● [`repoprompt-mcp/`](repoprompt-mcp/) ([README](./repoprompt-mcp/README.md))
   - Pi-compatible, token-efficient proxy for the RepoPrompt MCP server with:
     - Supports both RepoPrompt CE and Classic targets via `/rp app`

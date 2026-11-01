@@ -1,0 +1,4 @@
+{
+  "approveTools": ["delete_*", "remove_*"],
+  "exemptServers": []
+}
