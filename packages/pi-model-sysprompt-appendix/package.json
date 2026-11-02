@@ -1,7 +1,7 @@
 {
   "name": "pi-model-sysprompt-appendix",
-  "version": "0.1.1",
-  "description": "Append model-specific content to Pi system prompt before Project Context",
+  "version": "0.1.2",
+  "description": "Add model-specific content to Pi system prompt as a model_context section",
   "keywords": ["pi-package", "pi", "pi-coding-agent"],
   "license": "MIT",
   "repository": {

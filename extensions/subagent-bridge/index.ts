@@ -8,7 +8,6 @@ import type { Attachment as IntercomAttachment, Message as IntercomMessage, Sess
 
 import { loadConfig, type SubagentBridgeConfig } from "./config.ts";
 import {
-  SUBAGENT_BRIDGE_HINT_MARKER,
   buildHint,
   deleteChildLink,
   deriveIntercomTarget,
@@ -816,12 +815,8 @@ export default function subagentBridgeExtension(pi: ExtensionAPI, overrides: Bri
 
     if (!hintBlock) return;
 
-    const base = event.systemPrompt ?? "";
-    if (base.includes(SUBAGENT_BRIDGE_HINT_MARKER)) return;
-
-    return {
-      systemPrompt: base ? `${base}\n\n${hintBlock}` : hintBlock,
-    };
+    // A section rather than a returned systemPrompt, which would replace the whole prompt and drop other extensions' sections.
+    event.systemPromptOptions.sections.subagent_bridge = hintBlock;
   });
 
   pi.on("tool_call", (event) => {

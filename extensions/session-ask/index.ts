@@ -1457,17 +1457,12 @@ export default function sessionAskExtension(pi: ExtensionAPI) {
         const ancestorCount = parents.length;
         const immediateParent = parents[0];
 
-        const marker = "# Fork lineage (extension hint)";
-        const base = event.systemPrompt ?? "";
-        if (base.includes(marker)) return;
-
-        const appendix =
-            "\n\n" + marker + "\n" +
+        // A section rather than a returned systemPrompt, which would replace the whole prompt and drop other extensions' sections.
+        event.systemPromptOptions.sections.fork_lineage =
+            "# Fork lineage (extension hint)\n" +
             `Ancestors: ${ancestorCount}. ` +
             (immediateParent ? `Parent: ${immediateParent}. ` : "") +
             "Do not guess; call session_lineage({ maxDepth: 50 }) when asked.";
-
-        return { systemPrompt: base + appendix };
     });
 
     // Keep session-ask outputs out of the model context by default (this is a user-facing diagnostic)

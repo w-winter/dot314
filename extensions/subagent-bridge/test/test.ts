@@ -575,7 +575,9 @@ test("before_agent_start emits no child hint until @parent is resolvable", async
   });
   await harness.emit("session_start");
 
-  assert.equal(await harness.emit("before_agent_start", { systemPrompt: "Base prompt" }), undefined);
+  const unresolved: Record<string, string> = {};
+  assert.equal(await harness.emit("before_agent_start", { systemPrompt: "Base prompt", systemPromptOptions: { sections: unresolved } }), undefined);
+  assert.deepEqual(unresolved, {});
 
   saveChildLink(childFile, {
     version: 1,
@@ -589,9 +591,12 @@ test("before_agent_start emits no child hint until @parent is resolvable", async
     },
   });
 
-  const result = await harness.emit("before_agent_start", { systemPrompt: "Base prompt" }) as { systemPrompt: string };
-  assert.match(result.systemPrompt, new RegExp(SUBAGENT_BRIDGE_HINT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(result.systemPrompt, new RegExp(CHILD_PARENT_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  // A section, not a replaced prompt, so later handlers' sections still reach the model.
+  const sections: Record<string, string> = {};
+  assert.equal(await harness.emit("before_agent_start", { systemPrompt: "Base prompt", systemPromptOptions: { sections } }), undefined);
+  const hint = sections.subagent_bridge;
+  assert.match(hint, new RegExp(SUBAGENT_BRIDGE_HINT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(hint, new RegExp(CHILD_PARENT_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
 test("parent hint truncates, omits missing children, and appends a +N more suffix", async () => {
@@ -629,11 +634,13 @@ test("parent hint truncates, omits missing children, and appends a +N more suffi
   });
   await harness.emit("session_start");
 
-  const result = await harness.emit("before_agent_start", { systemPrompt: "Base prompt" }) as { systemPrompt: string };
-  assert.match(result.systemPrompt, /Known subagent handles:/);
-  assert.match(result.systemPrompt, /\(\+\d+ more\)\./);
-  assert.match(result.systemPrompt, /intercom\.to as @<handle>/);
-  assert.equal(result.systemPrompt.includes("missing-child"), false);
+  const sections: Record<string, string> = {};
+  assert.equal(await harness.emit("before_agent_start", { systemPrompt: "Base prompt", systemPromptOptions: { sections } }), undefined);
+  const hint = sections.subagent_bridge;
+  assert.match(hint, /Known subagent handles:/);
+  assert.match(hint, /\(\+\d+ more\)\./);
+  assert.match(hint, /intercom\.to as @<handle>/);
+  assert.equal(hint.includes("missing-child"), false);
 });
 
 test("deriveIntercomTarget matches intercom's unnamed-session alias rule", () => {

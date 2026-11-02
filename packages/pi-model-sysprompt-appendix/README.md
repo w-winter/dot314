@@ -1,6 +1,6 @@
 # Model system-prompt appendix for Pi (`pi-model-sysprompt-appendix`)
 
-Appends a per-model "appendix" to Pi's system prompt right before `# Project Context`.
+Adds a per-model "appendix" to Pi's system prompt as a `<model_context>` section.
 
 Useful for model-specific calibration (e.g. adding model-targeted rules or identity steering).
 
