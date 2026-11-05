@@ -23,6 +23,7 @@ export async function discoverClaudeModels(cwd: string, account: ClaudeAccountRo
 		cwd,
 		abortController: controller,
 		persistSession: false,
+		settings: { autoDreamEnabled: false },
 		settingSources: [],
 		strictMcpConfig: true,
 		tools: [],

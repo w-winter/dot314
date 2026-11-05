@@ -19460,51 +19460,12 @@ function failSteeringDelivery(queryCtx, sdkQuery2, error51, live, piSession) {
   else abortSdkQuery(sdkQuery2);
 }
 
-// src/auth-presence.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
-import { homedir as homedir3, platform as osPlatform } from "os";
-import { join as join4 } from "path";
-function resolveClaudeConfigDir(env = process.env) {
-  const configured = env.CLAUDE_CONFIG_DIR;
-  if (typeof configured === "string" && configured.trim().length > 0) return configured.trim();
-  return join4(homedir3(), ".claude");
-}
-function nonEmptyEnv(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function envTruthy(value) {
-  const v = value?.trim().toLowerCase();
-  return v === "1" || v === "true";
-}
-function hasApiKeyHelper(configDir) {
-  try {
-    const settingsPath = join4(configDir, "settings.json");
-    if (!existsSync3(settingsPath)) return false;
-    const parsed = JSON.parse(readFileSync3(settingsPath, "utf8"));
-    return typeof parsed?.apiKeyHelper === "string" && parsed.apiKeyHelper.trim().length > 0;
-  } catch {
-    return false;
-  }
-}
-function hasClaudeCredentials(env = process.env, platform = osPlatform()) {
-  if (nonEmptyEnv(env.CLAUDE_CODE_OAUTH_TOKEN)) return true;
-  if (nonEmptyEnv(env.ANTHROPIC_API_KEY)) return true;
-  if (nonEmptyEnv(env.ANTHROPIC_AUTH_TOKEN)) return true;
-  if (envTruthy(env.CLAUDE_CODE_USE_BEDROCK)) return true;
-  if (envTruthy(env.CLAUDE_CODE_USE_VERTEX)) return true;
-  if (envTruthy(env.CLAUDE_CODE_USE_FOUNDRY)) return true;
-  if (envTruthy(env.CLAUDE_CODE_USE_ANTHROPIC_AWS)) return true;
-  if (envTruthy(env.CLAUDE_CODE_USE_MANTLE)) return true;
-  const configDir = resolveClaudeConfigDir(env);
-  if (existsSync3(join4(configDir, ".credentials.json"))) return true;
-  if (hasApiKeyHelper(configDir)) return true;
-  if (platform === "darwin") return true;
-  return false;
-}
+// src/direct-auth.ts
+import { platform as osPlatform2 } from "node:os";
 
 // src/account-router.ts
-import { homedir as homedir4 } from "node:os";
-import { join as join6 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { join as join5 } from "node:path";
 
 // node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 import { createRequire as xV } from "node:module";
@@ -47122,7 +47083,7 @@ function unmanagedClaudeEnv(base = process.env) {
   return claudeChildEnv(void 0, loadConfig(process.cwd()).provider?.inheritAnthropicEnv, base);
 }
 function claudeDirForProfile(profile) {
-  return profile.configDir?.trim() || join6(homedir4(), ".claude");
+  return profile.configDir?.trim() || join5(homedir3(), ".claude");
 }
 function accountSessionScope(profile) {
   return profile ? { accountProfileId: profile.profileId, claudeConfigDir: claudeDirForProfile(profile) } : {};
@@ -47235,8 +47196,60 @@ function classifyClaudeFailure(value) {
   return void 0;
 }
 
+// src/auth-presence.ts
+import { existsSync as existsSync4, readFileSync as readFileSync4 } from "fs";
+import { homedir as homedir4, platform as osPlatform } from "os";
+import { join as join6 } from "path";
+function resolveClaudeConfigDir(env = process.env) {
+  const configured = env.CLAUDE_CONFIG_DIR;
+  if (typeof configured === "string" && configured.trim().length > 0) return configured.trim();
+  return join6(homedir4(), ".claude");
+}
+function nonEmptyEnv(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function envTruthy(value) {
+  const v = value?.trim().toLowerCase();
+  return v === "1" || v === "true";
+}
+var apiKeyHelperSettings = external_exports.object({ apiKeyHelper: external_exports.string().trim().min(1) });
+function hasApiKeyHelper(configDir) {
+  try {
+    const settingsPath = join6(configDir, "settings.json");
+    if (!existsSync4(settingsPath)) return false;
+    return apiKeyHelperSettings.safeParse(JSON.parse(readFileSync4(settingsPath, "utf8"))).success;
+  } catch {
+    return false;
+  }
+}
+function hasClaudeCredentials(env = process.env, platform = osPlatform(), settingSources = []) {
+  if (nonEmptyEnv(env.CLAUDE_CODE_OAUTH_TOKEN)) return true;
+  if (nonEmptyEnv(env.ANTHROPIC_API_KEY)) return true;
+  if (nonEmptyEnv(env.ANTHROPIC_AUTH_TOKEN)) return true;
+  if (envTruthy(env.CLAUDE_CODE_USE_BEDROCK)) return true;
+  if (envTruthy(env.CLAUDE_CODE_USE_VERTEX)) return true;
+  if (envTruthy(env.CLAUDE_CODE_USE_FOUNDRY)) return true;
+  if (envTruthy(env.CLAUDE_CODE_USE_ANTHROPIC_AWS)) return true;
+  if (envTruthy(env.CLAUDE_CODE_USE_MANTLE)) return true;
+  const configDir = resolveClaudeConfigDir(env);
+  if (existsSync4(join6(configDir, ".credentials.json"))) return true;
+  if (settingSources.includes("user") && hasApiKeyHelper(configDir)) return true;
+  if (platform === "darwin") return true;
+  return false;
+}
+
+// src/direct-auth.ts
+function hasDirectClaudeLogin(cwd, env = process.env, platform = osPlatform2()) {
+  const config2 = loadConfig(cwd);
+  return hasClaudeCredentials(
+    claudeChildEnv(void 0, config2.provider.inheritAnthropicEnv, env),
+    platform,
+    settingSourcesForQuery(connectorsEnabledFor(config2), config2.provider.settingSources)
+  );
+}
+
 // src/native-provider.ts
-var NATIVE_PROVIDER_UNSUPPORTED_MESSAGE = "Claude bridge needs Pi 0.81 or later. Upgrade Pi.";
+var NATIVE_PROVIDER_UNSUPPORTED_MESSAGE = "Claude bridge needs Pi 1.5 or later. Upgrade Pi.";
 function supportsNativeProvider(piAi2) {
   return typeof piAi2?.createProvider === "function";
 }
@@ -47246,7 +47259,7 @@ function claudeAuthSourceLabel(env = process.env) {
   if (env.ANTHROPIC_AUTH_TOKEN?.trim()) return "ANTHROPIC_AUTH_TOKEN";
   return "Claude Code login";
 }
-function buildNativeProvider(piAi2, models, streamSimple, env = process.env, hasCredentials = () => hasClaudeCredentials(unmanagedClaudeEnv(env))) {
+function buildNativeProvider(piAi2, models, streamSimple, env = process.env, hasCredentials = () => hasDirectClaudeLogin(process.cwd(), env)) {
   if (!supportsNativeProvider(piAi2)) throw new Error(NATIVE_PROVIDER_UNSUPPORTED_MESSAGE);
   const stamped = models.map((model) => ({ ...model, api: "claude-bridge", baseUrl: "claude-bridge", provider: PROVIDER_ID }));
   const streams = {
@@ -47368,6 +47381,7 @@ var RELIST_TIMEOUT_MS = 2e3;
 var PI_TOOL_CALL_TIMEOUT_MS = 2147483647;
 var CLAUDE_CODE_TOOL_USE_ID = "claudecode/toolUseId";
 var PASS_THROUGH_INPUT = external_exports.looseObject({});
+var TOOL_ARGUMENTS_INSTRUCTIONS = "Text you write to the user after a tool call in the same turn may reach the session only as a short summary, without code blocks. Put anything a tool must read, such as a script, in that tool call's arguments.";
 var ADVERTISED_ROOT_KEYWORDS = ["$defs", "definitions", "additionalProperties"];
 function advertisedInputSchema(parameters, toolName = "tool") {
   const schema2 = JSON.parse(JSON.stringify(parameters ?? {}));
@@ -47424,7 +47438,7 @@ var ServedToolServer = class {
     this.handlerFor = handlerFor;
     this.hooks = hooks;
     this.desired = tools;
-    this.config = Fwe({ name, version: "1.0.0", tools: [], timeout: PI_TOOL_CALL_TIMEOUT_MS });
+    this.config = Fwe({ name, version: "1.0.0", instructions: TOOL_ARGUMENTS_INSTRUCTIONS, tools: [], timeout: PI_TOOL_CALL_TIMEOUT_MS });
     const aliases = mcpToolAliases(tools.map((tool) => tool.name));
     for (const tool of tools) this.register(tool, aliases.get(tool.name) ?? tool.name);
     this.observeRelist();
@@ -49450,6 +49464,7 @@ async function probeClaudeAccountProfile(input) {
         DISABLE_AUTO_COMPACT: "1"
       },
       maxTurns: 1,
+      settings: { autoDreamEnabled: false },
       // bypassPermissions makes tool containment the only gate, so the probe
       // gets BOTH layers: the standard bridge isolation lists AND a deny-all
       // PreToolUse hook — a /usage probe has no business executing anything.
@@ -49534,6 +49549,7 @@ async function discoverClaudeModels(cwd, account, signal) {
     cwd,
     abortController: controller,
     persistSession: false,
+    settings: { autoDreamEnabled: false },
     settingSources: [],
     strictMcpConfig: true,
     tools: [],
@@ -49970,10 +49986,14 @@ function buildClaudeQueryOptions(input) {
     ...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
     ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
     DISABLE_AUTO_COMPACT: "1",
+    // Stop recording redundant API requests in the transcript.
+    CLAUDE_CODE_ELEGANT_MEADOW: "0",
     CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
     CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
     CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1"
   };
+  const settings = { autoDreamEnabled: false, claudeMdExcludes };
+  if (providerSettings.fastMode) settings.fastMode = true;
   const queryOptions = {
     cwd,
     model: queryModel.id,
@@ -49982,7 +50002,7 @@ function buildClaudeQueryOptions(input) {
     permissionMode: "bypassPermissions",
     includePartialMessages: true,
     ...fallbackModel ? { fallbackModel } : {},
-    settings: { claudeMdExcludes, ...providerSettings.fastMode ? { fastMode: true } : {} },
+    settings,
     systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
     extraArgs,
     strictMcpConfig: true,
@@ -50257,9 +50277,9 @@ function applyProviderRegistration(trigger) {
     }
     return;
   }
-  const credentialed = hasClaudeCredentials(unmanagedClaudeEnv()) || Boolean(resolveClaudeAccountRouter());
+  const credentialed = hasDirectClaudeLogin(process.cwd()) || Boolean(resolveClaudeAccountRouter());
   debug(`${trigger}: native registration upsert, credentialed=${credentialed} (module=${moduleInstanceId})`);
-  if (hasClaudeCredentials(unmanagedClaudeEnv()) && connectorsEnabledFor(loadConfig(process.cwd()))) primeConnectorServers();
+  if (hasDirectClaudeLogin(process.cwd()) && connectorsEnabledFor(loadConfig(process.cwd()))) primeConnectorServers();
   g6[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
   try {
     nativeProviderInstance ??= buildNativeProvider(
@@ -50269,7 +50289,7 @@ function applyProviderRegistration(trigger) {
       process.env,
       // Availability includes a companion account pool: the router owns
       // credentials the direct existence probes cannot see.
-      () => hasClaudeCredentials(unmanagedClaudeEnv()) || Boolean(resolveClaudeAccountRouter())
+      () => hasDirectClaudeLogin(process.cwd()) || Boolean(resolveClaudeAccountRouter())
     );
     pi2.registerProvider(nativeProviderInstance);
   } catch (err) {
@@ -50574,7 +50594,7 @@ function streamRequestInLane(model, context, options, laneId, releaseEphemeralLa
     });
     return stream;
   }
-  if (!hasClaudeCredentials(unmanagedClaudeEnv()) && !resolveClaudeAccountRouter()) {
+  if (!hasDirectClaudeLogin(cwd) && !Boolean(resolveClaudeAccountRouter())) {
     try {
       applyProviderRegistration("pre-spawn");
     } catch {

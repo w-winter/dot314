@@ -42,6 +42,7 @@ export async function probeClaudeAccountProfile(input: {
 				DISABLE_AUTO_COMPACT: "1",
 			},
 			maxTurns: 1,
+			settings: { autoDreamEnabled: false },
 			// bypassPermissions makes tool containment the only gate, so the probe
 			// gets BOTH layers: the standard bridge isolation lists AND a deny-all
 			// PreToolUse hook — a /usage probe has no business executing anything.

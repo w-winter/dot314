@@ -3,7 +3,7 @@
 // the provided context only.
 
 import { type Model } from "@earendil-works/pi-ai";
-import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, type query, type EffortLevel, type Settings, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.ts";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.ts";
 import { carriesPiDefaultBase, normalizeEffortLevel, resolveSystemPrompt, type Config } from "./config.ts";
@@ -201,10 +201,14 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
+		// Stop recording redundant API requests in the transcript.
+		CLAUDE_CODE_ELEGANT_MEADOW: "0",
 		CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS: "0",
 		CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 		CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1",
 	};
+	const settings: Settings = { autoDreamEnabled: false, claudeMdExcludes };
+	if (providerSettings.fastMode) settings.fastMode = true;
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		model: queryModel.id,
@@ -213,7 +217,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
 		...(fallbackModel ? { fallbackModel } : {}),
-		settings: { claudeMdExcludes, ...(providerSettings.fastMode ? { fastMode: true } : {}) },
+		settings,
 		systemPrompt: { type: "custom", prompt: outbound.prompt, snapshot: false },
 		extraArgs,
 		strictMcpConfig: true,

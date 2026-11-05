@@ -62,7 +62,7 @@ describe("claudeAuthSourceLabel", () => {
 describe("buildNativeProvider", () => {
 	it("throws the versioned message on a pre-0.81 host shape", () => {
 		assert.throws(() => buildNativeProvider({}, MODELS, () => {}), { message: NATIVE_PROVIDER_UNSUPPORTED_MESSAGE });
-		assert.equal(NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, "Claude bridge needs Pi 0.81 or later. Upgrade Pi.");
+		assert.equal(NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, "Claude bridge needs Pi 1.5 or later. Upgrade Pi.");
 	});
 
 	it("builds a provider whose id, models, and stamped fields match the bridge contract", () => {

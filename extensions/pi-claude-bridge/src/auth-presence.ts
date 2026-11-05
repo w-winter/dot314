@@ -20,9 +20,11 @@
 // non-empty string and never logs its value. Credential CONTENTS are never read
 // or logged.
 
+import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync } from "fs";
 import { homedir, platform as osPlatform } from "os";
 import { join } from "path";
+import { z } from "zod";
 
 /**
  * Resolve the Claude config directory the same way the bundled cc-session-io
@@ -52,6 +54,8 @@ function envTruthy(value: string | undefined): boolean {
 	return v === "1" || v === "true";
 }
 
+const apiKeyHelperSettings = z.object({ apiKeyHelper: z.string().trim().min(1) });
+
 /**
  * True when `${configDir}/settings.json` exists, parses as JSON, and carries a
  * non-empty `apiKeyHelper` string (an enterprise/custom auth command that
@@ -62,8 +66,7 @@ function hasApiKeyHelper(configDir: string): boolean {
 	try {
 		const settingsPath = join(configDir, "settings.json");
 		if (!existsSync(settingsPath)) return false;
-		const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as { apiKeyHelper?: unknown };
-		return typeof parsed?.apiKeyHelper === "string" && parsed.apiKeyHelper.trim().length > 0;
+		return apiKeyHelperSettings.safeParse(JSON.parse(readFileSync(settingsPath, "utf8"))).success;
 	} catch {
 		return false;
 	}
@@ -79,7 +82,8 @@ function hasApiKeyHelper(configDir: string): boolean {
  *     _ANTHROPIC_AWS / _MANTLE (such routing needs no local key file);
  *   - `.credentials.json` in the resolved config dir (existence only — the file
  *     is never opened; written mode 0600 by `claude login`);
- *   - `settings.json` apiKeyHelper (presence only — see hasApiKeyHelper).
+ *   - `settings.json` apiKeyHelper, only when `settingSources` includes "user"
+ *     so the child can run the helper (presence only; see hasApiKeyHelper).
  *
  * PLATFORM ASYMMETRY: on macOS the `claude` CLI stores OAuth tokens in the login
  * Keychain, NOT in `.credentials.json`, so file-absence is NOT evidence of
@@ -93,6 +97,7 @@ function hasApiKeyHelper(configDir: string): boolean {
 export function hasClaudeCredentials(
 	env: NodeJS.ProcessEnv = process.env,
 	platform: NodeJS.Platform = osPlatform(),
+	settingSources: readonly SettingSource[] = [],
 ): boolean {
 	if (nonEmptyEnv(env.CLAUDE_CODE_OAUTH_TOKEN)) return true;
 	if (nonEmptyEnv(env.ANTHROPIC_API_KEY)) return true;
@@ -105,7 +110,7 @@ export function hasClaudeCredentials(
 
 	const configDir = resolveClaudeConfigDir(env);
 	if (existsSync(join(configDir, ".credentials.json"))) return true;
-	if (hasApiKeyHelper(configDir)) return true;
+	if (settingSources.includes("user") && hasApiKeyHelper(configDir)) return true;
 
 	if (platform === "darwin") return true;
 

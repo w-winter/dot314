@@ -99,19 +99,24 @@ describe("hasClaudeCredentials", () => {
 	}));
 
 	// settings.json apiKeyHelper ---------------------------------------------
-	it("is true when settings.json has a non-empty apiKeyHelper string", () => withTempHome((dir) => {
+	it("counts a user apiKeyHelper only when the child loads user settings", () => withTempHome((dir) => {
 		writeFileSync(join(dir, "settings.json"), JSON.stringify({ apiKeyHelper: "/usr/local/bin/get-key.sh" }));
-		assert.equal(hasClaudeCredentials({ CLAUDE_CONFIG_DIR: dir }, LINUX), true);
+		const env = { CLAUDE_CONFIG_DIR: dir };
+		assert.equal(hasClaudeCredentials(env, LINUX), false);
+		assert.equal(hasClaudeCredentials(env, LINUX, []), false);
+		assert.equal(hasClaudeCredentials(env, LINUX, ["project", "local"]), false);
+		assert.equal(hasClaudeCredentials(env, LINUX, ["user"]), true);
+		assert.equal(hasClaudeCredentials(env, LINUX, ["user", "project"]), true);
 	}));
 
 	it("is false when settings.json lacks apiKeyHelper or it is empty", () => withTempHome((dir) => {
 		writeFileSync(join(dir, "settings.json"), JSON.stringify({ apiKeyHelper: "", other: 1 }));
-		assert.equal(hasClaudeCredentials({ CLAUDE_CONFIG_DIR: dir }, LINUX), false);
+		assert.equal(hasClaudeCredentials({ CLAUDE_CONFIG_DIR: dir }, LINUX, ["user"]), false);
 	}));
 
 	it("tolerates malformed settings.json as apiKeyHelper-absent", () => withTempHome((dir) => {
 		writeFileSync(join(dir, "settings.json"), "{ not valid json");
-		assert.equal(hasClaudeCredentials({ CLAUDE_CONFIG_DIR: dir }, LINUX), false);
+		assert.equal(hasClaudeCredentials({ CLAUDE_CONFIG_DIR: dir }, LINUX, ["user"]), false);
 	}));
 
 	// Platform asymmetry -----------------------------------------------------

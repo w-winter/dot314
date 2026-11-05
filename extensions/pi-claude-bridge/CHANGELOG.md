@@ -7,6 +7,7 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 ### Fixed
 
 - Adapted nicobailon's Pi 1.5 prompt alignment. A configured replacement removes Pi's default base rather than prepending to it. Default preservation retains `APPEND_SYSTEM.md` and extension-added model instructions; the regression test runs the actual `model-sysprompt-appendix` hook through Pi's prompt builder. Development dependencies and stream-consumer tests use Pi 1.5.
+- Adapted nicobailon's authentication and child-query fixes. Helper-only login availability follows the settings the child loads. Provider, discovery and account-probe queries disable background memory consolidation; provider queries disable redundant API-request transcript logging. The MCP server tells Claude to put text a tool needs into the call's arguments, since subsequent assistant text may be summarized.
 
 ## 2026-10-22
 

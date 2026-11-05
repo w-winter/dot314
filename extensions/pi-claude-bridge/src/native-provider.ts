@@ -22,11 +22,11 @@
 // real secret, so none is read or exposed.
 
 import { unmanagedClaudeEnv } from "./account-router.ts";
-import { hasClaudeCredentials } from "./auth-presence.ts";
+import { hasDirectClaudeLogin } from "./direct-auth.ts";
 import { PROVIDER_ID } from "./convert.ts";
 
 export const NATIVE_PROVIDER_UNSUPPORTED_MESSAGE =
-	"Claude bridge needs Pi 0.81 or later. Upgrade Pi.";
+	"Claude bridge needs Pi 1.5 or later. Upgrade Pi.";
 
 /** pi-ai gained createProvider in 0.81 alongside the object-form
  *  registerProvider; its presence is the capability signal for both. */
@@ -59,7 +59,7 @@ export function buildNativeProvider(
 	env: NodeJS.ProcessEnv = process.env,
 	// Availability probe. Defaults to direct credential presence; the extension
 	// passes a probe that also accepts a companion account-router pool.
-	hasCredentials: () => boolean = () => hasClaudeCredentials(unmanagedClaudeEnv(env)),
+	hasCredentials: () => boolean = () => hasDirectClaudeLogin(process.cwd(), env),
 ): unknown {
 	if (!supportsNativeProvider(piAi)) throw new Error(NATIVE_PROVIDER_UNSUPPORTED_MESSAGE);
 	// The legacy config path stamped provider/api/baseUrl onto each model during

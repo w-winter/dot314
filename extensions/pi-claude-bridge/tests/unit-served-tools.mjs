@@ -31,6 +31,20 @@ async function connect(instance) {
 const macrotask = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 describe("ServedToolServer", () => {
+	it("instructs the MCP client to put text a tool needs in its arguments", async () => {
+		const served = new ServedToolServer("custom-tools", [piTool("alpha")], echoHandler);
+		const { client } = await connect(served.config.instance);
+		try {
+			const instructions = client.getInstructions();
+			assert.match(instructions, /after a tool call.*summary/);
+			assert.match(instructions, /without code blocks/);
+			assert.match(instructions, /anything a tool must read.*tool call's arguments/);
+		} finally {
+			await client.close();
+			await served.config.instance.close();
+		}
+	});
+
 	it("adds a tool on the live server and holds the update until the client re-lists", async () => {
 		const served = new ServedToolServer("custom-tools", [piTool("alpha")], echoHandler);
 		const { client, notifications, listNames } = await connect(served.config.instance);

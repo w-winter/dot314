@@ -84,6 +84,8 @@ export const CLAUDE_CODE_TOOL_USE_ID = "claudecode/toolUseId";
  *  plain z.object({}) would strip unknown keys). */
 const PASS_THROUGH_INPUT = z.looseObject({});
 
+const TOOL_ARGUMENTS_INSTRUCTIONS = "Text you write to the user after a tool call in the same turn may reach the session only as a short summary, without code blocks. Put anything a tool must read, such as a script, in that tool call's arguments.";
+
 // Root keywords the model needs to read the properties right: `$ref` targets
 // and the object's own additionalProperties. Other root keywords are dropped,
 // as Pi's native Anthropic provider drops them. Claude Code skips any MCP tool
@@ -184,7 +186,7 @@ export class ServedToolServer {
 		// Tools are registered here rather than through createSdkMcpServer's
 		// `tools` option so every tool, initial or added later, has a
 		// RegisteredTool handle that can remove it.
-		this.config = createSdkMcpServer({ name, version: "1.0.0", tools: [], timeout: PI_TOOL_CALL_TIMEOUT_MS });
+		this.config = createSdkMcpServer({ name, version: "1.0.0", instructions: TOOL_ARGUMENTS_INSTRUCTIONS, tools: [], timeout: PI_TOOL_CALL_TIMEOUT_MS });
 		const aliases = mcpToolAliases(tools.map((tool) => tool.name));
 		for (const tool of tools) this.register(tool, aliases.get(tool.name) ?? tool.name);
 		this.observeRelist();

@@ -25,7 +25,7 @@ import { QueryContext, ctx, deleteQueryLane, detachContext, drainPendingToolCall
 import { answersKnownCall, deliverSteerBeforeResults, resolveToolResults } from "./tool-result-delivery.ts";
 import { abortSdkQuery, closeSdkQuery, teardownQuery } from "./query-teardown.ts";
 import { loadConfig, recordProjectTrust } from "./config.ts";
-import { hasClaudeCredentials } from "./auth-presence.ts";
+import { hasDirectClaudeLogin } from "./direct-auth.ts";
 import { NATIVE_PROVIDER_UNSUPPORTED_MESSAGE, buildNativeProvider, supportsNativeProvider } from "./native-provider.ts";
 import { CLAUDE_CODE_TOOL_USE_ID, ServedToolServer, type ServedToolHandler } from "./served-tools.ts";
 import { resolveGetModels } from "./pi-ai-compat.ts";
@@ -52,7 +52,6 @@ import {
 	resolveClaudeAccountRouter,
 	RetryEventBuffer,
 	safeRouterCall,
-	unmanagedClaudeEnv,
 	type ClaudeAccountRoute,
 } from "./account-router.ts";
 import { BRIDGE_ACCOUNT_HOST } from "./account-host.ts";
@@ -577,14 +576,14 @@ function applyProviderRegistration(trigger: string): void {
 		}
 		return;
 	}
-	const credentialed = hasClaudeCredentials(unmanagedClaudeEnv()) || Boolean(resolveClaudeAccountRouter());
+	const credentialed = hasDirectClaudeLogin(process.cwd()) || Boolean(resolveClaudeAccountRouter());
 	debug(`${trigger}: native registration upsert, credentialed=${credentialed} (module=${moduleInstanceId})`);
 	// Start the connector inventory now, not on the first turn: the query path
 	// can only read a synchronous snapshot, so priming here is what gets the
 	// declarations in place before turn 1. Fire and forget —
 	// registration must not wait on the network. Primes the DEFAULT credential
 	// scope only; managed profiles are primed per request in their own scope.
-	if (hasClaudeCredentials(unmanagedClaudeEnv()) && connectorsEnabledFor(loadConfig(process.cwd()))) primeConnectorServers();
+	if (hasDirectClaudeLogin(process.cwd()) && connectorsEnabledFor(loadConfig(process.cwd()))) primeConnectorServers();
 	// Claim ordering: stream guard BEFORE registerProvider so a concurrent
 	// subagent can never observe a registered provider without an owner.
 	g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
@@ -596,7 +595,7 @@ function applyProviderRegistration(trigger: string): void {
 			process.env,
 			// Availability includes a companion account pool: the router owns
 			// credentials the direct existence probes cannot see.
-			() => hasClaudeCredentials(unmanagedClaudeEnv()) || Boolean(resolveClaudeAccountRouter()),
+			() => hasDirectClaudeLogin(process.cwd()) || Boolean(resolveClaudeAccountRouter()),
 		);
 		(pi.registerProvider as (provider: unknown) => void)(nativeProviderInstance);
 	} catch (err) {
@@ -1103,8 +1102,8 @@ function streamRequestInLane(
 	// (a) re-upsert the provider (primary-only) so pi's availability recompute
 	// hides the models, and (b) fail this request with a clear, actionable
 	// message instead of letting the SDK spawn die with a generic error. The
-	// check is cheap (existsSync + env reads only, no credential contents).
-	if (!hasClaudeCredentials(unmanagedClaudeEnv()) && !resolveClaudeAccountRouter()) {
+	// check reads configuration and credential presence, never credential contents.
+	if (!hasDirectClaudeLogin(cwd) && !Boolean(resolveClaudeAccountRouter())) {
 		try { applyProviderRegistration("pre-spawn"); } catch { /* best effort */ }
 		const message = "Claude account not connected — connect an account (or run `claude login`) and retry.";
 		debug(`provider: pre-spawn credential check failed; failing fast: ${message}`);

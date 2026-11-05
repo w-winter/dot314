@@ -9,7 +9,7 @@ import { claudeChildEnv } from "../src/account-router.ts";
 import { PARENT_SESSION_ENV } from "./fixtures/parent-session-env.mjs";
 
 const ROUTING_KEYS = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
-const SENTINEL_KEYS = [...ROUTING_KEYS, ...Object.keys(PARENT_SESSION_ENV), "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"];
+const SENTINEL_KEYS = [...ROUTING_KEYS, ...Object.keys(PARENT_SESSION_ENV), "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "DISABLE_AUTO_COMPACT", "CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING", "CLAUDE_CODE_ELEGANT_MEADOW"];
 const saved = new Map(SENTINEL_KEYS.map((key) => [key, process.env[key]]));
 
 afterEach(() => {
@@ -95,5 +95,11 @@ describe("Claude Code child environment", () => {
 	it("streams tool arguments as Claude writes them", () => {
 		process.env.CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING = "0";
 		assert.equal(childEnv({}).CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING, "1");
+	});
+
+	it("disables redundant API-request transcript records even when the parent enables them", () => {
+		process.env.CLAUDE_CODE_ELEGANT_MEADOW = "1";
+		assert.equal(childEnv({}).CLAUDE_CODE_ELEGANT_MEADOW, "0");
+		assert.equal(process.env.CLAUDE_CODE_ELEGANT_MEADOW, "1");
 	});
 });
