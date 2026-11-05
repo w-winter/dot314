@@ -14,13 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { AssistantMessageFrameEncoder, Type } from "@earendil-works/pi-ai";
-import { runAgentLoop } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js";
+import { Type } from "typebox";
+import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { __testSetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
-import { consumeLikePi, encodeLikePi } from "./lib/pi-frame-consumer.mjs";
+import { consumeLikePi, encodeLikePi, piConsumer } from "./lib/pi-frame-consumer.mjs";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -120,14 +120,14 @@ async function runPiTurn(sessionId, closed, releaseFailure, onToolRun = () => {}
 		(m, context, options) => {
 			const inner = streamClaudeAgentSdk(m, context, options);
 			const events = [];
-			const encoder = new AssistantMessageFrameEncoder();
+			const consumer = piConsumer();
 			streams.push(events);
 			return {
 				async *[Symbol.asyncIterator]() {
 					for await (const event of inner) {
 						events.push(event);
 						await Promise.resolve();
-						encoder.encode(event);
+						consumer.consume(event);
 						yield event;
 					}
 				},

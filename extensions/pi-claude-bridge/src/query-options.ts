@@ -2,7 +2,7 @@
 // Extracted from index.ts (pure move): no closures — reads config, env, and
 // the provided context only.
 
-import { type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { type Model } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.ts";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.ts";
@@ -81,8 +81,8 @@ interface OutboundSystemPrompt {
  * configured replacement; a prompt from compaction or an extension's own call
  * keeps its instructions. Another prompt that carries Pi's default base (an
  * in-process subagent the bridge never saw start, a copy of Pi's prompt) has
- * only that base replaced, whatever preservePiContext says: Anthropic refuses
- * it as it is, and the caller's own text must still reach Claude. The
+ * only that base replaced, whatever preservePiContext says: the caller's
+ * own text must still reach Claude. The
  * preamble tells resolveSystemPrompt whether Pi built the base. */
 export function outboundSystemPrompt(
 	input: Pick<BuildClaudeQueryOptionsInput, "queryModel" | "bridgeConfig" | "systemPromptOrigin"> & { systemPrompt: string },
@@ -135,7 +135,9 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// Fall back to our generic table only for an absent key. A null entry marks
 	// the level unsupported on that model, and a value Claude Code does not
 	// accept is untrusted; both send no effort so Claude Code's default applies.
-	const mapped = reasoning ? queryModel.thinkingLevelMap?.[reasoning as ModelThinkingLevel] : undefined;
+	// SAFETY: Pi's model schema guarantees string-or-null map values; strict:false loses that inferred shape.
+	const levelMap = queryModel.thinkingLevelMap as Partial<Record<string, string | null>> | undefined;
+	const mapped = reasoning && Boolean(levelMap) ? levelMap[reasoning] : undefined;
 	const requestedEffort = reasoning
 		? mapped === undefined
 			? REASONING_TO_EFFORT[reasoning]
@@ -147,7 +149,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// adaptive thinking), so off sends the disabled mode (`--thinking disabled`).
 	// A null `off` entry marks a model that cannot turn thinking off; Pi hides the
 	// level there, and a caller's missing reasoning leaves Claude Code's default.
-	const thinkingOff = !reasoning && queryModel.thinkingLevelMap?.off !== null;
+	const thinkingOff = !reasoning && (!Boolean(levelMap) || levelMap.off !== null);
 
 	const extraArgs: Record<string, string | null> = {};
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).

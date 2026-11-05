@@ -14,8 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { createSession, getSessionPath, openSession } from "cc-session-io";
-import { isRetryableAssistantError, Type } from "@earendil-works/pi-ai";
-import { runAgentLoop } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import { runAgentLoop } from "@earendil-works/pi-agent-core";
 
 import { streamClaudeAgentSdk } from "../src/index.ts";
 import { __testSetBridgeIntegrityState, getSharedSession, markSessionForRebuild, setExtensionApi } from "../src/bridge-state.ts";

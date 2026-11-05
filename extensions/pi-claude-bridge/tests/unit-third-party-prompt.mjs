@@ -1,6 +1,6 @@
 // Anthropic treats a subscription request whose system prompt carries both
 // "custom providers (docs/custom-provider.md)" and "pi packages
-// (docs/packages.md)" (two clauses of Pi's documentation line) as a
+// (docs/packages.md)" in its system instructions as a
 // third-party app, and with Extra Usage off rejects it with HTTP 400. The
 // bridge sends such a request like any other, and when Claude Code reports
 // Anthropic's rejection it adds a hint to the error Pi ends the turn with.
@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { Type, getCurrentSystemPrompt, isContextOverflow, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, isContextOverflow, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 // Not in the package's exports map: Pi's session prompt builder.
 import { buildSystemPromptSections } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 
@@ -66,12 +67,12 @@ const user = (text) => ({ role: "user", content: [{ type: "text", text }], times
 const streamEvent = (event) => ({ type: "stream_event", event });
 
 // Pi's session prompt as AgentSession sends it: a sections-only system message.
-function sessionMessages() {
+function sessionMessages(agentsMd = "Use tabs.") {
 	const sections = buildSystemPromptSections({
 		cwd: "/tmp/project",
 		selectedTools: ["read", "bash", "edit", "write"],
 		toolSnippets: { read: "Read file contents", bash: "Execute bash commands" },
-		contextFiles: [{ path: "/tmp/project/AGENTS.md", content: "Use tabs." }],
+		contextFiles: [{ path: "/tmp/project/AGENTS.md", content: agentsMd }],
 	});
 	return [{ role: "system", content: "", sections, timestamp: 1 }, user("hello")];
 }
@@ -131,7 +132,7 @@ async function request(config, messages, sdkMessages, options = {}) {
 
 describe("a system prompt Anthropic takes for a third-party app", () => {
 	it("sends it unchanged, from Pi's main prompt or a caller's copy", { timeout: 10_000 }, async () => {
-		const main = sessionMessages();
+		const main = sessionMessages(`Read ${CLAUSES.join(" and ")} first.`);
 		const copied = callerMessages(`${getCurrentSystemPrompt(main)}\n---\n## Side Chat\n\nYou're in a side chat.`);
 		for (const [messages, options] of [[main, {}], [copied, { sessionId: "side-chat" }]]) {
 			const prompt = getCurrentSystemPrompt(messages);

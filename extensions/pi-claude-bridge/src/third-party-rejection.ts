@@ -11,8 +11,9 @@ export function isThirdPartyAppRejection(text: string): boolean {
 // Fixed text with no runtime values: Pi's isRetryableAssistantError and
 // isContextOverflow read the whole error, so a path or other value in it could
 // make Pi retry or compact. This text matches neither.
-const THIRD_PARTY_APP_HINT = "Pi Claude: Anthropic treats a system prompt that carries Pi's documentation line, with both "
-	+ "\"custom providers (docs/custom-provider.md)\" and \"pi packages (docs/packages.md)\", as a third-party app. "
+const THIRD_PARTY_APP_HINT = "Pi Claude: Anthropic treats a system prompt that carries both "
+	+ "\"custom providers (docs/custom-provider.md)\" and \"pi packages (docs/packages.md)\" as a third-party app. "
+	+ "Remove one of them from the source of the prompt text, such as an AGENTS.md file or an extension. "
 	+ "Set systemPrompt.replacement in the user claude-bridge.json (in ~/.pi/agent unless PI_CODING_AGENT_DIR moves it) to replace Pi's default prompt. "
 	+ "An extension that copies Pi's full system prompt into its own model call has to send its own prompt instead.";
 

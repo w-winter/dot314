@@ -25,9 +25,9 @@ import { openSession } from "cc-session-io";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { AssistantMessageFrameEncoder, Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { SessionManager, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { runAgentLoop, runAgentLoopContinue } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js";
+import { runAgentLoop, runAgentLoopContinue } from "@earendil-works/pi-agent-core";
 import {
 	__testGetBridgeIntegrityState,
 	__testSetBridgeIntegrityState,
@@ -37,7 +37,7 @@ import {
 import { setExtensionApi } from "../src/bridge-state.ts";
 import { ctx, resetStack } from "../src/query-state.ts";
 import { runInRequestLane } from "../src/request-lane.ts";
-import { encodeLikePi } from "./lib/pi-frame-consumer.mjs";
+import { encodeLikePi, piConsumer } from "./lib/pi-frame-consumer.mjs";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -268,16 +268,16 @@ async function runSteeredTurn(sessionId, { steers, continuations, original = "OR
 		(m, context, options) => {
 			const inner = streamClaudeAgentSdk(m, context, options);
 			callbackSeen[Math.min(streams.length, steers.length)].resolve();
-			// Pi's frame encoder runs on every event as Pi consumes it.
+			// Check each event when Pi consumes it, after the provider yielded it.
 			const events = [];
-			const encoder = new AssistantMessageFrameEncoder();
+			const consumer = piConsumer();
 			streams.push(events);
 			return {
 				async *[Symbol.asyncIterator]() {
 					for await (const event of inner) {
 						events.push(event);
 						await Promise.resolve();
-						encoder.encode(event);
+						consumer.consume(event);
 						yield event;
 					}
 				},
@@ -287,7 +287,7 @@ async function runSteeredTurn(sessionId, { steers, continuations, original = "OR
 	);
 	// Let the bridge's completion chain (persist, teardown) settle.
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	// ...and at maximum lag, every event encoded after the stream ended.
+	// Check queued events against the live partial after the stream has ended.
 	for (const events of streams) encodeLikePi(events);
 	return { persisted, streams };
 }
@@ -474,19 +474,19 @@ describe("a cancelled continuation ends as aborted, never as a kept reply", () =
 // whose first provider call delivers that result under a NEW signal. Esc in
 // run 2 aborts only run 2's signal.
 
-/** Wrap the bridge like Pi does: every stream is encoded as consumed. */
+/** Consume bridge events after an await, as Pi does. */
 function piStreamFn(streams) {
 	return (m, context, options) => {
 		const inner = streamClaudeAgentSdk(m, context, options);
 		const events = [];
-		const encoder = new AssistantMessageFrameEncoder();
+		const consumer = piConsumer();
 		streams.push(events);
 		return {
 			async *[Symbol.asyncIterator]() {
 				for await (const event of inner) {
 					events.push(event);
 					await Promise.resolve();
-					encoder.encode(event);
+					consumer.consume(event);
 					yield event;
 				}
 			},

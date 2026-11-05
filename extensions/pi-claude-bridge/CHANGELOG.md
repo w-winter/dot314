@@ -2,6 +2,12 @@
 
 Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
+## 2026-11-05
+
+### Fixed
+
+- Adapted nicobailon's Pi 1.5 prompt alignment. A configured replacement removes Pi's default base rather than prepending to it. Default preservation retains `APPEND_SYSTEM.md` and extension-added model instructions; the regression test runs the actual `model-sysprompt-appendix` hook through Pi's prompt builder. Development dependencies and stream-consumer tests use Pi 1.5.
+
 ## 2026-10-22
 
 ### Fixed

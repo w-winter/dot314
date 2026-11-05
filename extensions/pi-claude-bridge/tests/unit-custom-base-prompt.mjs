@@ -10,7 +10,6 @@
 // forced-prompt projection.
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 
 import { getCurrentSystemMessage, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
@@ -24,9 +23,6 @@ import { recordStartedLane, takeStartedLane } from "../src/bridge-state.ts";
 import * as bridgeConfig from "../src/config.ts";
 import { buildClaudeQueryOptions } from "../src/query-options.ts";
 import { legacyResolve } from "./lib/legacy-system-prompt.mjs";
-
-// The Pi the owner runs, when installed here.
-const INSTALLED_PI_BUILDER = "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
 
 const model = {
 	id: "claude-haiku-4-5",
@@ -130,7 +126,7 @@ const ACCEPTANCE_CONTRACT = [
 	"```",
 ].join("\n");
 const SUBAGENT_PROMPT = `<active_agent name="worker"/>\n\n${WORKER_PROMPT}\n\n${ACCEPTANCE_CONTRACT}`;
-const PI_DOCS_LINE = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
+const PI_DOCS_LINE = "- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.";
 // Extension sections whose names collide with Pi's default-base sections.
 const COLLIDING = { tools: "EXT TOOLS", rules: "EXT RULES", docs: "EXT DOCS" };
 
@@ -183,17 +179,8 @@ describe("Pi's default preamble", () => {
 		assert.equal(bridgeConfig.PI_DEFAULT_PREAMBLE, build({ contextFiles, skills, appendSystemPrompt: APPEND_MD, sections: COLLIDING }).preamble);
 	});
 
-	it("matches the preamble of the installed Pi build", { timeout: 10_000, skip: !existsSync(INSTALLED_PI_BUILDER) && "installed Pi not found" }, async () => {
-		const installed = await import(INSTALLED_PI_BUILDER);
-		assert.equal(bridgeConfig.PI_DEFAULT_PREAMBLE, installed.buildSystemPromptSections(buildOptions({})).preamble);
-	});
-
-	it("keeps the installed Pi build's rules and drops its tools and docs under a replacement", { timeout: 10_000, skip: !existsSync(INSTALLED_PI_BUILDER) && "installed Pi not found" }, async () => {
-		const installed = await import(INSTALLED_PI_BUILDER);
-		const sections = installed.buildSystemPromptSections(buildOptions({ contextFiles, promptGuidelines: ["Use the todo tool to track multi-step work"] }));
-		assert.deepEqual(Object.keys(sections), ["preamble", "tools", "rules", "docs", "project_context", "cwd"]);
-		assert.ok(sections.tools.endsWith("\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>"));
-		assert.ok(sections.docs.endsWith(`${PI_DOCS_LINE}\n</docs>`));
+	it("keeps Pi's tool guidelines when replacing its default base", () => {
+		const sections = build({ contextFiles, promptGuidelines: ["Use the todo tool to track multi-step work"] });
 		assertKeepsPiSections([{ role: "system", content: "", sections, timestamp: 1 }, user("hello")], sections);
 	});
 });
@@ -315,7 +302,7 @@ describe("systemPrompt replacement over Pi's default base", () => {
 		const messages = sessionMessages(DEFAULT_BASES["a pi-subagents append-mode agent (the addendum)"]);
 		const out = sent(messages, CONFIGS.preserve.config);
 		assert.ok(out.startsWith(`${REPLACEMENT}\n\n${getCurrentSystemMessage(messages).sections.rules}\n\n<addendum>\n${SUBAGENT_PROMPT}\n</addendum>`));
-		assert.ok(!out.includes("expert coding assistant operating inside pi"));
+		assert.ok(!out.includes(bridgeConfig.PI_DEFAULT_PREAMBLE));
 	});
 
 	// Review finding 2B: without Pi's docs line the forced prompt still renders Pi's default base.

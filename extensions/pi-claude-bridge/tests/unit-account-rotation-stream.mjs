@@ -16,8 +16,8 @@ import {
 	streamClaudeAgentSdk,
 } from "../src/index.ts";
 import * as piAi from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
-import { runAgentLoop } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.js";
+import { Type } from "typebox";
+import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import { buildModels } from "../src/models.ts";
 import { resolveGetModels } from "../src/pi-ai-compat.ts";
 import { buildNativeProvider } from "../src/native-provider.ts";

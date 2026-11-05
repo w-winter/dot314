@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 import { advertisedInputSchema, ServedToolServer } from "../src/served-tools.ts";
 import { QueryContext } from "../src/query-state.ts";

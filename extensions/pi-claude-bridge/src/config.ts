@@ -173,11 +173,11 @@ function projectSettingsTrusted(settingsPath: string): boolean {
 	return projectTrustRegistry().projectSettings?.get(settingsPath) === true;
 }
 // The last line of Pi's default base (system-prompt.ts, the docs section).
-const PI_DOCS_LINE = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
+const PI_DOCS_LINE = "- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.";
 // How Pi renders its tools and docs sections in the prompt: each opens with
 // its tag after a blank line and ends with a fixed line and its closing tag
 // (buildSystemPromptSections, getSystemMessageText).
-const PI_TOOLS_BLOCK = { open: "\n\n<tools>\n", close: "\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n</tools>" };
+const PI_TOOLS_BLOCK = { open: "\n\n<tools>\n", close: "\n\nAdditional tools may be available.\n</tools>" };
 const PI_DOCS_BLOCK = { open: "\n\n<docs>\n", close: `\n${PI_DOCS_LINE}\n</docs>` };
 
 /** Where Pi's rendered block sits in the prompt, found by its closing text. */
@@ -190,7 +190,7 @@ function piBlockRange(prompt: string, block: { open: string; close: string }): [
 /** The preamble buildSystemPromptSections sets when the session supplies no
  * base of its own. Pi does not export its builder from the package index, so
  * tests/unit-custom-base-prompt.mjs compares this copy with the builder's. */
-export const PI_DEFAULT_PREAMBLE = "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+export const PI_DEFAULT_PREAMBLE = "You are a coding assistant running inside pi, a coding agent harness. Help users inspect files, run commands, and modify code.";
 
 /**
  * Whether the prompt's base is Pi's default one. Pi builds a custom base
@@ -224,9 +224,8 @@ function piBaseAfterHookText(prompt: string): number | undefined {
 	return at !== -1 && piBaseAt(prompt, at + 2) ? at + 2 : undefined;
 }
 
-/** Whether a content-only prompt carries Pi's complete rendered default base,
- *  at its start or behind a hook's text. Anthropic refuses such a prompt as a
- *  third-party app whoever sends it. */
+/** Whether a content-only prompt includes Pi's complete rendered default base,
+ *  at its start or after a hook's text. */
 export function carriesPiDefaultBase(prompt: string): boolean {
 	return piBaseAt(prompt, 0) || piBaseAfterHookText(prompt) !== undefined;
 }

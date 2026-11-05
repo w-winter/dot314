@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { ExtensionRunner, convertToLlm, createExtensionRuntime } from "@earendil-works/pi-coding-agent";
 
 import { __testSetBridgeIntegrityState, __testGetBridgeIntegrityState, __testSetSdkQueryFactory, streamClaudeAgentSdk } from "../src/index.ts";
@@ -128,7 +128,8 @@ const customAsUser = (text) => ({ role: "user", content: [{ type: "text", text }
 const custom = (text) => ({ role: "custom", customType: "intercom", content: text, display: true, timestamp: stamp() });
 /** Pi's own path to the provider: the extension `context` handler runs through
  *  ExtensionRunner.emitContext (which Pi installs as transformContext) and the
- *  result goes through convertToLlm. */
+ *  result goes through convertToLlm. Pi hides system messages from context
+ *  handlers and restores them before conversion. */
 async function piTransform(agentMessages, handler) {
 	const extension = {
 		path: "<steer-ownership-test>",
@@ -477,7 +478,7 @@ describe("mid-query user ownership survives context transforms", () => {
 			custom("STEER-RELOCATED"),
 		], {
 			project: (initial, assistant, suffix) => piTransform([...initial, assistant, ...suffix], ({ messages }) => ({
-				messages: [...messages.slice(0, 2), messages.at(-1), ...messages.slice(2, -1)],
+				messages: [messages[0], messages.at(-1), ...messages.slice(1, -1)],
 			})),
 		});
 		assert.deepEqual(result.messages.map((message) => message.role), ["system", "user", "user", "assistant", "toolResult"]);
@@ -500,7 +501,7 @@ describe("mid-query user ownership survives context transforms", () => {
 			// [system, earlier-one, start, assistant, toolResult, custom, STEER-AFTER]
 			// becomes [system, custom, start, assistant, toolResult, STEER-AFTER].
 			project: (initial, assistant, suffix) => piTransform([...initial, assistant, ...suffix], ({ messages }) => ({
-				messages: [messages[0], messages[5], ...messages.slice(2, 5), messages[6]],
+				messages: [messages[4], ...messages.slice(1, 4), messages[5]],
 			})),
 		});
 		assert.deepEqual(result.messages.map((message) => message.role), ["system", "user", "user", "assistant", "toolResult", "user"]);

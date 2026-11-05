@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { openSession } from "cc-session-io";
 
 import { __testGetBridgeIntegrityState, __testSetBridgeIntegrityState, __testSetSdkQueryFactory, conversationFingerprint, onPiHistoryReplaced, streamClaudeAgentSdk } from "../src/index.ts";

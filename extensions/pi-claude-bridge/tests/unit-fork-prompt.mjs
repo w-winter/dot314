@@ -50,7 +50,7 @@ describe("fork prompt behavior", () => {
 		}));
 		recordProjectTrust({ cwd: project, isProjectTrusted: () => true });
 
-		const marker = "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
+		const marker = "- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.";
 		// A content-only rendering of Pi's default base, which opens with Pi's preamble.
 		const prompt = `${PI_DEFAULT_PREAMBLE}\n${marker}\n\n<project_context>\nProject instructions`;
 

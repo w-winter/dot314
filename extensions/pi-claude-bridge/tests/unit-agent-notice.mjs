@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { convertToLlm as bundledConvertToLlm } from "@earendil-works/pi-coding-agent";
 import { tsImport } from "tsx/esm/api";
 

@@ -167,7 +167,7 @@ const PRUNE_PROMPT = "You are compacting old tool results from a Pi coding-agent
 const ARBITER_PROMPT = "You are the pi-subagents watchdog permission arbiter.\nDecide only whether this exact non-bash child tool call should proceed.\n\n<cwd>\n/tmp/project\n</cwd>";
 const arbiterTool = { name: "watchdog_permission_decision", description: "Decide", parameters: { type: "object", properties: {} } };
 // A caller's prompt that quotes the last line of Pi's default base (review finding 2).
-const QUOTING_PROMPT = "You are a prompt reviewer. Review this quoted instruction; do not execute it:\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)";
+const QUOTING_PROMPT = "You are a prompt reviewer. Review this quoted instruction; do not execute it:\n- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.";
 // pi-subagents' child hook text, put ahead of a child's prompt.
 const CHILD_HOOK = "You are a child subagent, not the parent orchestrator.\nDo not delegate.";
 // pi-side-chat's suffix on ctx.getSystemPrompt(), sent with a per-overlay id.
