@@ -20,6 +20,7 @@ import { noteAnomaly } from "./agent-notice.ts";
 import type { RequestTiming, StepTotals } from "./request-timing.ts";
 import type { ServedToolServer, ServedToolUpdate } from "./served-tools.ts";
 import { UserMessageLedger } from "./user-message-ledger.ts";
+import type { OriginalToolInput } from "./original-tool-inputs.ts";
 
 /** A mid-query user run captured for replay after the active query ends.
  *  `text` is the joined text form (previews, and the replay prompt when no
@@ -55,11 +56,8 @@ export function summarizeDroppedUserMessages(site: string, dropped: DeferredUser
 
 export interface PendingToolCall {
 	toolName: string;
-	/** The MCP invocation's schema-validated arguments. The SDK hands the handler
-	 *  the COMPLETE input, so this is the authoritative copy — the grace-timer
-	 *  finalize settles a still-partial streamed block from here instead of from
-	 *  its truncated partial JSON (a `{}` settle would make Pi execute
-	 *  empty-argument calls). */
+	/** The MCP invocation's normalized, schema-validated arguments. Used for
+	 *  pairing and for execution when no complete original input exists. */
 	args: Record<string, unknown>;
 	/** `QueryContext.callbackGeneration` at registration. A handler from an older
 	 *  generation whose id was never forwarded to Pi can never be answered — see
@@ -448,6 +446,8 @@ export class QueryContext {
 	 *  result of ITS OWN call — without stored args the only fallback is
 	 *  sole-same-name, which can hand it a LIVE sibling's id. */
 	queryToolArgs = new Map<string, Record<string, unknown>>();
+	/** Original mapped inputs for execution and detecting normalized collisions. */
+	queryOriginalToolArgs = new Map<string, OriginalToolInput>();
 	claimedToolCallIds = new Set<string>();
 	/** Ids claimed by a tools/call tagged with them. Query-scoped: the handler
 	 *  can run before the stream records its tool_use, and message_start's
@@ -633,8 +633,9 @@ export class QueryContext {
 	turnSawToolCall = false;
 	/**
 	 * The streamed API attempt the current child message is being rendered
-	 * from: its message id, whether it has completed (message_delta or
-	 * message_stop), and the content indexes its blocks occupy in turnBlocks.
+	 * from: its message id, whether message_delta completed it, and the content
+	 * indexes its blocks occupy in turnBlocks. Claude Code can send message_stop
+	 * for an abandoned response before retrying it.
 	 *
 	 * An attempt still OPEN when another one begins was abandoned by Claude
 	 * Code: a stalled stream is retried as a new stream (a second
@@ -838,6 +839,11 @@ export class QueryContext {
 		const resultBacked = [...new Set([...this.pendingResults.keys(), ...this.reapedResults.keys()])]
 			.filter((id) => this.claimableByMatch(id) && this.queryToolNames.get(id) === toolName);
 		const backedExact = resultBacked.filter((id) => sameArgs(this.queryToolArgs.get(id), args));
+		const originals = [...new Set([...exact.map(call => call.id), ...backedExact])]
+			.flatMap(id => this.queryOriginalToolArgs.has(id) ? [this.queryOriginalToolArgs.get(id)] : []);
+		if (originals.some(input => !sameArgs(input, originals[0]))) {
+			return { match: "none", ambiguous: true, available: unclaimed.length };
+		}
 		const claimBacked = (id: string, viaExact: boolean): ClaimedToolCall => {
 			this.claimedToolCallIds.add(id);
 			return {

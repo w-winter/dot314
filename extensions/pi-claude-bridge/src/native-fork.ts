@@ -30,6 +30,8 @@ import { z } from "zod";
 import { toolResultToMcpContent } from "./extract-tool-results.ts";
 import { isPiDispatchable, mapToolArgs, mapToolName } from "./tool-mapping.ts";
 import { extractUserPrompt, extractUserPromptBlocks } from "./user-prompt.ts";
+import { wireToolInputsSchema, type WireToolInputs } from "./original-tool-inputs.ts";
+import { FAILED_REPLY_RETRY_PROMPT, HISTORY_REPLACED_PROMPT, HOST_RESUMED_PROMPT, SYSTEM_INSTRUCTIONS_CHANGED_PROMPT } from "./continuation-prompts.ts";
 
 type PiMessage = Context["messages"][number];
 type PiToolResult = Extract<PiMessage, { role: "toolResult" }>;
@@ -48,6 +50,7 @@ type TranscriptRecord = SessionStoreEntry & {
 	subtype?: unknown;
 	attachment?: unknown;
 	message?: unknown;
+	wireToolInputs?: WireToolInputs;
 };
 
 interface RecordMessage {
@@ -108,7 +111,9 @@ function isTrailingCarry(record: TranscriptRecord): boolean {
 }
 
 function isLeadingCarry(record: TranscriptRecord): boolean {
-	return isTrailingCarry(record) || isSyntheticAssistant(record);
+	return isTrailingCarry(record) || isSyntheticAssistant(record) ||
+		(record.type === "user" && record.isMeta !== true && sameContent(recordMessage(record).content,
+			[HISTORY_REPLACED_PROMPT, FAILED_REPLY_RETRY_PROMPT, SYSTEM_INSTRUCTIONS_CHANGED_PROMPT, HOST_RESUMED_PROMPT]));
 }
 
 /** Content blocks reduced to what a request carries, or undefined for a block
@@ -308,6 +313,11 @@ function readTranscript(path: string): { records: TranscriptRecord[] } | { reaso
 			return { reason: "unparseable-line" };
 		}
 		if (!isObject(value) || typeof value.type !== "string") return { reason: "unknown-record-shape" };
+		if (value.wireToolInputs !== undefined) {
+			const wire = wireToolInputsSchema.safeParse(value.wireToolInputs);
+			if (!wire.success) return { reason: "unknown-record-shape" };
+			value.wireToolInputs = wire.data;
+		}
 		records.push(value as TranscriptRecord);
 	}
 	return { records };
@@ -448,6 +458,7 @@ export function planNativePrefix(
 		if (typeof messageId !== "string") return undefined;
 		let position = at;
 		const blocks: unknown[] = [];
+		const wire: WireToolInputs = {};
 		const own = new Set<string>();
 		const answeredOwn = new Set<string>();
 		const allCalls: NativeToolCall[] = [];
@@ -464,6 +475,7 @@ export function planNativePrefix(
 				const content = recordMessage(chain[position]).content;
 				if (!Array.isArray(content)) return undefined;
 				blocks.push(...content);
+				Object.assign(wire, chain[position].wireToolInputs);
 				for (const block of content) {
 					const call = toolCallSchema.safeParse(block);
 					if (call.success) {
@@ -479,8 +491,12 @@ export function planNativePrefix(
 			for (const id of answered) answeredOwn.add(id);
 			position++;
 		}
-		if (!streamedMatches(blocks, priors[index], customToolNameToPi)) {
-			if (!importedMatches(blocks, priors[index], customToolNameToSdk) || answeredOwn.size > 0) return undefined;
+		const originalBlocks = blocks.map(block => {
+			const call = toolCallSchema.safeParse(block);
+			return call.success && wire[call.data.id] !== undefined ? { ...call.data, input: wire[call.data.id] } : block;
+		});
+		if (!streamedMatches(originalBlocks, priors[index], customToolNameToPi)) {
+			if (!importedMatches(originalBlocks, priors[index], customToolNameToSdk) || answeredOwn.size > 0) return undefined;
 			own.clear();
 		}
 		let last = position - 1;

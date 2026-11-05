@@ -190,6 +190,24 @@ afterEach(() => {
 });
 
 describe("Claude Code's retry after a stalled stream", () => {
+	for (const streamed of [false, true]) {
+		it(`discards cut text and unsigned thinking closed without message_delta before a ${streamed ? "streamed" : "non-streamed"} retry`, async () => {
+			const cut = [...stalledAttempt({ toolJson: false }), se({ type: "content_block_stop", index: 0 }), se({ type: "content_block_stop", index: 1 }), se({ type: "message_stop" })];
+			const retry = streamed ? [
+				se({ type: "message_start", message: { id: "msg_B", model: model.id } }),
+				se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+				se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Reading the log." } }),
+				se({ type: "content_block_stop", index: 0 }),
+				se({ type: "message_delta", delta: { stop_reason: "end_turn" } }),
+				se({ type: "message_stop" }),
+			] : [replacement({ tool: false })];
+			installFakeClaudeCode({ calls: [] }, [...cut, ...retry], { callsTool: false, finalResult: "Reading the log." });
+			const { done, eagerSnapshot } = await runLikePi(initial(), `closed-cut-${streamed}`);
+			assert.deepEqual(summarize(done.message.content), streamed ? [["text", "Reading the log."]] : [["thinking", "Let me look at both."], ["text", "Reading the log."]]);
+			assert.deepEqual(summarize(eagerSnapshot.content.slice(0, 2)), [["thinking", "Let me look"], ["text", "Readi"]]);
+		});
+	}
+
 	it("renders the non-streamed replacement and dispatches its tool call once, complete", async () => {
 		const observed = { calls: [] };
 		installFakeClaudeCode(observed, [...stalledAttempt({ toolJson: true }), replacement({ tool: true })], { callsTool: true });

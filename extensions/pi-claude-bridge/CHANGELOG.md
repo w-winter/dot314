@@ -8,6 +8,9 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 - Adapted nicobailon's Pi 1.5 prompt alignment. A configured replacement removes Pi's default base rather than prepending to it. Default preservation retains `APPEND_SYSTEM.md` and extension-added model instructions; the regression test runs the actual `model-sysprompt-appendix` hook through Pi's prompt builder. Development dependencies and stream-consumer tests use Pi 1.5.
 - Adapted nicobailon's authentication and child-query fixes. Helper-only login availability follows the settings the child loads. Provider, discovery and account-probe queries disable background memory consolidation; provider queries disable redundant API-request transcript logging. The MCP server tells Claude to put text a tool needs into the call's arguments, since subsequent assistant text may be summarized.
+- Adapted NateMateS's original-tool-input fix from nicobailon's fork. Literal escapes survive completed-message updates and grace finalization when original API metadata or complete streamed JSON is available. Normalized inputs remain separate for MCP pairing; ambiguous untagged callbacks cannot exchange results between distinct original calls.
+- Adapted nicobailon's native-prefix matching and continuation-prompt recognition. Recorded original arguments are authoritative, including in the imported-record comparison, so editing history cannot retain contradictory original metadata. Exact bridge continuation prompts are copied only before a verified group. Forks and rewinds retain more matching native history; live cache-hit rates and quota savings have not been measured.
+- Adapted nicobailon's cut-response retry fix. A response closed without `message_delta` remains discardable when Claude Code retries, so cut text and unsigned thinking stay out of the terminal message.
 
 ## 2026-10-22
 

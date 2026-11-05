@@ -196,6 +196,7 @@ This comparison uses [Kendex's `@vanillagreen/pi-claude-bridge` 4.0.8](https://g
 ### Tools and streamed replies
 
 - Matches tagged MCP calls by Claude Code's tool-use id. Duplicate invocations share the original wait, and an id belonging to another tool or an already-ended call receives an error rather than another call's result.
+- Executes original tool arguments from Claude Code's API-input metadata or complete streamed JSON, including literal Unicode escapes. Claude Code's normalized arguments are kept separately for matching callbacks. If neither original source is available, a handler's validated arguments supply the call.
 - Gives tools with long names or unsupported characters stable MCP aliases, and maps replies back to their exact Pi names.
 - Forwards Pi's JSON Schema definitions and referenced definitions, where Kendex converts them through Zod. Pi validates the arguments; fragments incompatible with JSON Schema 2020-12 are omitted from the advertised schema.
 - Updates tools during a running query when Pi enables, disables or redefines them. Calls already issued retain the handler and definition they need until their results are delivered.
@@ -225,6 +226,7 @@ This comparison uses [Kendex's `@vanillagreen/pi-claude-bridge` 4.0.8](https://g
 - Distinguishes copied Pi session files from their originals. Checks for native conversation turns appended after the bridge's last observed reply and rebuilds into a separate transcript when the source is changed or cannot be verified.
 - A reopened Pi session still rebuilds when Claude's copy was left out of date. Rebuilds omit failed or aborted assistant turns and their associated tool results.
 - Imports failed tool results as text, matching Claude Code's live MCP representation. Images in successful results remain available for replay.
+- Preserves verified native history across tool-input normalization and bridge-generated continuation prompts. Recorded original arguments must match Pi's history; edits end the copied prefix before the changed turn. This helps forks and rewinds reuse matching history, subject to Claude's cache lifetime and request-prefix requirements.
 - Replays redacted thinking in its correct format. A trailing Claude reply with incomplete thinking becomes a note containing its text, calls and results in order, including result images.
 - Suppresses Claude Code's automatic continuation of an interrupted stored turn; Pi supplies the next prompt.
 - Keeps unanswered prompts available after Esc and suppresses Claude Code's synthetic "No response requested." reply.

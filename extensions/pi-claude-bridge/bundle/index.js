@@ -17009,6 +17009,8 @@ var QueryContext = class {
    *  result of ITS OWN call — without stored args the only fallback is
    *  sole-same-name, which can hand it a LIVE sibling's id. */
   queryToolArgs = /* @__PURE__ */ new Map();
+  /** Original mapped inputs for execution and detecting normalized collisions. */
+  queryOriginalToolArgs = /* @__PURE__ */ new Map();
   claimedToolCallIds = /* @__PURE__ */ new Set();
   /** Ids claimed by a tools/call tagged with them. Query-scoped: the handler
    *  can run before the stream records its tool_use, and message_start's
@@ -17175,8 +17177,9 @@ var QueryContext = class {
   turnSawToolCall = false;
   /**
    * The streamed API attempt the current child message is being rendered
-   * from: its message id, whether it has completed (message_delta or
-   * message_stop), and the content indexes its blocks occupy in turnBlocks.
+   * from: its message id, whether message_delta completed it, and the content
+   * indexes its blocks occupy in turnBlocks. Claude Code can send message_stop
+   * for an abandoned response before retrying it.
    *
    * An attempt still OPEN when another one begins was abandoned by Claude
    * Code: a stalled stream is retried as a new stream (a second
@@ -17350,6 +17353,10 @@ var QueryContext = class {
     const exact = byName.filter((call) => sameArgs(call.arguments, args));
     const resultBacked = [.../* @__PURE__ */ new Set([...this.pendingResults.keys(), ...this.reapedResults.keys()])].filter((id) => this.claimableByMatch(id) && this.queryToolNames.get(id) === toolName);
     const backedExact = resultBacked.filter((id) => sameArgs(this.queryToolArgs.get(id), args));
+    const originals = [.../* @__PURE__ */ new Set([...exact.map((call) => call.id), ...backedExact])].flatMap((id) => this.queryOriginalToolArgs.has(id) ? [this.queryOriginalToolArgs.get(id)] : []);
+    if (originals.some((input) => !sameArgs(input, originals[0]))) {
+      return { match: "none", ambiguous: true, available: unclaimed.length };
+    }
     const claimBacked = (id, viaExact) => {
       this.claimedToolCallIds.add(id);
       return {
@@ -18296,6 +18303,139 @@ function flushConnectorCallAudit(queryCtx, reason) {
   return appended;
 }
 
+// src/tool-mapping.ts
+import { createHash as createHash3 } from "node:crypto";
+var MAX_QUALIFIED_TOOL_NAME = 128;
+var MAX_ALIAS_LENGTH = MAX_QUALIFIED_TOOL_NAME - MCP_TOOL_PREFIX.length;
+var SAFE_TOOL_NAME = /^[A-Za-z0-9_-]+$/;
+var HASH_LENGTH = 8;
+function isServableAsIs(name) {
+  return SAFE_TOOL_NAME.test(name) && name.length <= MAX_ALIAS_LENGTH;
+}
+function derivedAlias(name, attempt) {
+  const hash2 = createHash3("sha256").update(attempt === 0 ? name : `${name}\0${attempt}`).digest("hex").slice(0, HASH_LENGTH);
+  const readable = name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, MAX_ALIAS_LENGTH - HASH_LENGTH - 1);
+  return `${readable}_${hash2}`;
+}
+function mcpToolAliases(names, owned = /* @__PURE__ */ new Map()) {
+  const unique2 = [...new Set(names)];
+  const aliases = /* @__PURE__ */ new Map();
+  const reserved = new Set([...owned.values()].map((alias) => alias.toLowerCase()));
+  const taken = new Set(reserved);
+  for (const name of unique2) {
+    const alias = owned.get(name);
+    if (alias !== void 0) aliases.set(name, alias);
+  }
+  for (const name of unique2) {
+    if (aliases.has(name) || !isServableAsIs(name) || reserved.has(name.toLowerCase())) continue;
+    aliases.set(name, name);
+    taken.add(name.toLowerCase());
+  }
+  for (const name of unique2.filter((candidate) => !aliases.has(candidate)).sort()) {
+    let attempt = 0;
+    let alias = derivedAlias(name, attempt);
+    while (taken.has(alias.toLowerCase())) alias = derivedAlias(name, ++attempt);
+    aliases.set(name, alias);
+    taken.add(alias.toLowerCase());
+  }
+  return aliases;
+}
+var SDK_TO_PI_TOOL_NAME = {
+  read: "read",
+  write: "write",
+  edit: "edit",
+  bash: "bash"
+};
+var BRIDGED_TOOL_PREFIXES = [
+  MCP_TOOL_PREFIX,
+  `mcp__${MCP_SERVER_NAME.replace(/-/g, "_")}__`,
+  `mcp/${MCP_SERVER_NAME}/`,
+  `mcp/${MCP_SERVER_NAME.replace(/-/g, "_")}/`
+];
+function bridgedToolSuffix(normalized) {
+  const prefix = BRIDGED_TOOL_PREFIXES.find((candidate) => normalized.startsWith(candidate));
+  return prefix ? normalized.slice(prefix.length) : void 0;
+}
+function isForeignMcpTool(name) {
+  if (typeof name !== "string") return false;
+  const normalized = name.toLowerCase();
+  return (normalized.startsWith("mcp__") || normalized.startsWith("mcp/")) && bridgedToolSuffix(normalized) === void 0;
+}
+var authoritativeManifests = /* @__PURE__ */ new WeakSet();
+function markAuthoritativeManifest(customToolNameToPi) {
+  authoritativeManifests.add(customToolNameToPi);
+}
+function isPiDispatchable(name, customToolNameToPi) {
+  if (typeof name !== "string" || !name) return false;
+  const normalized = name.toLowerCase();
+  const hasManifest = Boolean(customToolNameToPi?.size) || customToolNameToPi !== void 0 && authoritativeManifests.has(customToolNameToPi);
+  if (customToolNameToPi?.has(name) || customToolNameToPi?.has(normalized)) return true;
+  const bridgedSuffix = bridgedToolSuffix(normalized);
+  if (bridgedSuffix !== void 0) {
+    if (!hasManifest) return true;
+    return customToolNameToPi?.has(`${MCP_TOOL_PREFIX}${bridgedSuffix}`) ?? false;
+  }
+  if (isForeignMcpTool(name)) return false;
+  if (isMcpResourceTool(name)) return true;
+  return !hasManifest;
+}
+function mapToolName(name, customToolNameToPi) {
+  const normalized = name.toLowerCase();
+  const builtin = SDK_TO_PI_TOOL_NAME[normalized];
+  if (builtin) return builtin;
+  if (customToolNameToPi) {
+    const mapped = customToolNameToPi.get(name) ?? customToolNameToPi.get(normalized);
+    if (mapped) return mapped;
+  }
+  const bridgedSuffix = bridgedToolSuffix(normalized);
+  if (bridgedSuffix !== void 0) {
+    return customToolNameToPi?.get(`${MCP_TOOL_PREFIX}${bridgedSuffix}`) ?? bridgedSuffix;
+  }
+  return name;
+}
+var SDK_KEY_RENAMES = {
+  read: { file_path: "path" },
+  write: { file_path: "path" },
+  edit: { file_path: "path", old_string: "oldText", new_string: "newText", old_text: "oldText", new_text: "newText" }
+};
+function mapToolArgs(toolName, args) {
+  const input = args ?? {};
+  const renames = SDK_KEY_RENAMES[toolName.toLowerCase()];
+  const result = {};
+  for (const [key, value] of Object.entries(input)) {
+    const piKey = renames?.[key] ?? key;
+    if (!(piKey in result)) result[piKey] = value;
+  }
+  return result;
+}
+
+// src/original-tool-inputs.ts
+var toolInputSchema = external_exports.record(external_exports.string(), external_exports.unknown());
+var wireToolInputsSchema = external_exports.record(external_exports.string(), toolInputSchema);
+var sdkWireInputsSchema = external_exports.object({ wire_tool_inputs: wireToolInputsSchema.optional() });
+function sdkWireToolInputs(message) {
+  return sdkWireInputsSchema.parse(message).wire_tool_inputs;
+}
+function completeToolInput(json2) {
+  let parsed;
+  try {
+    parsed = JSON.parse(json2);
+  } catch (error51) {
+    if (error51 instanceof SyntaxError) return void 0;
+    throw error51;
+  }
+  return toolInputSchema.parse(parsed);
+}
+function rememberOriginalToolInput(originals, id, name, wire, partialJson) {
+  const input = wire === void 0 ? void 0 : wire[id];
+  if (input !== void 0) originals.set(id, mapToolArgs(name, input));
+  else if (!originals.has(id) && partialJson !== void 0) {
+    const complete = completeToolInput(partialJson);
+    if (complete !== void 0) originals.set(id, mapToolArgs(name, complete));
+  }
+  return originals.get(id);
+}
+
 // src/stream-idle-watchdog.ts
 var DEFAULT_STREAM_IDLE_TIMEOUT_MS = 9e4;
 var STREAM_IDLE_BACKOFF_HINT_MS = 6e4;
@@ -18406,112 +18546,6 @@ function withoutThirdPartyAppHint(message) {
   return message.replace(`
 
 ${THIRD_PARTY_APP_HINT}`, "");
-}
-
-// src/tool-mapping.ts
-import { createHash as createHash3 } from "node:crypto";
-var MAX_QUALIFIED_TOOL_NAME = 128;
-var MAX_ALIAS_LENGTH = MAX_QUALIFIED_TOOL_NAME - MCP_TOOL_PREFIX.length;
-var SAFE_TOOL_NAME = /^[A-Za-z0-9_-]+$/;
-var HASH_LENGTH = 8;
-function isServableAsIs(name) {
-  return SAFE_TOOL_NAME.test(name) && name.length <= MAX_ALIAS_LENGTH;
-}
-function derivedAlias(name, attempt) {
-  const hash2 = createHash3("sha256").update(attempt === 0 ? name : `${name}\0${attempt}`).digest("hex").slice(0, HASH_LENGTH);
-  const readable = name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, MAX_ALIAS_LENGTH - HASH_LENGTH - 1);
-  return `${readable}_${hash2}`;
-}
-function mcpToolAliases(names, owned = /* @__PURE__ */ new Map()) {
-  const unique2 = [...new Set(names)];
-  const aliases = /* @__PURE__ */ new Map();
-  const reserved = new Set([...owned.values()].map((alias) => alias.toLowerCase()));
-  const taken = new Set(reserved);
-  for (const name of unique2) {
-    const alias = owned.get(name);
-    if (alias !== void 0) aliases.set(name, alias);
-  }
-  for (const name of unique2) {
-    if (aliases.has(name) || !isServableAsIs(name) || reserved.has(name.toLowerCase())) continue;
-    aliases.set(name, name);
-    taken.add(name.toLowerCase());
-  }
-  for (const name of unique2.filter((candidate) => !aliases.has(candidate)).sort()) {
-    let attempt = 0;
-    let alias = derivedAlias(name, attempt);
-    while (taken.has(alias.toLowerCase())) alias = derivedAlias(name, ++attempt);
-    aliases.set(name, alias);
-    taken.add(alias.toLowerCase());
-  }
-  return aliases;
-}
-var SDK_TO_PI_TOOL_NAME = {
-  read: "read",
-  write: "write",
-  edit: "edit",
-  bash: "bash"
-};
-var BRIDGED_TOOL_PREFIXES = [
-  MCP_TOOL_PREFIX,
-  `mcp__${MCP_SERVER_NAME.replace(/-/g, "_")}__`,
-  `mcp/${MCP_SERVER_NAME}/`,
-  `mcp/${MCP_SERVER_NAME.replace(/-/g, "_")}/`
-];
-function bridgedToolSuffix(normalized) {
-  const prefix = BRIDGED_TOOL_PREFIXES.find((candidate) => normalized.startsWith(candidate));
-  return prefix ? normalized.slice(prefix.length) : void 0;
-}
-function isForeignMcpTool(name) {
-  if (typeof name !== "string") return false;
-  const normalized = name.toLowerCase();
-  return (normalized.startsWith("mcp__") || normalized.startsWith("mcp/")) && bridgedToolSuffix(normalized) === void 0;
-}
-var authoritativeManifests = /* @__PURE__ */ new WeakSet();
-function markAuthoritativeManifest(customToolNameToPi) {
-  authoritativeManifests.add(customToolNameToPi);
-}
-function isPiDispatchable(name, customToolNameToPi) {
-  if (typeof name !== "string" || !name) return false;
-  const normalized = name.toLowerCase();
-  const hasManifest = Boolean(customToolNameToPi?.size) || customToolNameToPi !== void 0 && authoritativeManifests.has(customToolNameToPi);
-  if (customToolNameToPi?.has(name) || customToolNameToPi?.has(normalized)) return true;
-  const bridgedSuffix = bridgedToolSuffix(normalized);
-  if (bridgedSuffix !== void 0) {
-    if (!hasManifest) return true;
-    return customToolNameToPi?.has(`${MCP_TOOL_PREFIX}${bridgedSuffix}`) ?? false;
-  }
-  if (isForeignMcpTool(name)) return false;
-  if (isMcpResourceTool(name)) return true;
-  return !hasManifest;
-}
-function mapToolName(name, customToolNameToPi) {
-  const normalized = name.toLowerCase();
-  const builtin = SDK_TO_PI_TOOL_NAME[normalized];
-  if (builtin) return builtin;
-  if (customToolNameToPi) {
-    const mapped = customToolNameToPi.get(name) ?? customToolNameToPi.get(normalized);
-    if (mapped) return mapped;
-  }
-  const bridgedSuffix = bridgedToolSuffix(normalized);
-  if (bridgedSuffix !== void 0) {
-    return customToolNameToPi?.get(`${MCP_TOOL_PREFIX}${bridgedSuffix}`) ?? bridgedSuffix;
-  }
-  return name;
-}
-var SDK_KEY_RENAMES = {
-  read: { file_path: "path" },
-  write: { file_path: "path" },
-  edit: { file_path: "path", old_string: "oldText", new_string: "newText", old_text: "oldText", new_text: "newText" }
-};
-function mapToolArgs(toolName, args) {
-  const input = args ?? {};
-  const renames = SDK_KEY_RENAMES[toolName.toLowerCase()];
-  const result = {};
-  for (const [key, value] of Object.entries(input)) {
-    const piKey = renames?.[key] ?? key;
-    if (!(piKey in result)) result[piKey] = value;
-  }
-  return result;
 }
 
 // src/assistant-stream.ts
@@ -18868,8 +18902,9 @@ function finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, toolName, ma
   if (idx >= 0) {
     const block = queryCtx.turnBlocks[idx];
     if ("partialJson" in block) {
-      block.arguments = mappedArgs;
-      queryCtx.updateToolCallArgs(block.id, block.arguments);
+      const originalArgs = rememberOriginalToolInput(queryCtx.queryOriginalToolArgs, block.id, block.name, void 0, block.partialJson);
+      block.arguments = originalArgs === void 0 ? mappedArgs : originalArgs;
+      queryCtx.updateToolCallArgs(block.id, mappedArgs);
       delete block.partialJson;
       delete block.index;
       queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
@@ -18877,7 +18912,8 @@ function finalizeToolUseTurnFromMcpInvocation(queryCtx, toolCallId, toolName, ma
   } else if (queryCtx.forwardedToolCallIds.has(toolCallId) || queryCtx.deadToolCallIds.has(toolCallId)) {
     debug(`mcp handler: ${toolName} [${toolCallId}] already ${queryCtx.forwardedToolCallIds.has(toolCallId) ? "forwarded" : "dead"} \u2014 not re-emitting`);
   } else {
-    idx = addTurnBlock(queryCtx, { type: "toolCall", id: toolCallId, name: toolName, arguments: mappedArgs });
+    const args = queryCtx.queryOriginalToolArgs.has(toolCallId) ? queryCtx.queryOriginalToolArgs.get(toolCallId) : mappedArgs;
+    idx = addTurnBlock(queryCtx, { type: "toolCall", id: toolCallId, name: toolName, arguments: args });
     const block = queryCtx.turnBlocks[idx];
     queryCtx.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: queryCtx.turnOutput });
     queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
@@ -18908,7 +18944,8 @@ function settlePartialCallsOrEndTurn(queryCtx, rearmCount, rearm, fresh, label, 
     const waiting = queryCtx.pendingToolCalls.get(id);
     if (!waiting || queryCtx.forwardedToolCallIds.has(id) || queryCtx.deadToolCallIds.has(id)) continue;
     if (queryCtx.turnBlocks.some((b) => b.type === "toolCall" && b.id === id && isLiveBlock(b))) continue;
-    const idx = addTurnBlock(queryCtx, { type: "toolCall", id, name: waiting.toolName, arguments: waiting.args });
+    const args = queryCtx.queryOriginalToolArgs.has(id) ? queryCtx.queryOriginalToolArgs.get(id) : waiting.args;
+    const idx = addTurnBlock(queryCtx, { type: "toolCall", id, name: waiting.toolName, arguments: args });
     const block = queryCtx.turnBlocks[idx];
     queryCtx.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: queryCtx.turnOutput });
     queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
@@ -18918,8 +18955,9 @@ function settlePartialCallsOrEndTurn(queryCtx, rearmCount, rearm, fresh, label, 
     if (sibling.type !== "toolCall" || !("partialJson" in sibling) || !isLiveBlock(sibling)) continue;
     const waiting = queryCtx.pendingToolCalls.get(sibling.id);
     if (!waiting) continue;
-    sibling.arguments = waiting.args;
-    queryCtx.updateToolCallArgs(sibling.id, sibling.arguments);
+    const originalArgs = rememberOriginalToolInput(queryCtx.queryOriginalToolArgs, sibling.id, sibling.name, void 0, sibling.partialJson);
+    sibling.arguments = originalArgs === void 0 ? waiting.args : originalArgs;
+    queryCtx.updateToolCallArgs(sibling.id, waiting.args);
     delete sibling.partialJson;
     delete sibling.index;
     queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: i, toolCall: sibling, partial: queryCtx.turnOutput });
@@ -18944,7 +18982,6 @@ function processStreamEvent(message, customToolNameToPi, model, c = ctx()) {
   const event = message.event;
   if (event?.type === "ping") return;
   noteToolUseStreamActivity(c);
-  if (event?.type === "message_stop" && c.streamAttempt) c.streamAttempt.open = false;
   if (event?.type === "message_stop" && !c.turnSawToolCall) {
     debug("processStreamEvent: ignoring bare message_stop with no streamed content/tool call");
     return;
@@ -19059,11 +19096,14 @@ function processStreamEvent(message, customToolNameToPi, model, c = ctx()) {
       c.currentPiStream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
     } else if (block.type === "toolCall") {
       c.turnSawToolCall = true;
+      const recordedOriginal = c.queryOriginalToolArgs.has(block.id);
       block.arguments = mapToolArgs(
         block.name,
         parsePartialJson(block.partialJson, block.arguments)
       );
-      c.updateToolCallArgs(block.id, block.arguments);
+      if (!recordedOriginal) c.updateToolCallArgs(block.id, block.arguments);
+      const originalArgs = rememberOriginalToolInput(c.queryOriginalToolArgs, block.id, block.name, void 0, block.partialJson);
+      if (originalArgs !== void 0) block.arguments = originalArgs;
       delete block.partialJson;
       c.currentPiStream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
     }
@@ -19084,7 +19124,7 @@ function processStreamEvent(message, customToolNameToPi, model, c = ctx()) {
     debug("processStreamEvent: unhandled event type", event?.type);
   }
 }
-function appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c) {
+function appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c, wire) {
   if (!assistantMsg?.content) return false;
   const streamLive = Boolean(c.currentPiStream && c.turnOutput);
   let sawToolUse = false;
@@ -19109,11 +19149,12 @@ function appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameT
     const name = mapToolName(block.name, customToolNameToPi);
     const mappedArgs = mapToolArgs(name, block.input);
     c.recordToolCall(block.id, name, mappedArgs);
+    const existing = c.turnBlocks[existingIdx];
+    const originalArgs = rememberOriginalToolInput(c.queryOriginalToolArgs, block.id, name, wire, existing?.partialJson);
     if (!streamLive) continue;
     if (existingIdx >= 0) {
-      const existing = c.turnBlocks[existingIdx];
       existing.name = name;
-      existing.arguments = mappedArgs;
+      existing.arguments = originalArgs === void 0 ? mappedArgs : originalArgs;
       c.updateToolCallArgs(block.id, mappedArgs);
       if ("partialJson" in existing) {
         delete existing.partialJson;
@@ -19127,7 +19168,7 @@ function appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameT
       type: "toolCall",
       id: block.id,
       name,
-      arguments: mappedArgs
+      arguments: originalArgs === void 0 ? mappedArgs : originalArgs
     });
     const toolBlock = c.turnBlocks[idx];
     c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
@@ -19153,60 +19194,32 @@ function noteChildExecutedToolResults(message, c = ctx()) {
     debug(`child-executed tool result: ${name} [${block.tool_use_id}] isError=${isError} byteSize=${byteSize ?? "unknown"} audited=${audited}`);
   }
 }
-function renderCompletedBlocks(c, content, customToolNameToPi, label) {
-  const alreadyRendered = (type, value) => queryBlocks(c).some((b) => b.type === type && (type === "text" ? b.text : b.thinking) === value);
+function alreadyRendered(c, type, value) {
+  return queryBlocks(c).some((block) => block.type === type && block[type] === value);
+}
+function renderCompletedThinking(c, thinking, thinkingSignature) {
+  if (alreadyRendered(c, "thinking", thinking)) return;
+  ensureTurnStarted(c);
+  const idx = addTurnBlock(c, { type: "thinking", thinking, thinkingSignature });
+  const stream = c.currentPiStream;
+  stream.push({ type: "thinking_start", contentIndex: idx, partial: c.turnOutput });
+  if (thinking) stream.push({ type: "thinking_delta", contentIndex: idx, delta: thinking, partial: c.turnOutput });
+  stream.push({ type: "thinking_end", contentIndex: idx, content: thinking, partial: c.turnOutput });
+}
+function renderCompletedBlocks(c, content, customToolNameToPi, label, wire, model) {
+  const stream = c.currentPiStream;
   for (const block of content) {
     if (block.type === "text" && block.text) {
-      if (alreadyRendered("text", block.text)) continue;
+      if (alreadyRendered(c, "text", block.text)) continue;
       ensureTurnStarted(c);
       const idx = addTurnBlock(c, { type: "text", text: block.text });
-      c.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
-      c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
-      c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
+      stream.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
+      stream.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
+      stream.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
     } else if (block.type === "thinking") {
-      if (alreadyRendered("thinking", block.thinking ?? "")) continue;
-      ensureTurnStarted(c);
-      const idx = addTurnBlock(c, { type: "thinking", thinking: block.thinking ?? "", thinkingSignature: block.signature ?? "" });
-      c.currentPiStream?.push({ type: "thinking_start", contentIndex: idx, partial: c.turnOutput });
-      if (block.thinking) c.currentPiStream?.push({ type: "thinking_delta", contentIndex: idx, delta: block.thinking, partial: c.turnOutput });
-      c.currentPiStream?.push({ type: "thinking_end", contentIndex: idx, content: block.thinking ?? "", partial: c.turnOutput });
+      renderCompletedThinking(c, block.thinking ?? "", block.signature ?? "");
     } else if (block.type === "tool_use") {
-      if (isChildExecutedTool(block.name)) {
-        c.noteChildExecutedToolCall(block.id, block.name);
-        debug(`${label}: child-executed tool ${block.name} [${block.id}] \u2014 not mirrored as a Pi tool call`);
-        continue;
-      }
-      if (!isPiDispatchable(block.name, customToolNameToPi)) {
-        if (isForeignMcpTool(block.name)) c.noteForeignMcpToolCall(block.id, block.name);
-        debug(`${label}: non-dispatchable tool ${block.name} [${block.id}] \u2014 not mirrored as a Pi tool call`);
-        continue;
-      }
-      if (!c.turnBlocks.some((b) => b.type === "toolCall" && b.id === block.id && isLiveBlock(b)) && (c.forwardedToolCallIds.has(block.id) || c.deadToolCallIds.has(block.id))) {
-        debug(`${label}: tool_use ${block.id} already ${c.forwardedToolCallIds.has(block.id) ? "forwarded" : "dead"} \u2014 skipping duplicate`);
-        continue;
-      }
-      ensureTurnStarted(c);
-      c.turnSawToolCall = true;
-      const mappedName = mapToolName(block.name, customToolNameToPi);
-      const mappedArgs = mapToolArgs(mappedName, block.input);
-      c.recordToolCall(block.id, mappedName, mappedArgs);
-      const existingIdx = c.turnBlocks.findIndex((b) => b.type === "toolCall" && b.id === block.id && isLiveBlock(b));
-      if (existingIdx >= 0) {
-        const existing = c.turnBlocks[existingIdx];
-        existing.name = mappedName;
-        existing.arguments = mappedArgs;
-        c.updateToolCallArgs(block.id, mappedArgs);
-        continue;
-      }
-      const idx = addTurnBlock(c, {
-        type: "toolCall",
-        id: block.id,
-        name: mappedName,
-        arguments: mappedArgs
-      });
-      const toolBlock = c.turnBlocks[idx];
-      c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
-      c.currentPiStream?.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock, partial: c.turnOutput });
+      if (appendMissingToolUsesFromAssistant({ content: [block] }, model, customToolNameToPi, c, wire)) c.turnSawToolCall = true;
     } else if (block.type === "fallback") {
       updateTurnResponseModel(block.to?.model, c);
     } else {
@@ -19214,7 +19227,7 @@ function renderCompletedBlocks(c, content, customToolNameToPi, label) {
     }
   }
 }
-function renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, c) {
+function renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, c, wire) {
   const id = assistantMsg.id;
   const reyield = id === c.fallbackMessageId;
   if (!reyield) {
@@ -19224,7 +19237,7 @@ function renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, 
     c.streamAttempt = null;
   }
   debug(`processAssistantMessage: non-streaming replacement ${id}: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b) => b.type).join(",")}${reyield ? " (re-yield)" : ""}`);
-  renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "non-streaming replacement");
+  renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "non-streaming replacement", wire, model);
   if (assistantMsg.usage && c.turnOutput) updateUsage(c.turnOutput, assistantMsg.usage, model, c);
   if (c.turnSawToolCall) {
     scheduleToolUseTurnEnd(c, () => finalizeToolUseTurnAtAssistantBoundary(c), "non-streaming-replacement");
@@ -19234,17 +19247,18 @@ function renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, 
 function processAssistantMessage(message, model, customToolNameToPi, c = ctx()) {
   const assistantMsg = message.message;
   if (!assistantMsg?.content) return;
+  const wire = sdkWireToolInputs(message);
   if (!c.currentPiStream || !c.turnOutput) {
-    appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c);
+    appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c, wire);
     return;
   }
   updateTurnResponseModel(assistantMsg.model, c);
   if (isNonStreamingReplacement(message, assistantMsg, c)) {
-    renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, c);
+    renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, c, wire);
     return;
   }
   if (c.turnSawStreamEvent) {
-    if (appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c)) {
+    if (appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c, wire)) {
       c.turnSawToolCall = true;
       scheduleToolUseTurnEnd(c, () => finalizeToolUseTurnAtAssistantBoundary(c), "assistant-boundary");
     }
@@ -19257,7 +19271,7 @@ function processAssistantMessage(message, model, customToolNameToPi, c = ctx()) 
   }
   c.beginChildMessage(assistantMsg.id);
   debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b) => b.type).join(",")}${sameMessage ? " (same message re-yield)" : ""}`);
-  renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "processAssistantMessage fallback");
+  renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "processAssistantMessage fallback", wire, model);
   if (assistantMsg.usage && c.turnOutput) updateUsage(c.turnOutput, assistantMsg.usage, model, c);
   if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
     endToolUseTurn(c);
@@ -48119,6 +48133,12 @@ function carrySavedImages(images, from, to2) {
   }
 }
 
+// src/continuation-prompts.ts
+var HOST_RESUMED_PROMPT = "Continue from the completed tool results above; do not repeat completed tool calls.";
+var FAILED_REPLY_RETRY_PROMPT = "[Claude bridge: your previous reply failed before it finished, and Pi is retrying it. The tool results above are complete. Continue from them, and do not repeat a tool call whose result is already above.]";
+var HISTORY_REPLACED_PROMPT = "The conversation above was rewritten by Pi (compaction or history navigation). It is the complete current history, including the results of every tool call that has already run. Continue the turn from there, and do not repeat a tool call whose result is already above.";
+var SYSTEM_INSTRUCTIONS_CHANGED_PROMPT = "Continue the turn using the current system instructions and the tool results above. Do not repeat a tool call whose result is already above.";
+
 // src/native-fork.ts
 var toolCallSchema = external_exports.object({ type: external_exports.literal("tool_use"), id: external_exports.string(), name: external_exports.string() });
 var toolResultSchema = external_exports.object({ type: external_exports.literal("tool_result"), tool_use_id: external_exports.string(), content: external_exports.unknown(), is_error: external_exports.boolean().optional() });
@@ -48137,7 +48157,10 @@ function isTrailingCarry(record2) {
   return record2.type === "attachment" || record2.type === "system" || record2.type === "progress" || record2.type === "user" && record2.isMeta === true;
 }
 function isLeadingCarry(record2) {
-  return isTrailingCarry(record2) || isSyntheticAssistant(record2);
+  return isTrailingCarry(record2) || isSyntheticAssistant(record2) || record2.type === "user" && record2.isMeta !== true && sameContent(
+    recordMessage(record2).content,
+    [HISTORY_REPLACED_PROMPT, FAILED_REPLY_RETRY_PROMPT, SYSTEM_INSTRUCTIONS_CHANGED_PROMPT, HOST_RESUMED_PROMPT]
+  );
 }
 function normalizeBlocks(content) {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -48267,6 +48290,11 @@ function readTranscript(path) {
       return { reason: "unparseable-line" };
     }
     if (!isObject3(value) || typeof value.type !== "string") return { reason: "unknown-record-shape" };
+    if (value.wireToolInputs !== void 0) {
+      const wire = wireToolInputsSchema.safeParse(value.wireToolInputs);
+      if (!wire.success) return { reason: "unknown-record-shape" };
+      value.wireToolInputs = wire.data;
+    }
     records.push(value);
   }
   return { records };
@@ -48361,6 +48389,7 @@ function planNativePrefix(priors, oldSessionId, cwd, claudeDir, customToolNameTo
     if (typeof messageId !== "string") return void 0;
     let position2 = at2;
     const blocks = [];
+    const wire = {};
     const own = /* @__PURE__ */ new Set();
     const answeredOwn = /* @__PURE__ */ new Set();
     const allCalls = [];
@@ -48377,6 +48406,7 @@ function planNativePrefix(priors, oldSessionId, cwd, claudeDir, customToolNameTo
         const content = recordMessage(chain[position2]).content;
         if (!Array.isArray(content)) return void 0;
         blocks.push(...content);
+        Object.assign(wire, chain[position2].wireToolInputs);
         for (const block of content) {
           const call = toolCallSchema.safeParse(block);
           if (call.success) {
@@ -48392,8 +48422,12 @@ function planNativePrefix(priors, oldSessionId, cwd, claudeDir, customToolNameTo
       for (const id of answered) answeredOwn.add(id);
       position2++;
     }
-    if (!streamedMatches(blocks, priors[index2], customToolNameToPi)) {
-      if (!importedMatches(blocks, priors[index2], customToolNameToSdk) || answeredOwn.size > 0) return void 0;
+    const originalBlocks = blocks.map((block) => {
+      const call = toolCallSchema.safeParse(block);
+      return call.success && wire[call.data.id] !== void 0 ? { ...call.data, input: wire[call.data.id] } : block;
+    });
+    if (!streamedMatches(originalBlocks, priors[index2], customToolNameToPi)) {
+      if (!importedMatches(originalBlocks, priors[index2], customToolNameToSdk) || answeredOwn.size > 0) return void 0;
       own.clear();
     }
     let last = position2 - 1;
@@ -50033,8 +50067,6 @@ var ACTIVE_STREAM_SIMPLE_KEY = /* @__PURE__ */ Symbol.for("claude-bridge:activeS
 var ROTATION_STATE_KEY = /* @__PURE__ */ Symbol("claude-bridge:rotationState");
 var HOST_RESUME_MARKER = /* @__PURE__ */ Symbol.for("kendex.pi.claude-bridge.host-resume.v1");
 var HOST_RESUMED_TURN = /* @__PURE__ */ Symbol.for("kendex.pi.claude-bridge.host-resumed-turn.v1");
-var HOST_RESUMED_PROMPT = "Continue from the completed tool results above; do not repeat completed tool calls.";
-var FAILED_REPLY_RETRY_PROMPT = "[Claude bridge: your previous reply failed before it finished, and Pi is retrying it. The tool results above are complete. Continue from them, and do not repeat a tool call whose result is already above.]";
 var MAX_ROTATION_ATTEMPTS = 16;
 var MODELS = buildModels(getModels("anthropic"));
 function extractAllToolResults2(context) {
@@ -50297,8 +50329,6 @@ function applyProviderRegistration(trigger) {
     debug(`${trigger}: registerProvider threw; released stream guard for retry (kept primary):`, err);
   }
 }
-var HISTORY_REPLACED_PROMPT = "The conversation above was rewritten by Pi (compaction or history navigation). It is the complete current history, including the results of every tool call that has already run. Continue the turn from there, and do not repeat a tool call whose result is already above.";
-var SYSTEM_INSTRUCTIONS_CHANGED_PROMPT = "Continue the turn using the current system instructions and the tool results above. Do not repeat a tool call whose result is already above.";
 function restartContext(context, reason) {
   return {
     ...context,

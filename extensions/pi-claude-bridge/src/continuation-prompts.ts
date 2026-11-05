@@ -1,0 +1,4 @@
+export const HOST_RESUMED_PROMPT = "Continue from the completed tool results above; do not repeat completed tool calls.";
+export const FAILED_REPLY_RETRY_PROMPT = "[Claude bridge: your previous reply failed before it finished, and Pi is retrying it. The tool results above are complete. Continue from them, and do not repeat a tool call whose result is already above.]";
+export const HISTORY_REPLACED_PROMPT = "The conversation above was rewritten by Pi (compaction or history navigation). It is the complete current history, including the results of every tool call that has already run. Continue the turn from there, and do not repeat a tool call whose result is already above.";
+export const SYSTEM_INSTRUCTIONS_CHANGED_PROMPT = "Continue the turn using the current system instructions and the tool results above. Do not repeat a tool call whose result is already above.";

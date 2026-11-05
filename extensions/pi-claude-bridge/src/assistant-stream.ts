@@ -6,6 +6,7 @@ import { isChildExecutedTool } from "./connectors.ts";
 import { DEBUG, debug, diagDump } from "./debug.ts";
 import { noteAnomaly } from "./agent-notice.ts";
 import { deliveredAssistantDigest } from "./history-digest.ts";
+import { rememberOriginalToolInput, sdkWireToolInputs, type WireToolInputs } from "./original-tool-inputs.ts";
 import { ctx, failStrandedToolCall, type QueryContext } from "./query-state.ts";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-watchdog.ts";
 import { thirdPartyAppHintFor, withThirdPartyAppHint, withoutThirdPartyAppHint } from "./third-party-rejection.ts";
@@ -284,12 +285,9 @@ export const ABORTED_MESSAGE = "Operation aborted";
 // started. So the discard withdraws a waiting call without waiting for that
 // cancel.
 //
-// Pi's stream contract is APPEND-ONLY. Its frame encoder (pi-ai
-// AssistantMessageFrameEncoder, run by coding-agent on every event) rejects a
-// second start for an index, its reducer requires every start at the current
-// content length, and both it and coding-agent's toJsonEvent read the block at
-// an event's index from the live partial WHEN THE EVENT IS CONSUMED, which
-// lags the provider. So once Pi has seen a block, the live content array keeps
+// Pi's stream contract is APPEND-ONLY. Its toJsonEvent consumer reads the
+// block at an event's index from the live partial after the provider yields.
+// Once Pi has seen a block, the live content array keeps
 // it at its index with its type, forever. An abandoned attempt's blocks
 // therefore stay in the live partial, receive no further events, and are
 // marked discarded; the retry's blocks are appended after them; and the
@@ -668,8 +666,8 @@ export const FINALIZE_MAX_REARMS = Math.ceil(PARTIAL_CALL_MAX_SILENCE_MS / TOOL_
  *  in one provider call): the NEXT tool turn's tool_use streams in, the SDK
  *  invokes the MCP handler — and neither terminal event ever arrives. The
  *  invocation itself proves the assistant turn is committed, so end the pi
- *  stream like the `message_stop` path — with this handler's schema-validated
- *  arguments, never a partial parse — after settling every sibling whose
+ *  stream like the `message_stop` path, preserving complete original inputs
+ *  or using the handler's validated input when none exists, after settling every sibling whose
  *  handler has fired and giving a sibling that is still being written up to
  *  FINALIZE_MAX_REARMS extra grace periods of silence for the rest.
  *
@@ -700,14 +698,9 @@ export function finalizeToolUseTurnFromMcpInvocation(
 	if (idx >= 0) {
 		const block = queryCtx.turnBlocks[idx] as any;
 		if ("partialJson" in block) {
-			// Stream ended before content_block_stop. The SDK invoked this handler
-			// with the COMPLETE schema-validated input, so the handler's copy is
-			// authoritative — the streamed partial JSON is by definition behind it.
-			// Settling from the partial forwards `{}`-argument calls that Pi then
-			// executes and errors on, a divergence the synthesize branch below
-			// cannot have.
-			block.arguments = mappedArgs;
-			queryCtx.updateToolCallArgs(block.id, block.arguments);
+			const originalArgs = rememberOriginalToolInput(queryCtx.queryOriginalToolArgs, block.id, block.name, undefined, block.partialJson);
+			block.arguments = originalArgs === undefined ? mappedArgs : originalArgs;
+			queryCtx.updateToolCallArgs(block.id, mappedArgs);
 			delete block.partialJson;
 			delete block.index;
 			queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
@@ -726,7 +719,8 @@ export function finalizeToolUseTurnFromMcpInvocation(
 		// (observed after a tool-result+steer provider call reset the turn):
 		// synthesize the toolCall from the claim — the MCP call carries the
 		// authoritative id, name, and arguments.
-		idx = addTurnBlock(queryCtx, { type: "toolCall", id: toolCallId, name: toolName, arguments: mappedArgs });
+		const args = queryCtx.queryOriginalToolArgs.has(toolCallId) ? queryCtx.queryOriginalToolArgs.get(toolCallId) : mappedArgs;
+		idx = addTurnBlock(queryCtx, { type: "toolCall", id: toolCallId, name: toolName, arguments: args });
 		const block = queryCtx.turnBlocks[idx] as any;
 		queryCtx.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: queryCtx.turnOutput });
 		queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
@@ -775,20 +769,21 @@ function settlePartialCallsOrEndTurn(
 		const waiting = queryCtx.pendingToolCalls.get(id);
 		if (!waiting || queryCtx.forwardedToolCallIds.has(id) || queryCtx.deadToolCallIds.has(id)) continue;
 		if (queryCtx.turnBlocks.some((b: any) => b.type === "toolCall" && b.id === id && isLiveBlock(b))) continue;
-		const idx = addTurnBlock(queryCtx, { type: "toolCall", id, name: waiting.toolName, arguments: waiting.args });
+		const args = queryCtx.queryOriginalToolArgs.has(id) ? queryCtx.queryOriginalToolArgs.get(id) : waiting.args;
+		const idx = addTurnBlock(queryCtx, { type: "toolCall", id, name: waiting.toolName, arguments: args });
 		const block = queryCtx.turnBlocks[idx] as any;
 		queryCtx.currentPiStream.push({ type: "toolcall_start", contentIndex: idx, partial: queryCtx.turnOutput });
 		queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: idx, toolCall: block, partial: queryCtx.turnOutput });
 	}
-	// Settle every OTHER still-partial block whose handler has fired: each
-	// waiting handler carries the authoritative args for its own call.
+	// Preserve complete original JSON; the handler owns the normalized pairing copy.
 	for (let i = 0; i < queryCtx.turnBlocks.length; i++) {
 		const sibling = queryCtx.turnBlocks[i] as any;
 		if (sibling.type !== "toolCall" || !("partialJson" in sibling) || !isLiveBlock(sibling)) continue;
 		const waiting = queryCtx.pendingToolCalls.get(sibling.id);
 		if (!waiting) continue;
-		sibling.arguments = waiting.args;
-		queryCtx.updateToolCallArgs(sibling.id, sibling.arguments);
+		const originalArgs = rememberOriginalToolInput(queryCtx.queryOriginalToolArgs, sibling.id, sibling.name, undefined, sibling.partialJson);
+		sibling.arguments = originalArgs === undefined ? waiting.args : originalArgs;
+		queryCtx.updateToolCallArgs(sibling.id, waiting.args);
 		delete sibling.partialJson;
 		delete sibling.index;
 		queryCtx.currentPiStream.push({ type: "toolcall_end", contentIndex: i, toolCall: sibling, partial: queryCtx.turnOutput });
@@ -837,7 +832,6 @@ export function processStreamEvent(
 	const event = (message as SDKMessage & { event: any }).event;
 	if (event?.type === "ping") return;
 	noteToolUseStreamActivity(c);
-	if (event?.type === "message_stop" && c.streamAttempt) c.streamAttempt.open = false;
 	if (event?.type === "message_stop" && !c.turnSawToolCall) {
 		debug("processStreamEvent: ignoring bare message_stop with no streamed content/tool call");
 		return;
@@ -845,9 +839,8 @@ export function processStreamEvent(
 
 	if (event?.type === "message_start") {
 		// A message_start while the previous attempt never completed (no
-		// message_delta or message_stop): Claude Code gave up on that stream and
-		// is retrying the same request as a new one. Its blocks are not part of
-		// the answer.
+		// message_delta): Claude Code gave up on that stream and is retrying it.
+		// Claude Code may close cut blocks and send message_stop before retrying.
 		const retry = Boolean(c.streamAttempt?.open);
 		if (retry) discardAbandonedAttempt(c, "restreamed", event.message?.id);
 		// The child moving on to another message is where a still-queued result
@@ -982,10 +975,13 @@ export function processStreamEvent(
 			c.currentPiStream!.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: c.turnOutput });
 		} else if (block.type === "toolCall") {
 			c.turnSawToolCall = true;
+			const recordedOriginal = c.queryOriginalToolArgs.has(block.id);
 			block.arguments = mapToolArgs(
 				block.name, parsePartialJson(block.partialJson, block.arguments),
 			);
-			c.updateToolCallArgs(block.id, block.arguments);
+			if (!recordedOriginal) c.updateToolCallArgs(block.id, block.arguments);
+			const originalArgs = rememberOriginalToolInput(c.queryOriginalToolArgs, block.id, block.name, undefined, block.partialJson);
+			if (originalArgs !== undefined) block.arguments = originalArgs;
 			delete block.partialJson;
 			c.currentPiStream!.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: c.turnOutput });
 		}
@@ -1034,6 +1030,7 @@ function appendMissingToolUsesFromAssistant(
 	model: Model<any>,
 	customToolNameToPi: Map<string, string>,
 	c: QueryContext,
+	wire: WireToolInputs | undefined,
 ): boolean {
 	if (!assistantMsg?.content) return false;
 	// With a dead stream, ids are still RECORDED (claims and result matching
@@ -1071,11 +1068,12 @@ function appendMissingToolUsesFromAssistant(
 		const name = mapToolName(block.name, customToolNameToPi);
 		const mappedArgs = mapToolArgs(name, block.input);
 		c.recordToolCall(block.id, name, mappedArgs);
+		const existing = c.turnBlocks[existingIdx];
+		const originalArgs = rememberOriginalToolInput(c.queryOriginalToolArgs, block.id, name, wire, existing?.partialJson);
 		if (!streamLive) continue;
 		if (existingIdx >= 0) {
-			const existing = c.turnBlocks[existingIdx] as any;
 			existing.name = name;
-			existing.arguments = mappedArgs;
+			existing.arguments = originalArgs === undefined ? mappedArgs : originalArgs;
 			c.updateToolCallArgs(block.id, mappedArgs);
 			if ("partialJson" in existing) {
 				delete existing.partialJson;
@@ -1089,7 +1087,7 @@ function appendMissingToolUsesFromAssistant(
 		const idx = addTurnBlock(c, {
 			type: "toolCall", id: block.id,
 			name,
-			arguments: mappedArgs,
+			arguments: originalArgs === undefined ? mappedArgs : originalArgs,
 		});
 		const toolBlock = c.turnBlocks[idx];
 		c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
@@ -1140,12 +1138,26 @@ export function noteChildExecutedToolResults(message: SDKMessage, c: QueryContex
 	}
 }
 
+function alreadyRendered(c: QueryContext, type: "text" | "thinking", value: string): boolean {
+	return queryBlocks(c).some(block => block.type === type && block[type] === value);
+}
+
+function renderCompletedThinking(c: QueryContext, thinking: string, thinkingSignature: string): void {
+	if (alreadyRendered(c, "thinking", thinking)) return;
+	ensureTurnStarted(c);
+	const idx = addTurnBlock(c, { type: "thinking", thinking, thinkingSignature });
+	const stream = c.currentPiStream!;
+	stream.push({ type: "thinking_start", contentIndex: idx, partial: c.turnOutput });
+	if (thinking) stream.push({ type: "thinking_delta", contentIndex: idx, delta: thinking, partial: c.turnOutput });
+	stream.push({ type: "thinking_end", contentIndex: idx, content: thinking, partial: c.turnOutput });
+}
+
 /** Render a COMPLETED assistant message's blocks into the live Pi message:
  *  the content path for a message that produced no stream events of its own.
  *  Text and thinking are deduped against what the current SDK query rendered
  *  and tool calls by id, so a re-yield of the same message renders only what
  *  is new. */
-function renderCompletedBlocks(c: QueryContext, content: Array<any>, customToolNameToPi: Map<string, string>, label: string): void {
+function renderCompletedBlocks(c: QueryContext, content: Array<any>, customToolNameToPi: Map<string, string>, label: string, wire: WireToolInputs | undefined, model: Model<string>): void {
 	// Deduped against everything the current SDK query rendered, not just
 	// same-id re-yields: a rejected turn's synthesized error message ("You've
 	// hit your weekly limit") arrives as multiple assistant yields whose ids
@@ -1155,71 +1167,19 @@ function renderCompletedBlocks(c: QueryContext, content: Array<any>, customToolN
 	// rare; rendering such a duplicate once is the better failure mode.
 	// Replies of earlier queries in this Pi message (deferred replay) are not
 	// compared: a continuation repeating one is legitimate.
-	const alreadyRendered = (type: string, value: string): boolean =>
-		queryBlocks(c).some((b: any) => b.type === type && (type === "text" ? b.text : b.thinking) === value);
+	const stream = c.currentPiStream!;
 	for (const block of content) {
 		if (block.type === "text" && block.text) {
-			if (alreadyRendered("text", block.text)) continue;
+			if (alreadyRendered(c, "text", block.text)) continue;
 			ensureTurnStarted(c);
 			const idx = addTurnBlock(c, { type: "text", text: block.text });
-			c.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
+			stream.push({ type: "text_start", contentIndex: idx, partial: c.turnOutput });
+			stream.push({ type: "text_delta", contentIndex: idx, delta: block.text, partial: c.turnOutput });
+			stream.push({ type: "text_end", contentIndex: idx, content: block.text, partial: c.turnOutput });
 		} else if (block.type === "thinking") {
-			if (alreadyRendered("thinking", block.thinking ?? "")) continue;
-			ensureTurnStarted(c);
-			const idx = addTurnBlock(c, { type: "thinking", thinking: block.thinking ?? "", thinkingSignature: block.signature ?? "" });
-			c.currentPiStream?.push({ type: "thinking_start", contentIndex: idx, partial: c.turnOutput });
-			if (block.thinking) c.currentPiStream?.push({ type: "thinking_delta", contentIndex: idx, delta: block.thinking, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "thinking_end", contentIndex: idx, content: block.thinking ?? "", partial: c.turnOutput });
+			renderCompletedThinking(c, block.thinking ?? "", block.signature ?? "");
 		} else if (block.type === "tool_use") {
-			if (isChildExecutedTool(block.name)) {
-				// Same as the streamed path: the child owns this call, so it never
-				// becomes a Pi tool call and never ends the turn.
-				c.noteChildExecutedToolCall(block.id, block.name);
-				debug(`${label}: child-executed tool ${block.name} [${block.id}] — not mirrored as a Pi tool call`);
-				continue;
-			}
-			if (!isPiDispatchable(block.name, customToolNameToPi)) {
-				if (isForeignMcpTool(block.name)) c.noteForeignMcpToolCall(block.id, block.name);
-				debug(`${label}: non-dispatchable tool ${block.name} [${block.id}] — not mirrored as a Pi tool call`);
-				continue;
-			}
-			if (!c.turnBlocks.some((b: any) => b.type === "toolCall" && b.id === block.id && isLiveBlock(b))
-				&& (c.forwardedToolCallIds.has(block.id) || c.deadToolCallIds.has(block.id))) {
-				// A cross-turn replay of a call Pi already executed (or one whose
-				// handler was already failed as stranded). This is the path a
-				// duplicate dispatch takes: the completed-message yield lands in the
-				// callback AFTER a grace finalize already ended the call's turn, and
-				// per-message dedup cannot see across turns. Not recorded either — a
-				// forwarded call must not be claimable again.
-				debug(`${label}: tool_use ${block.id} already ${c.forwardedToolCallIds.has(block.id) ? "forwarded" : "dead"} — skipping duplicate`);
-				continue;
-			}
-			ensureTurnStarted(c);
-			c.turnSawToolCall = true;
-			const mappedName = mapToolName(block.name, customToolNameToPi);
-			const mappedArgs = mapToolArgs(mappedName, block.input);
-			c.recordToolCall(block.id, mappedName, mappedArgs);
-			// A same-message re-yield of an already-mirrored call refreshes its
-			// arguments in place — a second toolCall block would make pi dispatch
-			// the tool twice.
-			const existingIdx = c.turnBlocks.findIndex((b: any) => b.type === "toolCall" && b.id === block.id && isLiveBlock(b));
-			if (existingIdx >= 0) {
-				const existing = c.turnBlocks[existingIdx] as any;
-				existing.name = mappedName;
-				existing.arguments = mappedArgs;
-				c.updateToolCallArgs(block.id, mappedArgs);
-				continue;
-			}
-			const idx = addTurnBlock(c, {
-				type: "toolCall", id: block.id,
-				name: mappedName,
-				arguments: mappedArgs,
-			});
-			const toolBlock = c.turnBlocks[idx];
-			c.currentPiStream?.push({ type: "toolcall_start", contentIndex: idx, partial: c.turnOutput });
-			c.currentPiStream?.push({ type: "toolcall_end", contentIndex: idx, toolCall: toolBlock as any, partial: c.turnOutput });
+			if (appendMissingToolUsesFromAssistant({ content: [block] }, model, customToolNameToPi, c, wire)) c.turnSawToolCall = true;
 		} else if (block.type === "fallback") {
 			updateTurnResponseModel(block.to?.model, c);
 		} else {
@@ -1233,7 +1193,7 @@ function renderCompletedBlocks(c: QueryContext, content: Array<any>, customToolN
  *  so none of message_delta/message_stop will follow: a tool-use turn ends by
  *  the grace timer, which every yield of the replacement restarts, so calls
  *  a later re-yield adds still ship in the same turn. */
-function renderNonStreamingReplacement(assistantMsg: any, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
+function renderNonStreamingReplacement(assistantMsg: any, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext, wire: WireToolInputs | undefined): void {
 	const id: string = assistantMsg.id;
 	const reyield = id === c.fallbackMessageId;
 	if (!reyield) {
@@ -1243,7 +1203,7 @@ function renderNonStreamingReplacement(assistantMsg: any, model: Model<any>, cus
 		c.streamAttempt = null;
 	}
 	debug(`processAssistantMessage: non-streaming replacement ${id}: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}${reyield ? " (re-yield)" : ""}`);
-	renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "non-streaming replacement");
+	renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "non-streaming replacement", wire, model);
 	if (assistantMsg.usage && c.turnOutput) updateUsage(c.turnOutput, assistantMsg.usage, model, c);
 	if (c.turnSawToolCall) {
 		scheduleToolUseTurnEnd(c, () => finalizeToolUseTurnAtAssistantBoundary(c), "non-streaming-replacement");
@@ -1254,17 +1214,18 @@ function renderNonStreamingReplacement(assistantMsg: any, model: Model<any>, cus
 export function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext = ctx()): void {
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
+	const wire = sdkWireToolInputs(message);
 	// A completed SDK message can lag behind the tool-use turn that Pi already
 	// consumed. In particular, repeated no-stream assistant yields can expand as
 	// later siblings in a parallel batch become available. Keep their ids for
 	// handler matching, but never append to the delivered turnOutput object.
 	if (!c.currentPiStream || !c.turnOutput) {
-		appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c);
+		appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c, wire);
 		return;
 	}
 	updateTurnResponseModel(assistantMsg.model, c);
 	if (isNonStreamingReplacement(message, assistantMsg, c)) {
-		renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, c);
+		renderNonStreamingReplacement(assistantMsg, model, customToolNameToPi, c, wire);
 		return;
 	}
 	if (c.turnSawStreamEvent) {
@@ -1278,7 +1239,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 		// placeholders. The grace timer force-ends the turn if the stream goes
 		// silent, so pi still gets to execute the tools and unblock the MCP
 		// handlers.
-		if (appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c)) {
+		if (appendMissingToolUsesFromAssistant(assistantMsg, model, customToolNameToPi, c, wire)) {
 			c.turnSawToolCall = true;
 			scheduleToolUseTurnEnd(c, () => finalizeToolUseTurnAtAssistantBoundary(c), "assistant-boundary");
 		}
@@ -1303,7 +1264,7 @@ export function processAssistantMessage(message: SDKMessage, model: Model<any>, 
 	// produced no content blocks, since `turnSawStreamEvent` only tracks those.
 	c.beginChildMessage(assistantMsg.id);
 	debug(`processAssistantMessage fallback: ${assistantMsg.content.length} blocks, types=${assistantMsg.content.map((b: any) => b.type).join(",")}${sameMessage ? " (same message re-yield)" : ""}`);
-	renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "processAssistantMessage fallback");
+	renderCompletedBlocks(c, assistantMsg.content, customToolNameToPi, "processAssistantMessage fallback", wire, model);
 	if (assistantMsg.usage && c.turnOutput) updateUsage(c.turnOutput, assistantMsg.usage, model, c);
 
 	// End the stream on tool_use. Immediate (no grace deferral) ON PURPOSE: this

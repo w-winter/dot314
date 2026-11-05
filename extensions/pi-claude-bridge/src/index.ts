@@ -62,11 +62,13 @@ import { sdkQuery as startSdkQuery } from "./sdk-query.ts";
 import { UserMessageLedger, type ClassifyOptions } from "./user-message-ledger.ts";
 import { currentRequestLaneId, runInRequestLane } from "./request-lane.ts";
 import { piSessionCwd } from "./pi-sessions.ts";
+import { FAILED_REPLY_RETRY_PROMPT, HISTORY_REPLACED_PROMPT, HOST_RESUMED_PROMPT, SYSTEM_INSTRUCTIONS_CHANGED_PROMPT } from "./continuation-prompts.ts";
 import { attachRequestTiming, startRequestTiming, type RequestTiming } from "./request-timing.ts";
 
 // Re-exports: the module decomposition must not change the entry's public
 // surface — unit tests and downstream consumers import these from index.ts.
 export { probeClaudeAccountProfile } from "./account-host.ts";
+export { HISTORY_REPLACED_PROMPT } from "./continuation-prompts.ts";
 export { __testSetSdkQueryFactory } from "./sdk-query.ts";
 export { resolveConfiguredEffort } from "./query-options.ts";
 export { classifyClaudeExecutableBytes, preflightClaudeExecutable, resolveClaudeExecutable, spawnClaudeCodeWithDiagnostics, wrapClaudeSpawnErrorForSdk, type ClaudeExecutableFileType, type ClaudeExecutablePreflightResult } from "./claude-executable.ts";
@@ -142,10 +144,6 @@ const ROTATION_STATE_KEY = Symbol("claude-bridge:rotationState");
 // such a request. Pi does neither.
 const HOST_RESUME_MARKER = Symbol.for("kendex.pi.claude-bridge.host-resume.v1");
 const HOST_RESUMED_TURN = Symbol.for("kendex.pi.claude-bridge.host-resumed-turn.v1");
-/** A host-resumed turn's prompt. Never part of the host's history: the
- *  record's cursor and digests cover the host's messages only. */
-const HOST_RESUMED_PROMPT = "Continue from the completed tool results above; do not repeat completed tool calls.";
-const FAILED_REPLY_RETRY_PROMPT = "[Claude bridge: your previous reply failed before it finished, and Pi is retrying it. The tool results above are complete. Continue from them, and do not repeat a tool call whose result is already above.]";
 type ContinuationReason = "none" | "host-resumed" | "failed-reply";
 
 /** Hard cap on account-rotation attempts per request (CHANGELOG 3.0.0). */
@@ -606,9 +604,6 @@ function applyProviderRegistration(trigger: string): void {
 		debug(`${trigger}: registerProvider threw; released stream guard for retry (kept primary):`, err);
 	}
 }
-
-export const HISTORY_REPLACED_PROMPT = "The conversation above was rewritten by Pi (compaction or history navigation). It is the complete current history, including the results of every tool call that has already run. Continue the turn from there, and do not repeat a tool call whose result is already above.";
-const SYSTEM_INSTRUCTIONS_CHANGED_PROMPT = "Continue the turn using the current system instructions and the tool results above. Do not repeat a tool call whose result is already above.";
 
 function restartContext(context: Context, reason: QueryRestartRequest["reason"]): Context {
 	return {
