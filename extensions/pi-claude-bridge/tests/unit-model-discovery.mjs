@@ -64,7 +64,7 @@ it("reports the CLI catalog without a model prompt or changing provider registra
 	assert.equal(inputs[0].options.env.ANTHROPIC_API_KEY, undefined);
 	assert.equal(inputs[0].options.env.ANTHROPIC_AUTH_TOKEN, undefined);
 	assert.equal(inputs[0].options.env.ANTHROPIC_BASE_URL, undefined);
-	for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(inputs[0].options.env[key], undefined, key);
+	for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(inputs[0].options.env[key], key === "CLAUDE_CODE_ENTRYPOINT" ? "pi-claude-bridge" : undefined, key);
 	assert.equal(inputs[0].options.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
 	assert.equal(closed, 1);
 });
@@ -80,7 +80,7 @@ it("uses the active managed profile and refuses to substitute the default login"
 	await command(context);
 	assert.equal(inputs[0].options.env.CLAUDE_CONFIG_DIR, profile.configDir);
 	assert.equal(inputs[0].options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
-	for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(inputs[0].options.env[key], undefined, key);
+	for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(inputs[0].options.env[key], key === "CLAUDE_CODE_ENTRYPOINT" ? "pi-claude-bridge" : undefined, key);
 	assert.equal(inputs[0].options.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
 	assert.match(notices.at(-1).message, /Account B/);
 	profile = undefined;

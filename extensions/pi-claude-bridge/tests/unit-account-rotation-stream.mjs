@@ -1304,7 +1304,7 @@ describe("account host probe (probeProfile)", () => {
 			deadlineMs: 500,
 		});
 		assert.deepEqual(probeOptions.tools, [], "built-in tool set removed");
-		for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(probeOptions.env[key], undefined, key);
+		for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(probeOptions.env[key], key === "CLAUDE_CODE_ENTRYPOINT" ? "pi-claude-bridge" : undefined, key);
 		assert.equal(probeOptions.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
 		for (const [key, value] of Object.entries(PARENT_SESSION_ENV)) assert.equal(process.env[key], value);
 		assert.equal(process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "0");

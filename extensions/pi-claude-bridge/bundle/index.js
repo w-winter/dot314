@@ -47114,6 +47114,7 @@ function claudeChildEnv(profile, inheritAnthropicEnv, base = process.env) {
   const env = profile === void 0 ? { ...base } : subscriberProfileEnv(profile, base);
   if (profile === void 0 && !inheritAnthropicEnv) for (const key of ANTHROPIC_ROUTING_ENV) delete env[key];
   for (const key of CLAUDE_PARENT_SESSION_ENV) delete env[key];
+  env.CLAUDE_CODE_ENTRYPOINT = "pi-claude-bridge";
   env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   return env;
 }

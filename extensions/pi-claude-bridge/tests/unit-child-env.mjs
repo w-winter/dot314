@@ -53,7 +53,7 @@ describe("Claude Code child environment", () => {
 				const base = { ...PARENT_SESSION_ENV, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "0", CLAUDE_CODE_UNRELATED: "kept", CLAUDE_CODE_OAUTH_TOKEN: "offline-token", ANTHROPIC_API_KEY: "offline-key" };
 				const original = { ...base };
 				const env = claudeChildEnv(profile, inheritAnthropicEnv, base);
-				for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(env[key], undefined, key);
+				for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(env[key], key === "CLAUDE_CODE_ENTRYPOINT" ? "pi-claude-bridge" : undefined, key);
 				assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
 				assert.equal(env.CLAUDE_CODE_UNRELATED, "kept");
 				assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, profile ? undefined : "offline-token");
@@ -62,7 +62,7 @@ describe("Claude Code child environment", () => {
 
 				Object.assign(process.env, PARENT_SESSION_ENV, { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "0", CLAUDE_CONFIG_DIR: tmpdir() });
 				const options = buildClaudeQueryOptions({ cwd: tmpdir(), requestedModel: model, queryModel: model, bridgeConfig: { provider: { inheritAnthropicEnv, enableConnectors: true } }, systemPrompt: "Pi prompt", account: profile, resumeSessionId: null }).queryOptions;
-				for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(options.env[key], undefined, key);
+				for (const key of Object.keys(PARENT_SESSION_ENV)) assert.equal(options.env[key], key === "CLAUDE_CODE_ENTRYPOINT" ? "pi-claude-bridge" : undefined, key);
 				assert.equal(options.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
 				assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "1");
 				assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
@@ -73,7 +73,9 @@ describe("Claude Code child environment", () => {
 	}
 
 	it("drops inherited Anthropic routing variables unless provider.inheritAnthropicEnv opts in", () => {
+		delete process.env.CLAUDE_CODE_ENTRYPOINT;
 		const env = childEnv({});
+		assert.equal(env.CLAUDE_CODE_ENTRYPOINT, "pi-claude-bridge");
 		for (const key of ROUTING_KEYS) assert.equal(env[key], undefined, key);
 		assert.equal(env.ANTHROPIC_MODEL, "sentinel-model", "unrelated ANTHROPIC_* variables stay");
 		assert.equal(env.DISABLE_AUTO_COMPACT, "1", "bridge-owned overrides apply last");
