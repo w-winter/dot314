@@ -16368,18 +16368,23 @@ function extractUserPromptBlocks(messages) {
 }
 
 // src/models.ts
-var FABLE_MODEL_ID = "claude-fable-5-1";
+var FABLE_5_2_MODEL_ID = "claude-fable-5-2";
+var FABLE_5_1_MODEL_ID = "claude-fable-5-1";
 var FABLE_FALLBACK_MODEL_ID = "claude-opus-4-8";
 var OPUS_5_5_MODEL_ID = "claude-opus-5-5";
 var OPUS_5_MODEL_ID = "claude-opus-5";
 var SONNET_5_5_MODEL_ID = "claude-sonnet-5-5";
 var SONNET_5_MODEL_ID = "claude-sonnet-5";
 var HAIKU_5_5_MODEL_ID = "claude-haiku-5-5";
+function isFableModel(modelId) {
+  return modelId === FABLE_5_2_MODEL_ID || modelId === FABLE_5_1_MODEL_ID;
+}
 function fallbackModelForPrimaryModel(modelId) {
-  return modelId === FABLE_MODEL_ID || modelId === OPUS_5_5_MODEL_ID || modelId === OPUS_5_MODEL_ID ? FABLE_FALLBACK_MODEL_ID : void 0;
+  return isFableModel(modelId) || modelId === OPUS_5_5_MODEL_ID || modelId === OPUS_5_MODEL_ID ? FABLE_FALLBACK_MODEL_ID : void 0;
 }
 var MODEL_IDS_IN_ORDER = [
-  FABLE_MODEL_ID,
+  FABLE_5_2_MODEL_ID,
+  FABLE_5_1_MODEL_ID,
   OPUS_5_5_MODEL_ID,
   OPUS_5_MODEL_ID,
   FABLE_FALLBACK_MODEL_ID,
@@ -16392,8 +16397,17 @@ var MODEL_IDS_IN_ORDER = [
   "claude-haiku-4-5"
 ];
 var FALLBACK_MODELS = {
-  [FABLE_MODEL_ID]: {
-    id: FABLE_MODEL_ID,
+  [FABLE_5_2_MODEL_ID]: {
+    id: FABLE_5_2_MODEL_ID,
+    name: "Claude Fable 5.2",
+    reasoning: true,
+    thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
+    input: ["text", "image"],
+    contextWindow: 1e6,
+    maxTokens: 128e3
+  },
+  [FABLE_5_1_MODEL_ID]: {
+    id: FABLE_5_1_MODEL_ID,
     name: "Claude Fable 5.1",
     reasoning: true,
     thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
@@ -50015,7 +50029,7 @@ function buildClaudeQueryOptions(input) {
   const thinkingOff = !reasoning && (!Boolean(levelMap) || levelMap.off !== null);
   const extraArgs = {};
   if (effort && !thinkingOff) extraArgs["thinking-display"] = "summarized";
-  const fallbackModel = account && requestedModel.id === FABLE_MODEL_ID && queryModel.id === requestedModel.id ? void 0 : fallbackModelForPrimaryModel(queryModel.id);
+  const fallbackModel = Boolean(account) && isFableModel(requestedModel.id) && queryModel.id === requestedModel.id ? void 0 : fallbackModelForPrimaryModel(queryModel.id);
   const childEnv = {
     ...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
     ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",

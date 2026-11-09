@@ -119,11 +119,11 @@ A Claude Code login is required. Make `claude` available on `PATH` or set its ex
 
 System prompt replacement is optional; [Settings](#settings) explains how to configure it.
 
-Claude Sonnet 5.5 (`pi-claude/claude-sonnet-5-5`) requires [Claude Code 2.1.284 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284). Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
+Claude Sonnet 5.5 (`pi-claude/claude-sonnet-5-5`) requires [Claude Code 2.1.284 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21284). Claude Opus 5.5 (`pi-claude/claude-opus-5-5`) requires [Claude Code 2.1.280 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21280). Fable 5.2 (`pi-claude/claude-fable-5-2`) requires [Claude Code 2.1.321 or later](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#21321), and Fable 5.1 requires [Claude Code 2.1.255 or later](https://code.claude.com/docs/en/model-config#work-with-fable). These requirements apply to an executable chosen through `provider.pathToClaudeCodeExecutable` or found on `PATH`, which takes precedence over the SDK's bundled CLI. Account access and usage-credit requirements still apply.
 
 ## Features
 
-- Select Claude models from Pi's model menu, including `pi-claude/claude-sonnet-5-5`, `pi-claude/claude-opus-5-5` and `pi-claude/claude-fable-5-1`.
+- Select Claude models from Pi's model menu, including `pi-claude/claude-sonnet-5-5`, `pi-claude/claude-opus-5-5`, `pi-claude/claude-fable-5-2` and `pi-claude/claude-fable-5-1`.
 - Run Pi tool calls during Claude conversations.
 - Steer Claude while a Pi tool runs.
 - Resume the Claude conversation across Pi turns.
@@ -230,7 +230,7 @@ This comparison uses [Kendex's `@vanillagreen/pi-claude-bridge` 4.0.8](https://g
 - Replays redacted thinking in its correct format. A trailing Claude reply with incomplete thinking becomes a note containing its text, calls and results in order, including result images.
 - Suppresses Claude Code's automatic continuation of an interrupted stored turn; Pi supplies the next prompt.
 - Keeps unanswered prompts available after Esc and suppresses Claude Code's synthetic "No response requested." reply.
-- Adds Sonnet 5.5 to the supported model list. Thinking "off" sends disabled thinking where supported; Pi hides that choice for Fable 5.1, Opus 5.5 and Sonnet 5.5.
+- Adds Sonnet 5.5 and Fable 5.2 to the supported model list. Thinking "off" sends disabled thinking where supported; Pi hides that choice for Fable 5.2, Fable 5.1, Opus 5.5 and Sonnet 5.5.
 - Provides `/pi-claude models` to inspect the selected account's Claude Code picker catalog without a model request or filtering Pi's supported model list.
 - Reports the latest underlying Claude request's usage so internal requests do not multiply Pi's context estimate. Reasoning tokens and cache writes with a one-hour lifetime are reported as subsets; these counters do not measure total subscription consumption.
 - The reply retains the model id Pi requested and records a different serving model as `responseModel`; Claude Code's safety-related model switches are announced.

@@ -11,7 +11,7 @@ import { connectorQueryOptions, connectorWriteModeFor, connectorsEnabledFor, set
 import { connectorServersSnapshot } from "./connector-runtime.ts";
 import { PROVIDER_ID } from "./convert.ts";
 import { makeCliDebugOptions } from "./debug.ts";
-import { FABLE_MODEL_ID, fallbackModelForPrimaryModel } from "./models.ts";
+import { fallbackModelForPrimaryModel, isFableModel } from "./models.ts";
 import { piMainPromptEvidence, type SystemPromptOrigin } from "./pi-sessions.ts";
 
 // --- Effort level mapping ---
@@ -165,7 +165,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// silently skip accounts whose Fable quota is still available. Once the
 	// router explicitly selects Opus, its normal Opus→4.8 safety fallback is
 	// back on.
-	const fallbackModel = account && requestedModel.id === FABLE_MODEL_ID && queryModel.id === requestedModel.id
+	const fallbackModel = Boolean(account) && isFableModel(requestedModel.id) && queryModel.id === requestedModel.id
 		? undefined
 		: fallbackModelForPrimaryModel(queryModel.id);
 

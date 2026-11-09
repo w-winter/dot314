@@ -889,26 +889,28 @@ describe("managed account stream rotation", () => {
 		assert.equal(done?.message.responseModel, "claude-opus-5");
 	});
 
-	it("selects registered Fable 5.1 without skipping another managed account", async () => {
-		const observed = observedState();
-		const getModels = await resolveGetModels(piAi);
-		const provider = buildNativeProvider(piAi, buildModels(getModels("anthropic")), streamClaudeAgentSdk);
-		const fableModel = provider.getModels()[0];
-		assert.equal(fableModel.name, "Claude Fable 5.1");
-		globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);
-		let queryOptions;
-		__testSetSdkQueryFactory((input) => {
-			queryOptions = input.options;
-			return fakeSdkQuery([
-				{ type: "system", subtype: "init", session_id: "fable-session" },
-				{ type: "result", subtype: "success", result: "fable-first" },
-			], "a", observed);
-		});
+	for (const [fableId, fableName] of [["claude-fable-5-2", "Claude Fable 5.2"], ["claude-fable-5-1", "Claude Fable 5.1"]]) {
+		it(`selects registered ${fableName} without skipping another managed account`, async () => {
+			const observed = observedState();
+			const getModels = await resolveGetModels(piAi);
+			const provider = buildNativeProvider(piAi, buildModels(getModels("anthropic")), streamClaudeAgentSdk);
+			const fableModel = provider.getModels().find((m) => m.id === fableId);
+			assert.equal(fableModel?.name, fableName);
+			globalThis[CLAUDE_ACCOUNT_ROUTER_SYMBOL] = makeRouter(observed);
+			let queryOptions;
+			__testSetSdkQueryFactory((input) => {
+				queryOptions = input.options;
+				return fakeSdkQuery([
+					{ type: "system", subtype: "init", session_id: "fable-session" },
+					{ type: "result", subtype: "success", result: "fable-first" },
+				], "a", observed);
+			});
 
-		await collect(provider.streamSimple(fableModel, context, { sessionId: "fable-ready" }));
-		assert.equal(queryOptions.model, "claude-fable-5-1");
-		assert.equal(queryOptions.fallbackModel, undefined);
-	});
+			await collect(provider.streamSimple(fableModel, context, { sessionId: "fable-ready" }));
+			assert.equal(queryOptions.model, fableId);
+			assert.equal(queryOptions.fallbackModel, undefined);
+		});
+	}
 
 	it("surfaces an unavailable pool without starting Claude Code", async () => {
 		const observed = observedState();

@@ -57,6 +57,7 @@ describe("Pi thinking off", () => {
 	it("hides off for bridge-listed models that cannot turn thinking off", () => {
 		const offShown = Object.fromEntries(buildModels([]).map((m) => [m.id, getSupportedThinkingLevels(m).includes("off")]));
 		assert.deepEqual(offShown, {
+			"claude-fable-5-2": false,
 			"claude-fable-5-1": false,
 			"claude-opus-5-5": false,
 			"claude-opus-5": true,

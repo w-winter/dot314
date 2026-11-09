@@ -2,6 +2,15 @@
 
 Notable changes to this fork, newest first. The fork has no version numbers yet, so changes are grouped by the date they landed on main (Pacific time). A change that took several days to finish sits under the day it was finished. Each entry says what was wrong or missing, and what the bridge does now. Most entries list the commits behind them.
 
+## 2026-11-09
+
+### Added
+
+- **Claude Fable 5.2** (`pi-claude/claude-fable-5-2`) is now in Pi's model menu, above Fable 5.1, which stays available.
+  - It needs Claude Code 2.1.321 or later. Pi 1.5's model registry has no entry for it, so the bridge registers it with its own metadata: 1M context, 128K output, text and images, and xhigh and max effort.
+  - The API rejects disabled thinking for it, so Pi hides "off".
+  - When it refuses, Claude Code switches to Opus 4.8 or Opus 5, and Pi shows the switch. With managed accounts, Claude Code's own Opus fallback stays off for both Fable models, so the request moves through every account's Fable allowance before it switches to Opus.
+
 ## 2026-11-05
 
 ### Fixed
