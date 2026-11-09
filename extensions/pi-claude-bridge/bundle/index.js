@@ -50009,7 +50009,7 @@ function outboundSystemPrompt(input) {
   };
 }
 function buildClaudeQueryOptions(input) {
-  const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
+  const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, cacheRetention, resumeSessionId, mcpServers, claudeExecutable } = input;
   const providerSettings = bridgeConfig.provider ?? {};
   const accountScope = accountSessionScope(account);
   const enableCloudMcp = connectorsEnabledFor(bridgeConfig);
@@ -50040,6 +50040,17 @@ function buildClaudeQueryOptions(input) {
     CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
     CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1"
   };
+  switch (cacheRetention) {
+    case "none":
+      childEnv.DISABLE_PROMPT_CACHING = "1";
+      break;
+    case "short":
+      childEnv.FORCE_PROMPT_CACHING_5M = "1";
+      break;
+    case "long":
+      childEnv.ENABLE_PROMPT_CACHING_1H = "1";
+      break;
+  }
   const settings = { autoDreamEnabled: false, claudeMdExcludes };
   if (providerSettings.fastMode) settings.fastMode = true;
   const queryOptions = {
@@ -50933,6 +50944,7 @@ function startFreshQuery(fresh, syncResult) {
       cacheRetention: options?.cacheRetention
     },
     reasoning: options?.reasoning,
+    cacheRetention: Boolean(options) ? options.cacheRetention : void 0,
     resumeSessionId,
     mcpServers,
     claudeExecutable

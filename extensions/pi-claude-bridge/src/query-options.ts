@@ -2,7 +2,7 @@
 // Extracted from index.ts (pure move): no closures — reads config, env, and
 // the provided context only.
 
-import { type Model } from "@earendil-works/pi-ai";
+import { type CacheRetention, type Model } from "@earendil-works/pi-ai";
 import { createSdkMcpServer, type query, type EffortLevel, type Settings, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { accountSessionScope, claudeChildEnv, type ClaudeAccountRoute } from "./account-router.ts";
 import { spawnClaudeCodeWithDiagnostics } from "./claude-executable.ts";
@@ -55,6 +55,8 @@ export interface BuildClaudeQueryOptionsInput {
 	systemPromptOrigin?: SystemPromptOrigin;
 	/** Pi reasoning level from the stream options, if any. */
 	reasoning?: string;
+	/** Cache preference for this child. Absence keeps Claude Code's policy. */
+	cacheRetention?: CacheRetention;
 	resumeSessionId: string | null;
 	mcpServers?: Record<string, ReturnType<typeof createSdkMcpServer>>;
 	claudeExecutable?: string;
@@ -101,7 +103,7 @@ export function outboundSystemPrompt(
 }
 
 export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): BuiltClaudeQueryOptions {
-	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, resumeSessionId, mcpServers, claudeExecutable } = input;
+	const { cwd, requestedModel, queryModel, account, bridgeConfig, systemPrompt, systemPromptOrigin, reasoning, cacheRetention, resumeSessionId, mcpServers, claudeExecutable } = input;
 	const providerSettings = bridgeConfig.provider ?? {};
 	const accountScope = accountSessionScope(account);
 	// Whether to expose the Claude account's claude.ai cloud MCP connectors
@@ -197,7 +199,7 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 	// holds each tool argument value until the model finishes writing it, so a
 	// large write shows only its path for minutes and then arrives in one burst.
 	// With it, the argument streams as it is written and Pi sees it grow.
-	const childEnv = {
+	const childEnv: NodeJS.ProcessEnv = {
 		...claudeChildEnv(account, providerSettings.inheritAnthropicEnv),
 		ENABLE_CLAUDEAI_MCP_SERVERS: enableCloudMcp ? "1" : "0",
 		DISABLE_AUTO_COMPACT: "1",
@@ -207,6 +209,12 @@ export function buildClaudeQueryOptions(input: BuildClaudeQueryOptionsInput): Bu
 		CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS: "1",
 		CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING: "1",
 	};
+	// Inherited disable and five-minute switches take precedence over longer retention.
+	switch (cacheRetention) {
+		case "none": childEnv.DISABLE_PROMPT_CACHING = "1"; break;
+		case "short": childEnv.FORCE_PROMPT_CACHING_5M = "1"; break;
+		case "long": childEnv.ENABLE_PROMPT_CACHING_1H = "1"; break;
+	}
 	const settings: Settings = { autoDreamEnabled: false, claudeMdExcludes };
 	if (providerSettings.fastMode) settings.fastMode = true;
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {

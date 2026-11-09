@@ -4,6 +4,10 @@ Notable changes to this fork, newest first. The fork has no version numbers yet,
 
 ## 2026-11-09
 
+### Fixed
+
+- Adapted [nicobailon's cache-retention fix](https://github.com/nicobailon/pi-claude-bridge/commit/b8194a2abd9013fd49183ccf4497f55139fcbadb). A request's `cacheRetention` configures its Claude Code child's cache instead of only affecting request routing. Pi's compaction and branch-summary one-shots disable caching. Explicit short and long retention set the corresponding Claude Code switches. Unspecified retention keeps Claude Code's policy, and inherited restrictions remain in effect.
+
 ### Added
 
 - **Claude Fable 5.2** (`pi-claude/claude-fable-5-2`) is now in Pi's model menu, above Fable 5.1, which stays available.

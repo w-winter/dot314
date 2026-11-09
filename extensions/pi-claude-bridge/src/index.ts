@@ -1464,6 +1464,7 @@ function startFreshQuery(fresh: FreshQuery, syncResult: SyncResult): AssistantMe
 			cacheRetention: options?.cacheRetention,
 		},
 		reasoning: options?.reasoning,
+		cacheRetention: Boolean(options) ? options.cacheRetention : undefined,
 		resumeSessionId,
 		mcpServers,
 		claudeExecutable,
