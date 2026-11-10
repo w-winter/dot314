@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
     registerGroundedCompaction,
     runGroundedBranchSummaryAugmentation,
-    runGroundedCompaction,
+    type GroundedCompactionRunner,
 } from "../grounded-compaction/index.ts";
 import { registerModelAwareCompaction } from "../model-aware-compaction/index.ts";
 import codexCompactionCoordinator, {
@@ -260,7 +260,7 @@ describe("combined compaction ownership", () => {
                 runCompaction: (async () => {
                     groundedRuns += 1;
                     return { owner: "grounded" };
-                }) as typeof runGroundedCompaction,
+                }) as GroundedCompactionRunner,
                 runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
             });
             const grounded = hooks.get("session_before_compact")![0];
@@ -278,7 +278,7 @@ describe("combined compaction ownership", () => {
             runCompaction: (async () => {
                 groundedRuns += 1;
                 return { owner: "grounded" };
-            }) as typeof runGroundedCompaction,
+            }) as GroundedCompactionRunner,
             runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
         });
         const result = await runHooks(hooks.get("session_before_compact") ?? [], {}, codexContext());
@@ -297,7 +297,8 @@ describe("combined compaction ownership", () => {
                 isAutoCompactionEnabled: () => true,
             });
             registerGroundedCompaction(pi, {
-                runCompaction: (async () => ({ owner: "grounded" })) as typeof runGroundedCompaction,
+                // SAFETY: this test checks only which participant handles compaction, so the stub returns a marker.
+                runCompaction: (async () => ({ owner: "grounded" })) as GroundedCompactionRunner,
                 runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
             });
             const assistant = { role: "assistant", stopReason: "stop", usage: { totalTokens: 10 } };
@@ -314,7 +315,8 @@ describe("combined compaction ownership", () => {
     it("preserves grounded ownership for non-Codex models", async () => {
         const { hooks, pi } = createParticipantHarness();
         registerGroundedCompaction(pi, {
-            runCompaction: (async () => ({ owner: "grounded" })) as typeof runGroundedCompaction,
+            // SAFETY: this test checks only which participant handles compaction, so the stub returns a marker.
+            runCompaction: (async () => ({ owner: "grounded" })) as GroundedCompactionRunner,
             runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
         });
         const ctx = {

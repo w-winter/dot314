@@ -3,9 +3,39 @@ import type {
     ExtensionContext,
     SessionBeforeCompactEvent,
     SessionBeforeTreeEvent,
+    SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 
 const CODEX_COMPACTION_COORDINATION_EVENT = "codex-compaction-coordinator:coordination-query";
+const PREVIOUS_SUMMARY_EVENT = "grounded-compaction:previous-summary-query";
+
+/**
+ * Another extension's answer for a previous compaction entry: `unavailable` keeps the stored summary,
+ * `available` replaces it with readable text, and `error` means the entry's owner cannot supply that text now.
+ */
+const PreviousSummaryResponseSchema = Type.Union([
+    Type.Object({ status: Type.Literal("unavailable") }, { additionalProperties: false }),
+    Type.Object({ status: Type.Literal("available"), summary: Type.String({ pattern: "\\S" }) }, { additionalProperties: false }),
+    Type.Object({ status: Type.Literal("error"), error: Type.String({ pattern: "\\S" }) }, { additionalProperties: false }),
+]);
+export type PreviousSummaryResponse = Static<typeof PreviousSummaryResponseSchema>;
+
+export type PreviousSummaryRequest = {
+    compactionEntryId: string;
+    branchEntries: readonly SessionEntry[];
+    /** Every session entry, so an owner can find records stored on sibling branches. */
+    sessionEntries: readonly SessionEntry[];
+};
+
+export type PreviousSummaryLookup = (request: PreviousSummaryRequest) => PreviousSummaryResponse;
+
+/** The emitted payload. A listener may replace `response` with anything, so it is parsed after the emit. */
+type PreviousSummaryQuery = PreviousSummaryRequest & {
+    kind: "readable-previous-summary";
+    response: unknown;
+};
 
 type GroundedCoordinationResponse =
     | { status: "unavailable" }
@@ -49,10 +79,20 @@ function normalizeGroundedCoordinationResponse(value: unknown): GroundedCoordina
     return { status: "error", error: "invalid response from compaction coordinator" };
 }
 
+/** Asks other extensions for readable text standing in for a previous compaction entry's stored summary. */
+function queryReadablePreviousSummary(pi: ExtensionAPI, request: PreviousSummaryRequest): PreviousSummaryResponse {
+    const query: PreviousSummaryQuery = { kind: "readable-previous-summary", ...request, response: { status: "unavailable" } };
+    pi.events.emit(PREVIOUS_SUMMARY_EVENT, query);
+    return Check(PreviousSummaryResponseSchema, query.response)
+        ? query.response
+        : { status: "error", error: "invalid previous-summary response" };
+}
+
 export interface GroundedCompactionHandlers<CompactionResult, BranchSummaryResult> {
     runCompaction: (
         event: SessionBeforeCompactEvent,
         ctx: ExtensionContext,
+        queryPreviousSummary: PreviousSummaryLookup,
     ) => Promise<CompactionResult> | CompactionResult;
     runBranchSummary: (
         event: SessionBeforeTreeEvent,
@@ -88,7 +128,7 @@ export function registerGroundedCompactionHandlers<CompactionResult, BranchSumma
             }
             return { cancel: true };
         }
-        return handlers.runCompaction(event, ctx);
+        return handlers.runCompaction(event, ctx, (request) => queryReadablePreviousSummary(pi, request));
     });
 
     pi.on("session_before_tree", async (event, ctx) => handlers.runBranchSummary(event, ctx));

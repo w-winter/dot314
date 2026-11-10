@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerCodexCompactionPortability } from "./portability.ts";
 import { registerCodexCompactionPrewarm } from "./prewarm.ts";
 import { registerPortableSummaryEntryRenderer } from "./portable-summary-renderer.ts";
+import { registerPreviousSummaryResponder } from "./previous-summary-responder.ts";
 
 export const CODEX_COMPACTION_COORDINATION_EVENT =
     "codex-compaction-coordinator:coordination-query";
@@ -88,6 +89,7 @@ export default function codexCompactionCoordinator(pi: ExtensionAPI): void {
     registerPortableSummaryEntryRenderer(pi);
     registerCodexCompactionPrewarm(pi);
     registerCodexCompactionPortability(pi);
+    let unsubscribePreviousSummary: (() => void) | undefined = registerPreviousSummaryResponder(pi);
     let unsubscribe: (() => void) | undefined;
 
     unsubscribe = pi.events.on(CODEX_COMPACTION_COORDINATION_EVENT, (payload: unknown) => {
@@ -120,5 +122,7 @@ export default function codexCompactionCoordinator(pi: ExtensionAPI): void {
     pi.on("session_shutdown", () => {
         unsubscribe?.();
         unsubscribe = undefined;
+        unsubscribePreviousSummary?.();
+        unsubscribePreviousSummary = undefined;
     });
 }

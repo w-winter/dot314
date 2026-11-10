@@ -4,6 +4,8 @@
         "inBranchSummary": "writer"
     },
     "toolResultChars": 2000,
+    "verbatimUserMessageTokens": null,
+    "verbatimUserMessageFlagChars": 8000,
     "defaultPreset": "default",
     "largeContextPreset": "large",
     "presets": {

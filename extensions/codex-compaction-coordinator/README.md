@@ -31,6 +31,8 @@ Later requests reuse the saved summary without another summarizer call. A saved 
 
 Switching back to a Codex model uses the checkpoint extension's native replay instead of the plaintext summary.
 
+When grounded-compaction later compacts the session on another provider, it continues from the complete portable summary, because the checkpoint itself holds no readable text. The new compaction then replaces the checkpoint in that branch's context, so later requests on the branch no longer need the portable summary.
+
 ## Portability modes
 
 Portability defaults to `lazy`. Use these commands for the current session:
@@ -50,6 +52,8 @@ Prewarming while a Codex model is active requires grounded-compaction's `default
 Creating a portable summary may require one or more grounded-compaction model calls on the first non-Codex request or after a later checkpoint. In `prewarm` mode those calls can occur before another provider needs the summary. Usage and cost are recorded with the portable summary rather than added to the active assistant turn. Reusing a complete summary doesn't call the summarizer.
 
 Branches without current V2 checkpoints pass through unchanged. If a non-Codex model needs history covered by a native checkpoint but grounded-compaction is unavailable or summarization can't complete, the coordinator blocks the request rather than sending incomplete history. A background prewarm failure doesn't block the active Codex request; status reports the failure, and a later non-Codex request is blocked if the summary remains unavailable. After cancellation, a later attempt resumes from completed work.
+
+Grounded-compaction cancels a compaction on another provider while the latest checkpoint's portable summary is incomplete, because summarizing without it would drop the history the checkpoint covers. That happens only before the first request after switching away from a Codex model, or after summarization failed. A cancelled automatic compaction doesn't stop the pending request, which creates the summary, so the next automatic compaction proceeds. After a cancelled `/compact`, send a message or run `/codex-portability prewarm`, then run `/compact` again.
 
 Portable summaries can include only messages and summaries visible in the session history. Information stored solely inside an opaque OpenAI checkpoint remains available to compatible Codex models but can't be recovered into plaintext for another provider.
 

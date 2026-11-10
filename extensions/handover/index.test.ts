@@ -35,6 +35,7 @@ type ChildEditorContext = { hasUI: boolean; ui: { setEditorText(text: string): v
 async function runHandover(options: {
     configText?: string;
     compactionSummaries?: string[];
+    compactionDetails?: unknown[];
     /** Cancels child creation, which clears the pending draft without starting an auto-submit countdown */
     cancelChildSession?: boolean;
     /** The simulated model's reply; defaults to a draft body followed by a model-authored files-touched list */
@@ -56,6 +57,7 @@ async function runHandover(options: {
         summary,
         firstKeptEntryId: "first-kept",
         tokensBefore: 1000,
+        details: options.compactionDetails?.[index],
     }));
     const prompts: string[] = [];
     const notifications: Notification[] = [];
@@ -139,6 +141,16 @@ async function runHandover(options: {
 }
 
 describe("handover files-touched audiences", () => {
+    it("reads the recorded body instead of appended user material", async () => {
+        const body = "Summary body\n\n## Verbatim user messages\nThis heading is part of the summary.";
+        const run = await runHandover({
+            configText: '{"autoSubmitSeconds":0,"includeFilesTouched":"off"}',
+            compactionSummaries: [`${body}\n\nSupplement-only text`, "Latest body"],
+            compactionDetails: [{ groundedRetention: { version: 1, summaryBody: body, decisions: {}, retainedEntryIds: [] } }],
+        });
+        assert.ok(run.prompts[0].includes(body));
+        assert.ok(!run.prompts[0].includes("Supplement-only text"));
+    });
     it("handover routes the fresh ledger to the configured audiences", async () => {
         const block = renderFilesTouchedManifestBlock([TRACKED_FILE]);
 

@@ -2068,6 +2068,8 @@ describe("coordinator lazy portability orchestration", () => {
                 includeFilesTouched: { inCompactionSummary: "off", inBranchSummary: "off" },
                 defaultPreset: "current",
                 toolResultChars: null,
+                verbatimUserMessageTokens: null,
+                verbatimUserMessageFlagChars: 8000,
                 presets: {},
             }),
             loadCompactionPrompt: async () => "Keep the checkpoint concise",

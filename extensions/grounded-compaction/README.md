@@ -1,6 +1,6 @@
 # grounded-compaction
 
-Requires Pi 0.86.0 or later. Compaction presets can use models registered by other Pi extensions, including `pi-claude`.
+Requires Pi 1.5.0 or later and pi-ai 1.1.0 or later. Compaction presets can use models registered by other Pi extensions, including `pi-claude`.
 
 This extension can play three roles:
 * Replace Pi's compaction summarizer with configurable model presets, custom summarization prompt contracts, and deterministic files-touched tracking that covers Pi native tools, RepoPrompt, recognized shell operations, and Codex `apply_patch`
@@ -26,7 +26,7 @@ For background on Pi's compaction lifecycle, see the [compaction docs](https://g
 ## Files
 
 - **Config**: `config.json` (see `config.json.example` for presets)
-- **Compaction prompt**: `compaction-prompt.md` (falls back to default embedded in [`index.ts`](index.ts) if blank or missing)
+- **Compaction prompt**: `compaction-prompt.md` (falls back to default embedded in [`prompts.ts`](prompts.ts) if blank or missing)
 - **Branch-summary prompt**: `branch-summary-prompt.md` (falls back to Pi's stock branch summarization prompt if blank or missing)
 - Examples: `compaction-prompt.md.example`, `branch-summary-prompt.md.example`
 
@@ -45,6 +45,16 @@ For background on Pi's compaction lifecycle, see the [compaction docs](https://g
   "presets": {}
 }
 ```
+
+### Retaining user messages
+
+[Codex](https://github.com/openai/codex) keeps recent user messages next to its compaction summary: up to 20,000 tokens beside a plaintext summary and 64,000 beside OpenAI's encrypted one. Set `verbatimUserMessageTokens` to a positive whole number to append earlier user messages to this extension's summaries in the same way. The number is an estimated token budget for the appended section, and it shrinks when the model that continues the session lacks room. The default, `null`, turns retention off.
+
+Candidates are your messages from before the conversation Pi keeps after compaction (set by `keepRecentTokens`), chosen newest first. One that doesn't fit is skipped, so smaller older ones can still be included. They appear in conversation order with their session entry IDs and UTC times. Messages omitted through Pi's context edits are skipped, replaced ones use their replacement, and images are not retained.
+
+Messages of at least `verbatimUserMessageFlagChars` characters (default `8000`) can be shortened. The summarizer chooses line ranges, which the extension copies exactly, or writes a short description. The extension shortens a `/skill:` expansion itself, keeping the `<skill>` line that names the skill file and whatever you typed after the skill. Skills rendered by [skill-templates](../skill-templates/README.md) stay whole, because their text depends on the arguments you passed. Later compactions reuse a shortening, including after resume or fork, until the message's text changes.
+
+Each shortened message's full text is saved, readable only by you, to `<sessionDir>/<sessionId>.verbatim/<contentHash>.txt`, and the summary gives that path. Copy these files with the session when moving it to another machine.
 
 ### `includeFilesTouched`
 
@@ -132,7 +142,7 @@ For branch summaries, this extension sets the instructions that Pi's own branch 
 
 ## How compaction summaries are structured
 
-The extension mirrors Pi's stock compaction boundaries: `messagesToSummarize` for history, `turnPrefixMessages` for split-turn prefixes, and `previousSummary` for cumulative updates.  On repeated compactions, that means resuming from the previous compaction's `firstKeptEntryId`, not from the compaction entry itself.  When files-touched is enabled, every summarization request gets the same whole-branch manifest, and the summarizer is told whether the extension will append it. A manifest the model copies to the end of its own output is removed. In `"writerAndReader"` mode, the cumulative manifest is appended to the final persisted summary:
+The extension mirrors Pi's stock compaction boundaries: `messagesToSummarize` for history, `turnPrefixMessages` for split-turn prefixes, and `previousSummary` for cumulative updates.  On repeated compactions, that means resuming from the previous compaction's `firstKeptEntryId`, not from the compaction entry itself.  When the previous compaction is an encrypted checkpoint from a Codex model and codex-compaction-coordinator is loaded, the summarizer receives the coordinator's portable summary of that checkpoint in place of the checkpoint's placeholder text.  When files-touched is enabled, every summarization request gets the same whole-branch manifest, and the summarizer is told whether the extension will append it. A manifest the model copies to the end of its own output is removed. In `"writerAndReader"` mode, the cumulative manifest is appended to the final persisted summary:
 
 ````md
 ---
@@ -158,7 +168,15 @@ W  src/bar.ts
 
 Rerouting to `largeContextPreset` happens only when a request is too large for the model that would otherwise run it. Past that point there is nothing left to fall back to, so compaction is cancelled with a warning rather than handed back to Pi's stock summarizer if `largeContextPreset` is unset, cannot be resolved or authenticated, names a model whose context window is not larger, or still cannot fit the request. A summarization failure after rerouting also cancels.
 
-An explicit `-p` preset cancels if its model cannot fit the request or fails while summarizing. A summarization failure on a compaction that did fit leaves Pi's stock compaction available. Aborts cancel quietly.
+Compaction is also cancelled, with a diagnostic, for any of these:
+
+- The summary stops at the model's output limit. Summary requests ask for the model's maximum output.
+- Retention fails: the summarizer returns an invalid shortening, saved retention data is unreadable, or a recovery file can't be written.
+- The finished summary would leave the model that continues the session too little room for its prompt, tools, kept messages and `reserveTokens`.
+- The session, branch, model, prompt or tools change while the summary is being written.
+- The previous compaction is an encrypted Codex checkpoint whose portable summary codex-compaction-coordinator hasn't finished. The message explains how to build it.
+
+An explicit `-p` preset cancels if its model cannot fit the request or fails while summarizing. Other summarization failures on a compaction that did fit leave Pi's stock compaction available. Aborts cancel quietly.
 
 **Branch summary**: any failure returns `undefined` with a warning, letting Pi's stock flow proceed.
 

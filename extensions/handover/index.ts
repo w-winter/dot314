@@ -15,6 +15,7 @@ import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
 import { collectFilesTouched, registerFilesTouchedTracking, type FilesTouchedEntry } from "../_shared/files-touched-core.ts";
+import { readGroundedSummaryBody } from "../_shared/grounded-compaction-record.ts";
 
 const STATUS_KEY = "handover";
 const DEFAULT_AUTO_SUBMIT_SECONDS = 10;
@@ -278,7 +279,7 @@ function buildPriorCompactionAddendum(ctx: ExtensionCommandContext): string {
     }
 
     // The fresh files-touched list supersedes ledgers saved with older summaries
-    const summary = previous.summary.trimEnd().replace(COMPACTION_LEDGER_TAIL_PATTERN, "").trim();
+    const summary = readGroundedSummaryBody(previous).trimEnd().replace(COMPACTION_LEDGER_TAIL_PATTERN, "").trim();
     if (!summary) {
         return "";
     }

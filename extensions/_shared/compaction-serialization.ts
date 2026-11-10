@@ -34,3 +34,8 @@ export function serializeConversationForCompaction(messages: Message[], toolResu
 
     return parts.join("\n\n");
 }
+
+/** Coarse token estimate for a summarization request: four characters per token. */
+export function estimateInputTokens(text: string): number {
+    return Math.ceil(text.length / 4);
+}

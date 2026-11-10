@@ -17,8 +17,8 @@
     "extensions": ["extensions/grounded-compaction/index.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.86.0",
-    "@earendil-works/pi-coding-agent": ">=0.86.0",
+    "@earendil-works/pi-ai": ">=1.1.0",
+    "@earendil-works/pi-coding-agent": ">=1.5.0",
     "typebox": "^1.3.7"
   },
   "scripts": {
@@ -28,6 +28,10 @@
   "dot314Prepack": {
     "copy": [
       { "from": "../../extensions/grounded-compaction/index.ts", "to": "extensions/grounded-compaction/index.ts" },
+      { "from": "../../extensions/grounded-compaction/configuration.ts", "to": "extensions/grounded-compaction/configuration.ts" },
+      { "from": "../../extensions/grounded-compaction/prompts.ts", "to": "extensions/grounded-compaction/prompts.ts" },
+      { "from": "../../extensions/grounded-compaction/summary-execution.ts", "to": "extensions/grounded-compaction/summary-execution.ts" },
+      { "from": "../../extensions/grounded-compaction/retention.ts", "to": "extensions/grounded-compaction/retention.ts" },
       { "from": "../../extensions/grounded-compaction/portable-summarizer.ts", "to": "extensions/grounded-compaction/portable-summarizer.ts" },
       { "from": "../../extensions/grounded-compaction/registration.ts", "to": "extensions/grounded-compaction/registration.ts" },
       { "from": "../../extensions/grounded-compaction/compaction-prompt.md.example", "to": "extensions/grounded-compaction/compaction-prompt.md.example" },
@@ -37,6 +41,7 @@
       { "from": "../../extensions/_shared/files-touched-contract.ts", "to": "extensions/_shared/files-touched-contract.ts" },
       { "from": "../../extensions/_shared/files-touched-nested.ts", "to": "extensions/_shared/files-touched-nested.ts" },
       { "from": "../../extensions/_shared/compaction-serialization.ts", "to": "extensions/_shared/compaction-serialization.ts" },
+      { "from": "../../extensions/_shared/grounded-compaction-record.ts", "to": "extensions/_shared/grounded-compaction-record.ts" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ]
   }
