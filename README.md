@@ -61,7 +61,7 @@ After installing, use `pi config` to enable or disable individual extensions, sk
       "./extensions/files-touched.ts",
       "./extensions/grounded-compaction/index.ts",
       "./extensions/model-aware-compaction/index.ts",
-      "./extensions/move-session.ts",
+      "./extensions/move-session/index.ts",
       "./extensions/repoprompt-mcp/src/index.ts",
       "./extensions/session-ask/index.ts",
       "./extensions/session-switch/index.ts"
@@ -114,7 +114,7 @@ See [extensions/README.md](extensions/README.md) for more detailed descriptions.
 | ● | `md.ts` | [`pi-md-export`](https://www.npmjs.com/package/pi-md-export) | Export session branch or last N turns to Markdown file or clipboard |
 | ● | `model-aware-compaction/` | [`pi-model-aware-compaction`](https://www.npmjs.com/package/pi-model-aware-compaction) | Per-model compaction thresholds |
 | ● | `model-sysprompt-appendix/` | [`pi-model-sysprompt-appendix`](https://www.npmjs.com/package/pi-model-sysprompt-appendix) | Per-model system prompt additions |
-| ● | `move-session.ts` | [`pi-move-session`](https://www.npmjs.com/package/pi-move-session) | Move current active session to a new cwd |
+| ● | [`move-session/`](extensions/move-session/) | [`pi-move-session`](https://www.npmjs.com/package/pi-move-session) | Move the current session to a new working directory; `--family` includes its oldest ancestor and every descendant |
 | ● | [`native-mcp-approvals/`](extensions/native-mcp-approvals/) | [`pi-native-mcp-approvals`](https://www.npmjs.com/package/pi-native-mcp-approvals) | Configurable per-call approval for native MCP tools, including scripted calls |
 | ◐ | `pi-claude-bridge/` | | Claude Agent SDK bridge for ToS-compliant Claude subscriptions usage in Pi |
 | ◐ | `pi-queue-steer/` | | Editable steering and follow-up queues with RepoPrompt-aware interruption events |

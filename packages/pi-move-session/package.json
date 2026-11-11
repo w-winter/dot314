@@ -1,7 +1,7 @@
 {
   "name": "pi-move-session",
-  "version": "0.3.1",
-  "description": "Move a live Pi session to another working directory, including back to a repository's main worktree",
+  "version": "0.3.2",
+  "description": "Move a live Pi session or its whole family to another working directory",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "session"],
   "license": "MIT",
   "repository": {
@@ -14,18 +14,22 @@
   },
   "homepage": "https://github.com/w-winter/dot314#readme",
   "pi": {
-    "extensions": ["extensions/move-session.ts"]
+    "extensions": ["extensions/move-session/index.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0"
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "typebox": "*"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs"
   },
-  "files": ["extensions/**", "README.md", "LICENSE", "package.json"],
+  "files": ["extensions/move-session/*.ts", "extensions/_shared/normalize-target-cwd.ts", "README.md", "LICENSE", "package.json"],
   "dot314Prepack": {
     "copy": [
-      { "from": "../../extensions/move-session.ts", "to": "extensions/move-session.ts" },
+      { "from": "../../extensions/move-session/index.ts", "to": "extensions/move-session/index.ts" },
+      { "from": "../../extensions/move-session/arguments.ts", "to": "extensions/move-session/arguments.ts" },
+      { "from": "../../extensions/move-session/family.ts", "to": "extensions/move-session/family.ts" },
+      { "from": "../../extensions/move-session/README.md", "to": "README.md" },
       {
         "from": "../../extensions/_shared/normalize-target-cwd.ts",
         "to": "extensions/_shared/normalize-target-cwd.ts"

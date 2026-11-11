@@ -1,24 +1,10 @@
-/**
- * Session Move Extension
- *
- * Move the current session into another cwd bucket and relaunch pi in that directory
- *
- * Implementation strategy:
- *  1) Fork the current session file into the target cwd bucket using SessionManager.forkFrom()
- *  2) Clear the fork header's parentSession pointer
- *  3) Tear down the parent's terminal usage (pop kitty protocol, reset modes)
- *  4) Spawn a new pi process in the target cwd with inherited stdio
- *  5) Once the child has spawned, trash the old session file
- *  6) Once the child has spawned, destroy the parent's stdin so it cannot steal key presses
- *  7) Parent stays alive as an inert wrapper, forwarding the child's exit code
- *
- * Usage:
- *   /move-session <targetCwd>
- */
+/** Move the current session or its entire family to another working directory and relaunch Pi. */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { join } from "node:path";
 import {
     statSync,
     openSync,
@@ -34,11 +20,17 @@ import {
     isMainWorktreeTarget,
     MAIN_WORKTREE_TOKEN,
     normalizeTargetCwd,
-} from "./_shared/normalize-target-cwd";
+} from "../_shared/normalize-target-cwd";
+import { FAMILY_FLAG, parseMoveArguments } from "./arguments.ts";
+import { moveSessionFamily } from "./family.ts";
 
 const TRASH_TIMEOUT_MS = 5000;
 const HEADER_READ_MAX = 8192;
 const COPY_CHUNK_SIZE = 65_536;
+
+interface Relaunch {
+    state: { kind: "idle" } | { kind: "terminal-released" } | { kind: "running"; exit: Promise<number> };
+}
 
 function getBranchSelectionWarning(
     sourceSessionFile: string,
@@ -148,56 +140,55 @@ export default function (pi: ExtensionAPI) {
         return getMainWorktreeRootFromWorktreeList(result.stdout);
     };
 
-    const trashFileBestEffort = async (filePath: string) => {
-        try {
-            const { code } = await pi.exec("trash", [filePath], { timeout: TRASH_TIMEOUT_MS });
-            if (code === 0) {
-                return;
-            }
-        } catch {
-            // ignore
-        }
-
-        // If "trash" isn't available, do not fall back to unlink.
-        // This extension should never permanently delete session files.
+    const trash = async (paths: string[]) => {
+        const result = await pi.exec("trash", paths, { timeout: TRASH_TIMEOUT_MS });
+        if (result.code !== 0) throw new Error(`trash failed: ${result.stderr.trim() || result.code}`);
     };
 
     pi.registerCommand("move-session", {
-        description: "Move session to another directory and relaunch pi there",
+        description: "Move session to another directory; --family includes all related sessions",
         getArgumentCompletions: (argumentPrefix: string) => {
             const trimmedPrefix = argumentPrefix.trimStart();
-            if (!MAIN_WORKTREE_TOKEN.startsWith(trimmedPrefix)) {
-                return null;
-            }
-
-            return [{
-                value: MAIN_WORKTREE_TOKEN,
-                label: MAIN_WORKTREE_TOKEN,
-                description: "Move session to this repository's main git worktree",
-            }];
+            const familyPrefix = /^--family\s+/.exec(trimmedPrefix)?.[0] ?? "";
+            const targetPrefix = trimmedPrefix.slice(familyPrefix.length);
+            const completions = [
+                ...(!familyPrefix && FAMILY_FLAG.startsWith(trimmedPrefix) ? [{
+                    value: FAMILY_FLAG,
+                    label: FAMILY_FLAG,
+                    description: "Move the oldest ancestor and every descendant together",
+                }] : []),
+                ...(MAIN_WORKTREE_TOKEN.startsWith(targetPrefix) ? [{
+                    value: familyPrefix + MAIN_WORKTREE_TOKEN,
+                    label: MAIN_WORKTREE_TOKEN,
+                    description: "Move to this repository's main git worktree",
+                }] : []),
+            ];
+            return completions.length ? completions : null;
         },
         handler: async (args, ctx) => {
             await ctx.waitForIdle();
 
-            const rawTargetCwd = args.trim();
-            if (!rawTargetCwd) {
-                ctx.ui.notify("Usage: /move-session <targetCwd>", "error");
+            let parsed: ReturnType<typeof parseMoveArguments>;
+            try {
+                parsed = parseMoveArguments(args);
+            } catch (error) {
+                ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
                 return;
             }
 
             let targetCwd: string;
             try {
-                targetCwd = await resolveTargetCwd(rawTargetCwd, ctx.cwd);
-            } catch (error: any) {
-                ctx.ui.notify(error?.message ?? String(error), "error");
+                targetCwd = await resolveTargetCwd(parsed.targetCwd, ctx.cwd);
+            } catch (error) {
+                ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
                 return;
             }
 
             let targetCwdStat;
             try {
                 targetCwdStat = statSync(targetCwd);
-            } catch (error: any) {
-                const code = error?.code;
+            } catch (error) {
+                const code = error instanceof Error && "code" in error ? error.code : undefined;
                 if (code === "ENOENT") {
                     ctx.ui.notify(`Path does not exist: ${targetCwd}`, "error");
                 } else {
@@ -227,28 +218,9 @@ export default function (pi: ExtensionAPI) {
                 ctx.ui.notify(branchSelectionWarning, "warning");
             }
 
-            try {
-                const forked = SessionManager.forkFrom(sourceSessionFile, targetCwd);
-                const destSessionFile = forked.getSessionFile();
-
-                if (!destSessionFile) {
-                    ctx.ui.notify("Internal error: forkFrom() produced no session file", "error");
-                    return;
-                }
-
-                // We intend to move/replace the original session, so avoid leaving
-                // a parentSession pointer that may dangle after trashing the source.
-                try {
-                    clearParentSession(destSessionFile);
-                } catch (error: any) {
-                    ctx.ui.notify(
-                        `Warning: could not clear parent session reference: ${error?.message ?? String(error)}`,
-                        "warning"
-                    );
-                }
-
-                // --- Tear down the parent's terminal usage ---
-                // We do this BEFORE spawning, to avoid nesting Kitty protocol flags.
+            const relaunch: Relaunch = { state: { kind: "idle" } };
+            const launch = async (destSessionFile: string): Promise<void> => {
+                // Reset before spawning to avoid nesting Kitty protocol flags.
                 process.stdout.write("\x1b[<u");      // Pop kitty keyboard protocol
                 process.stdout.write("\x1b[?2004l");  // Disable bracketed paste
                 process.stdout.write("\x1b[?25h");    // Show cursor
@@ -257,6 +229,7 @@ export default function (pi: ExtensionAPI) {
                 if (process.stdin.isTTY) {
                     process.stdin.setRawMode(false);
                 }
+                relaunch.state = { kind: "terminal-released" };
 
                 // Spawn new pi in the target directory
                 const child = spawn("pi", ["--session", destSessionFile], {
@@ -264,31 +237,52 @@ export default function (pi: ExtensionAPI) {
                     stdio: "inherit",
                 });
 
-                child.once("spawn", () => {
-                    // Trash the old session file *after* the new process is actually running
-                    void trashFileBestEffort(sourceSessionFile);
+                const exit = new Promise<number>((resolve) => child.once("exit", (code) => resolve(code ?? 0)));
+                await once(child, "spawn");
+                relaunch.state = { kind: "running", exit };
 
-                    // Stop the parent from stealing keypresses.
-                    // destroy() is important; pause() was not sufficient.
-                    process.stdin.removeAllListeners();
-                    process.stdin.destroy();
+                // Use destroy() because pause() still lets the parent steal keypresses.
+                process.stdin.removeAllListeners();
+                process.stdin.destroy();
+                process.removeAllListeners("SIGINT");
+                process.removeAllListeners("SIGTERM");
+                process.on("SIGINT", () => {});
+                process.on("SIGTERM", () => {});
+            };
 
-                    // Avoid the parent reacting to Ctrl+C / termination signals.
-                    // (The child is the process the user is interacting with.)
-                    process.removeAllListeners("SIGINT");
-                    process.removeAllListeners("SIGTERM");
-                    process.on("SIGINT", () => {});
-                    process.on("SIGTERM", () => {});
-                });
-
-                child.on("exit", (code) => process.exit(code ?? 0));
-                child.on("error", (err) => {
-                    process.stderr.write(`Failed to launch pi: ${err.message}\n`);
-                    process.exit(1);
-                });
-            } catch (error: any) {
-                ctx.ui.notify(`Failed to move session: ${error?.message ?? String(error)}`, "error");
+            try {
+                if (parsed.scope === "family") {
+                    if (!ctx.hasUI) throw new Error("Family moves require interactive confirmation.");
+                    await moveSessionFamily({
+                        sourceSessionFile,
+                        targetCwd,
+                        sessionsRoot: join(getAgentDir(), "sessions"),
+                        targetSessionDir: SessionManager.create(targetCwd).getSessionDir(),
+                        confirm: (sources) => ctx.ui.confirm(
+                            `Move ${sources.length} sessions to ${targetCwd}?`,
+                            "Close any other Pi process using the sessions listed below. After verifying the copies, " +
+                            "Pi will reopen the current session in the target directory and move the originals to Trash.\n\n" +
+                            sources.join("\n"),
+                        ),
+                        launch,
+                        trash,
+                    });
+                } else {
+                    const forked = SessionManager.forkFrom(sourceSessionFile, targetCwd);
+                    const destSessionFile = forked.getSessionFile();
+                    if (!destSessionFile) throw new Error("Internal error: forkFrom() produced no session file");
+                    clearParentSession(destSessionFile);
+                    await launch(destSessionFile);
+                    await trash([sourceSessionFile]);
+                }
+            } catch (error) {
+                const message = `Failed to move session: ${error instanceof Error ? error.message : String(error)}`;
+                if (relaunch.state.kind !== "idle") process.stderr.write(message + "\n");
+                else ctx.ui.notify(message, "error");
             }
+            // Wait for cleanup even if the child exits immediately after spawning.
+            if (relaunch.state.kind === "running") process.exit(await relaunch.state.exit);
+            if (relaunch.state.kind === "terminal-released") process.exit(1);
         },
     });
 }

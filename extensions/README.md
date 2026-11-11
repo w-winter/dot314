@@ -124,12 +124,11 @@
   - `/fork-from-first` forks the current session from its first user message and switches into the new fork immediately
   - If [pi-rewind-hook](https://github.com/nicobailon/pi-rewind-hook) is installed, it requests rewind's conversation-only fork mode ("keep current files") for that fork
 
-- ● [`move-session.ts`](move-session.ts)
-  - `/move-session <targetCwd>` moves the *current session* to a different working directory, intended for when you started pi in one folder but come to find that you need it in another after building up valuable context
-  - `/move-session $main-worktree` moves the session to the repository's main Git worktree, useful when retiring a linked worktree after preserving a valuable session
-  - Forks the session JSONL into the target cwd bucket (`SessionManager.forkFrom(...)`), clears the fork header's `parentSession` pointer, then relaunches `pi --session <fork>` with `cwd=<targetCwd>` so the footer + built-in tools resolve relative paths against the new directory
-  - Uses `trash` to delete the old session file (best-effort); if `trash` isn't available, it leaves the old file in place
-  - Supports `~` expansion (e.g. `/move-session ~/code/my-project`)
+- ● [`move-session/`](move-session/) ([README](move-session/README.md))
+  - `/move-session <targetCwd>` moves the current session to another working directory and relaunches Pi there
+  - `/move-session --family <targetCwd>` moves its oldest ancestor and every descendant together, retaining session IDs and parent links. Confirmation lists the affected sessions
+  - Supports spaces, relative paths, `~` expansion, and `$main-worktree` as the target, including `/move-session --family $main-worktree`
+  - Close other family sessions before confirming. Originals go to Trash after the copies are verified and Pi launches, and failures report recovery paths
 
 - ● [`roam/`](roam/) ([README](./roam/README.md))
   - `/roam [window-name]` post-hoc moves the current live Pi session into a dedicated tmux server (`tmux -L pi`) for remote continuation (e.g. Termius over Tailscale) -- convenient if you find yourself wishing you had already started Pi inside tmux
