@@ -2,7 +2,9 @@ import type {
     ExtensionAPI,
     ExtensionContext,
     SessionBeforeCompactEvent,
+    SessionBeforeCompactResult,
     SessionBeforeTreeEvent,
+    SessionBeforeTreeResult,
     SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
@@ -45,6 +47,8 @@ type GroundedCoordinationResponse =
 type GroundedCompactionCoordinationQuery = {
     kind: "grounded-session-compaction";
     model?: { provider: string; api: string; id: string };
+    event: SessionBeforeCompactEvent;
+    context: ExtensionContext;
     response: GroundedCoordinationResponse;
 };
 
@@ -88,7 +92,10 @@ function queryReadablePreviousSummary(pi: ExtensionAPI, request: PreviousSummary
         : { status: "error", error: "invalid previous-summary response" };
 }
 
-export interface GroundedCompactionHandlers<CompactionResult, BranchSummaryResult> {
+export interface GroundedCompactionHandlers<
+    CompactionResult extends SessionBeforeCompactResult | undefined,
+    BranchSummaryResult extends SessionBeforeTreeResult | undefined,
+> {
     runCompaction: (
         event: SessionBeforeCompactEvent,
         ctx: ExtensionContext,
@@ -102,23 +109,30 @@ export interface GroundedCompactionHandlers<CompactionResult, BranchSummaryResul
 
 export function queryGroundedCompactionDelegation(
     pi: ExtensionAPI,
-    model: GroundedCompactionCoordinationQuery["model"],
+    event: SessionBeforeCompactEvent,
+    context: ExtensionContext,
 ): GroundedCoordinationResponse {
     const query: GroundedCompactionCoordinationQuery = {
         kind: "grounded-session-compaction",
-        model,
+        model: context.model,
+        event,
+        context,
         response: { status: "unavailable" },
     };
     pi.events.emit(CODEX_COMPACTION_COORDINATION_EVENT, query);
     return normalizeGroundedCoordinationResponse(query.response);
 }
 
-export function registerGroundedCompactionHandlers<CompactionResult, BranchSummaryResult>(
+export function registerGroundedCompactionHandlers<
+    CompactionResult extends SessionBeforeCompactResult | undefined,
+    BranchSummaryResult extends SessionBeforeTreeResult | undefined,
+>(
     pi: ExtensionAPI,
     handlers: GroundedCompactionHandlers<CompactionResult, BranchSummaryResult>,
 ): void {
     pi.on("session_before_compact", async (event, ctx) => {
-        const coordination = queryGroundedCompactionDelegation(pi, ctx.model);
+        if (event.signal.aborted) return { cancel: true };
+        const coordination = queryGroundedCompactionDelegation(pi, event, ctx);
         if (coordination.status === "available") {
             return undefined;
         }

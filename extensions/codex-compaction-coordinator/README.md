@@ -2,20 +2,27 @@
 
 Coordinates native compaction and cross-provider history portability for models whose provider is `openai-codex` and API is `openai-codex-responses` (called **Codex models** below).
 
-Requires Pi 0.86.0 or later.
+Requires Pi 1.5.0 or later.
 
 The coordinator depends on two integrations:
 
-- A compatible checkpoint extension creates and replays encrypted OpenAI Responses V2 checkpoints through Pi's normal compaction pipeline. [howaboua's `@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) is the implementation I use and test with this coordinator.
+- [howaboua's `@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) 4.0.10 or later creates and replays encrypted OpenAI Responses V2 checkpoints through Pi's normal compaction pipeline. Install it with `pi install npm:@howaboua/pi-codex-conversion`.
 - [`grounded-compaction`](../grounded-compaction/README.md) is required to create portable plaintext summaries when another provider needs visible history covered by a native checkpoint.
-
-Any extension that produces and replays compatible durable Responses V2 checkpoints can fill the checkpoint role.
 
 Aside: the other compaction-related extension in this repo, [`model-aware-compaction`](../model-aware-compaction/README.md), isn't a coordinator dependency. That extension independently changes when Pi begins compaction for whichever extension, or Pi's native logic, owns the compaction lifecycle at runtime.
 
 ## Behavior
 
-For Codex models, grounded-compaction leaves compaction to Pi's normal pipeline. When the compatible checkpoint extension creates a native checkpoint, the coordinator can prepare the visible history covered by that checkpoint for other providers.
+For Codex models, the compaction method selected in `/codex context` determines which extension writes the summary:
+
+- **Pi summary** uses grounded-compaction, including its model presets, prompt, file tracking, and user-message retention.
+- **Codex V2** and **Both** use pi-codex-conversion when its native compaction is active.
+
+After changing the compaction method, run `/reload`. The coordinator reads the effective global and trusted project settings at session start and cancels compaction if the saved method changes before reloading.
+
+If Pi summary is selected and the latest checkpoint is encrypted with no readable summary, pi-codex-conversion handles the next compaction to convert it to text. Grounded-compaction handles subsequent compactions. A checkpoint that already contains a readable summary, such as one created with Both, can be summarized by grounded-compaction directly.
+
+Keep the coordinator enabled when using Pi summary. Its portability and prewarming features process encrypted checkpoints from earlier sessions and earlier compaction-method selections.
 
 On the first request after switching to another provider, the coordinator creates any missing portable summaries for the current history. Grounded-compaction uses its configured `defaultPreset` to summarize the visible session history in chronological chunks. When grounded-compaction's `includeFilesTouched.inCompactionSummary` is `"writer"` or `"writerAndReader"`, the summarizer receives the cumulative files-touched manifest through that checkpoint, and with `"writerAndReader"` each portable summary also includes it. Messages after the checkpoint remain in the visible tail and are excluded from the manifest.
 

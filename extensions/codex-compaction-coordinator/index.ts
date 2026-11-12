@@ -1,5 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
 
+import { loadConversionCompaction, type ConversionCompaction } from "./conversion-compaction.ts";
 import { registerCodexCompactionPortability } from "./portability.ts";
 import { registerCodexCompactionPrewarm } from "./prewarm.ts";
 import { registerPortableSummaryEntryRenderer } from "./portable-summary-renderer.ts";
@@ -16,6 +19,8 @@ export type GroundedCoordinationResponse =
 export type CodexCompactionCoordinationQuery = {
     kind: "grounded-session-compaction";
     model?: { provider: string; api: string; id: string };
+    event: SessionBeforeCompactEvent;
+    context: ExtensionContext;
     response: GroundedCoordinationResponse;
 };
 
@@ -24,8 +29,16 @@ type ModelIdentity = { provider: string; api: string; id: string };
 type MutableCoordinationQuery = {
     kind: unknown;
     model?: unknown;
+    event?: unknown;
+    context?: unknown;
     response: unknown;
 };
+
+// Pi supplies the full event and context. The schema checks the coordination envelope.
+const CompactionRequestSchema = Type.Object({
+    event: Type.Unsafe<SessionBeforeCompactEvent>(Type.Object({ branchEntries: Type.Array(Type.Object({ type: Type.String() })) })),
+    context: Type.Unsafe<ExtensionContext>(Type.Object({ cwd: Type.String() })),
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -91,6 +104,25 @@ export default function codexCompactionCoordinator(pi: ExtensionAPI): void {
     registerCodexCompactionPortability(pi);
     let unsubscribePreviousSummary: (() => void) | undefined = registerPreviousSummaryResponder(pi);
     let unsubscribe: (() => void) | undefined;
+    let conversion:
+        | { status: "ready"; policy: ConversionCompaction | undefined }
+        | { status: "error"; error: string } = { status: "error", error: "Compaction coordination has not initialized; run /reload." };
+
+    pi.on("session_start", (_event, ctx) => {
+        try {
+            conversion = { status: "ready", policy: loadConversionCompaction(pi, ctx) };
+        } catch (error) {
+            conversion = { status: "error", error: error instanceof Error ? error.message : String(error) };
+            if (ctx.hasUI) ctx.ui.notify(`Codex compaction coordination failed: ${conversion.error}`, "error");
+        }
+        pi.on("session_before_compact", (event, context) => {
+            if (conversion.status === "error") {
+                if (context.hasUI) context.ui.notify(`Codex compaction coordination failed: ${conversion.error}`, "error");
+                return { cancel: true };
+            }
+            return conversion.policy?.prepare(event, context);
+        });
+    });
 
     unsubscribe = pi.events.on(CODEX_COMPACTION_COORDINATION_EVENT, (payload: unknown) => {
         if (
@@ -106,10 +138,12 @@ export default function codexCompactionCoordinator(pi: ExtensionAPI): void {
         }
 
         try {
-            payload.response = mergeCoordinationResponse(payload.response, {
-                status: "available",
-                decision: "delegate-to-pi-pipeline",
-            });
+            if (conversion.status === "error") throw new Error(conversion.error);
+            if (!Check(CompactionRequestSchema, payload)) throw new Error("Invalid compaction coordination request");
+            const response: GroundedCoordinationResponse = conversion.policy?.delegates(payload.event, payload.context)
+                ? { status: "available", decision: "delegate-to-pi-pipeline" }
+                : { status: "unavailable" };
+            payload.response = mergeCoordinationResponse(payload.response, response);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             payload.response = mergeCoordinationResponse(payload.response, {
@@ -120,6 +154,7 @@ export default function codexCompactionCoordinator(pi: ExtensionAPI): void {
     });
 
     pi.on("session_shutdown", () => {
+        if (conversion.status === "ready") conversion.policy?.dispose();
         unsubscribe?.();
         unsubscribe = undefined;
         unsubscribePreviousSummary?.();

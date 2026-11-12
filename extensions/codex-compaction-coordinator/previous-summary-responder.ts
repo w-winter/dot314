@@ -2,7 +2,7 @@ import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
-import { describeNativeEpoch } from "./native-checkpoint-source.ts";
+import { describeNativeEpoch, NATIVE_COMPACTION_SUMMARY } from "./native-checkpoint-source.ts";
 import { derivePortablePlan, discoverChain } from "./portability.ts";
 
 /** Grounded-compaction asks this before summarizing from a previous compaction entry's stored summary. */
@@ -32,13 +32,17 @@ type PreviousSummaryQuery = Static<typeof PreviousSummaryQuerySchema>;
 
 /**
  * Answers for the latest native checkpoint on the branch with its complete portable summary. Returns undefined
- * when the entry is not that checkpoint, or when the checkpoint covers no visible history, so the stored summary stands.
+ * when the stored summary is readable, the entry is not that checkpoint, or the checkpoint covers no visible history.
  */
 function resolvePreviousSummary(query: PreviousSummaryQuery): PreviousSummaryResponse | undefined {
     const epoch = describeNativeEpoch(query.branchEntries);
     // An epoch error means a native checkpoint follows the latest plaintext compaction, so the entry is a checkpoint.
     if (epoch.status === "error") return { status: "error", error: epoch.message };
     if (epoch.checkpoints.at(-1)?.entryId !== query.compactionEntryId) return undefined;
+    const checkpoint = query.branchEntries.find((entry) => entry.id === query.compactionEntryId);
+    if (checkpoint?.type === "compaction" && checkpoint.summary.trim() && checkpoint.summary !== NATIVE_COMPACTION_SUMMARY) {
+        return undefined;
+    }
     const plan = derivePortablePlan(query.branchEntries, epoch);
     const chain = discoverChain(plan, query.sessionEntries, query.branchEntries, () => undefined);
     if (chain.completedCheckpoints !== plan.checkpoints.length || chain.tip?.record.state !== "complete") {

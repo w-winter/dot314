@@ -3,7 +3,7 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { hashPortableValue } from "./portable-record.ts";
 
 const NATIVE_COMPACTION_STRATEGY = "openai-responses-compaction-v2";
-const NATIVE_COMPACTION_SUMMARY = "[OpenAI native compaction checkpoint]";
+export const NATIVE_COMPACTION_SUMMARY = "[OpenAI native compaction checkpoint]";
 const NATIVE_COMPACTION_DISPLAY_TYPE = "codex-native-compaction-display";
 
 // hashPortableValue inserts the NUL separator, so the persisted V1 domain string excludes it

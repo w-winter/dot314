@@ -222,6 +222,14 @@ function query(branch: readonly SessionEntry[], compactionEntryId: string): Quer
 }
 
 describe("readable previous summary after a native Codex checkpoint", () => {
+    it("uses an embedded readable checkpoint summary without requiring a separate portable record", () => {
+        const harness = createHarness({ retentionTokens: null });
+        const entry = { ...nativeCheckpoint("readable", "kept"), summary: "Readable summary from Both mode" };
+        const payload = query([...harness.branch, entry], entry.id);
+        harness.bus.emit(GROUNDED_PREVIOUS_SUMMARY_EVENT, payload);
+        assert.deepEqual(payload.response, { status: "unavailable" });
+    });
+
     for (const retentionTokens of [null, 4_000]) {
         it(`continues ordinary compaction from the complete portable summary (retention ${retentionTokens ?? "off"})`, async () => {
             const harness = createHarness({ retentionTokens });

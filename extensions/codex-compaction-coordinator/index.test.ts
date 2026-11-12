@@ -5,14 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import {
     registerGroundedCompaction,
-    runGroundedBranchSummaryAugmentation,
-    type GroundedCompactionRunner,
 } from "../grounded-compaction/index.ts";
 import { registerModelAwareCompaction } from "../model-aware-compaction/index.ts";
+import { createEvent, createModel } from "../grounded-compaction/test/fixtures.ts";
 import codexCompactionCoordinator, {
     CODEX_COMPACTION_COORDINATION_EVENT,
     type CodexCompactionCoordinationQuery,
@@ -62,13 +61,15 @@ function createHarness(bus = new TestEventBus()) {
         registerEntryRenderer(customType: string, renderer: unknown) {
             entryRenderers.set(customType, renderer);
         },
+        getCommands: () => [],
     } as unknown as ExtensionAPI;
     codexCompactionCoordinator(pi);
+    for (const hook of hooks.get("session_start") ?? []) hook({}, codexContext());
     return { bus, hooks, entryRenderers };
 }
 
 function codexModel() {
-    return {
+    return createModel({
         id: "gpt-test",
         name: "GPT Test",
         provider: "openai-codex",
@@ -78,14 +79,21 @@ function codexModel() {
         input: ["text"],
         contextWindow: 128_000,
         maxTokens: 16_384,
-        cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0, total: 0 },
-    };
+        cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0 },
+    });
 }
 
 function groundedQuery(model = codexModel()): CodexCompactionCoordinationQuery {
+    const fields: Pick<ExtensionContext, "model" | "cwd" | "isProjectTrusted"> = {
+        model, cwd: "/repo", isProjectTrusted: () => true,
+    };
+    // SAFETY: the coordination reader uses only the model, working directory, and trust callback in this fixture.
+    const context = fields as ExtensionContext;
     return {
         kind: "grounded-session-compaction",
         model,
+        event: createEvent(),
+        context,
         response: { status: "unavailable" },
     };
 }
@@ -96,7 +104,7 @@ describe("codex compaction coordinator", () => {
         assert.equal(entryRenderers.has(PORTABLE_SUMMARY_CUSTOM_TYPE), true);
         assert.equal(entryRenderers.has(LABEL_SENSITIVE_PORTABLE_SUMMARY_CUSTOM_TYPE), false);
         assert.equal(hooks.get("context")?.length, 2);
-        assert.equal(hooks.get("session_start")?.length, 2);
+        assert.equal(hooks.get("session_start")?.length, 3);
         assert.equal(hooks.get("session_tree")?.length, 2);
         assert.equal(hooks.get("model_select")?.length, 2);
         assert.equal(hooks.get("agent_end")?.length, 1);
@@ -104,14 +112,11 @@ describe("codex compaction coordinator", () => {
         assert.equal(hooks.get("session_shutdown")?.length, 3);
     });
 
-    it("delegates grounded compaction only for the exact Codex provider and API", () => {
+    it("leaves compaction available when pi-codex-conversion is not loaded", () => {
         const { bus } = createHarness();
         const canonical = groundedQuery();
         bus.emit(CODEX_COMPACTION_COORDINATION_EVENT, canonical);
-        assert.deepEqual(canonical.response, {
-            status: "available",
-            decision: "delegate-to-pi-pipeline",
-        });
+        assert.deepEqual(canonical.response, { status: "unavailable" });
 
         for (const model of [
             { ...codexModel(), provider: "openai" },
@@ -169,7 +174,7 @@ describe("codex compaction coordinator", () => {
         createHarness(bus);
         const activeQuery = groundedQuery();
         bus.emit(CODEX_COMPACTION_COORDINATION_EVENT, activeQuery);
-        assert.equal(activeQuery.response.status, "available");
+        assert.equal(activeQuery.response.status, "unavailable");
     });
 });
 
@@ -215,8 +220,10 @@ function createParticipantHarness() {
         registerEntryRenderer() {
             return undefined;
         },
+        getCommands: () => [],
     } as unknown as ExtensionAPI;
     codexCompactionCoordinator(pi);
+    for (const hook of hooks.get("session_start") ?? []) hook({}, codexContext());
     return { bus, hooks, pi };
 }
 
@@ -237,6 +244,7 @@ async function runHooks(
 function codexContext(assistantUsage?: { totalTokens: number }): Record<string, unknown> {
     return {
         cwd: "/repo",
+        isProjectTrusted: () => true,
         model: codexModel(),
         hasUI: false,
         ui: { notify: () => undefined },
@@ -251,39 +259,24 @@ function codexContext(assistantUsage?: { totalTokens: number }): Record<string, 
     };
 }
 
-describe("combined compaction ownership", () => {
-    it("runs the real grounded registration in either order without grounded work", async () => {
-        for (const order of ["grounded-first", "native-first"] as const) {
-            const { hooks, pi } = createParticipantHarness();
-            let groundedRuns = 0;
-            registerGroundedCompaction(pi, {
-                runCompaction: (async () => {
-                    groundedRuns += 1;
-                    return { owner: "grounded" };
-                }) as GroundedCompactionRunner,
-                runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
-            });
-            const grounded = hooks.get("session_before_compact")![0];
-            const native: ParticipantHook = () => ({ owner: "native" });
-            const orderedHooks = order === "grounded-first" ? [grounded, native] : [native, grounded];
-            assert.deepEqual(await runHooks(orderedHooks, {}, codexContext()), { owner: "native" });
-            assert.equal(groundedRuns, 0);
-        }
-    });
+describe("compaction without a loaded checkpoint extension", () => {
+    const grounded = {
+        compaction: { summary: "grounded", firstKeptEntryId: "kept", tokensBefore: 1, details: { model: "test" } },
+    };
 
-    it("leaves canonical Codex compaction ownership to Pi's pipeline", async () => {
+    it("runs grounded compaction for Codex models", async () => {
         const { hooks, pi } = createParticipantHarness();
         let groundedRuns = 0;
         registerGroundedCompaction(pi, {
-            runCompaction: (async () => {
+            runCompaction: async () => {
                 groundedRuns += 1;
-                return { owner: "grounded" };
-            }) as GroundedCompactionRunner,
-            runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
+                return grounded;
+            },
+            runBranchSummary: async () => undefined,
         });
-        const result = await runHooks(hooks.get("session_before_compact") ?? [], {}, codexContext());
-        assert.equal(result, undefined);
-        assert.equal(groundedRuns, 0);
+        const result = await runHooks(hooks.get("session_before_compact") ?? [], createEvent(), codexContext());
+        assert.deepEqual(result, grounded);
+        assert.equal(groundedRuns, 1);
     });
 
     it("carries a real model-aware nudge into Pi's normal compaction ownership", async () => {
@@ -297,16 +290,15 @@ describe("combined compaction ownership", () => {
                 isAutoCompactionEnabled: () => true,
             });
             registerGroundedCompaction(pi, {
-                // SAFETY: this test checks only which participant handles compaction, so the stub returns a marker.
-                runCompaction: (async () => ({ owner: "grounded" })) as GroundedCompactionRunner,
-                runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
+                runCompaction: async () => grounded,
+                runBranchSummary: async () => undefined,
             });
             const assistant = { role: "assistant", stopReason: "stop", usage: { totalTokens: 10 } };
             const ctx = codexContext();
             await runHooks(hooks.get("message_end") ?? [], { message: assistant }, ctx);
             await runHooks(hooks.get("agent_end") ?? [], { messages: [assistant], willRetry: false }, ctx);
             assert.equal(assistant.usage.totalTokens, 128001);
-            assert.equal(await runHooks(hooks.get("session_before_compact") ?? [], {}, ctx), undefined);
+            assert.deepEqual(await runHooks(hooks.get("session_before_compact") ?? [], createEvent(), ctx), grounded);
         } finally {
             rmSync(directory, { recursive: true, force: true });
         }
@@ -315,16 +307,13 @@ describe("combined compaction ownership", () => {
     it("preserves grounded ownership for non-Codex models", async () => {
         const { hooks, pi } = createParticipantHarness();
         registerGroundedCompaction(pi, {
-            // SAFETY: this test checks only which participant handles compaction, so the stub returns a marker.
-            runCompaction: (async () => ({ owner: "grounded" })) as GroundedCompactionRunner,
-            runBranchSummary: (async () => undefined) as typeof runGroundedBranchSummaryAugmentation,
+            runCompaction: async () => grounded,
+            runBranchSummary: async () => undefined,
         });
         const ctx = {
             ...codexContext(),
             model: { id: "claude-sonnet", provider: "anthropic", api: "anthropic-messages" },
         };
-        assert.deepEqual(await runHooks(hooks.get("session_before_compact") ?? [], {}, ctx), {
-            owner: "grounded",
-        });
+        assert.deepEqual(await runHooks(hooks.get("session_before_compact") ?? [], createEvent(), ctx), grounded);
     });
 });
