@@ -52,6 +52,8 @@ For background on Pi's compaction lifecycle, see the [compaction docs](https://g
 
 Set `enforceCompactionMandatoryReading` to `true` to enforce the summarizer's required files after compaction. Set `enforceBranchMandatoryReading` to `true` to enforce them after a summarized `/tree` move. Both default to `false` and work independently. Checks are deterministic and require no classifier or additional model call.
 
+Enforcement follows the latest compaction or branch summary on the current session path, using only that summary's reading list. With branch enforcement disabled, a branch summary leaves the reading gate inactive. A later compaction uses the compaction setting.
+
 When enabling enforcement for a summary type, remove any mandatory-reading section or rereading directives from its custom prompt. Keep factual file references in the summary. The extension adds these response-format instructions to the summarizer's system prompt. Your custom prompt specifies the summary itself:
 
 ```text
@@ -73,7 +75,7 @@ The checker compares each existing regular file with the text in pi's continuing
 
 For branch summaries, the checker uses the destination branch's context. Reads available only on the abandoned branch do not satisfy its requirements. Kept messages from before a compaction count, including the retained suffix of a split turn. Requirements survive session resume and reload through the saved metadata. Encrypted checkpoints and summaries from other extensions have no grounded reading metadata and add no reading requirements.
 
-The initial hidden reminder points to the `<grounded-required-reading>` blocks in summaries of the enabled types. Blocked-tool errors list only files still unread. While files remain unread, only `read`, `grep`, `find` and `ls` run. Sessions without a `read` tool can also use shell tools, including `exec` and `exec_command`; nested non-reading tools stay blocked. These shell commands can also modify files, so this is a workflow check rather than a security boundary. Full reading releases the restriction. If the agent tries to finish early, one hidden follow-up lists the remaining files.
+The initial hidden reminder points to the `<grounded-required-reading>` block in the latest summary. Blocked-tool errors list only files still unread. While files remain unread, only `read`, `grep`, `find` and `ls` run. Sessions without a `read` tool can also use shell tools, including `exec` and `exec_command`; nested non-reading tools stay blocked. These shell commands can also modify files, so this is a workflow check rather than a security boundary. Full reading releases the restriction. If the agent tries to finish early, one hidden follow-up lists the remaining files.
 
 Run `/reading-gate-off` to suspend enforcement until the next compaction or branch summary. Set either configuration option to `false` to disable enforcement for that summary type across sessions. Extensions that rewrite provider payloads or run later context filters can change what reaches the model. Load the reading check after context-filtering extensions.
 

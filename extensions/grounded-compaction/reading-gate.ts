@@ -13,7 +13,7 @@ const READING_REMINDER = "grounded-reading-reminder";
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const SHELL_TOOLS = new Set(["bash", "exec", "wait", "exec_command", "write_stdin", "codemode"]);
 
-/** Enforces only lists owned by grounded-compaction and present on the active projected branch. */
+/** Enforces the latest summary on the active branch when its summary type is enabled. */
 export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConfig): void {
     let requestMessages: readonly AgentMessage[] | undefined;
     pi.on("context_with_system", (event) => { requestMessages = event.messages; });
@@ -22,25 +22,25 @@ export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConf
     const pending = async (ctx: ExtensionContext) => {
         const config = await getConfig();
         if (!config.enforceCompactionMandatoryReading && !config.enforceBranchMandatoryReading) return undefined;
-        const projection = ctx.sessionManager.buildSessionProjection();
-        const summaries = projection.entries.filter((entry) => entry.messages.length > 0).map((entry) => entry.sourceEntry)
-            .filter((entry) => entry.type === "compaction" || entry.type === "branch_summary");
-        const transition = summaries.at(-1);
+        const branch = ctx.sessionManager.getBranch();
+        // Projection puts a compaction before its kept entries, so select the transition in branch order.
+        const transition = branch.findLast((entry) => entry.type === "compaction" || entry.type === "branch_summary");
         if (!transition) return undefined;
-        const enforcedSummaries = summaries.filter((entry) => entry.type === "compaction"
-            ? config.enforceCompactionMandatoryReading : config.enforceBranchMandatoryReading);
-        const records = enforcedSummaries.flatMap((entry) => requiredReadingRecord(entry)?.paths ?? []);
-        if (records.length === 0 || hasMarker(ctx.sessionManager.getBranch(), READING_OFF, transition.id)) return undefined;
+        const enabled = transition.type === "compaction" ? config.enforceCompactionMandatoryReading : config.enforceBranchMandatoryReading;
+        if (!enabled) return undefined;
+        const records = requiredReadingRecord(transition)?.paths ?? [];
+        if (records.length === 0 || hasMarker(branch, READING_OFF, transition.id)) return undefined;
+        const projection = ctx.sessionManager.buildSessionProjection();
         const files = outstandingReading([...new Set(records)], requestMessages ?? projection.messages, ctx.getSystemPrompt(), ctx.cwd);
-        const summaryKinds = [...new Set(enforcedSummaries.map((entry) => entry.type === "compaction" ? "compaction" : "branch"))].join(" and ");
-        return files.length > 0 ? { transitionId: transition.id, files, summaryKinds } : undefined;
+        const summaryKind = transition.type === "compaction" ? "compaction" : "branch";
+        return files.length > 0 ? { transitionId: transition.id, files, summaryKind } : undefined;
     };
     const remind = async (ctx: ExtensionContext) => {
         requestMessages = undefined;
         const reading = await pending(ctx);
         if (reading) pi.sendMessage({
             customType: READING_MESSAGE,
-            content: `[grounded-compaction] Read outstanding files in the <grounded-required-reading> blocks of ${reading.summaryKinds} summaries before continuing. Full contents already in context are exempt. Use read; if unavailable, use shell reads. Other tools remain restricted until the required contents are in context.`,
+            content: `[grounded-compaction] Read outstanding files in the latest ${reading.summaryKind} summary's <grounded-required-reading> block before continuing. Full contents already in context are exempt. Use read; if unavailable, use shell reads. Other tools remain restricted until the required contents are in context.`,
             display: false,
         }, { deliverAs: "steer" });
     };
@@ -68,7 +68,7 @@ export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConf
     pi.registerCommand("reading-gate-off", {
         description: "Suspend required reading until the next compaction or branch summary",
         handler: async (_args, ctx) => {
-            const transition = ctx.sessionManager.buildSessionProjection().entries.filter((entry) => entry.messages.length > 0).map((entry) => entry.sourceEntry)
+            const transition = ctx.sessionManager.getBranch()
                 .findLast((entry) => entry.type === "compaction" || entry.type === "branch_summary");
             if (transition) pi.appendEntry(READING_OFF, transition.id);
             ctx.ui.notify("Required-reading enforcement suspended until the next summary.", "info");

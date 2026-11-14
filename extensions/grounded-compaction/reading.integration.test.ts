@@ -212,24 +212,53 @@ it("branch summaries credit destination reads, not reads on the abandoned branch
     }
 });
 
-it("generates branch summaries without reading requirements when only compaction enforcement is enabled", async () => {
+it("does not reactivate an older compaction's reading list after a branch summary with enforcement disabled", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "grounded-reading-branch-off-"));
-    const h = await harness(dir);
+    const file = path.join(dir, "required.md");
+    await writeFile(file, "Original reference contents.\n");
+    let h = await harness(dir);
     let passed = false;
     try {
-        h.work.push(say("Shared work."));
-        await h.session.prompt("Start a task.");
+        h.config.verbatimUserMessageTokens = null;
+        h.work.push(say("Work remains. ".repeat(300)));
+        await h.session.prompt("Prepare a checkpoint. ".repeat(300));
+        h.summaries.push(`Compaction summary.\n${readingBlock([file])}`);
+        await h.session.compact();
+        h.work.push(call("read", { path: file }), say("Shared work."));
+        await h.session.prompt("Continue after compaction.");
+        h.work.push(say("Ready to explore another approach."));
+        await h.session.prompt("Additional shared work. ".repeat(1000));
         const target = h.manager.getLeafId();
         assert.ok(target);
         h.work.push(say("Work on another approach."));
         await h.session.prompt("Explore another approach.");
+        await writeFile(file, "Reference changed while exploring the other branch.\n");
+        const remindersBefore = h.manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "grounded-required-reading").length;
         h.summaries.push("Branch notes for reference.");
         const result = await h.session.navigateTree(target, { summarize: true });
         assert.equal(result.cancelled, false);
         assert.ok(!h.summaryPrompts.at(-1)!.includes("<grounded-required-reading>"));
+        assert.equal(h.manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "grounded-required-reading").length, remindersBefore,
+            "branch navigation must not issue a reminder for the older compaction");
+        const saved = h.manager.getSessionFile();
+        assert.ok(saved);
+        h.session.dispose();
+        h = await harness(dir, SessionManager.open(saved));
         h.work.push(call("bash", { command: "echo unrestricted" }), say("Done."));
         await h.session.prompt("Consider the branch notes.");
         assert.equal(contentText(h.results().at(-1)!.content).trim(), "unrestricted");
+
+        h.config.verbatimUserMessageTokens = null;
+        h.work.push(say("More work remains."));
+        await h.session.prompt("Prepare another checkpoint.");
+        h.summaries.push(`New compaction.\n${readingBlock([file])}`, `Split-turn progress.\n${readingBlock([file])}`);
+        await h.session.compact();
+        h.work.push(call("bash", { command: "echo premature" }), call("read", { path: file }),
+            call("bash", { command: "echo released" }), say("Done."));
+        await h.session.prompt("Continue after the new compaction.");
+        const commands = h.results().filter((result) => result.toolName === "bash").slice(-2);
+        assert.equal(commands[0].isError, true);
+        assert.equal(contentText(commands[1].content).trim(), "released");
         passed = true;
     } finally {
         h.session.dispose();
