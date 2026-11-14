@@ -4,7 +4,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import type { loadConfig } from "./configuration.ts";
-import { outstandingReading } from "./reading-coverage.ts";
+import { outstandingReading, type OutstandingReading } from "./reading-coverage.ts";
 import { requiredReadingRecord } from "./required-reading.ts";
 
 const READING_MESSAGE = "grounded-required-reading";
@@ -40,7 +40,7 @@ export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConf
         const reading = await pending(ctx);
         if (reading) pi.sendMessage({
             customType: READING_MESSAGE,
-            content: `[grounded-compaction] Read outstanding files in the latest ${reading.summaryKind} summary's <grounded-required-reading> block before continuing. Full contents already in context are exempt. Use read; if unavailable, use shell reads. Other tools remain restricted until the required contents are in context.`,
+            content: `[grounded-compaction] Read outstanding files in the latest ${reading.summaryKind} summary's <grounded-required-reading> block before continuing. Contents already in context are exempt. Use read; if unavailable, use cat or sed -n 'START,ENDp' with a literal file path. Emit one bounded file chunk per call. Other tools remain restricted until the required contents are in context.`,
             display: false,
         }, { deliverAs: "steer" });
     };
@@ -80,10 +80,11 @@ function hasMarker(entries: readonly SessionEntry[], customType: string, transit
     return entries.some((entry) => entry.type === "custom" && entry.customType === customType && entry.data === transitionId);
 }
 
-function instruction(files: readonly string[], cwd: string): string {
+function instruction(files: readonly OutstandingReading[], cwd: string): string {
     const paths = files.map((file) => {
-        const relative = path.relative(cwd, file);
-        return relative.startsWith("..") ? file : relative;
+        const relative = path.relative(cwd, file.path);
+        const ranges = file.ranges.map(({ start, end }) => start === end ? `${start}` : `${start}-${end}`).join(", ");
+        return `${relative.startsWith("..") ? file.path : relative} (lines ${ranges})`;
     });
-    return `[grounded-compaction] Read these files in full before continuing: ${paths.join(", ")}. Other tools unlock when their complete contents are in context. Use read; if unavailable, use shell reads. Directories and system-injected content are exempt.`;
+    return `[grounded-compaction] Read missing lines before continuing: ${paths.join(", ")}. Use read offsets/limits or sed -n 'START,ENDp' with a literal file path. Emit one bounded file chunk per call. Other tools unlock when all required lines are in context.`;
 }

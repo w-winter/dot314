@@ -1,0 +1,104 @@
+{
+  "contents": "First reference line.\nSecond reference line.\nUnseen middle line.\nFinal reference line.\n",
+  "partial": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"exit_code\":0}\nOutput:\nFirst reference line.\nSecond reference line.\nUns\n[Output truncated; later results may be omitted. Narrow reads or fetch missing help separately. Do not rerun side effects for output.]"
+      }
+    ],
+    "details": {
+      "codeMode": true,
+      "cellId": "reading-fixture",
+      "status": "result",
+      "statusPrefix": false,
+      "traces": [
+        {
+          "id": "read-fixture",
+          "name": "exec_command",
+          "input": {
+            "cmd": "cat required.md"
+          },
+          "status": "done",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "First reference line.\nSecond reference line.\nUnseen middle line.\nFinal reference line.\n"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    }
+  },
+  "remainders": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"exit_code\":0}\nOutput:\nUnseen middle line.\nFinal reference line.\n"
+        }
+      ],
+      "details": {
+        "codeMode": true,
+        "cellId": "reading-fixture",
+        "status": "result",
+        "statusPrefix": false,
+        "traces": [
+          {
+            "id": "read-fixture",
+            "name": "exec_command",
+            "input": {
+              "cmd": "sed -n '3,4p' required.md"
+            },
+            "status": "done",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Unseen middle line.\nFinal reference line.\n"
+                }
+              ],
+              "isError": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"output\":\"Unseen middle line.\\nFinal reference line.\\n\",\"exit_code\":0}"
+        }
+      ],
+      "details": {
+        "codeMode": true,
+        "cellId": "reading-fixture",
+        "status": "result",
+        "statusPrefix": false,
+        "traces": [
+          {
+            "id": "read-fixture",
+            "name": "exec_command",
+            "input": {
+              "cmd": "sed -n '3,4p' required.md"
+            },
+            "status": "done",
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Unseen middle line.\nFinal reference line.\n"
+                }
+              ],
+              "isError": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

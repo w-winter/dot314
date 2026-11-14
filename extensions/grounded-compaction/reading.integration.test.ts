@@ -14,11 +14,15 @@ const say = (text: string) => fauxAssistantMessage(text);
 const call = (name: string, args: JsonObject) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 const readingBlock = (files: string[]) => `<grounded-required-reading>\n${JSON.stringify({ paths: files })}\n</grounded-required-reading>`;
 
-const ExecInput = Type.Object({ command: Type.String(), emit: Type.Boolean() });
+const ExecInput = Type.Object({ command: Type.String(), emit: Type.Boolean(), maxOutputChars: Type.Optional(Type.Integer({ minimum: 1 })) });
 const execTool: ToolDefinition<typeof ExecInput> = {
     name: "exec", label: "exec", description: "Read through a nested shell call and optionally emit its result.", parameters: ExecInput,
     async execute(_id, input, signal, _onUpdate, ctx) {
         const outcome = await ctx.executeTool("bash", { command: input.command }, { signal });
+        if (input.emit && input.maxOutputChars !== undefined) {
+            const text = contentText(outcome.result.content).slice(0, input.maxOutputChars);
+            return { content: [{ type: "text", text: `${text}\n[Output truncated; later results may be omitted.]` }], details: undefined };
+        }
         return { content: [{ type: "text", text: input.emit ? JSON.stringify(outcome.result) : "Nested call completed." }], details: undefined };
     },
 };
@@ -293,5 +297,43 @@ it("requires nested shell reads to emit file contents rather than merely recordi
         h.session.dispose();
         if (passed) execFileSync("trash", [dir]);
         else console.error(`Nested reading E2E artifact: ${dir}`);
+    }
+});
+
+it("credits a truncated nested read and requests only the missing lines until shell chunks close every gap", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "grounded-reading-chunks-"));
+    const file = path.join(dir, "required.md");
+    const target = path.join(dir, "result.txt");
+    const prefix = "First reference line.\nSecond reference line.\n";
+    await writeFile(file, `${prefix}Unseen middle line.\nFinal reference line.\n`);
+    const h = await harness(dir);
+    let passed = false;
+    try {
+        h.config.verbatimUserMessageTokens = null;
+        h.session.setActiveToolsByName(["bash", "write", "exec"]);
+        h.work.push(say("Work remains. ".repeat(300)));
+        await h.session.prompt("Prepare a checkpoint. ".repeat(300));
+        h.summaries.push(`Summary.\n${readingBlock([file])}`);
+        await h.session.compact();
+        h.work.push(call("exec", { command: `cat '${file}'`, emit: true, maxOutputChars: prefix.length + 3 }),
+            call("write", { path: target, content: "premature" }),
+            call("exec", { command: `sed -n '4,4p' '${file}'`, emit: true }),
+            call("write", { path: target, content: "gap remains" }),
+            call("bash", { command: `sed -n '3,3p' '${file}'` }),
+            call("write", { path: target, content: "released" }), say("Done."));
+        await h.session.prompt("Continue.");
+        const writes = h.results().filter((result) => result.toolName === "write");
+        assert.equal(writes.length, 3);
+        assert.equal(writes[0].isError, true);
+        assert.match(contentText(writes[0].content), /required\.md \(lines 3-4\)/);
+        assert.equal(writes[1].isError, true);
+        assert.match(contentText(writes[1].content), /required\.md \(lines 3\)/);
+        assert.equal(writes[2].isError, false);
+        await writeFile(path.join(dir, "receipt.json"), JSON.stringify({ sessionFile: h.manager.getSessionFile(), blocked: 2, released: true }));
+        passed = true;
+    } finally {
+        h.session.dispose();
+        if (passed) execFileSync("trash", [dir]);
+        else console.error(`Chunk reading E2E artifact: ${dir}`);
     }
 });
