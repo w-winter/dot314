@@ -227,6 +227,8 @@ export function createTreeEvent(overrides?: Partial<SessionBeforeTreeEvent>): Se
 
 export function createTestConfig(overrides: Partial<GroundedCompactionConfig> = {}): GroundedCompactionConfig {
     return {
+        enforceCompactionMandatoryReading: false,
+        enforceBranchMandatoryReading: false,
         includeFilesTouched: {
             inCompactionSummary: "off",
             inBranchSummary: "off",

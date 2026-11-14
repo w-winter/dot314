@@ -32,6 +32,8 @@ export type PresetConfig = {
 };
 
 export interface GroundedCompactionConfig {
+    enforceCompactionMandatoryReading: boolean;
+    enforceBranchMandatoryReading: boolean;
     includeFilesTouched: IncludeFilesTouchedSettings;
     defaultPreset: string;
     largeContextPreset?: string;
@@ -87,6 +89,8 @@ const DEFAULT_INCLUDE_FILES_TOUCHED_SETTINGS: IncludeFilesTouchedSettings = {
 const FILES_TOUCHED_MODES_TEXT = '"off", "writer", or "writerAndReader"';
 
 export const DEFAULT_CONFIG: GroundedCompactionConfig = {
+    enforceCompactionMandatoryReading: false,
+    enforceBranchMandatoryReading: false,
     includeFilesTouched: DEFAULT_INCLUDE_FILES_TOUCHED_SETTINGS,
     defaultPreset: CURRENT_PRESET_SENTINEL,
     toolResultChars: null,
@@ -205,6 +209,14 @@ export function parseConfig(value: unknown): GroundedCompactionConfig {
         throw new Error("Invalid grounded-compaction config: top-level value must be an object");
     }
     const { verbatimUserMessageTokens, verbatimUserMessageFlagChars } = parseRetentionSettings(value);
+    const enforceCompactionMandatoryReading = value.enforceCompactionMandatoryReading === undefined ? false : value.enforceCompactionMandatoryReading;
+    if (!Check(Type.Boolean(), enforceCompactionMandatoryReading)) {
+        throw new Error("Invalid grounded-compaction config: enforceCompactionMandatoryReading must be a boolean");
+    }
+    const enforceBranchMandatoryReading = value.enforceBranchMandatoryReading === undefined ? false : value.enforceBranchMandatoryReading;
+    if (!Check(Type.Boolean(), enforceBranchMandatoryReading)) {
+        throw new Error("Invalid grounded-compaction config: enforceBranchMandatoryReading must be a boolean");
+    }
     const includeFilesTouched = parseIncludeFilesTouchedSettings(value.includeFilesTouched);
     const toolResultChars =
         value.toolResultChars === undefined || value.toolResultChars === null
@@ -238,6 +250,8 @@ export function parseConfig(value: unknown): GroundedCompactionConfig {
     }
 
     const config: GroundedCompactionConfig = {
+        enforceCompactionMandatoryReading,
+        enforceBranchMandatoryReading,
         includeFilesTouched,
         defaultPreset,
         toolResultChars,

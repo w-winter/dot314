@@ -1,4 +1,6 @@
 {
+    "enforceCompactionMandatoryReading": false,
+    "enforceBranchMandatoryReading": false,
     "includeFilesTouched": {
         "inCompactionSummary": "writer",
         "inBranchSummary": "writer"

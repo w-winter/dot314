@@ -40,11 +40,42 @@ For background on Pi's compaction lifecycle, see the [compaction docs](https://g
     "inCompactionSummary": "writer",
     "inBranchSummary": "writer"
   },
+  "enforceCompactionMandatoryReading": false,
+  "enforceBranchMandatoryReading": false,
   "toolResultChars": null,
   "defaultPreset": "current",
   "presets": {}
 }
 ```
+
+### Required reading
+
+Set `enforceCompactionMandatoryReading` to `true` to enforce the summarizer's required files after compaction. Set `enforceBranchMandatoryReading` to `true` to enforce them after a summarized `/tree` move. Both default to `false` and work independently. Checks are deterministic and require no classifier or additional model call.
+
+When enabling enforcement for a summary type, remove any mandatory-reading section or rereading directives from its custom prompt. Keep factual file references in the summary. The extension adds these response-format instructions to the summarizer's system prompt. Your custom prompt specifies the summary itself:
+
+```text
+## Required reading response contract
+Choose the smallest set of text files the next agent needs to read before continuing the task. List absolute paths to individual files, not directories, globs or URLs. Include needed files even if they were read earlier: the harness checks whether their contents are still available to the next agent.
+
+Finish your response with exactly one block in this form, replacing the example path:
+<grounded-required-reading>
+{"paths":["/absolute/path/to/file"]}
+</grounded-required-reading>
+Include the block even when no files are needed, using {"paths":[]}. The JSON object must contain only the paths array. Put each tag on its own unindented line. Do not wrap the block in a code fence or write anything after the closing tag.
+
+Put reading requirements only in this block. Other file references may remain in the summary when they explain the work.
+```
+
+The extension validates the response block and saves the normalized paths as metadata on the summary entry. A missing, malformed or ambiguous block cancels compaction or branch navigation. An explicit empty array means there are no reading requirements. Split-turn summaries combine the requirements from both generated spans.
+
+The checker compares each existing regular file with the text in pi's continuing context. Complete contents already in the system prompt or retained messages satisfy the requirement. Native `read` chunks also count when their returned lines cover the whole file. Shell and nested `exec` results count when their emitted text contains the complete file, including text encoded in a complete JSON result. A tool's success status, historical file-touch records and nested traces alone do not count. Partial, truncated, transformed or otherwise uncertain coverage requires rereading. Missing files and directories are skipped.
+
+For branch summaries, the checker uses the destination branch's context. Reads available only on the abandoned branch do not satisfy its requirements. Kept messages from before a compaction count, including the retained suffix of a split turn. Requirements survive session resume and reload through the saved metadata. Encrypted checkpoints and summaries from other extensions have no grounded reading metadata and add no reading requirements.
+
+The initial hidden reminder points to the `<grounded-required-reading>` blocks in summaries of the enabled types. Blocked-tool errors list only files still unread. While files remain unread, only `read`, `grep`, `find` and `ls` run. Sessions without a `read` tool can also use shell tools, including `exec` and `exec_command`; nested non-reading tools stay blocked. These shell commands can also modify files, so this is a workflow check rather than a security boundary. Full reading releases the restriction. If the agent tries to finish early, one hidden follow-up lists the remaining files.
+
+Run `/reading-gate-off` to suspend enforcement until the next compaction or branch summary. Set either configuration option to `false` to disable enforcement for that summary type across sessions. Extensions that rewrite provider payloads or run later context filters can change what reaches the model. Load the reading check after context-filtering extensions.
 
 ### Retaining user messages
 
@@ -72,7 +103,7 @@ A single string sets both features. An object sets each feature separately, and 
 
 Any other value, including `true` or `false`, makes the config invalid.
 
-For compaction, the manifest covers the whole session branch, so the writer also sees files from history that earlier compactions summarized. In `"writerAndReader"` mode it is appended to the saved summary under `## Files touched (cumulative)`. Portable summaries for codex-compaction-coordinator use the history up to the checkpoint being summarized. For branch summaries, the manifest covers the entries being summarized, and Pi's summarizer is told either to reproduce it verbatim (`"writerAndReader"`) or to use it only as reference (`"writer"`). Pi also appends its own read and modified file lists to a branch summary when the summarized entries touched files, whatever this setting says.
+For compaction, the manifest covers the whole session branch, so the writer also sees files from history that earlier compactions summarized. In `"writerAndReader"` mode it is appended to the saved summary under `## Files touched (cumulative)`. Portable summaries for codex-compaction-coordinator use the history up to the checkpoint being summarized. For branch summaries, the manifest covers the entries being summarized, and Pi's summarizer is told either to reproduce it verbatim (`"writerAndReader"`) or to use it only as reference (`"writer"`). When `enforceBranchMandatoryReading` is `false`, Pi also appends its own read and modified file lists to a branch summary when the summarized entries touched files.
 
 In both enabled modes the manifest is a recall aid for the writer. File operations spread across many tool calls in a long context are easy to miss without an authoritative list.
 
@@ -125,6 +156,8 @@ Only a leading `--preset` / `-p` is special; everything after is freeform focus 
 
 ## Branch-summary augmentation
 
+With required-reading enforcement enabled, the extension generates and validates the branch summary on the current session model before navigation. Otherwise, it adjusts pi's summarization instructions as follows.
+
 During `/tree`, if the user chooses to summarize:
 
 - If `branch-summary-prompt.md` has content, it replaces Pi's stock branch-summary instructions
@@ -138,7 +171,7 @@ The user's freeform focus text from the `/tree` prompt is preserved in either mo
 
 For compaction, this extension fully owns the LLM call: it can select a different model via presets, control thinking level independently, and manage token budgets.  A session running Opus with a high thinkingLevel can compact cheaply with Gemini Flash.
 
-For branch summaries, this extension sets the instructions that Pi's own branch summarizer receives, and Pi makes the summarization call. Branch summaries therefore run on the current session model with Pi's own output limit and reasoning settings, and the presets in `config.json` do not apply to them. Pi's `session_before_tree` hook can also accept a complete summary written by an extension, which would allow a cheaper model; this extension uses the instruction overrides instead.
+Branch summaries use the current session model and reasoning level. With required-reading enforcement enabled, grounded-compaction owns generation so it can reject an invalid reading list before pi changes branches. Otherwise, pi generates the summary with the supplied instructions.
 
 ## How compaction summaries are structured
 
@@ -178,7 +211,9 @@ Compaction is also cancelled, with a diagnostic, for any of these:
 
 An explicit `-p` preset cancels if its model cannot fit the request or fails while summarizing. Other summarization failures on a compaction that did fit leave Pi's stock compaction available. Aborts cancel quietly.
 
-**Branch summary**: any failure returns `undefined` with a warning, letting Pi's stock flow proceed.
+**Required-reading enforcement**: a failed opted-in compaction or branch summary cancels the transition with a diagnostic. The existing conversation remains available.
+
+**Branch summary without required-reading enforcement**: any failure returns `undefined` with a warning, letting Pi's stock flow proceed.
 
 **Invalid `config.json`**: compaction warns and Pi runs its stock compaction (an explicit `-p` preset cancels compaction instead), and branch summaries use Pi's stock flow. When codex-compaction-coordinator requests a portable summary, the error appears only as its generic "Codex checkpoint portability failed" notice, so check grounded-compaction's `config.json` first when that notice appears.
 

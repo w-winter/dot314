@@ -5,6 +5,7 @@ import type { SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent"
 import { estimateInputTokens } from "../_shared/compaction-serialization.ts";
 import type { SavedRetentionDecision } from "../_shared/grounded-compaction-record.ts";
 import { parseRetentionResponse, RetentionError, type RetentionSpan } from "./retention.ts";
+import { REQUIRED_READING_INSTRUCTIONS, parseRequiredReadingResponse, type RequiredReadingRecord } from "./required-reading.ts";
 import {
     resolvePresetSummarizer,
     toReasoningLevel,
@@ -26,9 +27,11 @@ import {
 
 export type PreparedSummaryRequest = Readonly<{
     mode: SummaryMode;
+    systemPrompt: string;
     userPrompt: string;
     estimatedInputTokens: number;
     retention?: RetentionSpan;
+    enforceMandatoryReading?: boolean;
 }>;
 
 export type PreparedSummaryBatch =
@@ -41,6 +44,7 @@ export type PreparedSummaryBatch =
         history?: PreparedSummaryRequest;
         turnPrefix: PreparedSummaryRequest;
         carriedHistorySummary?: string;
+        carriedReading?: RequiredReadingRecord;
     }>;
 
 /**
@@ -139,14 +143,19 @@ export function prepareSummaryRequest(params: {
     filesTouchedLedger: FilesTouchedLedger;
     splitTurn?: boolean;
     retention?: RetentionSpan;
+    enforceMandatoryReading?: boolean;
 }): PreparedSummaryRequest {
-    const userPrompt = buildSummaryUserPrompt(params)
-        + (params.retention ? `\n\n${RETENTION_RESPONSE_INSTRUCTIONS}` : "");
+    const userPrompt = buildSummaryUserPrompt(params);
+    const systemPrompt = DEFAULT_SYSTEM_PROMPT
+        + (params.retention ? `\n\n${RETENTION_RESPONSE_INSTRUCTIONS}` : "")
+        + (params.enforceMandatoryReading ? `\n\n${REQUIRED_READING_INSTRUCTIONS}` : "");
     return {
         mode: params.mode,
+        systemPrompt,
         userPrompt,
-        estimatedInputTokens: estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${userPrompt}`),
+        estimatedInputTokens: estimateInputTokens(`${systemPrompt}\n\n${userPrompt}`),
         retention: params.retention,
+        enforceMandatoryReading: params.enforceMandatoryReading,
     };
 }
 
@@ -274,7 +283,7 @@ async function executePreparedSummaryRequestResult(params: {
     const response = await deps.complete(
         params.summarizer.model,
         {
-            systemPrompt: DEFAULT_SYSTEM_PROMPT,
+            systemPrompt: params.request.systemPrompt,
             messages: [buildSummaryRequestMessage(params.request.userPrompt)],
         },
         options,
@@ -317,7 +326,7 @@ export async function executePortableSummaryRequestResult(params: {
     const response = await deps.complete(
         params.summarizer.model,
         {
-            systemPrompt: DEFAULT_SYSTEM_PROMPT,
+            systemPrompt: params.request.systemPrompt,
             messages: [buildSummaryRequestMessage(params.request.userPrompt)],
         },
         options,
@@ -354,11 +363,14 @@ export function prepareSummaryBatch(params: {
     previousSummary?: string;
     filesTouchedLedger: FilesTouchedLedger;
     retention?: { history: RetentionSpan; turnPrefix: RetentionSpan };
+    enforceMandatoryReading?: boolean;
+    previousReading?: RequiredReadingRecord;
 }): PreparedSummaryBatch {
     const { event, promptContract, toolResultChars, focusText, previousSummary, filesTouchedLedger } = params;
     if (event.preparation.isSplitTurn && event.preparation.turnPrefixMessages.length > 0) {
         const history = event.preparation.messagesToSummarize.length > 0
             ? prepareSummaryRequest({
+                enforceMandatoryReading: params.enforceMandatoryReading,
                 mode: "history",
                 promptContract,
                 retention: params.retention?.history,
@@ -373,6 +385,7 @@ export function prepareSummaryBatch(params: {
             })
             : undefined;
         const turnPrefix = prepareSummaryRequest({
+            enforceMandatoryReading: params.enforceMandatoryReading,
             mode: "turn-prefix",
             promptContract,
             retention: params.retention?.turnPrefix,
@@ -388,12 +401,14 @@ export function prepareSummaryBatch(params: {
             history,
             turnPrefix,
             carriedHistorySummary: history ? undefined : previousSummary,
+            carriedReading: history ? undefined : params.previousReading,
         };
     }
 
     return {
         kind: "history-only",
         history: prepareSummaryRequest({
+            enforceMandatoryReading: params.enforceMandatoryReading,
             mode: "history",
             promptContract,
             retention: params.retention?.history,
@@ -412,7 +427,7 @@ export async function executePreflightedSummaryBatch(
     plan: PreflightedSummaryBatch,
     signal: AbortSignal,
     deps: SummaryExecutionDeps,
-): Promise<{ summaryBody: string; decisions: ReadonlyMap<string, SavedRetentionDecision> }> {
+): Promise<{ summaryBody: string; decisions: ReadonlyMap<string, SavedRetentionDecision>; reading?: RequiredReadingRecord }> {
     // Each output is stripped before merging so a copied ledger cannot survive inside the merged summary
     const execute = async (request: PreparedSummaryRequest) => {
         const response = await executePreparedSummaryRequest(
@@ -424,15 +439,17 @@ export async function executePreflightedSummaryBatch(
             },
             deps,
         );
+        const readingResponse = request.enforceMandatoryReading ? parseRequiredReadingResponse(response) : undefined;
+        const body = readingResponse ? readingResponse.summaryBody : response;
         const parsed = request.retention
-            ? parseRetentionResponse(response, request.retention.offered)
-            : { summaryBody: response, decisions: new Map<string, SavedRetentionDecision>() };
+            ? parseRetentionResponse(body, request.retention.offered)
+            : { summaryBody: body, decisions: new Map<string, SavedRetentionDecision>() };
         const summaryBody = stripGroundedCompactionManifestTail(parsed.summaryBody);
         if (!summaryBody) {
             if (request.retention) throw new RetentionError("invalid-decisions", "Retention response has no summary body after ledger cleanup");
             throw new Error("Summarization returned no summary body");
         }
-        return { summaryBody, decisions: parsed.decisions };
+        return { summaryBody, decisions: parsed.decisions, reading: readingResponse?.reading };
     };
 
     if (plan.batch.kind === "history-only") {
@@ -441,13 +458,17 @@ export async function executePreflightedSummaryBatch(
 
     const [historySummary, turnPrefixSummary] = await Promise.all([
         plan.batch.history ? execute(plan.batch.history) : Promise.resolve({
-            summaryBody: plan.batch.carriedHistorySummary, decisions: new Map<string, SavedRetentionDecision>(),
+            summaryBody: plan.batch.carriedHistorySummary, decisions: new Map<string, SavedRetentionDecision>(), reading: plan.batch.carriedReading,
         }),
         execute(plan.batch.turnPrefix),
     ]);
     return {
         summaryBody: mergeSplitTurnSummary(historySummary.summaryBody, turnPrefixSummary.summaryBody),
         decisions: new Map([...historySummary.decisions, ...turnPrefixSummary.decisions]),
+        reading: turnPrefixSummary.reading ? {
+            version: 1,
+            paths: [...new Set([...(historySummary.reading?.paths ?? []), ...turnPrefixSummary.reading.paths])],
+        } : undefined,
     };
 }
 

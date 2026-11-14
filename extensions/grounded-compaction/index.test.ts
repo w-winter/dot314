@@ -862,6 +862,7 @@ describe("previous-summary query", () => {
             });
             const api: Partial<ExtensionAPI> = {
                 events,
+                registerCommand: () => undefined,
                 on: (eventName: string, hook: RegisteredHook) => {
                     if (eventName === "session_before_compact") {
                         // SAFETY: Pi passes the compaction event's own handler, which forwards this test context unchanged.
@@ -872,7 +873,7 @@ describe("previous-summary query", () => {
             };
             const { ctx, notifications } = createContext([createModel()]);
             let summarizerCalls = 0;
-            // SAFETY: registration uses only the event bus and the compaction and tree hooks.
+            // SAFETY: this double supplies the event, hook and command registration methods used here.
             registerGroundedCompaction(api as ExtensionAPI, {
                 runCompaction: (event, hookContext, queryPreviousSummary) => runGroundedCompaction(event, hookContext, createDeps({
                     complete: async () => {

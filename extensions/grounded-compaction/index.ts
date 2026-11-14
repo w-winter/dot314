@@ -11,11 +11,13 @@ import type {
     SessionProjection,
     ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { buildSessionProjection } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, prepareBranchEntries } from "@earendil-works/pi-coding-agent";
 
 import { estimateInputTokens } from "../_shared/compaction-serialization.ts";
 import { collectFilesTouched, registerFilesTouchedTracking } from "../_shared/files-touched-core.ts";
 import type { GroundedRetentionRecord } from "../_shared/grounded-compaction-record.ts";
+import { appendRequiredReading, requiredReadingRecord, RequiredReadingError, type RequiredReadingRecord } from "./required-reading.ts";
+import { registerReadingGate } from "./reading-gate.ts";
 import {
     assertCompactionOwner, captureRetentionSnapshot, prepareRetentionSources, publishSelectedSidecars,
     readPreparedSummaryBody, RetentionError, selectRetainedSupplement, serializeRetentionSpan,
@@ -45,6 +47,7 @@ import {
     buildSummaryUserPrompt,
     loadBranchSummaryPromptContract,
     loadCompactionPromptContract,
+    serializePreparedMessages,
     stripGroundedCompactionManifestTail,
     type FilesTouchedLedger,
 } from "./prompts.ts";
@@ -65,6 +68,7 @@ import {
     isSignalAborted,
     preflightSummaryBatch,
     prepareSummaryBatch,
+    prepareSummaryRequest,
     selectOrdinarySummaryRoute,
     throwIfAborted,
     type PortableSummaryCompletion,
@@ -111,6 +115,7 @@ export interface GroundedCompactionDetails {
     model: string;
     thinkingLevel?: ThinkingLevel;
     groundedRetention?: GroundedRetentionRecord;
+    groundedReading?: RequiredReadingRecord;
 }
 
 type HookContext = SummarizerContext & {
@@ -377,6 +382,7 @@ export async function openGroundedPortableSummarizerSession(
                 {
                     request: {
                         mode: "history",
+                        systemPrompt: DEFAULT_SYSTEM_PROMPT,
                         userPrompt,
                         estimatedInputTokens: estimateInputTokens(`${DEFAULT_SYSTEM_PROMPT}\n\n${userPrompt}`),
                     },
@@ -403,10 +409,12 @@ function buildSuccessResult(
     summary: string,
     summarizer: ResolvedSummarizer,
     groundedRetention?: GroundedRetentionRecord,
+    groundedReading?: RequiredReadingRecord,
 ) {
     const details: GroundedCompactionDetails = { model: `${summarizer.model.provider}/${summarizer.model.id}` };
     if (summarizer.reasoningLevel !== undefined) details.thinkingLevel = summarizer.reasoningLevel;
     if (groundedRetention) details.groundedRetention = groundedRetention;
+    if (groundedReading) details.groundedReading = groundedReading;
     return {
         compaction: {
             summary,
@@ -457,34 +465,66 @@ export async function runGroundedBranchSummaryAugmentation(
         return undefined;
     }
 
+    let enforceReading = false;
     try {
         const config = await deps.loadConfig(EXTENSION_DIR);
+        enforceReading = config.enforceBranchMandatoryReading;
         const promptContract = await deps.loadBranchSummaryPrompt(EXTENSION_DIR);
 
         const mode = config.includeFilesTouched.inBranchSummary;
-        if (!promptContract && mode === "off") {
+        if (!enforceReading && !promptContract && mode === "off") {
             return undefined;
         }
 
-        return buildBranchSummaryInstructions({
+        const filesTouchedLedger = buildFilesTouchedLedger({
+            mode,
+            entries: event.preparation.entriesToSummarize,
+            cwd: ctx.cwd,
+            heading: FILES_TOUCHED_HEADING,
+            collectFilesTouchedImpl: deps.collectFilesTouched,
+        });
+        const instructions = buildBranchSummaryInstructions({
             promptContract,
             focusText: event.preparation.customInstructions,
-            filesTouchedLedger: buildFilesTouchedLedger({
-                mode,
-                entries: event.preparation.entriesToSummarize,
-                cwd: ctx.cwd,
-                heading: FILES_TOUCHED_HEADING,
-                collectFilesTouchedImpl: deps.collectFilesTouched,
-            }),
+            filesTouchedLedger,
         });
+        if (!enforceReading) return instructions;
+
+        const summarizer = await resolveDefaultSummarizer(ctx, ctx.sessionManager.getBranch());
+        const contract = instructions?.customInstructions ?? "Summarize the abandoned branch with Goal, Constraints & Preferences, Progress, Key Decisions and Next Steps.";
+        const requestParams = {
+            mode: "history" as const, promptContract: contract, enforceMandatoryReading: true,
+            filesTouchedLedger: { mode: "off" as const },
+            focusText: instructions ? undefined : event.preparation.customInstructions,
+        };
+        const fixed = prepareSummaryRequest({ ...requestParams, serializedConversation: "" });
+        const capacity = summarizer.model.contextWindow - summarizer.model.maxTokens - fixed.estimatedInputTokens;
+        if (capacity <= 0) throw new RequiredReadingError("Branch summary instructions leave no source capacity");
+        const prepared = prepareBranchEntries(event.preparation.entriesToSummarize, capacity);
+        const request = prepareSummaryRequest({
+            ...requestParams,
+            serializedConversation: serializePreparedMessages(prepared.messages, config.toolResultChars),
+        });
+        const plan = preflightSummaryBatch({ batch: { kind: "history-only", history: request }, summarizer, reserveTokens: summarizer.model.maxTokens });
+        const result = await executePreflightedSummaryBatch(plan, event.signal, {
+            complete: deps.complete ?? ((model, context, options) => ctx.modelRegistry.streamSimple(model, context, {
+                ...options, sessionId: randomUUID(), cacheRetention: "none",
+            }).result()),
+        });
+        throwIfAborted(event.signal);
+        if (!result.reading) throw new RequiredReadingError("Branch summary has no required-reading record");
+        return { summary: {
+            summary: appendReaderLedger(appendRequiredReading(result.summaryBody, result.reading), filesTouchedLedger),
+            details: { groundedReading: result.reading },
+        } };
     } catch (error) {
         if (isSignalAborted(event.signal)) {
-            return undefined;
+            return enforceReading ? { cancel: true } : undefined;
         }
 
         const message = error instanceof Error ? error.message : String(error);
         notify(ctx, `Grounded branch-summary augmentation failed: ${message}`, "warning");
-        return undefined;
+        return enforceReading ? { cancel: true } : undefined;
     }
 }
 
@@ -494,17 +534,19 @@ export async function runGroundedCompaction(
     deps: CompactionRunDeps,
 ): Promise<{ compaction: { summary: string; firstKeptEntryId: string; tokensBefore: number; details: GroundedCompactionDetails } } | { cancel: true } | undefined> {
     let summarizerIdentity = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "unresolved";
-    const failsClosed = (cause: unknown) => cause instanceof RetentionError || cause instanceof IncompleteSummaryError;
+    let enforceReading = false;
+    const failsClosed = (cause: unknown) => enforceReading || cause instanceof RetentionError || cause instanceof IncompleteSummaryError || cause instanceof RequiredReadingError;
     const reportFailure = (cause: unknown, prefix: string) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
         if (failsClosed(cause)) {
             const diagnostic = JSON.stringify({
-                operation: "grounded-compaction", code: cause instanceof RetentionError ? cause.code : "incomplete-summary",
+                operation: "grounded-compaction", code: cause instanceof RetentionError ? cause.code : cause instanceof IncompleteSummaryError ? "incomplete-summary" : "required-reading-failed",
                 summarizer: summarizerIdentity, sessionId: ctx.sessionManager.getSessionId(),
-                entryIds: cause instanceof RetentionError ? cause.entryIds : [], message: cause.message,
+                entryIds: cause instanceof RetentionError ? cause.entryIds : [], message,
             });
             if (ctx.hasUI) ctx.ui.notify(diagnostic, "warning");
             else process.stderr.write(`${diagnostic}\n`);
-        } else notify(ctx, `${prefix}: ${describePresetFallback(cause)}`, "warning");
+        } else notify(ctx, `${prefix}: ${message}`, "warning");
     };
     try {
         throwIfAborted(event.signal);
@@ -521,6 +563,7 @@ export async function runGroundedCompaction(
             systemMessage,
         };
         const config = await deps.loadConfig(EXTENSION_DIR);
+        enforceReading = config.enforceCompactionMandatoryReading;
         let retention: { budget: number; snapshot: RetentionSnapshot; sources: RetentionSources } | undefined;
         if (config.verbatimUserMessageTokens !== null) {
             const snapshot = captureRetentionSnapshot(event, owner);
@@ -553,7 +596,10 @@ export async function runGroundedCompaction(
             branchEntries: event.branchEntries,
             sessionEntries: ctx.sessionManager.getEntries(),
         }));
+        const previousCompaction = projection.entries.map((entry) => entry.sourceEntry).findLast((entry) => entry.type === "compaction");
         const batch = prepareSummaryBatch({
+            enforceMandatoryReading: config.enforceCompactionMandatoryReading,
+            previousReading: config.enforceCompactionMandatoryReading && previousCompaction ? requiredReadingRecord(previousCompaction) : undefined,
             event,
             promptContract,
             toolResultChars: config.toolResultChars,
@@ -569,24 +615,25 @@ export async function runGroundedCompaction(
         const finish = async (summary: Awaited<ReturnType<typeof executePreflightedSummaryBatch>>, summarizer: ResolvedSummarizer) => {
             throwIfAborted(event.signal);
             assertCompactionOwner(owner, ctx.sessionManager, ctx.model);
+            const summaryBody = summary.reading ? appendRequiredReading(summary.summaryBody, summary.reading) : summary.summaryBody;
             if (!retention) {
-                const text = appendReaderLedger(summary.summaryBody, filesTouchedLedger);
+                const text = appendReaderLedger(summaryBody, filesTouchedLedger);
                 remainingContinuationTokens({
                     branchEntries: event.branchEntries, projection, summary: text,
                     firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore,
                     contextWindow: owner.model?.contextWindow, reserveTokens,
                 });
-                return buildSuccessResult(event, text, summarizer);
+                return buildSuccessResult(event, text, summarizer, undefined, summary.reading);
             }
             const { snapshot, sources, budget } = retention;
             const result = selectRetainedSupplement({
                 event, snapshot, sources, decisions: new Map([...sources.carriedDecisions, ...summary.decisions]),
-                summaryBody: summary.summaryBody, ledger: filesTouchedLedger, budget,
+                summaryBody, ledger: filesTouchedLedger, budget,
             });
             await publishSelectedSidecars(result.selected, event.signal);
             assertCompactionOwner(owner, ctx.sessionManager, ctx.model);
             throwIfAborted(event.signal);
-            return buildSuccessResult(event, result.summary, summarizer, result.record);
+            return buildSuccessResult(event, result.summary, summarizer, result.record, summary.reading);
         };
 
         if (parsedInstructions.usesPresetDirective) {
@@ -697,6 +744,7 @@ export async function runGroundedCompaction(
 }
 
 export interface GroundedCompactionExtensionDependencies {
+    loadConfig?: RunDeps["loadConfig"];
     runCompaction?: GroundedCompactionRunner;
     runBranchSummary?: typeof runGroundedBranchSummaryAugmentation;
     openPortableSession?: GroundedPortableSummarizerOpener;
@@ -706,6 +754,7 @@ export function registerGroundedCompaction(
     pi: ExtensionAPI,
     dependencies: GroundedCompactionExtensionDependencies = {},
 ): void {
+    registerReadingGate(pi, dependencies.loadConfig ?? loadConfig);
     registerGroundedCompactionHandlers(pi, {
         runCompaction: dependencies.runCompaction
             ?? ((event, ctx, queryPreviousSummary) => runGroundedCompaction(event, ctx, { ...DEFAULT_DEPS, queryPreviousSummary })),

@@ -40,6 +40,8 @@ function thinkingEntry(level: string): SessionEntry {
 
 function createConfig(overrides: Partial<GroundedCompactionConfig> = {}): GroundedCompactionConfig {
     return {
+        enforceCompactionMandatoryReading: false,
+        enforceBranchMandatoryReading: false,
         includeFilesTouched: {
             inCompactionSummary: "writerAndReader",
             inBranchSummary: "writerAndReader",

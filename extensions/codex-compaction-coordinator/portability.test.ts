@@ -2065,6 +2065,8 @@ describe("coordinator lazy portability orchestration", () => {
                 } satisfies AssistantMessage;
             },
             loadConfig: async () => ({
+                enforceCompactionMandatoryReading: false,
+                enforceBranchMandatoryReading: false,
                 includeFilesTouched: { inCompactionSummary: "off", inBranchSummary: "off" },
                 defaultPreset: "current",
                 toolResultChars: null,
