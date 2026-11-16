@@ -130,6 +130,55 @@ it("enforces generated reading lists while crediting system instructions and ful
     }
 });
 
+it("keeps completed reading satisfied after an append and resume, and checks again for a new summary", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "grounded-reading-completed-"));
+    const file = path.join(dir, "handoff.md");
+    const target = path.join(dir, "result.txt");
+    await writeFile(file, "Original instructions.\nMore instructions.\n");
+    let h = await harness(dir);
+    let passed = false;
+    try {
+        h.config.verbatimUserMessageTokens = null;
+        h.work.push(say("Work remains. ".repeat(300)));
+        await h.session.prompt("Prepare a checkpoint. ".repeat(300));
+        h.summaries.push(`Summary.\n${readingBlock([file])}`);
+        await h.session.compact();
+        const remindersBefore = h.manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "grounded-required-reading").length;
+        h.work.push(call("read", { path: file, limit: 1 }), call("write", { path: target, content: "premature" }),
+            call("read", { path: file, offset: 2 }), call("bash", { command: `printf 'Work completed.\\n' >> '${file}'` }), say("Done."));
+        await h.session.prompt("Read the handoff, then record the completed work.");
+        assert.equal(h.results().findLast((result) => result.toolName === "write")!.isError, true);
+        assert.equal(h.results().findLast((result) => result.toolName === "bash")!.isError, false);
+        assert.equal(h.manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === "grounded-required-reading").length, remindersBefore,
+            "appending work notes after completing the reads must not trigger a late reading reminder");
+
+        const saved = h.manager.getSessionFile();
+        assert.ok(saved);
+        h.session.dispose();
+        h = await harness(dir, SessionManager.open(saved));
+        h.work.push(call("bash", { command: "echo resumed" }), say("Done."));
+        await h.session.prompt("Continue the completed task.");
+        assert.equal(contentText(h.results().at(-1)!.content).trim(), "resumed");
+
+        h.config.verbatimUserMessageTokens = null;
+        h.work.push(say("More work remains. ".repeat(300)));
+        await h.session.prompt("Prepare another checkpoint. ".repeat(300));
+        h.summaries.push(`New summary.\n${readingBlock([file])}`, `Split-turn progress.\n${readingBlock([file])}`);
+        await h.session.compact();
+        h.work.push(call("write", { path: target, content: "premature after compaction" }), call("read", { path: file }),
+            call("write", { path: target, content: "released" }), say("Done."));
+        await h.session.prompt("Continue after the new compaction.");
+        const writes = h.results().filter((result) => result.toolName === "write").slice(-2);
+        assert.equal(writes[0].isError, true);
+        assert.equal(writes[1].isError, false);
+        passed = true;
+    } finally {
+        h.session.dispose();
+        if (passed) execFileSync("trash", [dir]);
+        else console.error(`Completed reading E2E artifact: ${dir}`);
+    }
+});
+
 it("cancels malformed compactions, accepts an explicit empty list, and leaves enforcement off by default", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "grounded-reading-contract-"));
     const h = await harness(dir);

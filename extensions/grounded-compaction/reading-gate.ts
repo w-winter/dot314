@@ -9,6 +9,7 @@ import { requiredReadingRecord } from "./required-reading.ts";
 
 const READING_MESSAGE = "grounded-required-reading";
 const READING_OFF = "grounded-reading-off";
+const READING_COMPLETE = "grounded-reading-complete";
 const READING_REMINDER = "grounded-reading-reminder";
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const SHELL_TOOLS = new Set(["bash", "exec", "wait", "exec_command", "write_stdin", "codemode"]);
@@ -28,12 +29,17 @@ export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConf
         if (!transition) return undefined;
         const enabled = transition.type === "compaction" ? config.enforceCompactionMandatoryReading : config.enforceBranchMandatoryReading;
         if (!enabled) return undefined;
+        if (hasMarker(branch, READING_COMPLETE, transition.id)) return undefined;
         const records = requiredReadingRecord(transition)?.paths ?? [];
         if (records.length === 0 || hasMarker(branch, READING_OFF, transition.id)) return undefined;
         const projection = ctx.sessionManager.buildSessionProjection();
         const files = outstandingReading([...new Set(records)], requestMessages ?? projection.messages, ctx.getSystemPrompt(), ctx.cwd);
+        if (files.length === 0) {
+            pi.appendEntry(READING_COMPLETE, transition.id);
+            return undefined;
+        }
         const summaryKind = transition.type === "compaction" ? "compaction" : "branch";
-        return files.length > 0 ? { transitionId: transition.id, files, summaryKind } : undefined;
+        return { transitionId: transition.id, files, summaryKind };
     };
     const remind = async (ctx: ExtensionContext) => {
         requestMessages = undefined;
