@@ -4,8 +4,16 @@ import { constants } from "node:fs";
 import { link, mkdir, open, unlink } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 
-import { contentText, getCurrentSystemMessage, type UserMessage, type SystemMessage } from "@earendil-works/pi-ai";
-import { estimateMessageTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
+import {
+    contentText,
+    getCurrentSystemMessage,
+    getSystemMessageText,
+    type ImageContent,
+    type Message,
+    type SystemMessage,
+    type TextContent,
+    type UserMessage,
+} from "@earendil-works/pi-ai";
 import {
     buildSessionProjection,
     convertToLlm,
@@ -30,6 +38,49 @@ import {
 import { serializeConversationForCompaction } from "../_shared/compaction-serialization.ts";
 import { appendReaderLedger, stripGroundedCompactionManifestTail, type FilesTouchedLedger } from "./prompts.ts";
 import type { PreviousSummaryResponse } from "./registration.ts";
+
+// Local copy of the pi-ai utils/estimate heuristics. Pi maps only its documented pi-ai entry points
+// for extensions and `pi install` does not install peers, so "@earendil-works/pi-ai/utils/estimate"
+// does not resolve from an installed package.
+const CHARS_PER_TOKEN = 3.5;
+const ESTIMATED_IMAGE_CHARS = 4800;
+
+function safeJsonStringify(value: unknown): string {
+    try {
+        return JSON.stringify(value) ?? "undefined";
+    } catch {
+        return "[unserializable]";
+    }
+}
+
+export function estimateTextTokens(text: string): number {
+    return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+function estimateContentTokens(content: string | (TextContent | ImageContent)[]): number {
+    if (typeof content === "string") return estimateTextTokens(content);
+    let chars = 0;
+    for (const block of content) chars += block.type === "text" ? block.text.length : ESTIMATED_IMAGE_CHARS;
+    return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+function estimateToolsTokens(tools: unknown[] | undefined): number {
+    return tools && tools.length > 0 ? estimateTextTokens(safeJsonStringify(tools)) : 0;
+}
+
+export function estimateMessageTokens(message: Message): number {
+    if (message.role === "system") {
+        return estimateTextTokens(getSystemMessageText(message)) + estimateToolsTokens(message.toolsAdded) + estimateToolsTokens(message.toolsRemoved);
+    }
+    if (message.role === "user" || message.role === "toolResult") return estimateContentTokens(message.content);
+    let chars = 0;
+    for (const block of message.content) {
+        if (block.type === "text") chars += block.text.length;
+        else if (block.type === "thinking") chars += block.thinking.length;
+        else chars += block.name.length + safeJsonStringify(block.arguments).length;
+    }
+    return Math.ceil(chars / CHARS_PER_TOKEN);
+}
 
 type ProjectedMessage = ProjectedSessionEntry["messages"][number];
 
