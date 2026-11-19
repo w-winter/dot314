@@ -4,8 +4,9 @@ import { mkdtemp, mkdir, open, readFile, readdir, writeFile, symlink, stat, type
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { fauxAssistantMessage, getCurrentSystemMessage, type SystemMessage, type Api, type Model, type JsonValue } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, getCurrentSystemMessage, type Message, type SystemMessage, type Api, type Model, type JsonValue } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { buildSessionProjection, convertToLlm, SessionManager, type SessionBeforeCompactEvent } from "@earendil-works/pi-coding-agent";
 import { estimateMessageTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
@@ -17,6 +18,8 @@ import { runGroundedCompaction } from "./index.ts";
 import {
     captureRetentionSnapshot,
     assertCompactionOwner,
+    estimateMessageTokens as estimateRetentionMessageTokens,
+    estimateTextTokens as estimateRetentionTextTokens,
     hashText,
     parseRetentionResponse,
     prepareRetentionSources,
@@ -453,5 +456,41 @@ describe("grounded retention boundaries", () => {
             assert.throws(() => parseRetentionResponse(text, offered));
         }
         assert.equal(parseRetentionResponse(envelope([]), offered).decisions.size, 0);
+    });
+});
+
+describe("grounded retention token estimates", () => {
+    it("match pi-ai's estimators for every message role and plain text", () => {
+        const messages: Message[] = [
+            { role: "user", content: "hello world, this is a test of the estimator", timestamp: 1 },
+            { role: "user", content: [{ type: "text", text: "abc".repeat(50) }, { type: "image", data: "x", mimeType: "image/png" }], timestamp: 1 },
+            { role: "toolResult", toolCallId: "t", toolName: "bash", content: [{ type: "text", text: "out".repeat(99) }], isError: false, timestamp: 1 },
+            fauxAssistantMessage([fauxText("reply"), fauxThinking("hmm".repeat(20)), fauxToolCall("bash", { command: "ls -la" })]),
+            {
+                role: "system",
+                content: "You are pi.",
+                sections: { a: "section A", b: null },
+                toolsAdded: [{ name: "read", description: "d", parameters: Type.Object({}) }],
+                toolsRemoved: [{ name: "bash" }],
+                timestamp: 1,
+            },
+            { role: "system", content: [{ type: "text", text: "sys" }], timestamp: 1 },
+        ];
+        for (const message of messages) assert.equal(estimateRetentionMessageTokens(message), estimateMessageTokens(message), message.role);
+        for (const text of ["", "x", "y".repeat(1001)]) assert.equal(estimateRetentionTextTokens(text), estimateTextTokens(text));
+    });
+
+    it("shipped sources import only the pi-ai entry points Pi maps for extensions", async () => {
+        const mapped = new Set(["@earendil-works/pi-ai", "@earendil-works/pi-ai/compat", "@earendil-works/pi-ai/models", "@earendil-works/pi-ai/oauth", "@earendil-works/pi-ai/providers/all"]);
+        const extensionDir = path.dirname(fileURLToPath(import.meta.url));
+        const packageRoot = path.join(extensionDir, "../../packages/pi-grounded-compaction");
+        const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as { dot314Prepack: { copy: { from: string }[] } };
+        const sources = manifest.dot314Prepack.copy.map((entry) => path.resolve(packageRoot, entry.from)).filter((file) => file.endsWith(".ts"));
+        assert.ok(sources.includes(path.join(extensionDir, "retention.ts")));
+        for (const source of sources) {
+            for (const [, specifier] of (await readFile(source, "utf8")).matchAll(/from\s+"(@earendil-works\/pi-ai[^"]*)"/g)) {
+                assert.ok(mapped.has(specifier), `${path.basename(source)} imports unmapped ${specifier}`);
+            }
+        }
     });
 });
