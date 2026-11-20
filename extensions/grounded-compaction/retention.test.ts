@@ -324,6 +324,47 @@ describe("grounded retention boundaries", () => {
             assert.deepEqual(await readdir(abortedDir), []);
         } finally { execFileSync("trash", [dir]); }
     });
+    it("requires empty decisions when skill expansions are already handled by the harness", async () => {
+        const session = SessionManager.inMemory();
+        const authorization = "All four PRs are approved. I authorize merging them.";
+        const flagChars = 8000;
+        const instructions = "Skill instructions.".padEnd(flagChars, ".");
+        const skill = user(session, `<skill name="surf" location="/skills/surf/SKILL.md">\n${instructions}\n</skill>\n\n${authorization}`);
+        session.appendMessage(fauxAssistantMessage("Merged the approved PRs."));
+        user(session, "What remains?");
+        session.appendMessage(fauxAssistantMessage("kept reply"));
+        const { event, snapshot } = prepare(session);
+        const sources = prepareRetentionSources(event, snapshot, flagChars);
+        const batch = prepareSummaryBatch({
+            event, promptContract: "Preserve the goal", toolResultChars: null, filesTouchedLedger: { mode: "off" },
+            retention: {
+                history: serializeRetentionSpan(sources.history, sources, null),
+                turnPrefix: serializeRetentionSpan(sources.turnPrefix, sources, null),
+            },
+        });
+        const plan = preflightSummaryBatch({ batch, summarizer: { model: createModel() }, reserveTokens: 500 });
+        let requests = 0;
+        const result = await executePreflightedSummaryBatch(plan, event.signal, {
+            complete: async (_model, context) => {
+                requests++;
+                assert.match(context.systemPrompt ?? "", /No entries are eligible for shortening; use \{"decisions":\[\]\}/);
+                assert.doesNotMatch(context.systemPrompt ?? "", /"action":"(?:excerpt|reference)"/);
+                return createAssistantResponse(envelope([]));
+            },
+        });
+        assert.equal(requests, 2);
+        assert.equal(result.decisions.size, 0);
+        const retained = selectRetainedSupplement({
+            event, snapshot: { ...snapshot, sessionDir: "/sessions" }, sources,
+            decisions: new Map([...sources.carriedDecisions, ...result.decisions]),
+            summaryBody: result.summaryBody, ledger: { mode: "off" }, budget: 4000,
+        });
+        assert.ok(retained.supplement.includes(authorization));
+        assert.ok(!retained.supplement.includes("Skill instructions."));
+        await assert.rejects(executePreflightedSummaryBatch(plan, event.signal, {
+            complete: async () => createAssistantResponse(envelope([{ entryId: skill, action: "reference", note: "Skill expansion" }])),
+        }), /not offered/);
+    });
     it("executes one decision-producing response per prepared span and merges only validated decisions", async () => {
         const session = SessionManager.inMemory();
         const first = user(session, "First long user message\nKeep the public API.");
@@ -340,10 +381,12 @@ describe("grounded retention boundaries", () => {
         });
         const plan = preflightSummaryBatch({ batch, summarizer: { model: createModel() }, reserveTokens: 500 });
         const prompts: string[] = [];
-        const complete = async (_model: Model<Api>, context: { messages: readonly { content: unknown }[] }) => {
+        const complete = async (_model: Model<Api>, context: { systemPrompt?: string; messages: readonly { content: unknown }[] }) => {
             const prompt = JSON.stringify(context.messages);
             prompts.push(prompt);
             const id = prompt.includes(first) ? first : second;
+            assert.ok(context.systemPrompt?.includes(`Eligible entry IDs for this request: ${JSON.stringify([id])}`));
+            assert.ok(!context.systemPrompt?.includes(id === first ? second : first));
             return createAssistantResponse(envelope([{ entryId: id, action: "excerpt", ranges: [{ startLine: 2, endLine: 2 }] }], `Body for ${id}`));
         };
         const result = await executePreflightedSummaryBatch(plan, event.signal, { complete });

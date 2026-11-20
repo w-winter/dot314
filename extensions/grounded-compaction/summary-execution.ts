@@ -16,7 +16,7 @@ import {
 import type { PortableSummaryUsage } from "./portable-summarizer.ts";
 import {
     DEFAULT_SYSTEM_PROMPT,
-    RETENTION_RESPONSE_INSTRUCTIONS,
+    buildRetentionResponseInstructions,
     buildSummaryUserPrompt,
     mergeSplitTurnSummary,
     serializePreparedMessages,
@@ -147,7 +147,7 @@ export function prepareSummaryRequest(params: {
 }): PreparedSummaryRequest {
     const userPrompt = buildSummaryUserPrompt(params);
     const systemPrompt = DEFAULT_SYSTEM_PROMPT
-        + (params.retention ? `\n\n${RETENTION_RESPONSE_INSTRUCTIONS}` : "")
+        + (params.retention ? `\n\n${buildRetentionResponseInstructions([...params.retention.offered.keys()])}` : "")
         + (params.enforceMandatoryReading ? `\n\n${REQUIRED_READING_INSTRUCTIONS}` : "");
     return {
         mode: params.mode,
