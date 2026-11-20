@@ -363,7 +363,7 @@ const renderPreviewBodyLines = (
 	width: number,
 	theme: any,
 	nodeById: Map<string, SessionTreeNode>,
-): string[] => {
+): readonly string[] => {
 	if (entry.type === "message") {
 		const msg = entry.message as { role?: string; command?: string };
 
@@ -855,7 +855,7 @@ class anycopyOverlay implements Focusable {
 
 	private renderSelector(width: number, visibleRows: number): string[] {
 		this.getTreeListInternals().maxVisibleLines = Math.max(1, visibleRows);
-		const selectorLines = this.selector.render(width);
+		const selectorLines = [...this.selector.render(width)];
 		const searchLineIndex = selectorLines.findIndex((line) => line.includes("Type to search"));
 		const listStartIndex = searchLineIndex >= 0 ? searchLineIndex + 2 : -1;
 		if (listStartIndex >= 0 && visibleWidth(selectorLines[listStartIndex] ?? "") === 0) {

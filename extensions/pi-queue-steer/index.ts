@@ -473,7 +473,7 @@ export default function queueSteerExtension(pi: ExtensionAPI) {
 				}
 			};
 
-			editor.render = (width: number): string[] => {
+			editor.render = (width: number): readonly string[] => {
 				if (editSession && !renderingInline) return [];
 				return renderEditor(width);
 			};

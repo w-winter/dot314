@@ -42,7 +42,7 @@ type RenderCacheEntry = {
 	path: string;
 	width: number;
 	previewRevision: number;
-	renderedLines: string[];
+	renderedLines: readonly string[];
 };
 
 const PREVIEW_SCROLL_UP = "shift+up";
@@ -303,7 +303,7 @@ class ResumeOverlay implements Focusable {
 			return blank;
 		}
 
-		let renderedLines: string[];
+		let renderedLines: readonly string[];
 		if (
 			this.renderCache &&
 			this.renderCache.path === selectedPath &&

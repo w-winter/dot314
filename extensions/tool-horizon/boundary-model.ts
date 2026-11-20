@@ -634,7 +634,7 @@ export function renderPreviewBody(args: {
 	nodeById: ReadonlyMap<string, ToolHorizonTreeNode>;
 	width: number;
 	theme: BoundaryPickerThemeLike;
-}): string[] {
+}): readonly string[] {
 	const text = clipPreviewText(extractPreviewText(args.entry));
 	const normalized = text.replace(/\t/g, "   ");
 
