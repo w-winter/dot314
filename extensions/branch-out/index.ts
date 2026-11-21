@@ -1318,6 +1318,40 @@ function resolveBranchModel(
 	}
 }
 
+function writeBranchSnapshot(
+	session: ExtensionContext["sessionManager"],
+	parentSession: string,
+	branch: SessionEntry[],
+): string {
+	const child = SessionManager.create(session.getCwd(), path.dirname(parentSession), { parentSession })
+	const file = child.getSessionFile()
+	const header = child.getHeader()
+	if (!file || !header) throw new Error("Failed to create branched session")
+
+	// Labels are session-wide in Pi. Carry over the latest update (including a
+	// clear) for each retained target if that update lies outside the active path.
+	const branchIds = new Set(branch.map((entry) => entry.id))
+	const latestLabels = new Map<string, Extract<SessionEntry, { type: "label" }>>()
+	for (const entry of session.getEntries()) {
+		if (entry.type === "label" && branchIds.has(entry.targetId)) {
+			latestLabels.set(entry.targetId, entry)
+		}
+	}
+	const entries = [...branch]
+	let parentId = branch[branch.length - 1].id
+	for (const label of latestLabels.values()) {
+		if (branchIds.has(label.id)) continue
+		entries.push({ ...label, parentId })
+		parentId = label.id
+	}
+
+	fs.writeFileSync(file, [header, ...entries].map((entry) => JSON.stringify(entry) + "\n").join(""), {
+		flag: "wx",
+		mode: 0o600,
+	})
+	return file
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag(TERMINAL_FLAG, {
 		description: "Command to open a new terminal. Use {session} placeholder for the session file path.",
@@ -1349,18 +1383,16 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
-			const leafId = ctx.sessionManager.getLeafId()
-			if (!leafId) {
+			// Snapshot the live path before the first await. The active leaf need not
+			// exist in the on-disk file, and must not be replaced by a different leaf.
+			const branch = ctx.sessionManager.getBranch()
+			if (!branch.some((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))) {
 				if (ctx.hasUI) ctx.ui.notify("No messages yet. Nothing to branch.", "error")
 				return
 			}
 
 			const { modelQuery, message } = parseBranchArgs(args)
-			const forkManager = SessionManager.open(sessionFile)
-			const forkFile = forkManager.createBranchedSession(leafId)
-			if (!forkFile) {
-				throw new Error("Failed to create branched session")
-			}
+			const forkFile = writeBranchSnapshot(ctx.sessionManager, sessionFile, branch)
 
 			const trimmedMessage = message.trim()
 			const hasLaunchCustomization = Boolean(modelQuery || trimmedMessage)

@@ -10,7 +10,7 @@ Fork the current Pi session into a split terminal pane or new tab with rotating 
 
 Both arguments are optional and independent.
 
-`/branch` works while the parent is responding or running tools. The child starts with the session entries saved when you run the command; an unfinished streamed response and later tool results are not included. The parent continues its turn.
+`/branch` works while the parent is responding or running tools. The child starts with the entries on the parent's active path when you run the command, even if the session file is behind. An unfinished streamed response and later tool results are not included. The parent continues its turn.
 
 - **`--model <query>`** — target model for the child session.  Accepts a fully qualified `provider/model-id` or a fuzzy query scoped to the current provider.  If the query does not resolve safely the child keeps the parent's model.
 - **`message`** — prefilled text in the child session's editor with a 10-second auto-submit countdown.  Typing anything or pressing `Esc` cancels the countdown; `Enter` sends immediately.
