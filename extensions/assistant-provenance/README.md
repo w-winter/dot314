@@ -24,7 +24,7 @@ The notes are **provider context only** — they reach the model but aren't pers
 - **No note on every message.**  Notes appear only at the specific conversation boundaries where a meaningful handoff occurred, not on subsequent turns where the model hasn't changed.
 - **No ongoing prefix-cache churn.**  Notes are inserted at deterministic positions with deterministic content derived from assistant message metadata.  The `timestamp` field doesn't reach the provider, so repeated context builds produce a stable provider-facing prefix.
 
-Handoff notes are recreated from the conversation history on every context build, so later turns retain awareness of earlier model switches without any durable session artifacts.  Error and aborted assistant messages are ignored when determining handoff boundaries.  Tool-result continuation contexts are left untouched.
+Handoff notes are recreated from the conversation history on every context build, so later turns retain awareness of earlier model switches without any durable session artifacts.  Error and aborted assistant messages are ignored when determining handoff boundaries.  Tool-result continuations within a turn receive the same notes as the request that started it.
 
 ## Configuration
 

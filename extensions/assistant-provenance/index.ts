@@ -105,17 +105,6 @@ function findReplyModelForUser(
 	return currentModel;
 }
 
-function isToolResultContinuation(messages: AgentMessage[]): boolean {
-	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const role = getMessageRole(messages[index]);
-		if (role !== "custom") {
-			return role === "toolResult";
-		}
-	}
-
-	return false;
-}
-
 function hasExistingProvenanceMessage(messages: AgentMessage[], startIndex: number, endIndex: number): boolean {
 	for (let index = startIndex; index < endIndex; index += 1) {
 		const message = messages[index] as { role?: unknown; customType?: unknown };
@@ -298,7 +287,9 @@ export function injectProvenanceMessage(
 	nowMs: () => number,
 ): AgentMessage[] {
 	const currentModelRef = getCurrentModelRef(currentModel);
-	if (!currentModelRef || isToolResultContinuation(messages)) {
+	// Tool-result continuations get the same notes as the prompt that started the turn, so providers that match
+	// the history they already hold see one unchanged prefix across the whole turn.
+	if (!currentModelRef) {
 		return messages;
 	}
 

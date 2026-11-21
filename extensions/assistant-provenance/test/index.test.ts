@@ -291,17 +291,17 @@ test("injectProvenanceMessage does not inject when there is no user message afte
 	assert.equal(result, messages);
 });
 
-test("injectProvenanceMessage does not inject into a tool-result continuation context", () => {
-	const messages = [
-		userMessage("first"),
-		assistantMessage("openai", "gpt-5.5"),
-		userMessage("next", 3),
-		toolResultMessage(4),
-	];
+test("injectProvenanceMessage gives a tool-result continuation the same notes as the prompt that started the turn", () => {
+	const prompt = [userMessage("first"), assistantMessage("openai", "gpt-5.5"), userMessage("next", 3)];
+	const continuation = [...prompt, assistantMessage("anthropic", "claude-opus-4-5", "toolUse", 4), toolResultMessage(5)];
+	const current = model("anthropic", "claude-opus-4-5");
+	const fixedTime = () => 9;
 
-	const result = injectProvenanceMessage(messages, model("anthropic", "claude-opus-4-5"), DEFAULT_CONFIG, Date.now);
+	const promptContext = injectProvenanceMessage(prompt, current, DEFAULT_CONFIG, fixedTime);
+	const continuationContext = injectProvenanceMessage(continuation, current, DEFAULT_CONFIG, fixedTime);
 
-	assert.equal(result, messages);
+	assert.equal(promptContext.length, prompt.length + 1);
+	assert.deepEqual(continuationContext.slice(0, promptContext.length), promptContext);
 });
 
 test("injectProvenanceMessage does not inject a duplicate provenance note in the current turn segment", () => {
