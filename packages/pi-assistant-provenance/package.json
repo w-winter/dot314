@@ -1,6 +1,6 @@
 {
   "name": "pi-assistant-provenance",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Gives models awareness of mid-session model switches in Pi",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "model-handoff", "provenance", "multi-model", "context"],
   "license": "MIT",
