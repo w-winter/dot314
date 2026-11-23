@@ -15,17 +15,36 @@ const source = stripTypeScriptTypes(fs.readFileSync(url, 'utf8'))
   .replaceAll('import.meta.url', JSON.stringify(url.href))
   .replace('export default function', 'function register');
 
-for (const { args, launchFails } of [
-  { args: '', launchFails: false },
-  { args: '--model test-model investigate the parser', launchFails: false },
-  { args: '', launchFails: true },
+for (const { args = '', launchFails = false, diskMissingLeaf = false, laterSibling = false } of [
+  {},
+  { args: '--model test-model investigate the parser' },
+  { launchFails: true },
+  { diskMissingLeaf: true, args: '--model test-model investigate the parser' },
+  { laterSibling: true },
 ]) {
-  test(`branch during an active first turn: ${launchFails ? 'terminal failure' : args || 'no arguments'}`, async () => {
+  const name = diskMissingLeaf ? 'leaf missing from disk'
+    : laterSibling ? 'newer sibling on disk' : launchFails ? 'terminal failure' : args || 'no arguments';
+  test(`branch during an active first turn: ${name}`, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-branch-test-'));
     try {
       const parent = SessionManager.create(dir, dir);
-      parent.appendMessage({ role: 'user', content: 'Start working', timestamp: Date.now() });
+      const firstUser = parent.appendMessage({ role: 'user', content: 'Start working', timestamp: Date.now() });
       const parentFile = parent.getSessionFile();
+      if (laterSibling) {
+        const forkPoint = parent.appendLabelChange(firstUser, 'old label');
+        const activeLeaf = parent.appendCustomEntry('test-active-path', {});
+        parent.branch(forkPoint);
+        parent.appendMessage({ role: 'user', content: 'Other path', timestamp: Date.now() });
+        parent.appendLabelChange(firstUser, 'updated label');
+        parent.branch(activeLeaf);
+        assert.notEqual(SessionManager.open(parentFile).getLeafId(), activeLeaf);
+      }
+      if (diskMissingLeaf) {
+        const previousBytes = fs.readFileSync(parentFile, 'utf8');
+        parent.appendCustomEntry('test-live-only', { value: 'present in memory' });
+        fs.writeFileSync(parentFile, previousBytes);
+        assert.equal(SessionManager.open(parentFile).getEntry(parent.getLeafId()), undefined);
+      }
       const parentLeaf = parent.getLeafId();
       const parentBytes = fs.readFileSync(parentFile, 'utf8');
       const model = { provider: 'test', id: 'test-model', name: 'Test' };
@@ -33,7 +52,16 @@ for (const { args, launchFails } of [
       let handler;
       let forkFile;
       const context = vm.createContext({
-        fs, os, path, fileURLToPath, SessionManager,
+        fs: {
+          ...fs,
+          readFileSync(file, ...opts) {
+            if (file === path.join(path.dirname(fileURLToPath(url)), 'config.json')) {
+              return '{"launchMode":"split","splitDirection":"right"}';
+            }
+            return fs.readFileSync(file, ...opts);
+          },
+        },
+        os, path, fileURLToPath, SessionManager,
         process: { env: {
           ORCA_WORKTREE_ID: 'test-worktree', ORCA_TERMINAL_HANDLE: 'term_parent',
           PI_CODING_AGENT_DIR: dir,
@@ -77,6 +105,12 @@ for (const { args, launchFails } of [
       assert.equal(child.getHeader().parentSession, parentFile);
       assert.deepEqual(child.buildSessionContext().messages.map(message => message.content), ['Start working']);
       assert.equal(parent.buildSessionContext().messages.length, 2);
+      if (diskMissingLeaf || laterSibling) {
+        assert.deepEqual(child.getEntry(parentLeaf), parent.getEntry(parentLeaf));
+      }
+      if (laterSibling) {
+        assert.equal(child.getLabel(firstUser), 'updated label');
+      }
       if (args) {
         const launch = child.getBranch().find(entry => entry.type === 'custom' && entry.customType === 'branch-out-launch');
         assert.equal(launch.data.message, 'investigate the parser');
