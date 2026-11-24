@@ -206,3 +206,13 @@ The Pi package does not export skills.  See [skills/README.markdown](skills/READ
 | ● | `rp/` |  |
 | ● | `rp-deep-build/` | Requires [pi-codex-goal](https://github.com/fitchmultz/pi-codex-goal) |
 | ◐ | `text-search/` | |
+
+## Scripts
+
+Standalone scripts and hooks (not part of the Pi package). See [scripts/README.md](scripts/README.md) for full descriptions.
+
+| | Script | Description |
+|---|---|---|
+| ● | [`agy-grounded-compaction/`](scripts/agy-grounded-compaction/) | Antigravity CLI `PreInvocation` hook that runs `grounded-compaction` through `pi` and injects the summary plus deduplicated verbatim user messages after native compaction |
+| ● | [`agy-session-ask/`](scripts/agy-session-ask/) | CLI (`lineage` and `ask`) for querying Antigravity CLI transcripts and stitched parent-fork history through `pi` |
+| ● | [`pi-package-prepack.mjs`](scripts/pi-package-prepack.mjs) | Prepack helper for standalone npm packages under `packages/` that copies extension sources and blocks accidental packaging of local JSON configs |

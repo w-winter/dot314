@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
     getStateDir,
@@ -80,9 +80,17 @@ async function appendHookLog(stateDir: string, entry: Record<string, unknown>): 
     await appendFile(path.join(stateDir, "hook.log"), `${line}\n`, "utf8");
 }
 
-function formatSegmentPaths(segments: readonly LineageSegment[]): string {
+const SESSION_ASK_CLI_PATH = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "agy-session-ask",
+    "cli.ts",
+);
+
+function formatSegmentPaths(segments: readonly LineageSegment[], conversationId: string): string {
+    const queryHint = `To query pre-compaction or ancestor history without loading raw logs into context, run: node ${SESSION_ASK_CLI_PATH} ask --cid ${conversationId} "<question>"`;
     if (segments.length === 1) {
-        return `Any Retrieval cues listed below refer to raw pre-compaction history preserved on disk at ${segments[0].transcriptPath} (and its compact sibling transcript.jsonl).`;
+        return `Any Retrieval cues listed below refer to raw pre-compaction history preserved on disk at ${segments[0].transcriptPath} (and its compact sibling transcript.jsonl). ${queryHint}`;
     }
     const lines = ["Any Retrieval cues listed below refer to raw history preserved across these stitched transcript logs:"];
     for (let i = 0; i < segments.length; i += 1) {
@@ -93,10 +101,12 @@ function formatSegmentPaths(segments: readonly LineageSegment[]): string {
         const label = i === segments.length - 1 ? "Post-fork history" : "Pre-fork history";
         lines.push(`- ${label} (${range}): ${seg.transcriptPath}`);
     }
+    lines.push(queryHint);
     return lines.join("\n");
 }
 
 function buildPrecedenceHeader(params: {
+    conversationId: string;
     checkpointStep: number;
     model: string;
     thinkingLevel?: string;
@@ -119,7 +129,7 @@ function buildPrecedenceHeader(params: {
         return [
             `Post-fork grounded compaction supplement generated externally by ${modelLabel} for native compaction step ${params.checkpointStep} (covers post-fork steps ${start}..${end} only; pre-fork history (steps 0..${start - 1}) was unavailable on disk).${verbatimNote}`,
             `Treat this summary and any verbatim user messages below as authoritative ONLY for post-fork steps ${start}..${end}. Rely on Antigravity's earlier automatic compaction checkpoint for pre-fork goals, constraints, and decisions from steps 0..${start - 1}, and ask the user if anything appears contradictory or ambiguous.`,
-            `Post-fork raw history (steps ${start}..) is preserved on disk at ${params.transcriptPath} (and its compact sibling transcript.jsonl).`,
+            `Post-fork raw history (steps ${start}..) is preserved on disk at ${params.transcriptPath} (and its compact sibling transcript.jsonl). To query it without loading the raw log, run: node ${SESSION_ASK_CLI_PATH} ask --cid ${params.conversationId} "<question>"`,
         ].join("\n");
     }
 
@@ -127,7 +137,7 @@ function buildPrecedenceHeader(params: {
     return [
         `Authoritative grounded compaction checkpoint generated externally by ${modelLabel} for native compaction step ${params.checkpointStep}${stitchedNote}.${verbatimNote}`,
         "Where this grounded summary conflicts with Antigravity's earlier automatic compaction checkpoint, treat this grounded summary and any verbatim user messages below as authoritative.",
-        formatSegmentPaths(params.lineage.segments),
+        formatSegmentPaths(params.lineage.segments, params.conversationId),
     ].join("\n");
 }
 
@@ -255,6 +265,7 @@ export async function processPreInvocation(
         }
 
         const headerBlock = buildPrecedenceHeader({
+            conversationId: input.conversationId,
             checkpointStep: latestCheckpoint.stepIndex,
             model: summaryResult.model,
             thinkingLevel: summaryResult.thinkingLevel,
