@@ -7,11 +7,15 @@
 #
 # Usage:
 #   session-view /path/to/session.jsonl
+#   session-view <session-id-or-prefix> [pi|codex|claude|agy]
+#   session-view --path <session-id-or-prefix> [pi|codex|claude|agy]
+#   session-view --path --latest [pi|codex|claude|agy|rp]
 #   session-view /path/to/AgentSession-ABC123.json
 #   session-view --latest [pi|codex|claude|agy|rp]
 #   cat session.jsonl | session-view - [pi|codex|claude|agy]
 #
 # Options:
+#   --path                   Print the resolved session file path and exit (no rendering)
 #   --include-tool-calls     Include assistant tool invocations with full arguments (default: omitted)
 #   --include-tool-results   Include tool result/output blocks (default: omitted)
 #
@@ -47,16 +51,17 @@ RP_PROCESSOR="$SCRIPT_DIR/repoprompt-agent-session-extract.py"
 
 usage() {
     cat <<EOF
-Usage: session-view [OPTIONS] <file> [format]
+Usage: session-view [OPTIONS] <file-or-id> [format]
 
 Diagnostic view of agent session logs (Pi, Codex, Claude Code, Antigravity, RepoPrompt AgentSession).
 
 Arguments:
-  <file>      Path to .jsonl session file, agy conversation dir, or '-' for stdin
-  [format]    Force format: pi, codex, claude, agy, or rp (auto-detected from path)
+  <file-or-id>  Path to .jsonl session file, agy conversation dir, session UUID/prefix, or '-' for stdin
+  [format]      Force format: pi, codex, claude, agy, or rp (auto-detected from path)
 
 Options:
   --latest [format]          Process most recent session (default: pi)
+  --path                     Print the resolved session file path and exit without rendering
   --include-tool-calls       Include assistant tool invocations with full arguments (default: omitted)
   --include-tool-results     Include tool result/output blocks (default: omitted)
   --max-lines N              Max lines per tool output when included (default: 8)
@@ -66,6 +71,9 @@ Options:
 Examples:
   session-view ~/.pi/agent/sessions/project/session.jsonl
   session-view ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl
+  session-view 02b7fec0
+  session-view --path 02b7fec0
+  session-view --path --latest agy
   session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessions/AgentSession-ABC123.json
   session-view --latest codex
   session-view --latest agy
@@ -129,9 +137,135 @@ run_processor() {
     esac
 }
 
+resolve_latest_path() {
+    local fmt="$1"
+    python3 - "$fmt" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+fmt = sys.argv[1]
+home = Path.home()
+
+if fmt == "pi":
+    env_dir = os.environ.get("PI_CODING_AGENT_SESSION_DIR")
+    candidates = ([Path(os.path.expanduser(env_dir))] if env_dir else []) + [
+        home / ".pi/agent/sessions",
+        home / ".pi/sessions",
+    ]
+    root = next((c for c in candidates if c.is_dir()), None)
+    files = list(root.rglob("*.jsonl")) if root else []
+elif fmt == "codex":
+    root = home / ".codex/sessions"
+    files = list(root.rglob("*.jsonl")) if root.is_dir() else []
+elif fmt == "claude":
+    root = home / ".claude/projects"
+    files = list(root.rglob("*.jsonl")) if root.is_dir() else []
+elif fmt in ("agy", "antigravity"):
+    root = home / ".gemini/antigravity-cli/brain"
+    files = list(root.glob("*/.system_generated/logs/transcript_full.jsonl")) if root.is_dir() else []
+elif fmt == "rp":
+    root = home / "Library/Application Support/RepoPrompt/Workspaces"
+    files = list(root.glob("Workspace-*/AgentSessions/AgentSession-*.json")) if root.is_dir() else []
+else:
+    print(f"Unknown format: {fmt}", file=sys.stderr)
+    print("Supported formats: pi, codex, claude, agy, rp", file=sys.stderr)
+    sys.exit(1)
+
+if not files:
+    print(f"No session files found for format: {fmt}", file=sys.stderr)
+    sys.exit(1)
+
+newest = max(files, key=lambda p: p.stat().st_mtime)
+print(newest)
+PY
+}
+
+resolve_session_id() {
+    local query="$1"
+    local scope="${2:-}"
+    local matches=()
+    local line=""
+
+    search_pi() {
+        local pi_root="${PI_CODING_AGENT_SESSION_DIR:-$HOME/.pi/agent/sessions}"
+        if [[ -d "$pi_root" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && matches+=("$line")
+            done < <(find "$pi_root" -type f -iname "*_${query}*.jsonl" 2>/dev/null)
+        fi
+    }
+
+    search_claude() {
+        if [[ -d "$HOME/.claude/projects" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && matches+=("$line")
+            done < <(find "$HOME/.claude/projects" -type f -iname "${query}*.jsonl" 2>/dev/null)
+        fi
+    }
+
+    search_codex() {
+        if [[ -d "$HOME/.codex/sessions" ]]; then
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && matches+=("$line")
+            done < <(find "$HOME/.codex/sessions" -type f -iname "rollout-????-??-??T??-??-??-${query}*.jsonl" 2>/dev/null)
+        fi
+    }
+
+    search_agy() {
+        local brain="$HOME/.gemini/antigravity-cli/brain"
+        if [[ -d "$brain" ]]; then
+            while IFS= read -r line; do
+                local transcript="$line/.system_generated/logs/transcript_full.jsonl"
+                [[ -f "$transcript" ]] && matches+=("$transcript")
+            done < <(find "$brain" -maxdepth 1 -type d -iname "${query}*" 2>/dev/null)
+        fi
+    }
+
+    case "$scope" in
+        "")
+            search_pi
+            search_claude
+            search_codex
+            search_agy
+            ;;
+        pi)
+            search_pi
+            ;;
+        claude)
+            search_claude
+            ;;
+        codex)
+            search_codex
+            ;;
+        agy|antigravity)
+            search_agy
+            ;;
+        *)
+            echo "Session ID lookup is not supported for format: $scope" >&2
+            echo "Supported formats for ID lookup: pi, codex, claude, agy" >&2
+            return 1
+            ;;
+    esac
+
+    if [[ ${#matches[@]} -eq 0 ]]; then
+        echo "No session found matching ID: $query" >&2
+        return 1
+    fi
+
+    if [[ ${#matches[@]} -gt 1 ]]; then
+        echo "Ambiguous session ID '$query' matched ${#matches[@]} sessions:" >&2
+        printf '  %s\n' "${matches[@]}" >&2
+        return 1
+    fi
+
+    echo "${matches[0]}"
+}
+
 # Parse arguments
 latest=false
 latest_format="pi"
+print_path=false
 extra_args=()
 
 while [[ $# -gt 0 ]]; do
@@ -147,6 +281,10 @@ while [[ $# -gt 0 ]]; do
             else
                 shift
             fi
+            ;;
+        --path)
+            print_path=true
+            shift
             ;;
         --include-tool-calls|--with-tool-calls)
             extra_args+=("--include-tool-calls")
@@ -191,6 +329,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if $latest; then
+    if $print_path; then
+        resolve_latest_path "$latest_format"
+        exit $?
+    fi
     run_processor "$latest_format" "${extra_args[@]}" --latest
     exit $?
 fi
@@ -204,12 +346,22 @@ format="${2:-}"
 
 # Handle stdin
 if [[ "$file" == "-" ]]; then
+    if $print_path; then
+        echo "--path cannot be used with stdin (-)" >&2
+        exit 1
+    fi
     if [[ -z "$format" ]]; then
         echo "Format required when reading from stdin: session-view - [pi|codex|claude|agy]" >&2
         exit 1
     fi
     run_processor "$format" "${extra_args[@]}" -
     exit $?
+fi
+
+# Resolve bare session UUID/prefix across harness roots when argument is not an existing path or qmd://
+if [[ "$file" != qmd://* && "$file" != */* && ! -e "$file" ]]; then
+    file=$(resolve_session_id "$file" "$format")
+    format=$(detect_format "$file")
 fi
 
 # Auto-detect format from path if not specified
@@ -320,6 +472,18 @@ if [[ "$file" == qmd://* ]]; then
     file="$resolved"
     # Re-detect format from resolved path
     format=$(detect_format "$file")
+fi
+
+if $print_path; then
+    if [[ -d "$file" && ( "$format" == "agy" || "$format" == "antigravity" ) && -f "$file/.system_generated/logs/transcript_full.jsonl" ]]; then
+        file="$file/.system_generated/logs/transcript_full.jsonl"
+    fi
+    if [[ ! -e "$file" ]]; then
+        echo "File not found: $file" >&2
+        exit 2
+    fi
+    echo "$file"
+    exit 0
 fi
 
 run_processor "$format" "${extra_args[@]}" "$file"

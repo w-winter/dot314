@@ -286,6 +286,11 @@ session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessi
 
 # Antigravity (agy) transcript or conversation directory
 session-view ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript_full.jsonl
+
+# Resolve by session UUID or prefix across Pi, Claude, Codex, and agy
+session-view 02b7fec0
+session-view --path 02b7fec0
+session-view --path --latest agy
 ```
 
 You can also inspect the latest local session directly:
