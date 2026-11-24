@@ -31,6 +31,21 @@ Active-branch reconstruction reuses `scripts/agy-grounded-compaction/transcript.
 
 Rendered transcripts up to 32,000 characters go inline to `pi -p --no-tools` for a single-turn answer. Larger transcripts are written to a temporary directory as `transcript.txt` and `session.meta.json`, where `pi -p --tools read,grep` searches the rendered log read-only before the temporary directory is removed.
 
+## Antigravity skill
+
+Register [SKILL.md](./SKILL.md) in `~/.gemini/config/skills.json` using an absolute `path` (`~/` is not expanded there). This merges additively with `~/.gemini/config/skills` while keeping the skill invisible to Pi, Codex, and Claude Code:
+
+```json
+{
+  "entries": [
+    {
+      "path": "/absolute/path/to/scripts",
+      "include_only": ["agy-session-ask"]
+    }
+  ]
+}
+```
+
 ## Tests
 
 Run the unit tests and strict typecheck from the repository root:
