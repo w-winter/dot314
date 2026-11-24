@@ -142,8 +142,25 @@ describe("transcript parsing, retention, files-touched, and chunking", () => {
             stepIndex: 42,
             createdAt: "2026-11-24T06:10:00Z",
             key: "42@2026-11-24T06:10:00Z",
+            hasPendingCompactAfter: false,
         });
         assert.equal(findLatestActiveCheckpoint(makeJsonl([userRecord(0, "no checkpoint")])), null);
+
+        // A /compact USER_INPUT after the latest checkpoint sets hasPendingCompactAfter=true,
+        // and rewinding over it clears the flag.
+        const pendingCompact = makeJsonl([
+            userRecord(0, "hello"),
+            checkpointRecord(10, "cp1", "2026-11-24T06:05:00Z"),
+            userRecord(12, "/compact focus", "2026-11-24T06:06:00Z"),
+        ]);
+        assert.equal(findLatestActiveCheckpoint(pendingCompact)?.hasPendingCompactAfter, true);
+        const rewoundCompact = makeJsonl([
+            userRecord(0, "hello"),
+            checkpointRecord(10, "cp1", "2026-11-24T06:05:00Z"),
+            userRecord(12, "/compact focus", "2026-11-24T06:06:00Z"),
+            userRecord(12, "continue instead", "2026-11-24T06:07:00Z"),
+        ]);
+        assert.equal(findLatestActiveCheckpoint(rewoundCompact)?.hasPendingCompactAfter, false);
 
         // Rewinding past checkpoint 42 removes it from the active branch.
         const rewoundPastCp2 = makeJsonl([
@@ -157,6 +174,7 @@ describe("transcript parsing, retention, files-touched, and chunking", () => {
             stepIndex: 10,
             createdAt: "2026-11-24T06:05:00Z",
             key: "10@2026-11-24T06:05:00Z",
+            hasPendingCompactAfter: false,
         });
 
         // Rewinding past ALL checkpoints leaves no active checkpoint.
@@ -519,15 +537,38 @@ describe("PreInvocation hook state machine and failure handling", () => {
             assert.deepEqual(await processPreInvocation(input, deps), {});
             assert.equal(summarizeCalls, 0);
 
-            // Even with a checkpoint present, invocationNum=0 for /compact must not inject right before /compact wipes context.
-            const withCheckpoint = makeJsonl([userRecord(0, "hello"), plannerRecord(1, "hi"), checkpointRecord(2)]);
-            await writeFile(transcriptPath, withCheckpoint);
-            await writeFile(compactPath, withCheckpoint);
+            // Back-to-back /compact (USER_INPUT after the unhandled checkpoint) must skip on invocationNum=0.
+            const withPendingCompact = makeJsonl([
+                userRecord(0, "hello"),
+                plannerRecord(1, "hi"),
+                checkpointRecord(2),
+                userRecord(3, "/compact now"),
+            ]);
+            await writeFile(transcriptPath, withPendingCompact);
+            await writeFile(compactPath, withPendingCompact);
             assert.deepEqual(
                 await processPreInvocation({ ...input, invocationNum: 0, lastUserInput: "/compact now" }, deps),
                 {},
             );
             assert.equal(summarizeCalls, 0);
+
+            // Mid-turn queued user message arriving as /compact finishes may still carry stale
+            // lastUserInput="/compact" on invocationNum=0; when /compact preceded the CHECKPOINT,
+            // the hook MUST inject immediately on invocationNum=0 instead of skipping until invocationNum=1.
+            const afterCompletedCompact = makeJsonl([
+                userRecord(0, "hello"),
+                plannerRecord(1, "hi"),
+                userRecord(2, "/compact"),
+                checkpointRecord(3),
+            ]);
+            await writeFile(transcriptPath, afterCompletedCompact);
+            await writeFile(compactPath, afterCompletedCompact);
+            const injected = await processPreInvocation(
+                { ...input, invocationNum: 0, lastUserInput: "/compact" },
+                deps,
+            );
+            assert.equal(summarizeCalls, 1);
+            assert.ok(injected.injectSteps && injected.injectSteps.length >= 1);
         } finally {
             await rm(brainDir, { recursive: true, force: true });
         }

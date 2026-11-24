@@ -23,7 +23,6 @@ import {
     chunkInjectedPayload,
     collectAgyFilesTouchedBlock,
     findLatestActiveCheckpoint,
-    parseCompactCommand,
     parseNativeUserRequests,
     parseTranscriptRecords,
     selectVerbatimUserMessages,
@@ -136,11 +135,6 @@ export async function processPreInvocation(
     input: PreInvocationHookInput,
     deps: HookDeps = DEFAULT_DEPS,
 ): Promise<PreInvocationHookOutput> {
-    // Do not inject right before /compact runs and resets model context.
-    if (input.invocationNum === 0 && input.lastUserInput && parseCompactCommand(input.lastUserInput).isCompact) {
-        return {};
-    }
-
     const scanContent = await readCompactTranscriptForScan(input.transcriptPath);
     if (!scanContent) {
         return {};
@@ -148,6 +142,13 @@ export async function processPreInvocation(
 
     const latestCheckpoint = findLatestActiveCheckpoint(scanContent);
     if (latestCheckpoint === null) {
+        return {};
+    }
+
+    // Do not inject right before a pending /compact runs and resets model context.
+    // Relying on transcript order avoids false skips when a mid-turn queued message wakes up
+    // right after /compact finishes with stale input.lastUserInput="/compact".
+    if (input.invocationNum === 0 && latestCheckpoint.hasPendingCompactAfter) {
         return {};
     }
 

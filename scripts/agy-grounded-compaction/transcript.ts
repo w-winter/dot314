@@ -190,24 +190,32 @@ export interface ActiveCheckpointRef {
     readonly stepIndex: number;
     readonly createdAt: string;
     readonly key: string;
+    readonly hasPendingCompactAfter: boolean;
 }
 
 export function makeCheckpointKey(stepIndex: number, createdAt: string): string {
     return `${stepIndex}@${createdAt}`;
 }
 
-function pruneRewoundSteps(seenSteps: Set<number>, activeMap: Map<number, unknown>, rewindStep: number): void {
+function pruneRewoundSteps(
+    seenSteps: Set<number>,
+    rewindStep: number,
+    ...activeMaps: Array<Map<number, unknown>>
+): void {
     for (const step of seenSteps) {
         if (step >= rewindStep) {
             seenSteps.delete(step);
-            activeMap.delete(step);
+            for (const activeMap of activeMaps) {
+                activeMap.delete(step);
+            }
         }
     }
 }
 
 /**
  * Reconstructs the active checkpoint sequence across append-only `/rewind` entries and returns
- * the latest active CHECKPOINT, or null if none remain on the active timeline.
+ * the latest active CHECKPOINT along with whether a `/compact` USER_INPUT is pending after it,
+ * or null if no active CHECKPOINT remains on the timeline.
  */
 export function findLatestActiveCheckpoint(jsonlContent: string): ActiveCheckpointRef | null {
     if (!jsonlContent.includes('"CHECKPOINT"')) {
@@ -215,7 +223,8 @@ export function findLatestActiveCheckpoint(jsonlContent: string): ActiveCheckpoi
     }
 
     const seenSteps = new Set<number>();
-    const activeCheckpoints = new Map<number, ActiveCheckpointRef>();
+    const activeCheckpoints = new Map<number, Omit<ActiveCheckpointRef, "hasPendingCompactAfter">>();
+    const activeUserCompactFlags = new Map<number, boolean>();
 
     for (const rawLine of jsonlContent.split("\n")) {
         const line = rawLine.trim();
@@ -233,7 +242,7 @@ export function findLatestActiveCheckpoint(jsonlContent: string): ActiveCheckpoi
         }
         const stepIndex = parsed.step_index;
         if (seenSteps.has(stepIndex)) {
-            pruneRewoundSteps(seenSteps, activeCheckpoints, stepIndex);
+            pruneRewoundSteps(seenSteps, stepIndex, activeCheckpoints, activeUserCompactFlags);
         }
         seenSteps.add(stepIndex);
 
@@ -244,16 +253,31 @@ export function findLatestActiveCheckpoint(jsonlContent: string): ActiveCheckpoi
                 createdAt,
                 key: makeCheckpointKey(stepIndex, createdAt),
             });
+        } else if (parsed.type === "USER_INPUT") {
+            const rawContent = typeof parsed.content === "string" ? parsed.content : "";
+            activeUserCompactFlags.set(stepIndex, parseCompactCommand(extractUserRequestText(rawContent)).isCompact);
         }
     }
 
-    let latest: ActiveCheckpointRef | null = null;
+    let latest: Omit<ActiveCheckpointRef, "hasPendingCompactAfter"> | null = null;
     for (const checkpoint of activeCheckpoints.values()) {
         if (latest === null || checkpoint.stepIndex > latest.stepIndex) {
             latest = checkpoint;
         }
     }
-    return latest;
+    if (latest === null) {
+        return null;
+    }
+
+    let latestUserAfterStep = -1;
+    let hasPendingCompactAfter = false;
+    for (const [stepIndex, isCompact] of activeUserCompactFlags) {
+        if (stepIndex > latest.stepIndex && stepIndex > latestUserAfterStep) {
+            latestUserAfterStep = stepIndex;
+            hasPendingCompactAfter = isCompact;
+        }
+    }
+    return { ...latest, hasPendingCompactAfter };
 }
 
 function parseToolCalls(raw: unknown): ToolCallRecord[] {
@@ -312,7 +336,7 @@ export function parseTranscriptRecords(jsonlContent: string): TranscriptRecord[]
         }
         const stepIndex = parsed.step_index;
         if (seenSteps.has(stepIndex)) {
-            pruneRewoundSteps(seenSteps, activeByStep, stepIndex);
+            pruneRewoundSteps(seenSteps, stepIndex, activeByStep);
         }
         seenSteps.add(stepIndex);
 
