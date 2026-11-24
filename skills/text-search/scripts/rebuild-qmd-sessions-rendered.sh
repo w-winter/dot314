@@ -46,11 +46,17 @@ def detect_format(relative_path: str) -> str:
         return 'claude'
     if relative_path.startswith('codex/'):
         return 'codex'
+    if relative_path.startswith('agy/'):
+        return 'agy'
     return ''
 
 
 def should_skip(relative_path: str) -> bool:
-    return '/subagents/agent-acompact-' in f'/{relative_path}'
+    if '/subagents/agent-acompact-' in f'/{relative_path}':
+        return True
+    if relative_path.startswith('agy/'):
+        return not relative_path.endswith('/.system_generated/logs/transcript_full.jsonl')
+    return False
 
 
 def part_path(output_path: Path, index: int) -> Path:

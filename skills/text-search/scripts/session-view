@@ -3,13 +3,13 @@
 # session-view - Diagnostic view of agent session logs
 #
 # Detects format from path and dispatches to the appropriate processor.
-# Supports Pi, Codex, Claude, and RepoPrompt AgentSession formats.
+# Supports Pi, Codex, Claude, Antigravity (agy), and RepoPrompt AgentSession formats.
 #
 # Usage:
 #   session-view /path/to/session.jsonl
 #   session-view /path/to/AgentSession-ABC123.json
-#   session-view --latest [pi|codex|claude|rp]
-#   cat session.jsonl | session-view - [pi|codex|claude]
+#   session-view --latest [pi|codex|claude|agy|rp]
+#   cat session.jsonl | session-view - [pi|codex|claude|agy]
 #
 # Options:
 #   --include-tool-calls     Include assistant tool invocations with full arguments (default: omitted)
@@ -19,8 +19,10 @@
 #   session-view ~/.pi/agent/sessions/foo/bar.jsonl
 #   session-view ~/.codex/sessions/2025/11/04/session.jsonl
 #   session-view ~/.claude/projects/-Users-ww-foo/session.jsonl
+#   session-view ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl
 #   session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessions/AgentSession-ABC123.json
 #   session-view --latest pi
+#   session-view --latest agy
 #   session-view --latest rp
 #   qmd get sessions/file.jsonl --full | session-view - pi
 #   qmd get sessions/file.jsonl --full | session-view --include-tool-calls - pi
@@ -40,17 +42,18 @@ SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PI_PROCESSOR="$SCRIPT_DIR/pi-session-extract-with-tools.py"
 CODEX_PROCESSOR="$SCRIPT_DIR/codex-session-extract-with-tools.py"
 CLAUDE_PROCESSOR="$SCRIPT_DIR/claude-session-extract-with-tools.py"
+AGY_PROCESSOR="$SCRIPT_DIR/agy-session-extract-with-tools.py"
 RP_PROCESSOR="$SCRIPT_DIR/repoprompt-agent-session-extract.py"
 
 usage() {
     cat <<EOF
 Usage: session-view [OPTIONS] <file> [format]
 
-Diagnostic view of agent session logs (Pi, Codex, Claude Code, RepoPrompt AgentSession).
+Diagnostic view of agent session logs (Pi, Codex, Claude Code, Antigravity, RepoPrompt AgentSession).
 
 Arguments:
-  <file>      Path to .jsonl session file, or '-' for stdin
-  [format]    Force format: pi, codex, claude, or rp (auto-detected from path)
+  <file>      Path to .jsonl session file, agy conversation dir, or '-' for stdin
+  [format]    Force format: pi, codex, claude, agy, or rp (auto-detected from path)
 
 Options:
   --latest [format]          Process most recent session (default: pi)
@@ -62,8 +65,10 @@ Options:
 
 Examples:
   session-view ~/.pi/agent/sessions/project/session.jsonl
+  session-view ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl
   session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessions/AgentSession-ABC123.json
   session-view --latest codex
+  session-view --latest agy
   session-view --latest rp
   qmd get sessions/file.jsonl --full | session-view - pi
 EOF
@@ -76,6 +81,9 @@ detect_format() {
     case "$path" in
         AgentSession-*.json|./AgentSession-*.json|../AgentSession-*.json|*/Library/Application\ Support/RepoPrompt/*/AgentSessions/AgentSession-*.json|*/RepoPrompt/*/AgentSessions/AgentSession-*.json|*/AgentSessions/AgentSession-*.json)
             echo "rp"
+            ;;
+        */.gemini/antigravity-cli/*|*/antigravity-cli/*|*/.system_generated/logs/transcript*.jsonl|*/agy/*|agy/*)
+            echo "agy"
             ;;
         */.pi/*|*/pi-session*|*pi/*)
             echo "pi"
@@ -107,12 +115,15 @@ run_processor() {
         claude)
             python3 "$CLAUDE_PROCESSOR" "$@"
             ;;
+        agy|antigravity)
+            python3 "$AGY_PROCESSOR" "$@"
+            ;;
         rp)
             python3 "$RP_PROCESSOR" "$@"
             ;;
         *)
             echo "Unknown format: $format" >&2
-            echo "Supported formats: pi, codex, claude, rp" >&2
+            echo "Supported formats: pi, codex, claude, agy, rp" >&2
             exit 1
             ;;
     esac
@@ -194,7 +205,7 @@ format="${2:-}"
 # Handle stdin
 if [[ "$file" == "-" ]]; then
     if [[ -z "$format" ]]; then
-        echo "Format required when reading from stdin: session-view - [pi|codex|claude]" >&2
+        echo "Format required when reading from stdin: session-view - [pi|codex|claude|agy]" >&2
         exit 1
     fi
     run_processor "$format" "${extra_args[@]}" -
@@ -272,6 +283,11 @@ resolve_qmd_path() {
             # qmd://sessions/claude/-Users-ww-foo/file.jsonl → ~/.claude/projects/-Users-ww-foo/file.jsonl
             local sub_path="${rel_path#claude/}"
             echo "$HOME/.claude/projects/$sub_path"
+            ;;
+        agy/*)
+            # qmd://sessions/agy/<id>/.system_generated/logs/transcript_full.jsonl → ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl
+            local sub_path="${rel_path#agy/}"
+            echo "$HOME/.gemini/antigravity-cli/brain/$sub_path"
             ;;
         *)
             # Unknown prefix, try as-is under sessions

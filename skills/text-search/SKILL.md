@@ -283,6 +283,9 @@ session-view --include-tool-calls --include-tool-results /absolute/path/to/origi
 
 # RepoPrompt AgentSession JSON
 session-view ~/Library/Application\ Support/RepoPrompt/Workspaces/.../AgentSessions/AgentSession-ABC123.json
+
+# Antigravity (agy) transcript or conversation directory
+session-view ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript_full.jsonl
 ```
 
 You can also inspect the latest local session directly:
@@ -292,6 +295,7 @@ You can also inspect the latest local session directly:
 session-view --latest pi
 session-view --latest codex
 session-view --latest claude
+session-view --latest agy
 session-view --latest rp
 
 # Opt-in: include full tool-call arguments
