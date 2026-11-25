@@ -34,6 +34,20 @@ Argument syntax supports `--flag`, `--key value`, and `--key=value`. Whitespace,
 
 `all_args` preserves quote characters, option spelling, equals-versus-space syntax, and the `--` sentinel after trimming outer whitespace. Grouping quotes are removed in parsed `args`, `named`, and normalized variables. The same raw tail is appended after the closing `</skill>` tag, allowing arguments to influence template rendering while remaining visible to the agent.
 
+## User text and compaction
+
+Apply `user_text` as the final filter when inserting the user's task into rendered instructions:
+
+```njk
+Request: {{ args | join(" ") | user_text }}
+```
+
+The filter records where the rendered user text appears. Keep settings that change the workflow outside this filter. Raw arguments after `</skill>` are recorded as user text automatically. The expansion includes metadata tied to its exact text, so the distinction survives session resume and forks.
+
+With grounded-compaction's user-message retention enabled, expansions that meet its shortening threshold share one copy of identical instructions from the same template. Each selected invocation keeps its marked task text and raw arguments. Changed instructions remain separate. This saves space when a workflow is invoked repeatedly with different tasks.
+
+The extension also records substitutions and raw arguments for ordinary `/prompt-name` templates, including positional arguments, defaults and argument slices.
+
 ## Includes and composition
 
 Standard Nunjucks `{% include %}` resolves relative to the file currently rendering. Frontmatter is stripped when a `SKILL.template.md` is loaded as a template.

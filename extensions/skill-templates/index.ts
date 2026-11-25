@@ -8,6 +8,7 @@ import type {
 
 import { buildTemplateCatalog } from "./catalog.ts";
 import { renderTemplateInvocation } from "./render.ts";
+import { renderPromptTemplate } from "./prompt-input.ts";
 import type { ExtensionState, TemplateCatalog } from "./types.ts";
 
 interface SkillTemplatesExtensionOptions {
@@ -203,7 +204,15 @@ function handleTemplateSkillInput(
 
   const invocation = parseSkillInvocation(event.text);
   if (!invocation) {
-    return { action: "continue" };
+    const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(event.text);
+    const prompt = match && pi.getCommands().find((command) => command.source === "prompt" && command.name === match[1]);
+    if (!prompt) return { action: "continue" };
+    try {
+      return { action: "transform", text: renderPromptTemplate(prompt.sourceInfo.path, match.at(2) ?? ""), images: event.images };
+    } catch (error) {
+      reportError(ctx, `Failed to render prompt template "${prompt.name}"`, error);
+      return { action: "handled" };
+    }
   }
 
   ensureCatalogCurrent(state, pi, ctx.cwd, ctx.isProjectTrusted(), options);

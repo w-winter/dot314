@@ -3,9 +3,11 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "nod
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, test } from "node:test";
+import { parseSkillBlock } from "@earendil-works/pi-coding-agent";
 
 import { buildSkillInvocationText, renderTemplateInvocation } from "../render.ts";
 import type { TemplateSkill } from "../types.ts";
+import { readPromptExpansion } from "../../_shared/prompt-expansion.ts";
 
 const tempDirs: string[] = [];
 
@@ -56,7 +58,7 @@ test("renderTemplateInvocation populates args context and wraps output like a Pi
 
   assert.equal(result.renderedBody, "Mode=security strict=true lang=python foo=baz");
   assert.ok(
-    result.invocationText.startsWith(`<skill name=\"code-review\" location=\"${canonicalizePath(skill.filePath)}\">`),
+    readPromptExpansion(result.invocationText)?.text.startsWith(`<skill name=\"code-review\" location=\"${canonicalizePath(skill.filePath)}\">`),
   );
   assert.ok(result.invocationText.endsWith("security --strict --lang python --foo-bar=baz"));
 });
@@ -74,6 +76,25 @@ test("renderTemplateInvocation supports native relative includes", () => {
   const result = renderTemplateInvocation({ skill, rawArgs: "security" });
 
   assert.equal(result.renderedBody, "Start\nIncluded security\nEnd");
+});
+
+test("user_text preserves rendered task text and raw arguments separately from instructions", () => {
+  const dir = createTempDir();
+  const skill = createTemplateSkill(join(dir, "workflow"),
+    "---\ndescription: workflow\n---\nMode={{ named.mode }}\nRequest: {{ args | join(' ') | user_text }}\nFollow the workflow.");
+  const first = renderTemplateInvocation({ skill, rawArgs: '--mode=careful -- "first task"' });
+  const second = renderTemplateInvocation({ skill, rawArgs: '--mode=careful -- "another task"' });
+  const changed = renderTemplateInvocation({ skill, rawArgs: '--mode=fast -- "another task"' });
+  const a = readPromptExpansion(first.invocationText);
+  const b = readPromptExpansion(second.invocationText);
+  const c = readPromptExpansion(changed.invocationText);
+  assert.ok(a && b && c);
+  assert.ok(parseSkillBlock(first.invocationText));
+  assert.equal(first.renderedBody, "Mode=careful\nRequest: first task\nFollow the workflow.");
+  assert.deepEqual(a.userTextRanges.map(([start, end]) => a.text.slice(start, end)),
+    ["first task", '--mode=careful -- "first task"']);
+  assert.equal(a.instructionsKey, b.instructionsKey);
+  assert.notEqual(b.instructionsKey, c.instructionsKey);
 });
 
 test("renderTemplateInvocation supports {% skill %} inclusion and strips frontmatter", () => {

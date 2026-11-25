@@ -45,6 +45,7 @@
       { "from": "../../extensions/_shared/files-touched-nested.ts", "to": "extensions/_shared/files-touched-nested.ts" },
       { "from": "../../extensions/_shared/compaction-serialization.ts", "to": "extensions/_shared/compaction-serialization.ts" },
       { "from": "../../extensions/_shared/grounded-compaction-record.ts", "to": "extensions/_shared/grounded-compaction-record.ts" },
+      { "from": "../../extensions/_shared/prompt-expansion.ts", "to": "extensions/_shared/prompt-expansion.ts" },
       { "from": "../../LICENSE", "to": "LICENSE" }
     ]
   }

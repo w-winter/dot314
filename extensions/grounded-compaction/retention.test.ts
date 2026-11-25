@@ -15,6 +15,7 @@ import { readGroundedRetentionRecord, readGroundedSummaryBody, type SavedRetenti
 import { executePreflightedSummaryBatch, preflightSummaryBatch, prepareSummaryBatch } from "./summary-execution.ts";
 import { createAssistantResponse, createModel, createContext, createDeps, createEvent, createTestConfig } from "./test/fixtures.ts";
 import { runGroundedCompaction } from "./index.ts";
+import { PromptExpansionWriter } from "../_shared/prompt-expansion.ts";
 import {
     captureRetentionSnapshot,
     assertCompactionOwner,
@@ -270,6 +271,73 @@ describe("grounded retention identity", () => {
         session.appendMessage(fauxAssistantMessage("kept reply"));
         user(session, "kept request");
         assert.deepEqual(prepare(session).sources.candidates.map(({ entryId }) => entryId), [summarized]);
+    });
+
+    it("deduplicates expansion instructions within the budget while retaining every task and changed workflow", () => {
+        const session = SessionManager.inMemory();
+        const instructions = "Follow the complete workflow.\n".repeat(100);
+        const expansion = (task: string, mode = "careful") => {
+            const writer = new PromptExpansionWriter("/skills/workflow/SKILL.template.md");
+            return writer.serialize(`Mode: ${mode}\nRequest: ${writer.userText("")}${writer.userText(task)}\n${instructions}\n${writer.userText(`-- ${task}`)}`);
+        };
+        const firstText = expansion("First task\nKeep this second line.");
+        const first = user(session, firstText);
+        const secondText = expansion("Second task");
+        const second = user(session, secondText);
+        const third = user(session, expansion("Third task"));
+        session.appendMessage(fauxAssistantMessage("kept reply"));
+        const { event, snapshot, sources } = prepare(session);
+        const selected = selectRetainedSupplement({
+            event, snapshot: { ...snapshot, sessionDir: "/sessions" }, sources, decisions: sources.carriedDecisions,
+            summaryBody: "Summary", ledger: { mode: "off" }, budget: 1800,
+        });
+        assert.deepEqual(selected.record.retainedEntryIds, [first, second, third]);
+        assert.equal(selected.supplement.split(instructions).length - 1, 1);
+        assert.ok(selected.supplement.includes(firstText));
+        for (const task of ["Second task", "Third task"]) {
+            assert.ok(selected.supplement.includes(`Request: ${task}`));
+            assert.ok(selected.supplement.includes(`-- ${task}`));
+        }
+        assert.ok(estimateRetentionTextTokens(selected.supplement) <= 1800);
+        const kept = session.getLeafId();
+        assert.ok(kept);
+        session.appendCompaction(selected.summary, kept, 100, { groundedRetention: selected.record });
+        session.appendContextEdit(first, null);
+        user(session, expansion("Changed task", "fast"));
+        session.appendMessage(fauxAssistantMessage("kept again"));
+        const next = prepare(session);
+        const result = selectRetainedSupplement({
+            ...next, snapshot: { ...next.snapshot, sessionDir: "/sessions" }, decisions: next.sources.carriedDecisions,
+            summaryBody: "Summary", ledger: { mode: "off" }, budget: 5000,
+        });
+        assert.ok(!result.record.retainedEntryIds.includes(first));
+        assert.ok(result.supplement.includes(secondText));
+        assert.equal(result.supplement.split(instructions).length - 1, 2);
+        const unshortenedSources = prepareRetentionSources(next.event, next.snapshot, Number.MAX_SAFE_INTEGER);
+        const unshortened = selectRetainedSupplement({
+            ...next, snapshot: { ...next.snapshot, sessionDir: "/sessions" }, sources: unshortenedSources,
+            decisions: unshortenedSources.carriedDecisions, summaryBody: "Summary", ledger: { mode: "off" }, budget: 5000,
+        });
+        assert.equal(unshortened.supplement.split(instructions).length - 1, 3);
+    });
+
+    it("keeps a full expansion when older copies do not fit and rejects stale user-text offsets", () => {
+        const writer = new PromptExpansionWriter("/prompts/review.md");
+        const instructions = "Review the requested code.\n".repeat(100);
+        const session = SessionManager.inMemory();
+        user(session, writer.serialize(`${instructions}${writer.userText("old task ".repeat(2000))}`));
+        const latestText = writer.serialize(`${instructions}${writer.userText("current task")}`);
+        const latest = user(session, latestText);
+        session.appendMessage(fauxAssistantMessage("kept reply"));
+        const { event, snapshot, sources } = prepare(session);
+        const result = selectRetainedSupplement({
+            event, snapshot: { ...snapshot, sessionDir: "/sessions" }, sources, decisions: sources.carriedDecisions,
+            summaryBody: "Summary", ledger: { mode: "off" }, budget: 1200,
+        });
+        assert.deepEqual(result.record.retainedEntryIds, [latest]);
+        assert.ok(result.supplement.includes(latestText));
+        session.appendContextEdit(latest, { content: latestText.replace("current task", "edited task") });
+        assert.throws(() => prepare(session), /expansion/i);
     });
 });
 

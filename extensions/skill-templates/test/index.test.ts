@@ -2,8 +2,20 @@ import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { Type, type Static } from "typebox";
+import { Assert } from "typebox/value";
 
 import { createHarness, createTempDir, writeTextFile } from "./test-helpers.ts";
+import { readPromptExpansion } from "../../_shared/prompt-expansion.ts";
+
+const TransformedInputSchema = Type.Object({ action: Type.Literal("transform"), text: Type.String() });
+type TransformedInput = Static<typeof TransformedInputSchema>;
+
+function withoutExpansionMetadata(result: TransformedInput) {
+  const expansion = readPromptExpansion(result.text);
+  assert.ok(expansion);
+  return { ...result, text: expansion.text };
+}
 
 function canonicalizePath(path: string): string {
   try {
@@ -63,7 +75,8 @@ test("input transforms /skill:name when a matching template skill exists", async
   await harness.emit("session_start");
   const result = await harness.emitInput({ text: "/skill:review security", images: [{ type: "image", source: { type: "base64", mediaType: "image/png", data: "abc" } }] });
 
-  assert.deepEqual(result, {
+  Assert(TransformedInputSchema, result);
+  assert.deepEqual(withoutExpansionMetadata(result), {
     action: "transform",
     text: [
       `<skill name="review" location="${canonicalizePath(join(skillDir, "SKILL.template.md"))}">`,
@@ -89,6 +102,22 @@ test("input continues to core handling when no matching template skill exists", 
   harness.cleanup();
 });
 
+test("prompt template substitutions and raw arguments retain their user-text boundaries", async (t) => {
+  const cwd = createTempDir();
+  const promptFile = join(cwd, "review.md");
+  writeTextFile(promptFile, "---\ndescription: review\n---\nReview $1. Details: ${@:2}. Default: ${9:-careful}.");
+  const harness = createHarness({ cwd, commands: [{ name: "review", source: "prompt", path: promptFile }] });
+  t.after(() => harness.cleanup());
+  const raw = '"first task" doesn\'t "replace $1"';
+  const result = await harness.emitInput({ text: `/review ${raw}` });
+  Assert(TransformedInputSchema, result);
+  const expansion = readPromptExpansion(result.text);
+  assert.ok(expansion);
+  assert.ok(expansion.text.includes("Review first task. Details: doesn't replace $1. Default: careful."));
+  assert.deepEqual(expansion.userTextRanges.map(([start, end]) => expansion.text.slice(start, end)),
+    ["first task", "doesn't replace $1", "careful", raw]);
+});
+
 test("multiline prompts after -- render through skill input and alias commands", async (t) => {
   const harness = createHarness();
   t.after(() => harness.cleanup());
@@ -108,10 +137,15 @@ test("multiline prompts after -- render through skill input and alias commands",
 
   await harness.emit("session_start");
   const result = await harness.emitInput({ text: `/skill:review ${rawArgs}` });
-  assert.deepEqual(result, { action: "transform", text: expectedText, images: undefined });
+  Assert(TransformedInputSchema, result);
+  assert.deepEqual(withoutExpansionMetadata(result), { action: "transform", text: expectedText, images: undefined });
 
   await harness.invokeCommand("skill-template:review", rawArgs);
-  assert.deepEqual(harness.sentUserMessages, [{ content: expectedText, options: undefined }]);
+  assert.equal(harness.sentUserMessages.length, 1);
+  const sent = harness.sentUserMessages[0];
+  Assert(Type.String(), sent.content);
+  assert.equal(readPromptExpansion(sent.content)?.text, expectedText);
+  assert.equal(sent.options, undefined);
 });
 
 test("input handles matching template render errors without falling back", async () => {
@@ -238,7 +272,8 @@ test("resources_discover marks a catalog refresh pending and the next input refr
 
   const result = await harness.emitInput({ text: "/skill:review" });
 
-  assert.deepEqual(result, {
+  Assert(TransformedInputSchema, result);
+  assert.deepEqual(withoutExpansionMetadata(result), {
     action: "transform",
     text: [
       `<skill name="review" location="${canonicalizePath(join(skillDir, "SKILL.template.md"))}">`,

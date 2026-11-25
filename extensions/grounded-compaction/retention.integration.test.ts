@@ -12,6 +12,7 @@ import {
     type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { readGroundedRetentionRecord } from "../_shared/grounded-compaction-record.ts";
+import { PromptExpansionWriter } from "../_shared/prompt-expansion.ts";
 import { parseConfig, registerGroundedCompaction, runGroundedCompaction } from "./index.ts";
 
 const LONG_SOURCE = `Preserve the public API.\r\n${"Diagnostic detail 🙂\n".repeat(30)}`;
@@ -81,7 +82,9 @@ it("retains exact revisions through real compaction, resume, forks and failed at
                 if (!Object.hasOwn(record.decisions, id)) continue;
                 const decision = record.decisions[id];
                 const file = path.join(manager.getSessionDir(), `${manager.getSessionId()}.verbatim`, `${decision.contentHash}.txt`);
-                assert.deepEqual(await readFile(file), Buffer.from(LONG_SOURCE));
+                const source = manager.getBranch().find((entry) => entry.id === id);
+                assert.ok(source?.type === "message");
+                assert.deepEqual(await readFile(file), Buffer.from(contentText(source.message.content, "")));
             }
         }
         const manager = SessionManager.create(dir, path.join(dir, "sessions"));
@@ -116,6 +119,15 @@ it("retains exact revisions through real compaction, resume, forks and failed at
         assert.deepEqual(latest(manager).record.retainedEntryIds, [second.id]);
         assert.equal(latest(manager).record.decisions[first.id], undefined);
         await checkFiles(manager);
+        const instructions = "Follow all review steps.\n".repeat(50);
+        for (const task of ["Review the parser", "Review cancellation"]) {
+            const writer = new PromptExpansionWriter("/skills/review/SKILL.template.md");
+            await session.prompt(writer.serialize(`<skill name="review" location="/skills/review/SKILL.template.md">\n${instructions}Request: ${writer.userText(task)}\n</skill>`));
+        }
+        await session.compact();
+        assert.equal(latest(manager).entry.summary.split(instructions).length - 1, 1);
+        assert.ok(latest(manager).entry.summary.includes("Review cancellation"));
+        await checkFiles(manager);
         const savedFile = manager.getSessionFile();
         assert.ok(savedFile);
         assert.ok((await readFile(savedFile, "utf8")).includes('"groundedRetention"'));
@@ -125,12 +137,14 @@ it("retains exact revisions through real compaction, resume, forks and failed at
         await session.prompt("Continue after resume");
         await session.compact();
         await checkFiles(resumed);
+        assert.equal(latest(resumed).entry.summary.split(instructions).length - 1, 1);
         const child = SessionManager.forkFrom(savedFile, dir, path.join(dir, "children"));
         session.dispose();
         session = await start(child);
         await session.prompt("Continue in child");
         await session.compact();
         await checkFiles(child);
+        assert.equal(latest(child).entry.summary.split(instructions).length - 1, 1);
         assert.notEqual(child.getSessionId(), resumed.getSessionId());
         assert.equal(latest(child).record.decisions[first.id], undefined);
 

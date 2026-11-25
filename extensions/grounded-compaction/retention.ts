@@ -36,6 +36,7 @@ import {
     type GroundedRetentionRecord,
 } from "../_shared/grounded-compaction-record.ts";
 import { serializeConversationForCompaction } from "../_shared/compaction-serialization.ts";
+import { readPromptExpansion } from "../_shared/prompt-expansion.ts";
 import { appendReaderLedger, stripGroundedCompactionManifestTail, type FilesTouchedLedger } from "./prompts.ts";
 import type { PreviousSummaryResponse } from "./registration.ts";
 
@@ -159,6 +160,7 @@ export interface RetentionSources {
     carriedDecisions: ReadonlyMap<string, SavedRetentionDecision>;
     /** Entries a writer may shorten: at least the flag length, without a carried decision, and not a skill expansion. */
     offerable: ReadonlySet<string>;
+    expansions: ReadonlyMap<string, { key: string; decision: SavedRetentionDecision }>;
 }
 
 export function hashText(text: string): string {
@@ -387,6 +389,29 @@ function readSkillExpansion(source: UserMessageSource): SkillExpansion | undefin
     return { kind: "plain", decision: { contentHash: source.contentHash, action: "excerpt", ranges } };
 }
 
+function readExpansionExcerpt(source: UserMessageSource): { key: string; decision: SavedRetentionDecision } | undefined {
+    let expansion;
+    try { expansion = readPromptExpansion(source.text); }
+    catch (cause) {
+        throw new RetentionError("source-mapping", cause instanceof Error ? cause.message : "Invalid prompt expansion metadata", [source.entryId], { cause });
+    }
+    if (!expansion) return undefined;
+    const ranges: LineRange[] = [{ startLine: 1, endLine: 2 }];
+    let rangeIndex = 0;
+    for (let index = 2; index < source.lines.length; index++) {
+        const line = source.lines[index];
+        while (rangeIndex < expansion.protectedRanges.length
+            && (expansion.protectedRanges[rangeIndex][0] === expansion.protectedRanges[rangeIndex][1]
+                || expansion.protectedRanges[rangeIndex][1] <= line.start)) rangeIndex++;
+        const range = expansion.protectedRanges.at(rangeIndex);
+        if (!range || range[0] >= line.end) continue;
+        const previous = ranges[ranges.length - 1];
+        if (previous.endLine === index) previous.endLine = index + 1;
+        else ranges.push({ startLine: index + 1, endLine: index + 1 });
+    }
+    return { key: expansion.instructionsKey, decision: { contentHash: source.contentHash, action: "excerpt", ranges } };
+}
+
 /**
  * Resolves retention sources for one attempt. Messages still in the active projection use their projected
  * text; user entries already summarized by earlier compactions use the latest context edit on the branch.
@@ -422,7 +447,14 @@ export function prepareRetentionSources(
     }
 
     const offerable = new Set<string>();
+    const expansions = new Map<string, { key: string; decision: SavedRetentionDecision }>();
     for (const source of candidates) {
+        const expansion = readExpansionExcerpt(source);
+        if (expansion) {
+            if (source.text.length >= flagChars) expansions.set(source.entryId, expansion);
+            carriedDecisions.delete(source.entryId);
+            continue;
+        }
         if (source.text.length < flagChars) continue;
         const skill = readSkillExpansion(source);
         if (skill?.kind === "plain") carriedDecisions.set(source.entryId, skill.decision);
@@ -430,7 +462,7 @@ export function prepareRetentionSources(
         else if (!carriedDecisions.has(source.entryId)) offerable.add(source.entryId);
     }
 
-    return { candidates, history: spans.history, turnPrefix: spans.turnPrefix, carriedDecisions, offerable };
+    return { candidates, history: spans.history, turnPrefix: spans.turnPrefix, carriedDecisions, offerable, expansions };
 }
 
 /** Sources in one prepared span, keyed by entry ID. */
@@ -604,12 +636,25 @@ export function selectRetainedSupplement(params: {
     const available = Math.min(budget, remainingContinuationTokens({ ...capacity, summary: base }));
     let used = estimateTextTokens(SUPPLEMENT_PREFIX);
     const selected: SelectedRetention[] = [];
+    const resolvedDecisions = new Map(decisions);
+    const expansionOwners = new Map<string, { index: number; decision: SavedRetentionDecision }>();
+    const fragmentTokens = (fragment: SelectedRetention) => estimateTextTokens(dateLine(fragment.source) + fragment.fragment);
     for (let index = sources.candidates.length - 1; index >= 0; index--) {
         const source = sources.candidates[index];
         const fragment = renderRetainedSource(source, decisions.get(source.entryId), snapshot);
+        const expansion = sources.expansions.get(source.entryId);
+        const owner = expansion ? expansionOwners.get(expansion.key) : undefined;
+        const shortened = owner ? renderRetainedSource(selected[owner.index].source, owner.decision, snapshot) : undefined;
+        if (shortened && expansion) shortened.fragment += `\nSame instructions as the earlier retained expansion with instructionsHash ${expansion.key}.`;
         // Each message is charged its own date line, so sharing one can only make the joined text smaller.
-        const tokens = estimateTextTokens(dateLine(source) + fragment.fragment);
+        const tokens = fragmentTokens(fragment) + (owner && shortened ? fragmentTokens(shortened) - fragmentTokens(selected[owner.index]) : 0);
         if (used + tokens > available) continue;
+        // Selecting an older copy moves the full instructions to the first retained invocation in conversation order.
+        if (owner && shortened) {
+            selected[owner.index] = shortened;
+            resolvedDecisions.set(shortened.source.entryId, owner.decision);
+        }
+        if (expansion) expansionOwners.set(expansion.key, { index: selected.length, decision: expansion.decision });
         selected.push(fragment);
         used += tokens;
     }
@@ -620,7 +665,7 @@ export function selectRetainedSupplement(params: {
     if (estimateTextTokens(supplement) > budget) throw new RetentionError("continuation-capacity", "Rendered supplement exceeds its configured budget");
     return {
         summary, supplement, selected,
-        record: { version: 1, summaryBody, decisions: Object.fromEntries(decisions), retainedEntryIds: selected.map(({ source }) => source.entryId) },
+        record: { version: 1, summaryBody, decisions: Object.fromEntries(resolvedDecisions), retainedEntryIds: selected.map(({ source }) => source.entryId) },
     };
 }
 

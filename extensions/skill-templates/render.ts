@@ -4,6 +4,10 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import nunjucks from "nunjucks";
+import { Type } from "typebox";
+import { Assert } from "typebox/value";
+
+import { PromptExpansionWriter } from "../_shared/prompt-expansion.ts";
 
 import { parseInvocationArgs } from "./args.ts";
 import {
@@ -134,7 +138,7 @@ export function resolveSkillTargetPath(fromFilePath: string, requested: string):
   throw new Error(`Skill include target not found: ${requested}`);
 }
 
-function createNunjucksEnvironment(): any {
+function createNunjucksEnvironment(writer: PromptExpansionWriter): any {
   let environment: any;
 
   const LoaderBase = (nunjucks as any).Loader.extend({
@@ -161,6 +165,10 @@ function createNunjucksEnvironment(): any {
 
   const loader = new LoaderBase();
   environment = new (nunjucks as any).Environment(loader, { autoescape: false });
+  environment.addFilter("user_text", (value: string) => {
+    Assert(Type.String(), value);
+    return writer.userText(value);
+  });
 
   class SkillTagExtension {
     tags = ["skill"];
@@ -247,7 +255,8 @@ export function renderTemplateInvocation(input: {
     filePath: canonicalizePath(input.skill.filePath),
     baseDir: canonicalizePath(input.skill.baseDir),
   };
-  const environment = createNunjucksEnvironment();
+  const writer = new PromptExpansionWriter(canonicalSkill.filePath);
+  const environment = createNunjucksEnvironment(writer);
   const rootRef: TemplateRef = {
     filePath: canonicalSkill.filePath,
     ancestry: [canonicalSkill.filePath],
@@ -256,7 +265,8 @@ export function renderTemplateInvocation(input: {
 
   return {
     parsedArgs,
-    renderedBody,
-    invocationText: buildSkillInvocationText(canonicalSkill, renderedBody, parsedArgs.raw),
+    renderedBody: writer.expand(renderedBody).text,
+    invocationText: writer.serialize(buildSkillInvocationText(canonicalSkill, renderedBody,
+      parsedArgs.raw ? writer.userText(parsedArgs.raw) : "")),
   };
 }
