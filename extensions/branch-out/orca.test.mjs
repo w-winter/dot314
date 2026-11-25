@@ -32,7 +32,12 @@ const config = { launchMode: 'split', splitDirectionPreferences: ['right'], pres
 assert.equal((await context.openInOrca(pi, '/tmp/fork.jsonl', config, "/tmp/user's project")).opened, true);
 assert.deepEqual(calls.map(args => args[1]), ['list', 'split', 'switch']);
 assert.equal(calls[1][3], 'term_current');
+assert.equal(calls[1][5], 'vertical');
 assert.equal(calls[1][7], "cd '/tmp/user'\\''s project' && pi --session '/tmp/fork.jsonl'");
+calls.length = 0;
+const downConfig = { ...config, splitDirectionPreferences: ['down'] };
+assert.equal((await context.openInOrca(pi, '/tmp/fork.jsonl', downConfig, '/tmp')).opened, true);
+assert.equal(calls[1][5], 'horizontal');
 calls.length = 0;
 env.ORCA_TERMINAL_HANDLE = 'stale';
 assert.equal((await context.openInOrca(pi, '/tmp/fork.jsonl', config, '/tmp')).opened, false);
