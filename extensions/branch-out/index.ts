@@ -790,7 +790,7 @@ async function openInOrca(
 		return { opened: false, error: `Could not resolve Orca terminal '${terminalHandle || paneKey}' in the current worktree` }
 	}
 
-	const direction = resolvedSplitDirection === "right" ? "horizontal" : "vertical"
+	const direction = resolvedSplitDirection === "right" ? "vertical" : "horizontal"
 	const splitResult = await pi.exec(orcaCommand, [
 		"terminal",
 		"split",
