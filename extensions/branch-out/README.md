@@ -2,13 +2,22 @@
 
 Fork the current Pi session into a split terminal pane or new tab with rotating layout policies, and with optional model and message queuing. Routing, split geometry, and focus behavior are config-driven. Inside Orca, the fork opens as a new pane in the current terminal tab and worktree.
 
-## Command
+## Commands
 
 ```text
-/branch [--model <query>] [message]
+/branch [--tree] [--model <query>] [message]
+/branch-tree [--model <query>] [message]
 ```
 
-Both arguments are optional and independent.
+`/branch-tree` is the shortcut for `/branch --tree`. In short terminals, the picker reduces the tree viewport while keeping the focused entry visible and a preview row available; when the terminal cannot show both safely, it displays a resize prompt instead of accepting a hidden fork point.
+
+The live preview is shown in the same editor-slot custom UI as `/tool-horizon pick`, retaining the native session-tree title, spacing, and borders. Pi restores any editor draft when you leave the picker. Markdown and ordinary tool results use Pi's Markdown renderer; Bash commands and `read` results with a recognized path receive syntax highlighting. Hidden thinking blocks are not displayed. `Tab` switches between a larger tree and a larger preview; `Shift+Up`/`Shift+Down` scroll the preview, and `Shift+PageUp`/`Shift+PageDown` page through it. `Enter` forks at the selected entry without navigating the parent; `Esc` clears an active search or closes the picker. Copy actions are omitted.
+
+Selecting a text-only user message forks before it and restores the prompt in the child editor without automatically sending it. Messages with attachments are retained intact, and other selections include history through the chosen entry. The footer describes the selected fork boundary. Very large previews are capped at 7,000 characters or 200 rendered lines with an explicit notice, without truncating the child history. Additional instructions retain the usual auto-submit countdown.
+
+See the [package documentation](../../packages/pi-branch-out/README.md#commands) for examples and preview limits. The history picker requires Pi's interactive terminal UI and Pi `>=0.87.1`.
+
+The model and message arguments are optional and independent.
 
 `/branch` works while the parent is responding or running tools. The child starts with the entries on the parent's active path when you run the command, even if the session file is behind. An unfinished streamed response and later tool results are not included. The parent continues its turn.
 
@@ -72,8 +81,12 @@ rm /tmp/pi-branch-out-layout-state.json
 
 | Value | Behavior |
 |-------|----------|
-| `true` | Focus stays in the pane that ran `/branch` (default) |
-| `false` | Focus moves to the newly created pane |
+| `true` | Ask the terminal to keep the source pane selected (default) |
+| `false` | Allow the terminal's normal child-focus behavior |
+
+This applies to both `/branch` and `/branch-tree` and is read on every launch. Focus behavior depends on the backend and desktop environment. A successful CLI switch or an active-pane marker does not establish that subsequent keyboard input will reach the child, particularly over a remote connection.
+
+Use the terminal's native pane-switching shortcuts when automatic focus is unreliable. Orca's default bindings are `Cmd+]` / `Cmd+[` on macOS and `Ctrl+]` / `Ctrl+[` on Linux and Windows for the next / previous pane. These follow the desktop client's platform; custom Orca bindings take precedence. Wait for the child Pi editor to start before typing.
 
 ## Terminal backend routing
 

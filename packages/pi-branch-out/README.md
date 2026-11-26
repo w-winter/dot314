@@ -24,20 +24,47 @@ From the dot314 git bundle (filtered install):
 }
 ```
 
-After installing, copy `extensions/branch-out/config.json.example` to `extensions/branch-out/config.json` and adjust to taste.
+After installing, copy `extensions/branch-out/config.json.example` to `extensions/branch-out/config.json` and adjust to taste. Pi `>=0.87.1` is required for the session snapshot and native tree selector APIs.
 
-## Command
+## Commands
 
 ```text
-/branch [--model <query>] [message]
+/branch-tree [--model <query>] [message]
+/branch [--tree] [--model <query>] [message]
 ```
 
-Both arguments are optional and independent.
+`/branch-tree` is the shortcut for `/branch --tree`. In short terminals, the picker reduces the tree viewport while keeping the focused entry visible and a preview row available; when the terminal cannot show both safely, it displays a resize prompt instead of accepting a hidden fork point.
 
-`/branch` works while the parent is responding or running tools. The child starts with the entries on the parent's active path when you run the command, even if the session file is behind. An unfinished streamed response and later tool results are not included. The parent continues its turn.
+Use `/branch-tree` to select a historical entry, or `/branch` to fork from the current position. `/branch --tree` is equivalent to `/branch-tree`; both use the same handler and accept a model query and an optional draft message.
 
+- **`--tree`** — open Pi's native session-tree selector and fork the child from the selected entry without navigating the parent. Selecting a user message restores its prompt in the child editor; selecting another entry forks through that entry. `Esc` cancels without creating a child.
 - **`--model <query>`** — target model for the child session.  Accepts a fully qualified `provider/model-id` or a fuzzy query scoped to the current provider.  If the query does not resolve safely the child keeps the parent's model.
-- **`message`** — prefilled text in the child session's editor with a 10-second auto-submit countdown.  Typing anything or pressing `Esc` cancels the countdown; `Enter` sends immediately.
+- **`message`** — prefilled text in the child session's editor with a 10-second auto-submit countdown. Typing anything or pressing `Esc` cancels the countdown; `Enter` sends immediately. When a text-only user message is selected, the supplied instructions are appended to the restored prompt. Restoring a historical prompt without new instructions leaves it in the editor without auto-submitting it.
+
+Examples:
+
+```text
+/branch-tree
+/branch-tree --model flash
+/branch-tree Please focus on the failure mechanism
+/branch --tree
+```
+
+The selector uses Pi's native session tree, including search, filtering, folding, labels, and sibling branches. The current leaf is initially selected. A live preview below the tree shows the focused entry before you choose where to fork. Markdown content and ordinary tool results use Pi's Markdown renderer; Bash commands and `read` results with a recognized file path receive syntax highlighting. Hidden thinking blocks are not shown. Attachment placeholders identify content that remains in the child. The footer explains whether the selected entry is included or restored as an editable prompt. Previews are capped at the reference picker's limits of 7,000 characters or 200 rendered lines, with an explicit notice; this never truncates the child session's history.
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Toggle between a larger tree and a larger preview; both remain visible |
+| `Shift+Up` / `Shift+Down` | Scroll the preview by one line |
+| `Shift+PageUp` / `Shift+PageDown` | Page through the preview |
+| `Enter` | Fork from the focused entry |
+| `Esc` | Clear an active search, or close the picker without forking |
+
+Native navigation, search, filters, labels, spacing, and borders keep their configured bindings. Copy actions are omitted from this picker. Selection changes reset the preview scroll; resizing the terminal or toggling the layout preserves the selected node. Very large previews are capped at 7,000 characters or 200 rendered lines with an explicit notice; this never truncates the child session's history.
+
+Selecting a node does not navigate or interrupt the parent session. Label edits are persisted through Pi's `setLabel` API.
+
+Selecting a text-only user message forks before it and restores its prompt in the child editor for editing. Messages with attachments are retained intact through the selected message, so images are preserved without repeating the prompt. Selecting an assistant or other entry forks through that entry. The child opens using the existing terminal backend. The tree picker requires Pi's interactive terminal UI; ordinary `/branch` usage is unchanged.
 
 ## Config
 
@@ -96,8 +123,12 @@ rm /tmp/pi-branch-out-layout-state.json
 
 | Value | Behavior |
 |-------|----------|
-| `true` | Focus stays in the pane that ran `/branch` (default) |
-| `false` | Focus moves to the newly created pane |
+| `true` | Ask the terminal to keep the source pane selected (default) |
+| `false` | Allow the terminal's normal child-focus behavior |
+
+This applies to both `/branch` and `/branch-tree` and is read on every launch. Focus behavior depends on the backend and desktop environment. A successful CLI switch or an active-pane marker does not establish that subsequent keyboard input will reach the child, particularly over a remote connection.
+
+Use the terminal's native pane-switching shortcuts when automatic focus is unreliable. Orca's default bindings are `Cmd+]` / `Cmd+[` on macOS and `Ctrl+]` / `Ctrl+[` on Linux and Windows for the next / previous pane. These follow the desktop client's platform; custom Orca bindings take precedence. Wait for the child Pi editor to start before typing.
 
 ## Terminal backend routing
 

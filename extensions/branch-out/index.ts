@@ -10,8 +10,8 @@ import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
-import { SessionManager } from "@earendil-works/pi-coding-agent"
-import { Key, matchesKey } from "@earendil-works/pi-tui"
+import { getLanguageFromPath, getMarkdownTheme, highlightCode, SessionManager, TreeSelectorComponent } from "@earendil-works/pi-coding-agent"
+import { Key, Markdown, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
 
 const TERMINAL_FLAG = "branch-out-terminal"
 const STATUS_KEY = "branch-out-terminal"
@@ -481,17 +481,299 @@ function getModelCandidates(ctx: ExtensionContext): ScopedModelCandidate[] {
 	return []
 }
 
-function parseBranchArgs(rawArgs: string): { modelQuery?: string; message: string } {
+function parseBranchArgs(rawArgs: string): { modelQuery?: string; tree: boolean; message: string } {
 	let remaining = rawArgs.trim()
 	let modelQuery: string | undefined
+	let tree = false
 
-	const modelMatch = remaining.match(/^--model\s+(\S+)(?:\s+|$)/)
-	if (modelMatch) {
-		modelQuery = modelMatch[1]
-		remaining = remaining.slice(modelMatch[0].length).trimStart()
+	while (remaining) {
+		if (/^--tree(?:\s+|$)/.test(remaining)) {
+			tree = true
+			remaining = remaining.slice("--tree".length).trimStart()
+			continue
+		}
+
+		const modelMatch = remaining.match(/^--model\s+(\S+)(?:\s+|$)/)
+		if (modelMatch) {
+			modelQuery = modelMatch[1]
+			remaining = remaining.slice(modelMatch[0].length).trimStart()
+			continue
+		}
+
+		break
 	}
 
-	return { modelQuery, message: remaining }
+	return { modelQuery, tree, message: remaining }
+}
+
+function getMessageText(entry: SessionEntry): string {
+	if (entry.type !== "message" || !("content" in entry.message)) return ""
+	const content = (entry.message as { content?: unknown }).content
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content
+		.filter((part: unknown): part is { type: "text"; text: string } => (
+			typeof part === "object" && part !== null && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string"
+		))
+		.map((part) => part.text)
+		.join("\n")
+}
+
+function hasNonTextContent(entry: SessionEntry): boolean {
+	if (entry.type !== "message" || !("content" in entry.message)) return false
+	const content = (entry.message as { content?: unknown }).content
+	return Array.isArray(content) && content.some((part: unknown) => (
+		typeof part !== "object" || part === null || !("type" in part) || part.type !== "text"
+	))
+}
+
+function buildEntryPath(entries: SessionEntry[], targetId: string): SessionEntry[] | undefined {
+	const entriesById = new Map(entries.map((entry) => [entry.id, entry]))
+	const reversedPath: SessionEntry[] = []
+	let current = entriesById.get(targetId)
+	if (!current) return undefined
+	while (current) {
+		reversedPath.push(current)
+		current = current.parentId ? entriesById.get(current.parentId) : undefined
+	}
+	if (reversedPath[reversedPath.length - 1]?.parentId) return undefined
+	return reversedPath.reverse()
+}
+
+function buildTreeForkSelection(
+	entries: SessionEntry[],
+	targetId: string,
+): { branch: SessionEntry[]; message: string } | undefined {
+	const branch = buildEntryPath(entries, targetId)
+	if (!branch) return undefined
+
+	const selectedEntry = branch[branch.length - 1]
+	if (selectedEntry.type !== "message" || selectedEntry.message.role !== "user" || hasNonTextContent(selectedEntry)) {
+		// Keep attachments in their original message rather than reconstructing them from editor text.
+		return { branch, message: "" }
+	}
+
+	return { branch: branch.slice(0, -1), message: getMessageText(selectedEntry) }
+}
+
+const MAX_PREVIEW_CHARS = 7_000
+const MAX_PREVIEW_LINES = 200
+const MAX_PREVIEW_PARENT_DEPTH = 30
+const SELECTOR_HEIGHT_RATIO = 0.65
+
+type SessionTree = ReturnType<ExtensionCommandContext["sessionManager"]["getTree"]>
+
+function previewCode(text: string, language = ""): string {
+	const clipped = text.slice(0, MAX_PREVIEW_CHARS)
+	const fence = "`".repeat(Math.max(3, ...Array.from(clipped.matchAll(/`+/g), (match) => match[0].length + 1)))
+	return `${fence}${language}\n${clipped}\n${fence}${text.length > clipped.length ? "\n[Preview truncated]" : ""}`
+}
+
+function previewContent(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content.map((part: unknown) => {
+		if (typeof part !== "object" || part === null || !("type" in part)) return ""
+		if (part.type === "thinking") return ""
+		if (part.type === "text" && "text" in part && typeof part.text === "string") return part.text
+		if (part.type === "toolCall" && "name" in part) {
+			const args = "arguments" in part ? JSON.stringify(part.arguments, null, 2) : ""
+			return `Tool: ${part.name}\n${previewCode(args ?? "", "json")}`
+		}
+		return `[${part.type} attachment]`
+	}).filter(Boolean).join("\n\n")
+}
+
+function renderBranchPreview(entry: SessionEntry, entries: Map<string, SessionEntry>, width: number): string[] {
+	let text = ""
+	let highlightLanguage = ""
+	if (entry.type === "message") {
+		const message = entry.message
+		text = "content" in message ? previewContent(message.content) : ""
+		if (message.role === "bashExecution") {
+			text = `Command:\n${previewCode(message.command, "bash")}\n\nOutput:\n${message.output || "(no output)"}`
+			if (message.exitCode !== undefined) text += `\n\nExit code: ${message.exitCode}`
+			if (message.truncated) text += `\n\nFull output: ${message.fullOutputPath ?? "truncated"}`
+		} else if (message.role === "toolResult") {
+			// A read result's language comes from the matching call on this node's own ancestry.
+			let language = ""
+			let parent = entry.parentId ? entries.get(entry.parentId) : undefined
+			for (let depth = 0; parent && depth < MAX_PREVIEW_PARENT_DEPTH; depth += 1) {
+				if (parent.type === "message" && parent.message.role === "assistant") {
+					const call = parent.message.content.find((part: { type: string; id?: string }) => part.type === "toolCall" && part.id === message.toolCallId)
+					if (call?.type === "toolCall") {
+						const file = call.arguments.path ?? call.arguments.file_path
+						if (message.toolName === "read" && typeof file === "string") language = getLanguageFromPath(file) ?? ""
+						break
+					}
+				}
+				parent = parent.parentId ? entries.get(parent.parentId) : undefined
+			}
+			if (message.toolName === "read" && language) highlightLanguage = language
+			if (message.isError && text) text = `Tool error:\n\n${text}`
+		}
+		if (!text && "errorMessage" in message && message.errorMessage) text = `(error) ${message.errorMessage}`
+	} else if (entry.type === "custom_message") {
+		text = previewContent(entry.content)
+	} else if (entry.type === "compaction" || entry.type === "branch_summary") {
+		text = entry.summary
+	} else if (entry.type === "model_change") {
+		text = `Model: ${entry.provider}/${entry.modelId}`
+	} else if (entry.type === "thinking_level_change") {
+		text = `Thinking level: ${entry.thinkingLevel}`
+	} else if (entry.type === "label") {
+		text = `Label: ${entry.label ?? "(cleared)"}`
+	} else if (entry.type === "session_info") {
+		text = `Session: ${entry.name ?? "(unnamed)"}`
+	} else if (entry.type === "custom") {
+		text = `Extension entry: ${entry.customType}`
+	}
+	if (text.length > MAX_PREVIEW_CHARS) text = `${text.slice(0, MAX_PREVIEW_CHARS)}\n\n[Preview truncated]`
+	const lines = highlightLanguage
+		? highlightCode(text, highlightLanguage).map((line) => truncateToWidth(line, width))
+		: new Markdown(text || "(no text content)", 0, 0, getMarkdownTheme()).render(width)
+	return lines.length > MAX_PREVIEW_LINES
+		? [...lines.slice(0, MAX_PREVIEW_LINES - 1), "[Preview truncated]"]
+		: [...lines]
+}
+
+async function selectSessionTreeEntry(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	tree: SessionTree,
+	currentLeafId: string | null,
+): Promise<string | undefined> {
+	return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+		let editingLabel = false
+		let expanded = false
+		let scrollOffset = 0
+		let previewHeight = 1
+		let canSelect = false
+		let cache: { id: string; width: number; lines: string[] } | undefined
+		const entries = new Map<string, SessionEntry>()
+		const pending = [...tree]
+		while (pending.length) {
+			const node = pending.pop()!
+			entries.set(node.entry.id, node.entry)
+			pending.push(...node.children)
+		}
+
+		const selector = new TreeSelectorComponent(
+			tree,
+			currentLeafId,
+			Math.floor(tui.terminal.rows * SELECTOR_HEIGHT_RATIO),
+			(id) => { if (canSelect) done(id) },
+			() => done(undefined),
+			(entryId, label) => {
+				editingLabel = false
+				pi.setLabel(entryId, label)
+			},
+			currentLeafId ?? undefined,
+		)
+		const treeList = selector.getTreeList()
+		// Pi has no public tree viewport setter. Keep this one sizing assumption checked,
+		// and retain the native list so selection, search, folding and labels stay native.
+		const viewport = treeList as unknown as { maxVisibleLines: number }
+		const children = selector.children
+		if (!Number.isInteger(viewport.maxVisibleLines) || children.length <= 3
+			|| !children[3].render(200).join(" ").includes("filters")) {
+			throw new Error("Pi's session tree layout changed; the branch preview needs an update")
+		}
+		const key = (action: Parameters<typeof keybindings.getKeys>[0]) => keybindings.getKeys(action)[0] ?? ""
+		const help = {
+			invalidate() {},
+			render(width: number) {
+				return [
+					`${key("tui.select.up")}/${key("tui.select.down")} move · ${key("tui.editor.cursorLeft")}/${key("tui.editor.cursorRight")} page · ${key("app.tree.foldOrUp")}/${key("app.tree.unfoldOrDown")} branch · ${key("app.tree.editLabel")} label · ${key("app.tree.filter.cycleForward")} filters`,
+					`${key("tui.select.confirm")} fork · ${key("tui.select.cancel")} cancel · tab resize preview · shift+↑/↓ scroll · shift+pgup/pgdn page`,
+				].map((line) => truncateToWidth(theme.fg("dim", `  ${line}`), width))
+			},
+		}
+		// Preserve the native title, spacing and borders; only replace copy hints with fork guidance.
+		children[3] = help
+		const editLabel = treeList.onLabelEdit
+		treeList.onLabelEdit = (id, label) => {
+			editingLabel = true
+			editLabel?.(id, label)
+		}
+
+		const picker = {
+			get focused() { return selector.focused },
+			set focused(value: boolean) { selector.focused = value },
+			get capturesViewportInput() { return !editingLabel },
+			invalidate() {
+				cache = undefined
+				selector.invalidate()
+			},
+			handleInput(data: string) {
+				if (editingLabel) {
+					selector.handleInput(data)
+					if (keybindings.matches(data, "tui.select.cancel")) editingLabel = false
+				} else if (keybindings.matches(data, "tui.select.cancel")) {
+					if (canSelect) selector.handleInput(data)
+					else done(undefined)
+				} else if (matchesKey(data, Key.tab)) {
+					expanded = !expanded
+				} else if (matchesKey(data, "shift+up")) {
+					scrollOffset -= 1
+				} else if (matchesKey(data, "shift+down")) {
+					scrollOffset += 1
+				} else if (matchesKey(data, "shift+pageUp")) {
+					scrollOffset -= Math.max(1, previewHeight - 1)
+				} else if (matchesKey(data, "shift+pageDown")) {
+					scrollOffset += Math.max(1, previewHeight - 1)
+				} else if (!keybindings.matches(data, "app.message.copy")) {
+					// Recheck the viewport before accepting Enter after a terminal resize.
+					picker.render(tui.terminal.columns)
+					if (canSelect) selector.handleInput(data)
+				}
+				tui.requestRender()
+			},
+			render(width: number): string[] {
+				const height = Math.max(1, tui.terminal.rows)
+				const fit = (line: string) => truncateToWidth(line, Math.max(1, width))
+				viewport.maxVisibleLines = 1
+				selector.invalidate()
+				const chromeHeight = selector.render(width).length - (editingLabel ? 0 : treeList.render(width).length)
+				canSelect = width >= 20 && height >= chromeHeight + 5
+				if (!canSelect) return [fit(theme.fg("warning", "Resize terminal to choose a fork point. Esc cancels."))]
+				if (editingLabel) return selector.render(width).map(fit)
+
+				const treeRatio = expanded ? 0.3 : SELECTOR_HEIGHT_RATIO
+				const preferredTreeLines = Math.floor(Math.floor(height * treeRatio) / 2)
+				const availableTreeLines = height - chromeHeight - 4
+				viewport.maxVisibleLines = Math.max(1, Math.min(preferredTreeLines, availableTreeLines))
+				selector.invalidate()
+				const treeLines = selector.render(width)
+				previewHeight = Math.max(1, height - treeLines.length - 2)
+				const entry = treeList.getSelectedNode()?.entry
+				if (cache?.id !== entry?.id) scrollOffset = 0
+				if (entry && (!cache || cache.id !== entry.id || cache.width !== width)) {
+					cache = { id: entry.id, width, lines: renderBranchPreview(entry, entries, width) }
+				} else if (!entry) cache = undefined
+				const body = cache?.lines ?? ["No matching entry"]
+				scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, body.length - previewHeight)))
+				const visible = body.slice(scrollOffset, scrollOffset + previewHeight)
+				while (visible.length < previewHeight) visible.push("")
+				const role = entry?.type === "message"
+					? entry.message.role === "toolResult" ? `${entry.message.role} · ${entry.message.toolName}` : entry.message.role
+					: entry?.type ?? ""
+				const header = theme.fg("accent", `─ Preview: ${role} · ${scrollOffset + 1}–${Math.min(body.length, scrollOffset + previewHeight)}/${body.length} ─`)
+				const restoresPrompt = entry?.type === "message" && entry.message.role === "user" && !hasNonTextContent(entry)
+				const action = !entry ? "Choose a session entry to fork from"
+					: restoresPrompt ? "Fork before this prompt; restore it in the child editor"
+						: "Fork through this entry; parent stays at its current position"
+				return [...treeLines, header, ...visible, theme.fg("muted", action)].map(fit)
+			},
+		}
+		return picker
+	})
+}
+
+function appendBranchInstructions(message: string, extra: string): string {
+	const trimmedExtra = extra.trim()
+	if (!trimmedExtra) return message
+	return message ? `${message}\n\n${trimmedExtra}` : trimmedExtra
 }
 
 function isEditableInput(data: string): boolean {
@@ -1303,12 +1585,12 @@ function resolveBranchModel(
 	}
 
 	const match = resolveClosestModelCandidate(modelQuery, getModelCandidates(ctx), {
-		preferredProvider: ctx.model.provider,
+		preferredProvider: currentModel.provider,
 	})
 	if (!match) {
 		return {
 			targetModel: currentModel,
-			notice: `Model '${modelQuery}' did not resolve safely; using ${ctx.model.provider}/${ctx.model.id}`,
+			notice: `Model '${modelQuery}' did not resolve safely; using ${currentModel.provider}/${currentModel.id}`,
 		}
 	}
 
@@ -1338,7 +1620,7 @@ function writeBranchSnapshot(
 		}
 	}
 	const entries = [...branch]
-	let parentId = branch[branch.length - 1].id
+	let parentId = entries.at(-1)?.id ?? null
 	for (const label of latestLabels.values()) {
 		if (branchIds.has(label.id)) continue
 		entries.push({ ...label, parentId })
@@ -1374,64 +1656,100 @@ export default function (pi: ExtensionAPI) {
 		await applyPendingBranchLaunch(pi, ctx)
 	})
 
+	const handleBranch = async (args: string, ctx: ExtensionCommandContext, treeByDefault = false) => {
+		const sessionFile = ctx.sessionManager.getSessionFile()
+		if (!sessionFile) {
+			if (ctx.hasUI) ctx.ui.notify("Session is not persisted. Restart without --no-session.", "error")
+			return
+		}
+
+		const { modelQuery, tree, message } = parseBranchArgs(args)
+		const selectFromHistory = tree || treeByDefault
+		// Snapshot the live path before the first await. The active leaf need not
+		// exist in the on-disk file, and must not be replaced by a different leaf.
+		const branch = ctx.sessionManager.getBranch()
+		const sessionEntries = selectFromHistory ? ctx.sessionManager.getEntries() : branch
+		if (!sessionEntries.some((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))) {
+			if (ctx.hasUI) ctx.ui.notify("No messages yet. Nothing to branch.", "error")
+			return
+		}
+
+		let branchToSnapshot = branch
+		let queuedMessage = message
+
+		if (selectFromHistory) {
+			if (!ctx.hasUI || ctx.mode !== "tui") {
+				throw new Error("History selection requires Pi's interactive terminal UI")
+			}
+
+			const sessionTree = ctx.sessionManager.getTree()
+			const currentLeafId = ctx.sessionManager.getLeafId()
+			const selectedId = await selectSessionTreeEntry(pi, ctx, sessionTree, currentLeafId)
+			if (!selectedId) return
+
+			const selection = buildTreeForkSelection(sessionEntries, selectedId)
+			if (!selection) {
+				ctx.ui.notify("Could not resolve the selected session tree entry", "error")
+				return
+			}
+
+			branchToSnapshot = selection.branch
+			queuedMessage = appendBranchInstructions(selection.message, message)
+		}
+
+		const forkFile = writeBranchSnapshot(ctx.sessionManager, sessionFile, branchToSnapshot)
+		const inheritedLaunch = selectFromHistory ? readBranchLaunchData(branchToSnapshot) : undefined
+		if (inheritedLaunch) {
+			// A history entry may precede its launch-applied marker. Do not replay an old launch draft.
+			SessionManager.open(forkFile).appendCustomEntry(BRANCH_LAUNCH_APPLIED_CUSTOM_TYPE, { launchId: inheritedLaunch.launchId })
+		}
+
+		const trimmedMessage = queuedMessage.trim()
+		const hasLaunchCustomization = Boolean(modelQuery || trimmedMessage)
+		let launchData: BranchLaunchData | undefined
+
+		if (hasLaunchCustomization) {
+			const launchSession = SessionManager.open(forkFile)
+			const modelResolution = resolveBranchModel(ctx, modelQuery)
+			launchData = {
+				launchId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+				message: trimmedMessage || undefined,
+				autoSubmitSeconds: selectFromHistory && !message.trim() ? 0 : AUTO_SUBMIT_SECONDS,
+				modelNotice: modelResolution.notice,
+				targetModel: modelResolution.targetModel,
+			}
+			launchSession.appendCustomEntry(BRANCH_LAUNCH_CUSTOM_TYPE, launchData)
+		}
+
+		await openForkInTerminal(pi, ctx, forkFile)
+
+		if (ctx.hasUI) {
+			if (!launchData) {
+				ctx.ui.notify("Created fork and requested terminal launch", "info")
+				return
+			}
+
+			const details = [
+				launchData.targetModel
+					? `${launchData.targetModel.provider}/${launchData.targetModel.id}`
+					: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+				launchData.message ? "draft queued" : undefined,
+			].filter(Boolean).join(" · ")
+			ctx.ui.notify(
+				details
+					? `Created fork and requested terminal launch (${details})`
+					: "Created fork and requested terminal launch",
+				"info",
+			)
+		}
+	}
+
 	pi.registerCommand("branch", {
-		description: "Fork current session into a new terminal tab or split pane, optionally queueing --model <query> and a draft message",
-		handler: async (args, ctx) => {
-			const sessionFile = ctx.sessionManager.getSessionFile()
-			if (!sessionFile) {
-				if (ctx.hasUI) ctx.ui.notify("Session is not persisted. Restart without --no-session.", "error")
-				return
-			}
-
-			// Snapshot the live path before the first await. The active leaf need not
-			// exist in the on-disk file, and must not be replaced by a different leaf.
-			const branch = ctx.sessionManager.getBranch()
-			if (!branch.some((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))) {
-				if (ctx.hasUI) ctx.ui.notify("No messages yet. Nothing to branch.", "error")
-				return
-			}
-
-			const { modelQuery, message } = parseBranchArgs(args)
-			const forkFile = writeBranchSnapshot(ctx.sessionManager, sessionFile, branch)
-
-			const trimmedMessage = message.trim()
-			const hasLaunchCustomization = Boolean(modelQuery || trimmedMessage)
-			let launchData: BranchLaunchData | undefined
-
-			if (hasLaunchCustomization) {
-				const launchSession = SessionManager.open(forkFile)
-				const modelResolution = resolveBranchModel(ctx, modelQuery)
-				launchData = {
-					launchId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-					message: trimmedMessage || undefined,
-					autoSubmitSeconds: AUTO_SUBMIT_SECONDS,
-					modelNotice: modelResolution.notice,
-					targetModel: modelResolution.targetModel,
-				}
-				launchSession.appendCustomEntry(BRANCH_LAUNCH_CUSTOM_TYPE, launchData)
-			}
-
-			await openForkInTerminal(pi, ctx, forkFile)
-
-			if (ctx.hasUI) {
-				if (!launchData) {
-					ctx.ui.notify("Created fork and requested terminal launch", "info")
-					return
-				}
-
-				const details = [
-					launchData.targetModel
-						? `${launchData.targetModel.provider}/${launchData.targetModel.id}`
-						: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
-					launchData.message ? "draft queued" : undefined,
-				].filter(Boolean).join(" · ")
-				ctx.ui.notify(
-					details
-						? `Created fork and requested terminal launch (${details})`
-						: "Created fork and requested terminal launch",
-					"info",
-				)
-			}
-		},
+		description: "Fork the current session into a new terminal; optionally use --tree, --model <query>, and a draft message",
+		handler: handleBranch,
+	})
+	pi.registerCommand("branch-tree", {
+		description: "Select a history entry in Pi's session tree and fork it into a new terminal; optionally use --model <query> and a draft message",
+		handler: (args, ctx) => handleBranch(args, ctx, true),
 	})
 }
