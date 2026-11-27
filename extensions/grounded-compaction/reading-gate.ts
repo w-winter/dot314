@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, NormalizedBuildSystemPromptOptions, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 import type { loadConfig } from "./configuration.ts";
 import { outstandingReading, type OutstandingReading } from "./reading-coverage.ts";
@@ -17,6 +17,9 @@ const SHELL_TOOLS = new Set(["bash", "exec", "wait", "exec_command", "write_stdi
 /** Enforces the latest summary on the active branch when its summary type is enabled. */
 export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConfig): void {
     let requestMessages: readonly AgentMessage[] | undefined;
+    let promptOptions: Pick<NormalizedBuildSystemPromptOptions, "hiddenTools"> = { hiddenTools: [] };
+    // Pi finalizes hidden declarations on this object after before_agent_start handlers run.
+    pi.on("before_agent_start", (event) => { promptOptions = event.systemPromptOptions; });
     pi.on("context_with_system", (event) => { requestMessages = event.messages; });
     pi.on("session_start", () => { requestMessages = undefined; });
 
@@ -56,7 +59,8 @@ export function registerReadingGate(pi: ExtensionAPI, getConfig: typeof loadConf
         if (READ_TOOLS.has(event.toolName)) return;
         const reading = await pending(ctx);
         if (!reading) return;
-        if (!pi.getActiveTools().includes("read") && SHELL_TOOLS.has(event.toolName)) return;
+        const hasVisibleRead = pi.getActiveTools().includes("read") && !promptOptions.hiddenTools.includes("read");
+        if (!hasVisibleRead && SHELL_TOOLS.has(event.toolName)) return;
         return { block: true, reason: instruction(reading.files, ctx.cwd) };
     });
     pi.on("agent_before_settle", async (event, ctx) => {

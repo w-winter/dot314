@@ -27,7 +27,7 @@ const execTool: ToolDefinition<typeof ExecInput> = {
     },
 };
 
-async function harness(dir: string, manager = SessionManager.create(dir, path.join(dir, "sessions"))) {
+async function harness(dir: string, manager = SessionManager.create(dir, path.join(dir, "sessions")), executionTool = execTool) {
     const work: AssistantMessage[] = [];
     const summaries: string[] = [];
     const summaryPrompts: string[] = [];
@@ -68,7 +68,7 @@ async function harness(dir: string, manager = SessionManager.create(dir, path.jo
     await loader.reload();
     const { session } = await createAgentSession({
         cwd: dir, agentDir: dir, model: faux.getModel(), modelRuntime: runtime, thinkingLevel: "off", resourceLoader: loader,
-        tools: ["read", "bash", "write", "exec"], customTools: [execTool], sessionManager: manager, settingsManager: settings,
+        tools: ["read", "bash", "write", "exec"], customTools: [executionTool], sessionManager: manager, settingsManager: settings,
     });
     function results() {
         return manager.getBranch().flatMap((entry) => entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : []);
@@ -349,17 +349,20 @@ it("requires nested shell reads to emit file contents rather than merely recordi
     }
 });
 
-it("credits a truncated nested read and requests only the missing lines until shell chunks close every gap", async () => {
+it("credits nested shell chunks when read is active but hidden, blocking writes until every line is visible", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "grounded-reading-chunks-"));
     const file = path.join(dir, "required.md");
     const target = path.join(dir, "result.txt");
     const prefix = "First reference line.\nSecond reference line.\n";
     await writeFile(file, `${prefix}Unseen middle line.\nFinal reference line.\n`);
-    const h = await harness(dir);
+    const h = await harness(dir, undefined, {
+        ...execTool,
+        prepareLoadout: () => ({ hiddenDeclarations: ["read"] }),
+    });
     let passed = false;
     try {
         h.config.verbatimUserMessageTokens = null;
-        h.session.setActiveToolsByName(["bash", "write", "exec"]);
+        assert.ok(h.session.getActiveToolNames().includes("read"));
         h.work.push(say("Work remains. ".repeat(300)));
         await h.session.prompt("Prepare a checkpoint. ".repeat(300));
         h.summaries.push(`Summary.\n${readingBlock([file])}`);
