@@ -154,6 +154,20 @@ Fork using a fuzzy model query.  If the current provider is Anthropic, `flash` w
 ```
 Fork with both a target model and a queued message.
 
+## Building and publishing
+
+To release from a dot314 repository checkout, use Node.js 24 or newer and `trash` on your PATH. Update the version in `packages/pi-branch-out/package.json`, then run these commands from the repository root:
+
+```bash
+cd packages/pi-branch-out
+npm run test:package
+npm pack
+```
+
+The package-local `.npmrc` enables npm lifecycle scripts. Packing runs `prepack` to copy the current extension source and check for local JSON configs. The package test checks the tarball against the source and runs the Orca tests on its extracted implementation.
+
+Publish the resulting tarball with `npm publish <tarball-path>`.
+
 ## Upstream credit
 
 An earlier version of this extension began as an iteration on davidgasquez's [`branch-term.ts`](https://github.com/davidgasquez/dotfiles/blob/main/agents/pi/extensions/branch-term.ts), MIT license.
