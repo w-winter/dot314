@@ -2,11 +2,11 @@
 
 Coordinates native compaction and cross-provider history portability for models whose provider is `openai-codex` and API is `openai-codex-responses` (called **Codex models** below).
 
-Requires Pi 1.5.0 or later.
+Requires Pi 1.6.1 or later.
 
 The coordinator depends on two integrations:
 
-- [howaboua's `@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) 4.0.10 or later creates and replays encrypted OpenAI Responses V2 checkpoints through Pi's normal compaction pipeline. Install it with `pi install npm:@howaboua/pi-codex-conversion`.
+- [howaboua's `@howaboua/pi-codex-conversion`](https://www.npmjs.com/package/@howaboua/pi-codex-conversion) 5.1.2 or later creates and replays encrypted OpenAI Responses V2 checkpoints through Pi's normal compaction pipeline. Install it with `pi install npm:@howaboua/pi-codex-conversion`.
 - [`grounded-compaction`](../grounded-compaction/README.md) is required to create portable plaintext summaries when another provider needs visible history covered by a native checkpoint.
 
 Aside: the other compaction-related extension in this repo, [`model-aware-compaction`](../model-aware-compaction/README.md), isn't a coordinator dependency. That extension independently changes when Pi begins compaction for whichever extension, or Pi's native logic, owns the compaction lifecycle at runtime.

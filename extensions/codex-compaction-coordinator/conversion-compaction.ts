@@ -36,7 +36,7 @@ export function loadConversionCompaction(pi: ExtensionAPI, ctx: ExtensionContext
         }): ConversionConfig;
     } = requireConversion("@howaboua/pi-codex-conversion/dist/adapter/activation/config-store.js");
     const runtimePlan: {
-        resolveCodexRuntimePlanForState(context: Pick<ExtensionContext, "model">, state: {
+        resolveAdapterRuntimePlanForState(context: Pick<ExtensionContext, "model">, state: {
             config: ConversionConfig; availableToolNames: string[];
         }): { nativeCompaction: boolean; nativeReplay: boolean };
     } = requireConversion("@howaboua/pi-codex-conversion/dist/adapter/activation/runtime-plan.js");
@@ -79,7 +79,7 @@ export function loadConversionCompaction(pi: ExtensionAPI, ctx: ExtensionContext
         ...registered,
         delegates(event, context) {
             assertMethodUnchanged(context);
-            const plan = runtimePlan.resolveCodexRuntimePlanForState(context, {
+            const plan = runtimePlan.resolveAdapterRuntimePlanForState(context, {
                 config,
                 availableToolNames: pi.getAllTools().map(({ name }) => name),
             });

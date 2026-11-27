@@ -202,8 +202,9 @@ describe("compaction method ownership", () => {
     });
 
     it("leaves grounded in control when native compaction is inactive", async () => {
-        saveConfig("v2", undefined, { voiceFeaturesOnly: true });
+        saveConfig("v2");
         const h = await harness("pi", "native-first");
+        h.pi.getAllTools = () => [];
         assert.equal((await h.compact())?.compaction?.summary, "grounded");
     });
 
