@@ -17,7 +17,7 @@
     "extensions": ["extensions/branch-out/index.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.74.0"
+    "@earendil-works/pi-coding-agent": ">=0.87.1"
   },
   "scripts": {
     "prepack": "node ../../scripts/pi-package-prepack.mjs",

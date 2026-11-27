@@ -71,8 +71,8 @@ for (const { args = '', launchFails = false, diskMissingLeaf = false, laterSibli
       context.register({
         registerFlag() {}, on() {}, getFlag() {},
         registerCommand(name, command) {
-          assert.equal(name, 'branch');
-          handler = command.handler;
+          assert.ok(name === 'branch' || name === 'branch-tree');
+          if (name === 'branch') handler = command.handler;
         },
         async exec(_command, cliArgs) {
           if (cliArgs[1] === 'list') {
